@@ -166,7 +166,7 @@ class ClaudeClient:
             if self.debug:
                 print(f"\n[DEBUG] ✓ No busy indicators found - checking for prompt...\n", end='', flush=True)
 
-            # PRIORITY 2: Check for ready prompt (❯)
+            # PRIORITY 3: Check for ready prompt (❯) as confirmation
             # Search from the END to find the most recent prompt
             for i in range(len(last_20_lines) - 1, -1, -1):
                 line = last_20_lines[i]
@@ -189,10 +189,12 @@ class ClaudeClient:
                             print(f"\n[DEBUG] ✓ Found suggestion prompt - Claude is READY: {repr(stripped[:50])}\n", end='', flush=True)
                         return True
 
-            # No busy indicators but also no ready prompt found
+            # No specific prompt found, but no busy indicators either
+            # This handles permission screens, welcome messages, and other ready states
+            # that don't show the standard ❯ prompt
             if self.debug:
-                print(f"\n[DEBUG] ✗ No prompt found - Claude status unknown\n", end='', flush=True)
-            return False
+                print(f"\n[DEBUG] ✓ No prompt found but no busy indicators - assuming READY\n", end='', flush=True)
+            return True
 
         except Exception as e:
             if self.debug:
