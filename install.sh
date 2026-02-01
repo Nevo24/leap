@@ -85,8 +85,8 @@ if [ -n "$RC_FILE" ]; then
         read -p "  Overwrite? (y/N) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            # Remove old config
-            sed -i.bak '/# ClaudeQ - Multi-session Claude/,/^alias claude_client=/d' "$RC_FILE"
+            # Remove old config (match the function closing brace)
+            sed -i.bak '/# ClaudeQ - Multi-session Claude/,/^}$/d' "$RC_FILE"
             echo -e "${GREEN}✓ Removed old configuration${NC}"
         else
             echo "  Skipping shell configuration."

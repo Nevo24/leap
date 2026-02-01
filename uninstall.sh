@@ -51,8 +51,8 @@ if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ]; then
         # Backup RC file
         cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
 
-        # Remove ClaudeQ configuration
-        sed -i.bak '/# ClaudeQ - Multi-session Claude/,/^alias claude_client=/d' "$RC_FILE"
+        # Remove ClaudeQ configuration (match the function closing brace)
+        sed -i.bak '/# ClaudeQ - Multi-session Claude/,/^}$/d' "$RC_FILE"
         rm -f "$RC_FILE.bak"
 
         echo -e "${GREEN}✓ Configuration removed from $RC_FILE${NC}"
