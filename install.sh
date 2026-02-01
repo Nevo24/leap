@@ -113,8 +113,6 @@ if [ -n "$RC_FILE" ]; then
 claudeq() {
     ~/.local/bin/claudeq-auto.sh "$@"
 }
-alias claude_server='~/.local/bin/claudeq-server.sh'
-alias claude_client='~/.local/bin/claudeq-client.py'
 EOF
         echo -e "${GREEN}✓ Added ClaudeQ configuration to $RC_FILE${NC}"
     fi

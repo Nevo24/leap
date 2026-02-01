@@ -80,8 +80,6 @@ You: :sendall           # Send all
 |---------|-------------|
 | `claudeq <tag>` | Start/connect to tagged session (auto-detects) |
 | `claude` | Run Claude directly (no queueing) |
-| `claude_server <tag>` | Force server mode |
-| `claude_client <tag>` | Force client mode |
 
 ## Troubleshooting
 
