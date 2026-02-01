@@ -14,6 +14,15 @@ import tempfile
 import base64
 from collections import deque
 
+# Try to import prompt_toolkit for better input handling
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit.history import FileHistory
+    HAS_PROMPT_TOOLKIT = True
+except ImportError:
+    HAS_PROMPT_TOOLKIT = False
+
 QUEUE_DIR = os.path.expanduser("~/.claude-queues")
 
 def is_image_file(path):
@@ -80,9 +89,16 @@ class ClaudeClient:
         # Image handling
         self.pending_image_path = None
 
-        # Enable bracketed paste mode
-        sys.stdout.write('\033[?2004h')
-        sys.stdout.flush()
+        # Setup prompt_toolkit session if available
+        if HAS_PROMPT_TOOLKIT:
+            self.prompt_session = PromptSession(history=FileHistory(self.history_file))
+        else:
+            self.prompt_session = None
+
+        # Enable bracketed paste mode (only if not using prompt_toolkit)
+        if not HAS_PROMPT_TOOLKIT:
+            sys.stdout.write('\033[?2004h')
+            sys.stdout.flush()
 
     def load_queue(self):
         """Load queue from file"""
@@ -101,7 +117,8 @@ class ClaudeClient:
 
     def load_history(self):
         """Load command history from file"""
-        if os.path.exists(self.history_file):
+        # Only use readline if prompt_toolkit is not available
+        if not HAS_PROMPT_TOOLKIT and os.path.exists(self.history_file):
             try:
                 readline.read_history_file(self.history_file)
             except:
@@ -110,14 +127,20 @@ class ClaudeClient:
 
     def save_history(self):
         """Save command history to file"""
-        try:
-            readline.write_history_file(self.history_file)
-        except:
-            pass  # Ignore errors saving history
+        # Only use readline if prompt_toolkit is not available
+        # prompt_toolkit handles history automatically via FileHistory
+        if not HAS_PROMPT_TOOLKIT:
+            try:
+                readline.write_history_file(self.history_file)
+            except:
+                pass  # Ignore errors saving history
 
     def _custom_input(self, prompt):
-        """Custom input - just use regular input for now"""
-        return input(prompt)
+        """Custom input - uses prompt_toolkit if available for better handling of background output"""
+        if HAS_PROMPT_TOOLKIT and self.prompt_session:
+            return self.prompt_session.prompt(prompt)
+        else:
+            return input(prompt)
 
     def check_session_exists(self):
         """Check if tmux session exists"""
@@ -384,11 +407,13 @@ class ClaudeClient:
                 self.send_to_claude(msg, auto=True)
                 print(f"   See response in Tab 1", flush=True)
 
-                # Print prompt on new line after auto-send
-                if self.message_queue:
-                    print(f"\n[Queue:{len(self.message_queue)}] You: ", end='', flush=True)
-                else:
-                    print(f"\nYou: ", end='', flush=True)
+                # Only print prompt if NOT using prompt_toolkit
+                # (prompt_toolkit automatically preserves the input line)
+                if not HAS_PROMPT_TOOLKIT:
+                    if self.message_queue:
+                        print(f"\n[Queue:{len(self.message_queue)}] You: ", end='', flush=True)
+                    else:
+                        print(f"\nYou: ", end='', flush=True)
 
             except Exception as e:
                 if self.debug:
@@ -525,7 +550,7 @@ class ClaudeClient:
  | |    | | __ _ _   _  __| | ___| | | |
  | |    | |/ _` | | | |/ _` |/ _ \\ | | |
  | |____| | (_| | |_| | (_| |  __/ |_| |
-  \\_____|_|\\__,_|\\__,_|\\__,_|\\___|\\___\\Q
+  \\_____|_|\\__,_|\\__,_|\\__,_|\\___|\\___\\
 """)
         print("="*70)
         print(f"  CLIENT - Session: {self.tag}")
@@ -572,7 +597,15 @@ class ClaudeClient:
         if self.message_queue:
             print(f"📝 Queue has {len(self.message_queue)} messages - will auto-send when Claude is ready\n")
 
+        # Use patch_stdout context manager if prompt_toolkit is available
+        # This prevents background thread output from corrupting the input line
+        context_manager = patch_stdout() if HAS_PROMPT_TOOLKIT else None
+
         try:
+            # Enter patch_stdout context if available
+            if context_manager:
+                context_manager.__enter__()
+
             while True:
                 # Prompt
                 if self.message_queue:
@@ -744,9 +777,17 @@ class ClaudeClient:
             print("\n\nExiting...")
 
         finally:
-            # Disable bracketed paste mode
-            sys.stdout.write('\033[?2004l')
-            sys.stdout.flush()
+            # Exit patch_stdout context if we entered it
+            if context_manager:
+                try:
+                    context_manager.__exit__(None, None, None)
+                except:
+                    pass
+
+            # Disable bracketed paste mode (only if not using prompt_toolkit)
+            if not HAS_PROMPT_TOOLKIT:
+                sys.stdout.write('\033[?2004l')
+                sys.stdout.flush()
 
             # Stop auto-processing
             self.auto_process = False
