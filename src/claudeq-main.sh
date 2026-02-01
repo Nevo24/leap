@@ -1,7 +1,8 @@
 #!/bin/bash
 #
-# ClaudeQ Auto - Automatically start server or client based on session existence
+# ClaudeQ Main - Automatically start server or client based on session existence
 # Usage: claudeq <tag> [flags]
+# Flags are passed to Claude CLI when starting in server mode
 #
 
 # Check if tag provided

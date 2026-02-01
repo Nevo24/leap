@@ -59,12 +59,12 @@ echo "📦 Installing ClaudeQ scripts..."
 mkdir -p "$INSTALL_DIR"
 
 # Copy scripts
-cp "$SCRIPT_DIR/src/claudeq-auto.sh" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/src/claudeq-main.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/src/claudeq-server.sh" "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/src/claudeq-client.py" "$INSTALL_DIR/"
 
 # Make scripts executable
-chmod +x "$INSTALL_DIR/claudeq-auto.sh"
+chmod +x "$INSTALL_DIR/claudeq-main.sh"
 chmod +x "$INSTALL_DIR/claudeq-server.sh"
 chmod +x "$INSTALL_DIR/claudeq-client.py"
 
@@ -111,7 +111,7 @@ if [ -n "$RC_FILE" ]; then
 
 # ClaudeQ - Multi-session Claude with auto-detection and message queueing
 claudeq() {
-    ~/.local/bin/claudeq-auto.sh "$@"
+    ~/.local/bin/claudeq-main.sh "$@"
 }
 EOF
         echo -e "${GREEN}✓ Added ClaudeQ configuration to $RC_FILE${NC}"
