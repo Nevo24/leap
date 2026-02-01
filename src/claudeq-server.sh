@@ -13,7 +13,7 @@ for path in \
     "/usr/local/bin/claude" \
     "/opt/homebrew/bin/claude" \
     "$HOME/.local/bin/claude" \
-    "$(which claude 2>/dev/null)"; do
+    "$(command -v claude 2>/dev/null)"; do
 
     if [ -f "$path" ] && [ -x "$path" ]; then
         CLAUDE_PATH="$path"
