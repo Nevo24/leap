@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # ClaudeQ Server - Start Claude in a tmux session with tag
-# Usage: claude <tag>
+# Usage: claudeq <tag> [flags]
 #
 
 # Find Claude binary
@@ -35,20 +35,20 @@ fi
 
 # Check if tag provided
 if [ -z "$1" ]; then
-    echo "Usage: claude <tag>"
+    echo "Usage: claudeq <tag> [flags]"
     echo ""
     echo "Examples:"
-    echo "  Tab 1: claude backend"
-    echo "  Tab 2: claude_client backend"
+    echo "  claudeq backend"
+    echo "  claudeq backend --verbose"
+    echo "  claudeq frontend --some-flag"
     echo ""
-    echo "  Tab 1: claude frontend"
-    echo "  Tab 2: claude_client frontend"
-    echo ""
-    echo "This allows multiple Claude sessions, each controlled from a separate tab."
+    echo "Flags are passed directly to the Claude CLI."
     exit 1
 fi
 
 TAG="$1"
+shift  # Remove tag from arguments
+CLAUDE_FLAGS="$@"  # Remaining arguments are flags for Claude
 SESSION_NAME="claude-$TAG"
 
 # Check if tmux is installed
@@ -103,7 +103,7 @@ else
     # Create new session with Claude and attach (not detached)
     # Set destroy-unattached and detach-on-destroy for proper cleanup with iTerm2
     # The \; separates tmux commands - both execute before attaching
-    exec tmux new-session -s "$SESSION_NAME" "$CLAUDE_PATH" \; \
+    exec tmux new-session -s "$SESSION_NAME" "$CLAUDE_PATH" $CLAUDE_FLAGS \; \
         set-option -t "$SESSION_NAME" destroy-unattached on \; \
         set-option -t "$SESSION_NAME" detach-on-destroy on
 fi
