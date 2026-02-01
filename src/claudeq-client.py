@@ -382,7 +382,13 @@ class ClaudeClient:
                     print(f"   ({remaining} remaining in queue)")
 
                 self.send_to_claude(msg, auto=True)
-                print(f"   See response in Tab 1\n", flush=True)
+                print(f"   See response in Tab 1", flush=True)
+
+                # Print prompt on new line after auto-send
+                if self.message_queue:
+                    print(f"\n[Queue:{len(self.message_queue)}] You: ", end='', flush=True)
+                else:
+                    print(f"\nYou: ", end='', flush=True)
 
             except Exception as e:
                 if self.debug:
