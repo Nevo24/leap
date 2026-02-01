@@ -151,6 +151,9 @@ All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 Mouse mode is enabled by default - just use your mouse wheel to scroll.
 Alternatively, press `Ctrl+B` then `[` for keyboard scrolling (arrow keys, Page Up/Down).
 
+**Copying text from the server tab:**
+Hold `Shift` while selecting text with your mouse, then copy normally (`Cmd+C` or right-click).
+
 **Claude CLI not found?**
 ```bash
 npm install -g @anthropic-ai/claude-code

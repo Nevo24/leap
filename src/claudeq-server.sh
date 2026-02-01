@@ -82,6 +82,7 @@ cat << EOF
   All responses will appear HERE in this window.
 
   Scroll: Use mouse wheel (mouse mode enabled)
+  Copy text: Hold Shift while selecting with mouse
   Detach: Ctrl+B then D (session keeps running)
 ======================================================================
 
