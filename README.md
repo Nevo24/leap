@@ -72,9 +72,10 @@ You: :d Urgent! Need answer now                # Send directly, bypass queue
 
 **With Images:**
 ```
-You: :ip                                       # Attach image
+You: :ip What's wrong with this UI?            # Queue with image in one command
+You: :ip                                       # Or attach image first...
 🖼️ Image attached! Type message or press Enter to queue
-You: What's wrong with this UI?                # Queued with image
+You: What's wrong with this UI?                # ...then queue with message
 
 You: :d :ip Explain this error now             # Send directly with image
 ```
@@ -110,7 +111,8 @@ You: :d Urgent question!         # Sends directly, bypasses queue
 ### 🖼️ Image Support
 Paste images from clipboard:
 ```
-You: :ip                         # Attach image (queues with next message)
+You: :ip Explain this screenshot # Queue with image in one command
+You: :ip                         # Or attach image, then type message
 You: Explain this screenshot     # Queued with image
 
 You: :d :ip Fix this now         # Send directly with image (bypass queue)
@@ -127,7 +129,7 @@ All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 | Command | Description |
 |---------|-------------|
 | 💬 Type message | **Queue message** (auto-sends when ready) |
-| 🖼️ `:ip` or `:imagepaste` | Attach image (queues with next message) |
+| 🖼️ `:ip <msg>` or `:imagepaste <msg>` | Queue with image from clipboard |
 | ⚡ `:d <msg>` or `:direct <msg>` | **Send directly** (bypass queue) |
 | ⚡ `:d :ip <msg>` | Send directly with image |
 | 📤 `:s` or `:send` | Send next queued message |
