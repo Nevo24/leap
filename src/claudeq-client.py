@@ -362,12 +362,6 @@ class ClaudeClient:
                 self.send_to_claude(msg, auto=True)
                 print(f"   See response in Tab 1\n")
 
-                if self.message_queue:
-                    prompt = f"[Queue:{len(self.message_queue)}] You: "
-                else:
-                    prompt = "You: "
-                print(prompt, end='', flush=True)
-
             except Exception as e:
                 if self.debug:
                     print(f"\n[DEBUG] Error: {e}\n", end='', flush=True)
