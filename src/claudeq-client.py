@@ -10,9 +10,52 @@ import subprocess
 import threading
 import time
 import readline
+import tempfile
+import base64
 from collections import deque
 
 QUEUE_DIR = os.path.expanduser("~/.claude-queues")
+
+def check_clipboard_has_image():
+    """Check if clipboard contains an image (macOS only)"""
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', 'clipboard info'],
+            capture_output=True,
+            text=True,
+            timeout=1
+        )
+        return 'picture' in result.stdout.lower() or 'image' in result.stdout.lower()
+    except:
+        return False
+
+def save_clipboard_image():
+    """Save clipboard image to temp file and return path (macOS only)"""
+    try:
+        # Create temp file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        temp_path = temp_file.name
+        temp_file.close()
+
+        # Save clipboard image using osascript
+        script = f'''
+        set png_data to the clipboard as «class PNGf»
+        set the_file to open for access POSIX file "{temp_path}" with write permission
+        write png_data to the_file
+        close access the_file
+        '''
+
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            timeout=5
+        )
+
+        if result.returncode == 0 and os.path.exists(temp_path):
+            return temp_path
+        return None
+    except Exception as e:
+        return None
 
 class ClaudeClient:
     def __init__(self, tag, debug=False):
@@ -214,6 +257,40 @@ class ClaudeClient:
             self.is_sending = True
 
         try:
+            # Check if clipboard has an image
+            if check_clipboard_has_image():
+                if not auto:
+                    print(f"📎 Image detected in clipboard...")
+
+                # Save clipboard image
+                image_path = save_clipboard_image()
+                if image_path:
+                    try:
+                        # Read and encode image as base64
+                        with open(image_path, 'rb') as f:
+                            image_data = f.read()
+                        encoded = base64.b64encode(image_data).decode('ascii')
+
+                        # Try multiple methods to send the image
+                        # Method 1: iTerm2 inline image protocol via printf
+                        cmd = f'printf "\\033]1337;File=inline=1:{encoded}\\007"'
+                        subprocess.run([
+                            'tmux', 'send-keys', '-t', self.session_name,
+                            cmd, 'Enter'
+                        ])
+
+                        if not auto:
+                            print(f"   📸 Image sent")
+
+                        # Small delay for image to be processed
+                        time.sleep(0.5)
+                    finally:
+                        # Clean up temp file
+                        try:
+                            os.unlink(image_path)
+                        except:
+                            pass
+
             # Send message literally (without interpreting special keys)
             subprocess.run([
                 'tmux', 'send-keys', '-t', self.session_name,
