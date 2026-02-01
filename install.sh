@@ -105,7 +105,7 @@ if [ -n "$RC_FILE" ]; then
 # ClaudeQ - Multi-session Claude with auto-detection and message queueing
 # Usage: claudeq <tag> [flags]
 # Flags are passed to Claude CLI when starting server mode (ignored in client mode)
-# Example: claudeq backend --verbose
+# Example: claudeq my-cool-new-feature --verbose
 claudeq() {
     $SRC_DIR/claudeq-main.sh "\$@"
 }
