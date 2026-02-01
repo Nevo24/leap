@@ -515,7 +515,7 @@ class ClaudeClient:
         print()
         print("  💬 Type message           → Queue message (auto-sends when ready)")
         print("  🖼️ :ip or :imagepaste     → Queue with image from clipboard")
-        print("  ⚡ :d or :direct <msg>     → Send directly (bypass queue)")
+        print("  ⚡ :d or :direct <msg>    → Send directly (bypass queue)")
         print("  📤 :s or :send            → Send next queued")
         print("  📨 :sa or :sendall        → Send all queued")
         print("  📋 :l or :list            → Show queue")
