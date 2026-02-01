@@ -20,6 +20,17 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
+# Check if tag starts with a dash (which would be a flag, not a tag)
+if [[ "$1" == -* ]]; then
+    echo "Error: Tag cannot start with '-'"
+    echo ""
+    echo "The first argument must be a tag name, not a flag."
+    echo ""
+    echo "Usage: claudeq <tag> [flags]"
+    echo "Example: claudeq my-feature --verbose"
+    exit 1
+fi
+
 TAG="$1"
 shift  # Remove tag from arguments
 CLAUDE_FLAGS="$@"  # Remaining arguments are flags for Claude
