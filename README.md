@@ -131,7 +131,7 @@ All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 | 💬 Type message | **Queue message** (auto-sends when ready) |
 | 🖼️ `:ip <msg>` or `:imagepaste <msg>` | Queue with image from clipboard |
 | ⚡ `:d <msg>` or `:direct <msg>` | **Send directly** (bypass queue) |
-| ⚡ `:d :ip <msg>` | Send directly with image |
+| ⚡ `:d :ip <msg>` or `:direct :ip <msg>` | Send directly with image |
 | 📤 `:s` or `:send` | Send next queued message |
 | 📨 `:sa` or `:sendall` | Send all queued messages |
 | 📋 `:l` or `:list` | Show queue contents |
