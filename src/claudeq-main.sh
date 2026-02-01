@@ -7,15 +7,16 @@
 
 # Check if tag provided
 if [ -z "$1" ]; then
+    echo "Error: Tag is required"
+    echo ""
     echo "Usage: claudeq <tag> [flags]"
     echo ""
     echo "Examples:"
-    echo "  claudeq backend                    # Starts server or connects as client"
-    echo "  claudeq backend --verbose          # Pass flags to Claude (server only)"
-    echo "  claudeq frontend --some-flag       # Flags only apply in server mode"
+    echo "  claudeq my-feature                      # Start/connect to session"
+    echo "  claudeq my-cool-new-feature --verbose   # With Claude CLI flags"
     echo ""
-    echo "This automatically determines whether to start a new Claude session"
-    echo "or connect to an existing one."
+    echo "The tag identifies your Claude session. Use descriptive names like"
+    echo "feature names, ticket IDs, or project names."
     exit 1
 fi
 
