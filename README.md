@@ -16,6 +16,8 @@ source ~/.zshrc  # or ~/.bashrc for bash users
 
 **Requirements:** tmux, Python 3, Claude CLI
 
+**Note:** ClaudeQ runs directly from the project directory (no file copying). Don't move or delete the `claudeq` folder after installation.
+
 ## Usage
 
 ### Start/Connect to Tagged Session

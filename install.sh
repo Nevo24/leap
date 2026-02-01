@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-INSTALL_DIR="$HOME/.local/bin"
+SRC_DIR="$SCRIPT_DIR/src"
 
 echo "📋 Checking dependencies..."
 
@@ -53,22 +53,15 @@ else
 fi
 
 echo ""
-echo "📦 Installing ClaudeQ scripts..."
-
-# Create install directory if it doesn't exist
-mkdir -p "$INSTALL_DIR"
-
-# Copy scripts
-cp "$SCRIPT_DIR/src/claudeq-main.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/src/claudeq-server.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/src/claudeq-client.py" "$INSTALL_DIR/"
+echo "📦 Setting up ClaudeQ..."
 
 # Make scripts executable
-chmod +x "$INSTALL_DIR/claudeq-main.sh"
-chmod +x "$INSTALL_DIR/claudeq-server.sh"
-chmod +x "$INSTALL_DIR/claudeq-client.py"
+chmod +x "$SRC_DIR/claudeq-main.sh"
+chmod +x "$SRC_DIR/claudeq-server.sh"
+chmod +x "$SRC_DIR/claudeq-client.py"
 
-echo -e "${GREEN}✓ Scripts installed to $INSTALL_DIR${NC}"
+echo -e "${GREEN}✓ Scripts configured in $SRC_DIR${NC}"
+echo "  ClaudeQ will run directly from project directory (no file copying)"
 
 # Detect shell
 SHELL_NAME=$(basename "$SHELL")
@@ -106,27 +99,20 @@ if [ -n "$RC_FILE" ]; then
         cp "$RC_FILE" "$RC_FILE.backup-$(date +%Y%m%d-%H%M%S)"
         echo -e "${GREEN}✓ Backed up $RC_FILE${NC}"
 
-        # Add ClaudeQ configuration
-        cat >> "$RC_FILE" << 'EOF'
+        # Add ClaudeQ configuration with absolute path to project
+        cat >> "$RC_FILE" << EOF
 
 # ClaudeQ - Multi-session Claude with auto-detection and message queueing
 # Usage: claudeq <tag> [flags]
 # Flags are passed to Claude CLI when starting server mode (ignored in client mode)
 # Example: claudeq backend --verbose
 claudeq() {
-    ~/.local/bin/claudeq-main.sh "$@"
+    $SRC_DIR/claudeq-main.sh "\$@"
 }
 EOF
         echo -e "${GREEN}✓ Added ClaudeQ configuration to $RC_FILE${NC}"
+        echo "  Using project directory: $SRC_DIR"
     fi
-fi
-
-# Check if ~/.local/bin is in PATH
-if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-    echo ""
-    echo -e "${YELLOW}⚠ $HOME/.local/bin is not in your PATH${NC}"
-    echo "  Add this to your $RC_FILE:"
-    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
 echo ""
@@ -142,6 +128,10 @@ echo "Examples:"
 echo "  claude              # Run Claude directly (no queueing)"
 echo "  claudeq backend     # Start/connect to 'backend' session"
 echo "  claudeq frontend    # Start/connect to 'frontend' session"
+echo ""
+echo "⚠️  Important: Keep the ClaudeQ project in its current location:"
+echo "   $SCRIPT_DIR"
+echo "   Moving or deleting it will break ClaudeQ."
 echo ""
 echo "For more info, visit: https://github.com/nevo24/claudeq"
 echo ""

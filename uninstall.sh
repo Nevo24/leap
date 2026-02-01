@@ -28,9 +28,11 @@ else
 fi
 
 echo "This will remove:"
-echo "  - ClaudeQ scripts from $INSTALL_DIR"
 echo "  - ClaudeQ configuration from $RC_FILE"
 echo "  - Queue data from ~/.claude-queues/"
+echo ""
+echo "Note: The ClaudeQ project files will remain in place."
+echo "      Delete the project directory manually if desired."
 echo ""
 read -p "Continue? (y/N) " -n 1 -r
 echo
@@ -39,16 +41,6 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo "Uninstallation cancelled."
     exit 0
 fi
-
-echo ""
-echo "🗑️  Removing ClaudeQ scripts..."
-
-# Remove scripts
-rm -f "$INSTALL_DIR/claudeq-auto.sh"
-rm -f "$INSTALL_DIR/claudeq-server.sh"
-rm -f "$INSTALL_DIR/claudeq-client.py"
-
-echo -e "${GREEN}✓ Scripts removed${NC}"
 
 # Remove shell configuration
 if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ]; then
