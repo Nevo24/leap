@@ -6,6 +6,14 @@ Queue multiple prompts with images in one tab while Claude works in another. Aut
 
 ## Installation
 
+### Prerequisites
+
+Install dependencies first:
+```bash
+brew install tmux python3 node
+npm install -g @anthropic-ai/claude-code
+```
+
 ### Quick Install (One Command)
 
 ```bash
@@ -20,6 +28,11 @@ npm install -g github:nevo24/claudeq && source ~/.bashrc
 ### Manual Install
 
 ```bash
+# Install dependencies
+brew install tmux python3 node
+npm install -g @anthropic-ai/claude-code
+
+# Install ClaudeQ
 git clone https://github.com/nevo24/claudeq.git
 cd claudeq
 chmod +x install.sh
@@ -27,7 +40,7 @@ chmod +x install.sh
 source ~/.zshrc  # or ~/.bashrc for bash users
 ```
 
-**Requirements:** Node.js (for npm), tmux, Python 3, Claude CLI
+**Requirements:** tmux, Python 3, Node.js, Claude CLI
 
 **Note:** The npm install automatically runs the setup and configures your shell.
 
