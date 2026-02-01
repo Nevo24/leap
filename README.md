@@ -145,11 +145,9 @@ All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 
 ## Troubleshooting
 
-**Can't scroll in the server tab?**
-Tmux requires "copy mode" to scroll:
-- Press `Ctrl+B` then `[` to enter copy mode
-- Use arrow keys, Page Up/Down, or mouse wheel to scroll
-- Press `q` or `Esc` to exit copy mode
+**Scrolling in the server tab:**
+Mouse mode is enabled by default - just use your mouse wheel to scroll.
+Alternatively, press `Ctrl+B` then `[` for keyboard scrolling (arrow keys, Page Up/Down).
 
 **Claude CLI not found?**
 ```bash
