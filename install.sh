@@ -107,6 +107,12 @@ if [ -n "$RC_FILE" ]; then
 # Flags are passed to Claude CLI when starting server mode (ignored in client mode)
 # Example: claudeq my-cool-new-feature --verbose
 claudeq() {
+    if [ \$# -eq 0 ]; then
+        echo "Error: Tag is required"
+        echo "Usage: claudeq <tag> [flags]"
+        echo "Example: claudeq my-cool-new-feature --verbose"
+        return 1
+    fi
     $SRC_DIR/claudeq-main.sh "\$@"
 }
 EOF
