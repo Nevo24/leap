@@ -6,16 +6,6 @@ Queue multiple prompts with images in one tab while Claude works in another. Aut
 
 ## Installation
 
-### Prerequisites
-
-Install dependencies first:
-```bash
-brew install tmux python3 node
-npm install -g @anthropic-ai/claude-code
-```
-
-### Installation
-
 ```bash
 # 1. Install dependencies
 brew install tmux python3 node
@@ -31,9 +21,7 @@ chmod +x install.sh
 source ~/.zshrc  # or ~/.bashrc for bash users
 ```
 
-**Requirements:** tmux, Python 3, Node.js, Claude CLI
-
-**Note:** The npm install automatically runs the setup and configures your shell.
+**Requirements:** tmux, Python 3, Node.js (for Claude CLI), Claude CLI
 
 ## Usage
 
