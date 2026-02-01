@@ -52,57 +52,71 @@ claudeq my-cool-new-feature
 
 **Basic Usage:**
 ```
-You: How do I fix this bug?                    # Direct message
-You: :q Refactor the authentication            # Queue for later
-You: :ip                                       # Paste image, type message
-🖼️ Image pasted from clipboard!
-[📸] You: What's wrong with this UI?           # Send with image
+You: How do I fix this bug?                    # Queued automatically
+You: Refactor the authentication               # Queued automatically
+You: :d Urgent! Need answer now                # Send directly, bypass queue
 ```
 
-**Queue with Images:**
+**With Images:**
 ```
-You: :q :ip Explain this error                 # Queue message + image
-📝 Queued with image: Explain this error (1 total)
+You: :ip                                       # Attach image
+🖼️ Image attached! Type message or press Enter to queue
+You: What's wrong with this UI?                # Queued with image
+
+You: :d :ip Explain this error now             # Send directly with image
+```
+
+**Queue Management:**
+```
 You: :l                                        # View queue
-📋 Queue (1 messages):
-   1. [📸] Explain this error
-You: :s                                        # Send from queue
+📋 Queue (2 messages):
+   1. [📸] What's wrong with this UI?
+   2. Refactor the authentication
+You: :s                                        # Send next from queue
+You: :sa                                       # Send all remaining
 ```
 
 See responses in Tab 1 in real-time!
 
 ## Features
 
-### 📝 Message Queueing
-Queue messages and send them automatically when Claude is ready:
+### 📝 Smart Message Queueing (Default Behavior)
+**Messages are queued by default** and sent automatically when Claude is ready:
 ```
-You: :q Review this code
-You: :q Add error handling
-You: :l                # Show queue
-You: :sa               # Send all
+You: Review this code           # Queued automatically
+You: Add error handling          # Queued automatically
+You: :l                          # Show queue
+You: :sa                         # Send all
+```
+
+Need to send immediately? Use `:d`:
+```
+You: :d Urgent question!         # Sends directly, bypasses queue
 ```
 
 ### 🖼️ Image Support
-Paste images from clipboard and send with your messages:
+Paste images from clipboard:
 ```
-You: :ip               # Paste image, then type message
-You: :q :ip Explain this screenshot
+You: :ip                         # Attach image (queues with next message)
+You: Explain this screenshot     # Queued with image
+
+You: :d :ip Fix this now         # Send directly with image (bypass queue)
 ```
 
-Images are automatically sent to Claude CLI and can be queued for later.
+Images are automatically sent to Claude CLI.
 
-**Auto-queue** (default) automatically sends queued messages when Claude is ready.
+**Auto-queue** automatically sends queued messages when Claude is ready - no manual intervention needed!
 
 ## Client Commands
 
-All commands are **case-insensitive** (`:Q`, `:IP`, `:SEND` all work).
+All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 
 | Command | Description |
 |---------|-------------|
-| 💬 Type message | Send directly to Claude |
-| 🖼️ `:ip` or `:imagepaste` | Paste image from clipboard |
-| 📝 `:q <msg>` or `:queue <msg>` | Queue message for later |
-| 📝 `:q :ip <msg>` | Queue message with image |
+| 💬 Type message | **Queue message** (auto-sends when ready) |
+| 🖼️ `:ip` or `:imagepaste` | Attach image (queues with next message) |
+| ⚡ `:d <msg>` or `:direct <msg>` | **Send directly** (bypass queue) |
+| ⚡ `:d :ip <msg>` | Send directly with image |
 | 📤 `:s` or `:send` | Send next queued message |
 | 📨 `:sa` or `:sendall` | Send all queued messages |
 | 📋 `:l` or `:list` | Show queue contents |
