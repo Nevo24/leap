@@ -95,9 +95,13 @@ if [ -n "$RC_FILE" ]; then
     fi
 
     if [ -n "$RC_FILE" ]; then
-        # Backup RC file
-        cp "$RC_FILE" "$RC_FILE.backup-$(date +%Y%m%d-%H%M%S)"
-        echo -e "${GREEN}✓ Backed up $RC_FILE${NC}"
+        # Backup RC file if it exists
+        if [ -f "$RC_FILE" ]; then
+            cp "$RC_FILE" "$RC_FILE.backup-$(date +%Y%m%d-%H%M%S)"
+            echo -e "${GREEN}✓ Backed up $RC_FILE${NC}"
+        else
+            echo -e "${GREEN}✓ Creating new $RC_FILE${NC}"
+        fi
 
         # Add ClaudeQ configuration with absolute path to project
         cat >> "$RC_FILE" << EOF
