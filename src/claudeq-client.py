@@ -200,8 +200,17 @@ class ClaudeClient:
             busy_spinners = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
             # Other busy symbols (✽ ✢ ✻)
             busy_symbols = ['✽', '✢', '✻']
+            # Text patterns indicating busy state
+            busy_patterns = ['(thinking)', '(writing)', '(reading)']
+
+            import re
+            # Pattern for Claude Code spinner verbs: word ending in "ing" followed by "..."
+            # e.g., "Zesting...", "Thinking...", "Processing...", etc.
+            spinner_verb_pattern = re.compile(r'\w+ing\.\.\.', re.IGNORECASE)
 
             for line in last_20_lines:
+                stripped = line.strip()
+
                 # Check for Braille spinners
                 for spinner in busy_spinners:
                     if spinner in line:
@@ -215,6 +224,19 @@ class ClaudeClient:
                         if self.debug:
                             print(f"\n[DEBUG] ✗ Found symbol {symbol} - Claude is BUSY: {repr(line[:80])}\n", end='', flush=True)
                         return False
+
+                # Check for busy text patterns
+                for pattern in busy_patterns:
+                    if pattern in stripped.lower():
+                        if self.debug:
+                            print(f"\n[DEBUG] ✗ Found busy pattern {repr(pattern)} - Claude is BUSY: {repr(line[:80])}\n", end='', flush=True)
+                        return False
+
+                # Check for spinner verb pattern (e.g., "Zesting...", "Thinking...", etc.)
+                if spinner_verb_pattern.search(stripped):
+                    if self.debug:
+                        print(f"\n[DEBUG] ✗ Found spinner verb pattern - Claude is BUSY: {repr(line[:80])}\n", end='', flush=True)
+                    return False
 
             if self.debug:
                 print(f"\n[DEBUG] ✓ No busy indicators found - checking for prompt...\n", end='', flush=True)
@@ -360,7 +382,7 @@ class ClaudeClient:
                     print(f"   ({remaining} remaining in queue)")
 
                 self.send_to_claude(msg, auto=True)
-                print(f"   See response in Tab 1\n")
+                print(f"   See response in Tab 1\n", flush=True)
 
             except Exception as e:
                 if self.debug:
