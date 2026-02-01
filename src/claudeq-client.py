@@ -348,14 +348,22 @@ class ClaudeClient:
         # Set terminal tab title
         print("\033]0;claude-client {}\007".format(self.tag), end='', flush=True)
 
-        print()
+        # Print ASCII art
+        print("""
+   _____ _                 _       ___
+  / ____| |               | |     / _ \\
+ | |    | | __ _ _   _  __| | ___| | | |
+ | |    | |/ _` | | | |/ _` |/ _ \\ | | |
+ | |____| | (_| | |_| | (_| |  __/ |_| |
+  \\_____|_|\\__,_|\\__,_|\\__,_|\\___|\\___\\Q
+""")
         print("="*70)
-        print(f"  Claude Client - Session: {self.tag}")
+        print(f"  CLIENT - Session: {self.tag}")
         if self.debug:
             print("  [DEBUG MODE ENABLED]")
         print("="*70)
-        print(f"  Sending messages to Claude session '{self.tag}'")
-        print(f"  Watch responses in Tab 1 where 'claude {self.tag}' is running")
+        print(f"  Sending messages to ClaudeQ session '{self.tag}'")
+        print(f"  Watch responses in server tab where 'claudeq {self.tag}' started")
         print()
         print("  Type message        → Send to Claude")
         print("  q:<message>         → Queue for later (auto-sends when ready)")

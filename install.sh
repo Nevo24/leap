@@ -110,15 +110,11 @@ if [ -n "$RC_FILE" ]; then
         cat >> "$RC_FILE" << 'EOF'
 
 # ClaudeQ - Multi-session Claude with auto-detection and message queueing
-claude() {
-    if [ $# -eq 0 ]; then
-        # No arguments - run Claude directly
-        command claude --dangerously-skip-permissions
-    else
-        # Has arguments - use ClaudeQ auto-detection with tag
-        ~/.local/bin/claudeq-auto.sh "$@"
-    fi
+claudeq() {
+    ~/.local/bin/claudeq-auto.sh "$@"
 }
+# Keep claude as direct access (no queueing)
+alias claude='command claude --dangerously-skip-permissions'
 alias claude_server='~/.local/bin/claudeq-server.sh'
 alias claude_client='~/.local/bin/claudeq-client.py'
 EOF

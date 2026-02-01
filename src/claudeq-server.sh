@@ -61,21 +61,28 @@ fi
 # Set terminal tab title
 printf "\033]0;claude-server $TAG\007"
 
-# Print banner
-cat << EOF
+# Print banner with ASCII art
+cat << 'EOF'
+   _____ _                 _       ___
+  / ____| |               | |     / _ \
+ | |    | | __ _ _   _  __| | ___| | | |
+ | |    | |/ _` | | | |/ _` |/ _ \ | | |
+ | |____| | (_| | |_| | (_| |  __/ |_| |
+  \_____|_|\__,_|\__,_|\__,_|\___|\___\Q
 
+EOF
+cat << EOF
 ======================================================================
-  Claude Session: $TAG
+  SERVER - Session: $TAG
 ======================================================================
   Starting Claude with tag: $TAG
 
   To send messages from another tab, run:
-    claude_client $TAG
+    claudeq $TAG
 
   All responses will appear HERE in this window.
 
   Press Ctrl+B then D to detach (session keeps running)
-  Run 'claude $TAG' again to reattach
 ======================================================================
 
 EOF
