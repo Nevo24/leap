@@ -23,7 +23,7 @@ source ~/.zshrc  # or ~/.bashrc for bash users
 ### Start/Connect to Tagged Session
 
 ```bash
-claudeq backend
+claudeq my-cool-new-feature
 ```
 
 Automatically starts server if new, or connects as client if session exists.
@@ -40,15 +40,15 @@ Standard Claude Code behavior (unchanged).
 
 **Tab 1 - Server:**
 ```bash
-claudeq backend
+claudeq my-cool-new-feature
 ```
-→ Tab shows: `claude-server backend (tmux)`
+→ Tab shows: `claude-server my-cool-new-feature (tmux)`
 
 **Tab 2 - Client:**
 ```bash
-claudeq backend
+claudeq my-cool-new-feature
 ```
-→ Tab shows: `claude-client backend (Python)`
+→ Tab shows: `claude-client my-cool-new-feature (Python)`
 
 Type messages in Tab 2, see responses in Tab 1!
 
