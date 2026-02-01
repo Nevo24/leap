@@ -1,8 +1,8 @@
 # ClaudeQ
 
-**Message queueing for Claude Code - queue prompts and send them when Claude is ready.**
+**Message queueing and image support for Claude Code - queue prompts with images and send when Claude is ready.**
 
-Queue multiple prompts in one tab while Claude works in another. Auto-sends queued messages when ready for seamless workflow.
+Queue multiple prompts with images in one tab while Claude works in another. Auto-sends queued messages when ready for seamless workflow.
 
 ## Installation
 
@@ -42,39 +42,72 @@ Standard Claude Code behavior (unchanged).
 ```bash
 claudeq my-cool-new-feature
 ```
-→ Tab shows: `claude-server my-cool-new-feature (tmux)`
+→ Claude CLI running in tmux session
 
 **Tab 2 - Client:**
 ```bash
 claudeq my-cool-new-feature
 ```
-→ Tab shows: `claude-client my-cool-new-feature (Python)`
+→ Client interface with queueing and image support
 
-Type messages in Tab 2, see responses in Tab 1!
-
-## Message Queueing
-
-Queue messages for later:
-
+**Basic Usage:**
 ```
-You: q:Review this code
-You: q:Add error handling
-You: :list              # Show queue
-You: :sendall           # Send all
+You: How do I fix this bug?                    # Direct message
+You: :q Refactor the authentication            # Queue for later
+You: :ip                                       # Paste image, type message
+🖼️ Image pasted from clipboard!
+[📸] You: What's wrong with this UI?           # Send with image
 ```
 
-**Auto-queue** (default) automatically sends when Claude is ready.
+**Queue with Images:**
+```
+You: :q :ip Explain this error                 # Queue message + image
+📝 Queued with image: Explain this error (1 total)
+You: :l                                        # View queue
+📋 Queue (1 messages):
+   1. [📸] Explain this error
+You: :s                                        # Send from queue
+```
+
+See responses in Tab 1 in real-time!
+
+## Features
+
+### 📝 Message Queueing
+Queue messages and send them automatically when Claude is ready:
+```
+You: :q Review this code
+You: :q Add error handling
+You: :l                # Show queue
+You: :sa               # Send all
+```
+
+### 🖼️ Image Support
+Paste images from clipboard and send with your messages:
+```
+You: :ip               # Paste image, then type message
+You: :q :ip Explain this screenshot
+```
+
+Images are automatically sent to Claude CLI and can be queued for later.
+
+**Auto-queue** (default) automatically sends queued messages when Claude is ready.
 
 ## Client Commands
 
+All commands are **case-insensitive** (`:Q`, `:IP`, `:SEND` all work).
+
 | Command | Description |
 |---------|-------------|
-| `q:<message>` | Queue message |
-| `:send` or `:s` | Send next queued |
-| `:sendall` or `:sa` | Send all queued |
-| `:list` or `:l` | Show queue |
-| `:clear` | Clear queue |
-| `:quit` or `Ctrl+D` | Exit |
+| 💬 Type message | Send directly to Claude |
+| 🖼️ `:ip` or `:imagepaste` | Paste image from clipboard |
+| 📝 `:q <msg>` or `:queue <msg>` | Queue message for later |
+| 📝 `:q :ip <msg>` | Queue message with image |
+| 📤 `:s` or `:send` | Send next queued message |
+| 📨 `:sa` or `:sendall` | Send all queued messages |
+| 📋 `:l` or `:list` | Show queue contents |
+| 🗑️ `:c` or `:clear` | Clear queue |
+| 👋 `:x` or `:quit` | Exit client (or `Ctrl+D`) |
 
 ## Available Commands
 
