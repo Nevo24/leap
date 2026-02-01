@@ -4,6 +4,14 @@
 
 Queue multiple prompts with images in one tab while Claude works in another. Auto-sends queued messages when ready for seamless workflow.
 
+## How It Works
+
+ClaudeQ uses a **client-server model**:
+1. **First `claudeq my-cool-feature`** → Starts server (Claude CLI process that receives messages)
+2. **Second `claudeq my-cool-feature`** → Connects as client (sends queued messages to server)
+
+The same command auto-detects whether to start a server or connect as a client. You can always use `claude` directly for standard Claude CLI behavior without queueing.
+
 ## Installation
 
 ```bash
