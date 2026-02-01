@@ -513,9 +513,9 @@ class ClaudeClient:
         print(f"  Sending messages to ClaudeQ session '{self.tag}'")
         print(f"  Watch responses in server tab where 'claudeq {self.tag}' started")
         print()
-        print("  💬 Type message           → Send to Claude")
-        print("  🖼️ :ip or :imagepaste     → Paste image from clipboard")
-        print("  📝 :q or :queue <msg>     → Queue for later (add :ip for image)")
+        print("  💬 Type message           → Queue message (auto-sends when ready)")
+        print("  🖼️ :ip or :imagepaste     → Queue with image from clipboard")
+        print("  ⚡ :d or :direct <msg>     → Send directly (bypass queue)")
         print("  📤 :s or :send            → Send next queued")
         print("  📨 :sa or :sendall        → Send all queued")
         print("  📋 :l or :list            → Show queue")
@@ -598,21 +598,21 @@ class ClaudeClient:
                                 print(f"📎 Image attached: {os.path.basename(word)}")
                                 break
 
-                # Handle :ip or :imagepaste command
+                # Handle :ip or :imagepaste command (queues by default)
                 if line_lower in [':ip', ':imagepaste']:
                     if check_clipboard_has_image():
                         image_path = save_clipboard_image()
                         if image_path:
                             self.pending_image_path = image_path
-                            print(f"🖼️  Image pasted from clipboard!")
+                            print(f"🖼️  Image attached! Type message or press Enter to queue")
                         else:
                             print("✗ Failed to save image from clipboard")
                     else:
                         print("✗ No image in clipboard")
                     continue
 
-                # Handle commands (note: most commands will discard pending image except :ip and :q)
-                if line_lower.startswith(':') and line_lower not in [':ip', ':imagepaste'] and not (line_lower.startswith(':q ') or line_lower.startswith(':q:ip') or line_lower.startswith(':queue ')):
+                # Handle commands (note: most commands will discard pending image except :ip and :d)
+                if line_lower.startswith(':') and line_lower not in [':ip', ':imagepaste'] and not (line_lower.startswith(':d ') or line_lower.startswith(':d:ip') or line_lower.startswith(':direct ')):
                     # Clean up pending image if using a command (except queue commands)
                     if self.pending_image_path:
                         try:
@@ -623,16 +623,17 @@ class ClaudeClient:
                         self.pending_image_path = None
                         print("📎 Pending image discarded")
 
-                if line_lower.startswith(':q ') or line_lower.startswith(':q:ip') or line_lower.startswith(':queue '):
+                # Handle :d or :direct command (send directly, bypass queue)
+                if line_lower.startswith(':d ') or line_lower.startswith(':d:ip') or line_lower.startswith(':direct '):
                     # Handle different formats
-                    if line_lower.startswith(':q:ip'):
+                    if line_lower.startswith(':d:ip'):
                         prefix_len = 2
                         rest = line[prefix_len:].strip()
-                    elif line_lower.startswith(':q '):
+                    elif line_lower.startswith(':d '):
                         prefix_len = 3
                         rest = line[prefix_len:].strip()
-                    else:  # :queue
-                        prefix_len = 7
+                    else:  # :direct
+                        prefix_len = 8
                         rest = line[prefix_len:].strip()
 
                     rest_lower = rest.lower()
@@ -660,12 +661,14 @@ class ClaudeClient:
                         else:
                             print("✗ No image in clipboard")
 
-                        # Queue with or without message (empty string is ok for image-only)
-                        self.queue_add(msg if msg else "")
+                        # Send directly with or without message
+                        self.send_to_claude(msg if msg else "")
+                        print()
                     else:
-                        # Regular queue without image
+                        # Send directly without image
                         if rest:
-                            self.queue_add(rest)
+                            self.send_to_claude(rest)
+                            print()
                         else:
                             print("✗ No message provided")
                     continue
@@ -691,12 +694,11 @@ class ClaudeClient:
 
                 # Don't send bare :ip or :imagepaste as messages
                 if line_lower in [':ip', ':imagepaste']:
-                    print("✗ Use :ip alone to paste image before typing message, or :q :ip to queue image")
+                    print("✗ Use :ip alone to attach image, or :d :ip <msg> to send directly")
                     continue
 
-                # Regular message - send immediately
-                self.send_to_claude(line)
-                print()
+                # Regular message - queue by default
+                self.queue_add(line)
 
         except KeyboardInterrupt:
             print("\n\nExiting...")
