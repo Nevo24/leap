@@ -81,7 +81,8 @@ cat << EOF
 
   All responses will appear HERE in this window.
 
-  Press Ctrl+B then D to detach (session keeps running)
+  Scroll: Ctrl+B then [ (arrow keys to scroll, q to exit)
+  Detach: Ctrl+B then D (session keeps running)
 ======================================================================
 
 EOF
