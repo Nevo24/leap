@@ -6,6 +6,15 @@ Queue multiple prompts with images in one tab while Claude works in another. Aut
 
 ## Installation
 
+### Quick Install (npm)
+
+```bash
+npm install -g claudeq
+source ~/.zshrc  # or ~/.bashrc for bash users
+```
+
+### Manual Install
+
 ```bash
 git clone https://github.com/nevo24/claudeq.git
 cd claudeq
@@ -16,7 +25,7 @@ source ~/.zshrc  # or ~/.bashrc for bash users
 
 **Requirements:** tmux, Python 3, Claude CLI
 
-**Note:** ClaudeQ runs directly from the project directory (no file copying). Don't move or delete the `claudeq` folder after installation.
+**Note:** ClaudeQ runs directly from the install directory. If you used npm, it's in your npm global directory. If you cloned manually, don't move or delete the `claudeq` folder.
 
 ## Usage
 

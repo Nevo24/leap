@@ -1,0 +1,39 @@
+{
+  "name": "claudeq",
+  "version": "1.0.0",
+  "description": "Message queueing and image support for Claude Code - queue prompts with images and send when Claude is ready",
+  "main": "index.js",
+  "bin": {
+    "claudeq-install": "./install.sh"
+  },
+  "scripts": {
+    "postinstall": "bash install.sh"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cli",
+    "queue",
+    "tmux",
+    "ai",
+    "anthropic"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nevo24/claudeq.git"
+  },
+  "author": "Nevo Mashiach",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/nevo24/claudeq/issues"
+  },
+  "homepage": "https://github.com/nevo24/claudeq#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "dependencies": {}
+}
