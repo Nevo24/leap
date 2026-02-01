@@ -166,13 +166,14 @@ class ClaudeClient:
             if self.debug:
                 print(f"\n[DEBUG] ✓ No busy indicators found - checking for prompt...\n", end='', flush=True)
 
-            # PRIORITY 3: Check for ready prompt (❯) as confirmation
+            # PRIORITY 3: Check for ready prompt (❯ or >) as confirmation
             # Search from the END to find the most recent prompt
             for i in range(len(last_20_lines) - 1, -1, -1):
                 line = last_20_lines[i]
                 stripped = line.strip()
 
-                if stripped.startswith('❯'):
+                # Check for both ❯ (triangle) and > (greater-than) prompts
+                if stripped.startswith('❯') or stripped.startswith('>'):
                     # Remove the prompt character and any whitespace
                     after_prompt = stripped[1:].strip().strip('\xa0').strip()
 
