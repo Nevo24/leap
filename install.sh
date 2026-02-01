@@ -113,8 +113,6 @@ if [ -n "$RC_FILE" ]; then
 claudeq() {
     ~/.local/bin/claudeq-auto.sh "$@"
 }
-# Keep claude as direct access (no queueing)
-alias claude='command claude --dangerously-skip-permissions'
 alias claude_server='~/.local/bin/claudeq-server.sh'
 alias claude_client='~/.local/bin/claudeq-client.py'
 EOF

@@ -103,7 +103,7 @@ else
     # Create new session with Claude and attach (not detached)
     # Set destroy-unattached and detach-on-destroy for proper cleanup with iTerm2
     # The \; separates tmux commands - both execute before attaching
-    exec tmux new-session -s "$SESSION_NAME" "$CLAUDE_PATH" --dangerously-skip-permissions \; \
+    exec tmux new-session -s "$SESSION_NAME" "$CLAUDE_PATH" \; \
         set-option -t "$SESSION_NAME" destroy-unattached on \; \
         set-option -t "$SESSION_NAME" detach-on-destroy on
 fi
