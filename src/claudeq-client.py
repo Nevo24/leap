@@ -514,7 +514,7 @@ class ClaudeClient:
         print(f"  Watch responses in server tab where 'claudeq {self.tag}' started")
         print()
         print("  💬 Type message                        → Queue message (auto-sends when ready)")
-        print("  🖼️ :ip <msg> or :imagepaste <msg>     → Queue with image from clipboard")
+        print("  🖼️ :ip <msg> or :imagepaste <msg>       → Queue with image from clipboard")
         print("  ⚡ :d <msg> or :direct <msg>           → Send directly (bypass queue)")
         print("  📤 :s or :send                         → Send next queued")
         print("  📨 :sa or :sendall                     → Send all queued")
