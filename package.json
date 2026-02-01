@@ -7,7 +7,7 @@
     "claudeq-install": "./install.sh"
   },
   "scripts": {
-    "postinstall": "bash install.sh"
+    "install-claudeq": "bash install.sh"
   },
   "keywords": [
     "claude",

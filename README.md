@@ -14,29 +14,20 @@ brew install tmux python3 node
 npm install -g @anthropic-ai/claude-code
 ```
 
-### Quick Install (One Command)
+### Installation
 
 ```bash
-npm install -g github:nevo24/claudeq && source ~/.zshrc
-```
-
-Or with bash:
-```bash
-npm install -g github:nevo24/claudeq && source ~/.bashrc
-```
-
-### Manual Install
-
-```bash
-# Install dependencies
+# 1. Install dependencies
 brew install tmux python3 node
 npm install -g @anthropic-ai/claude-code
 
-# Install ClaudeQ
+# 2. Install ClaudeQ
 git clone https://github.com/nevo24/claudeq.git
 cd claudeq
 chmod +x install.sh
 ./install.sh
+
+# 3. Reload shell
 source ~/.zshrc  # or ~/.bashrc for bash users
 ```
 
