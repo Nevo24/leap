@@ -148,11 +148,10 @@ All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 ## Troubleshooting
 
 **Scrolling in the server tab:**
-Mouse mode is enabled by default - just use your mouse wheel to scroll.
-Alternatively, press `Ctrl+B` then `[` for keyboard scrolling (arrow keys, Page Up/Down).
+Press `Ctrl+B` then `[` to enter copy mode, then use arrow keys or Page Up/Down to scroll. Press `q` to exit.
 
 **Copying text from the server tab:**
-Hold `Shift` while selecting text with your mouse, then copy normally (`Cmd+C` or right-click).
+Select text with your mouse and copy normally (`Cmd+C` or right-click).
 
 **Claude CLI not found?**
 ```bash

@@ -81,8 +81,8 @@ cat << EOF
 
   All responses will appear HERE in this window.
 
-  Scroll: Use mouse wheel (mouse mode enabled)
-  Copy text: Hold Shift while selecting with mouse
+  Copy text: Select with mouse and copy normally
+  Scroll back: Ctrl+B then [ (arrow keys to scroll, q to exit)
   Detach: Ctrl+B then D (session keeps running)
 ======================================================================
 
@@ -103,10 +103,8 @@ else
     sleep 1
     # Create new session with Claude and attach (not detached)
     # Set destroy-unattached and detach-on-destroy for proper cleanup with iTerm2
-    # Enable mouse mode for scrolling with mouse wheel
-    # The \; separates tmux commands - all execute before attaching
+    # The \; separates tmux commands - both execute before attaching
     exec tmux new-session -s "$SESSION_NAME" "$CLAUDE_PATH" $CLAUDE_FLAGS \; \
         set-option -t "$SESSION_NAME" destroy-unattached on \; \
-        set-option -t "$SESSION_NAME" detach-on-destroy on \; \
-        set-option -t "$SESSION_NAME" mouse on
+        set-option -t "$SESSION_NAME" detach-on-destroy on
 fi
