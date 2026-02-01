@@ -16,28 +16,31 @@ from collections import deque
 
 QUEUE_DIR = os.path.expanduser("~/.claude-queues")
 
+def is_image_file(path):
+    """Check if path points to an image file"""
+    if not os.path.exists(path):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    return ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']
+
 def check_clipboard_has_image():
-    """Check if clipboard contains an image (macOS only)"""
+    """Check if clipboard contains an image (macOS)"""
     try:
         result = subprocess.run(
             ['osascript', '-e', 'clipboard info'],
-            capture_output=True,
-            text=True,
-            timeout=1
+            capture_output=True, text=True, timeout=1
         )
-        return 'picture' in result.stdout.lower() or 'image' in result.stdout.lower()
+        return 'picture' in result.stdout.lower()
     except:
         return False
 
 def save_clipboard_image():
-    """Save clipboard image to temp file and return path (macOS only)"""
+    """Save clipboard image to temp file (macOS)"""
     try:
-        # Create temp file
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
         temp_path = temp_file.name
         temp_file.close()
 
-        # Save clipboard image using osascript
         script = f'''
         set png_data to the clipboard as «class PNGf»
         set the_file to open for access POSIX file "{temp_path}" with write permission
@@ -45,16 +48,11 @@ def save_clipboard_image():
         close access the_file
         '''
 
-        result = subprocess.run(
-            ['osascript', '-e', script],
-            capture_output=True,
-            timeout=5
-        )
-
+        result = subprocess.run(['osascript', '-e', script], capture_output=True, timeout=5)
         if result.returncode == 0 and os.path.exists(temp_path):
             return temp_path
         return None
-    except Exception as e:
+    except:
         return None
 
 class ClaudeClient:
@@ -79,6 +77,13 @@ class ClaudeClient:
         self.is_sending = False
         self.auto_thread = None
 
+        # Image handling
+        self.pending_image_path = None
+
+        # Enable bracketed paste mode
+        sys.stdout.write('\033[?2004h')
+        sys.stdout.flush()
+
     def load_queue(self):
         """Load queue from file"""
         if os.path.exists(self.queue_file):
@@ -102,12 +107,17 @@ class ClaudeClient:
             except:
                 pass  # Ignore errors loading history
 
+
     def save_history(self):
         """Save command history to file"""
         try:
             readline.write_history_file(self.history_file)
         except:
             pass  # Ignore errors saving history
+
+    def _custom_input(self, prompt):
+        """Custom input - just use regular input for now"""
+        return input(prompt)
 
     def check_session_exists(self):
         """Check if tmux session exists"""
@@ -257,45 +267,43 @@ class ClaudeClient:
             self.is_sending = True
 
         try:
-            # Check if clipboard has an image
-            if check_clipboard_has_image():
+            # Check if we have a pending image to send
+            if self.pending_image_path:
+                image_path = self.pending_image_path
+                self.pending_image_path = None  # Clear pending image
+
                 if not auto:
-                    print(f"📎 Image detected in clipboard...")
+                    print(f"📎 Sending image: {os.path.basename(image_path)}")
 
-                # Save clipboard image
-                image_path = save_clipboard_image()
-                if image_path:
-                    try:
-                        # Read and encode image as base64
-                        with open(image_path, 'rb') as f:
-                            image_data = f.read()
-                        encoded = base64.b64encode(image_data).decode('ascii')
+                if image_path and os.path.exists(image_path):
+                    # Send the image file path to Claude
+                    # Claude CLI should accept file paths as attachments
+                    subprocess.run([
+                        'tmux', 'send-keys', '-t', self.session_name,
+                        '-l', f'@{image_path}'
+                    ])
 
-                        # Try multiple methods to send the image
-                        # Method 1: iTerm2 inline image protocol via printf
-                        cmd = f'printf "\\033]1337;File=inline=1:{encoded}\\007"'
-                        subprocess.run([
-                            'tmux', 'send-keys', '-t', self.session_name,
-                            cmd, 'Enter'
-                        ])
+                    # Add space after image path
+                    subprocess.run([
+                        'tmux', 'send-keys', '-t', self.session_name,
+                        'Space'
+                    ])
 
-                        if not auto:
-                            print(f"   📸 Image sent")
+                    if not auto:
+                        print(f"   📸 Image attached")
 
-                        # Small delay for image to be processed
-                        time.sleep(0.5)
-                    finally:
-                        # Clean up temp file
-                        try:
-                            os.unlink(image_path)
-                        except:
-                            pass
+                    # Small delay for image to be recognized
+                    time.sleep(0.3)
 
             # Send message literally (without interpreting special keys)
-            subprocess.run([
-                'tmux', 'send-keys', '-t', self.session_name,
-                '-l', message
-            ])
+            if message:
+                subprocess.run([
+                    'tmux', 'send-keys', '-t', self.session_name,
+                    '-l', message
+                ])
+
+            # Delay before Enter to let Claude process the image
+            time.sleep(0.2)
 
             # Then send Enter separately
             subprocess.run([
@@ -367,9 +375,32 @@ class ClaudeClient:
 
     def queue_add(self, message):
         """Add to queue"""
-        self.message_queue.append(message)
+        # If there's a pending image, include it with the message
+        if self.pending_image_path:
+            # Move image to a permanent location in queue dir
+            import shutil
+            image_ext = os.path.splitext(self.pending_image_path)[1]
+            perm_path = os.path.join(QUEUE_DIR, f"img_{int(time.time())}_{len(self.message_queue)}{image_ext}")
+            shutil.copy(self.pending_image_path, perm_path)
+
+            # Store with image marker
+            queued_msg = f"@IMG:{perm_path}|{message}"
+            self.message_queue.append(queued_msg)
+
+            # Clean up temp image
+            try:
+                if self.pending_image_path.startswith('/tmp/'):
+                    os.unlink(self.pending_image_path)
+            except:
+                pass
+            self.pending_image_path = None
+
+            print(f"📝 Queued with image: {message} ({len(self.message_queue)} total)\n")
+        else:
+            self.message_queue.append(message)
+            print(f"📝 Queued: {message} ({len(self.message_queue)} total)\n")
+
         self.save_queue()
-        print(f"📝 Queued: {message} ({len(self.message_queue)} total)\n")
 
     def queue_send(self):
         """Send next queued"""
@@ -381,11 +412,25 @@ class ClaudeClient:
         self.save_queue()
         remaining = len(self.message_queue)
 
-        print(f"📤 Sending: {msg}")
+        # Check if message has an image
+        if msg.startswith('@IMG:'):
+            parts = msg.split('|', 1)
+            if len(parts) == 2:
+                image_path = parts[0][5:]  # Remove @IMG: prefix
+                actual_msg = parts[1]
+                self.pending_image_path = image_path
+                print(f"📤 Sending with image: {actual_msg}")
+            else:
+                actual_msg = msg
+                print(f"📤 Sending: {actual_msg}")
+        else:
+            actual_msg = msg
+            print(f"📤 Sending: {actual_msg}")
+
         if remaining > 0:
             print(f"   ({remaining} remaining)")
 
-        self.send_to_claude(msg)
+        self.send_to_claude(actual_msg)
         print()
 
     def queue_sendall(self):
@@ -399,9 +444,23 @@ class ClaudeClient:
 
         while self.message_queue:
             msg = self.message_queue.popleft()
-            print(f"  → {msg}")
-            self.send_to_claude(msg)
-            import time
+
+            # Check if message has an image
+            if msg.startswith('@IMG:'):
+                parts = msg.split('|', 1)
+                if len(parts) == 2:
+                    image_path = parts[0][5:]  # Remove @IMG: prefix
+                    actual_msg = parts[1]
+                    self.pending_image_path = image_path
+                    print(f"  → [📸] {actual_msg}")
+                else:
+                    actual_msg = msg
+                    print(f"  → {actual_msg}")
+            else:
+                actual_msg = msg
+                print(f"  → {actual_msg}")
+
+            self.send_to_claude(actual_msg)
             time.sleep(0.5)
 
         self.save_queue()
@@ -414,7 +473,16 @@ class ClaudeClient:
         else:
             print(f"📝 Queue ({len(self.message_queue)} messages):")
             for i, msg in enumerate(self.message_queue, 1):
-                print(f"   {i}. {msg}")
+                # Check if message has an image
+                if msg.startswith('@IMG:'):
+                    parts = msg.split('|', 1)
+                    if len(parts) == 2:
+                        actual_msg = parts[1]
+                        print(f"   {i}. [📸] {actual_msg}")
+                    else:
+                        print(f"   {i}. {msg}")
+                else:
+                    print(f"   {i}. {msg}")
             print()
 
     def queue_clear(self):
@@ -445,13 +513,14 @@ class ClaudeClient:
         print(f"  Sending messages to ClaudeQ session '{self.tag}'")
         print(f"  Watch responses in server tab where 'claudeq {self.tag}' started")
         print()
-        print("  Type message        → Send to Claude")
-        print("  q:<message>         → Queue for later (auto-sends when ready)")
-        print("  :s or :send         → Send next queued")
-        print("  :sa or :sendall     → Send all queued")
-        print("  :l or :list         → Show queue")
-        print("  :clear              → Clear queue")
-        print("  :quit or Ctrl+D     → Exit client")
+        print("  💬 Type message           → Send to Claude")
+        print("  🖼️ :ip or :imagepaste     → Paste image from clipboard")
+        print("  📝 :q or :queue <msg>     → Queue for later (add :ip for image)")
+        print("  📤 :s or :send            → Send next queued")
+        print("  📨 :sa or :sendall        → Send all queued")
+        print("  📋 :l or :list            → Show queue")
+        print("  🗑️ :c or :clear           → Clear queue")
+        print("  👋 :x or :quit (Ctrl+D)   → Exit client")
         print()
         print("  🤖 Auto-queue: ENABLED (sends when Claude is ready)")
         if self.debug:
@@ -485,43 +554,145 @@ class ClaudeClient:
             while True:
                 # Prompt
                 if self.message_queue:
-                    prompt = f"[Queue:{len(self.message_queue)}] You: "
+                    prompt_prefix = f"[Queue:{len(self.message_queue)}]"
                 else:
-                    prompt = "You: "
+                    prompt_prefix = ""
+
+                if self.pending_image_path:
+                    prompt = f"{prompt_prefix}[📸] You: " if prompt_prefix else "[📸] You: "
+                else:
+                    prompt = f"{prompt_prefix} You: " if prompt_prefix else "You: "
 
                 try:
-                    line = input(prompt).strip()
+                    line = self._custom_input(prompt).strip()
                 except EOFError:
                     break
 
-                if not line:
+                if not line and not self.pending_image_path:
                     continue
 
-                # Handle commands
-                if line.startswith('q:'):
-                    msg = line[2:].strip()
-                    if msg:
-                        self.queue_add(msg)
+                # Make commands case-insensitive
+                line_lower = line.lower()
+
+                # Check if line contains an image file path
+                if line and not self.pending_image_path:
+                    # Check if entire line is a path
+                    if is_image_file(line):
+                        self.pending_image_path = line
+                        print(f"📎 Image attached: {os.path.basename(line)}")
+                        print("[📸] You: ", end='', flush=True)
+                        # Get the actual message
+                        try:
+                            message = input().strip()
+                            line = message
+                        except EOFError:
+                            line = ""
+                    else:
+                        # Check if line contains a path (might have text before/after)
+                        words = line.split()
+                        for word in words:
+                            if is_image_file(word):
+                                self.pending_image_path = word
+                                # Remove the path from the message
+                                line = line.replace(word, '').strip()
+                                print(f"📎 Image attached: {os.path.basename(word)}")
+                                break
+
+                # Handle :ip or :imagepaste command
+                if line_lower in [':ip', ':imagepaste']:
+                    if check_clipboard_has_image():
+                        image_path = save_clipboard_image()
+                        if image_path:
+                            self.pending_image_path = image_path
+                            print(f"🖼️  Image pasted from clipboard!")
+                        else:
+                            print("✗ Failed to save image from clipboard")
+                    else:
+                        print("✗ No image in clipboard")
                     continue
 
-                if line in [':s', ':send']:
+                # Handle commands (note: most commands will discard pending image except :ip and :q)
+                if line_lower.startswith(':') and line_lower not in [':ip', ':imagepaste'] and not (line_lower.startswith(':q ') or line_lower.startswith(':q:ip') or line_lower.startswith(':queue ')):
+                    # Clean up pending image if using a command (except queue commands)
+                    if self.pending_image_path:
+                        try:
+                            if self.pending_image_path.startswith('/tmp/'):
+                                os.unlink(self.pending_image_path)
+                        except:
+                            pass
+                        self.pending_image_path = None
+                        print("📎 Pending image discarded")
+
+                if line_lower.startswith(':q ') or line_lower.startswith(':q:ip') or line_lower.startswith(':queue '):
+                    # Handle different formats
+                    if line_lower.startswith(':q:ip'):
+                        prefix_len = 2
+                        rest = line[prefix_len:].strip()
+                    elif line_lower.startswith(':q '):
+                        prefix_len = 3
+                        rest = line[prefix_len:].strip()
+                    else:  # :queue
+                        prefix_len = 7
+                        rest = line[prefix_len:].strip()
+
+                    rest_lower = rest.lower()
+
+                    # Check if it starts with :ip or :imagepaste (with or without space)
+                    if rest_lower.startswith(':ip') or rest_lower.startswith(':imagepaste'):
+                        if rest_lower.startswith(':ip '):
+                            img_prefix = 4
+                        elif rest_lower.startswith(':ip'):
+                            img_prefix = 3
+                        elif rest_lower.startswith(':imagepaste '):
+                            img_prefix = 12
+                        else:
+                            img_prefix = 11
+                        msg = rest[img_prefix:].strip()
+
+                        # Grab image from clipboard
+                        if check_clipboard_has_image():
+                            image_path = save_clipboard_image()
+                            if image_path:
+                                self.pending_image_path = image_path
+                                print(f"🖼️ Image grabbed from clipboard!")
+                            else:
+                                print("✗ Failed to save image from clipboard")
+                        else:
+                            print("✗ No image in clipboard")
+
+                        # Queue with or without message (empty string is ok for image-only)
+                        self.queue_add(msg if msg else "")
+                    else:
+                        # Regular queue without image
+                        if rest:
+                            self.queue_add(rest)
+                        else:
+                            print("✗ No message provided")
+                    continue
+
+                if line_lower in [':s', ':send']:
                     self.queue_send()
                     continue
 
-                if line in [':sa', ':sendall']:
+                if line_lower in [':sa', ':sendall']:
                     self.queue_sendall()
                     continue
 
-                if line in [':l', ':list']:
+                if line_lower in [':l', ':list']:
                     self.queue_list()
                     continue
 
-                if line == ':clear':
+                if line_lower in [':c', ':clear']:
                     self.queue_clear()
                     continue
 
-                if line in [':quit', ':exit', ':q']:
+                if line_lower in [':x', ':quit', ':exit']:
                     break
+
+                # Don't send bare :ip or :imagepaste as messages
+                if line_lower in [':ip', ':imagepaste']:
+                    print("✗ Use :ip alone to paste image before typing message, or :q :ip to queue image")
+                    continue
 
                 # Regular message - send immediately
                 self.send_to_claude(line)
@@ -531,6 +702,10 @@ class ClaudeClient:
             print("\n\nExiting...")
 
         finally:
+            # Disable bracketed paste mode
+            sys.stdout.write('\033[?2004l')
+            sys.stdout.flush()
+
             # Stop auto-processing
             self.auto_process = False
             if self.auto_thread:
