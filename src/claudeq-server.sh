@@ -37,9 +37,9 @@ if [ -z "$1" ]; then
     echo "Usage: claudeq <tag> [flags]"
     echo ""
     echo "Examples:"
-    echo "  claudeq backend"
-    echo "  claudeq backend --verbose"
-    echo "  claudeq frontend --some-flag"
+    echo "  claudeq my-cool-feature"
+    echo "  claudeq my-cool-feature --verbose"
+    echo "  claudeq my-cool-feature --some-flag"
     echo ""
     echo "Flags are passed directly to the Claude CLI."
     exit 1

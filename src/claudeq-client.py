@@ -736,9 +736,9 @@ def main():
         print("Usage: claude_client <tag> [--debug]")
         print()
         print("Example:")
-        print("  Tab 1: claude backend")
-        print("  Tab 2: claude_client backend")
-        print("  Tab 2: claude_client backend --debug  (with debug output)")
+        print("  Tab 1: claude my-cool-feature")
+        print("  Tab 2: claude_client my-cool-feature")
+        print("  Tab 2: claude_client my-cool-feature --debug  (with debug output)")
         print()
         sys.exit(1)
 
