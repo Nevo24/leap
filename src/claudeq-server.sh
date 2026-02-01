@@ -7,13 +7,12 @@
 # Find Claude binary
 CLAUDE_PATH=""
 
-# Try common locations
+# Try common locations (avoid shell lookups to prevent picking up aliases)
 for path in \
     "$HOME/.nvm/versions/node/v20.19.6/bin/claude" \
     "/usr/local/bin/claude" \
     "/opt/homebrew/bin/claude" \
-    "$HOME/.local/bin/claude" \
-    "$(command -v claude 2>/dev/null)"; do
+    "$HOME/.local/bin/claude"; do
 
     if [ -f "$path" ] && [ -x "$path" ]; then
         CLAUDE_PATH="$path"
