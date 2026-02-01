@@ -103,8 +103,10 @@ else
     sleep 1
     # Create new session with Claude and attach (not detached)
     # Set destroy-unattached and detach-on-destroy for proper cleanup with iTerm2
-    # The \; separates tmux commands - both execute before attaching
+    # Set history-limit to 50,000 lines for extensive scrollback
+    # The \; separates tmux commands - all execute before attaching
     exec tmux new-session -s "$SESSION_NAME" "$CLAUDE_PATH" $CLAUDE_FLAGS \; \
         set-option -t "$SESSION_NAME" destroy-unattached on \; \
-        set-option -t "$SESSION_NAME" detach-on-destroy on
+        set-option -t "$SESSION_NAME" detach-on-destroy on \; \
+        set-option -t "$SESSION_NAME" history-limit 50000
 fi

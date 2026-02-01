@@ -148,7 +148,7 @@ All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
 ## Troubleshooting
 
 **Scrolling in the server tab:**
-Press `Ctrl+B` then `[` to enter copy mode, then use arrow keys or Page Up/Down to scroll. Press `q` to exit.
+Your terminal's native scrollback works with mouse wheel for recent content. For older history (up to 50,000 lines), press `Ctrl+B` then `[` to enter copy mode, then use arrow keys or Page Up/Down to scroll. Press `q` to exit.
 
 **Copying text from the server tab:**
 Select text with your mouse and copy normally (`Cmd+C` or right-click).
