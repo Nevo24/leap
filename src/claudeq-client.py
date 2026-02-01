@@ -1,4 +1,4 @@
-#!/Users/Nevo.Mashiach/global_venv/bin/python3
+#!/usr/bin/env python3
 """
 ClaudeQ Client - Send messages to a tagged Claude session
 Usage: claude_client <tag>
