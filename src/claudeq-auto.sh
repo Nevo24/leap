@@ -41,7 +41,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         tmux kill-session -t "$SESSION_NAME" 2>/dev/null
         echo "Starting fresh SERVER mode"
         echo ""
-        exec ~/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
+        exec ~/.local/bin/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
     fi
 
     # iTerm2 fix: Check if attached clients have valid terminals
@@ -72,7 +72,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         tmux kill-session -t "$SESSION_NAME" 2>/dev/null
         echo "Starting fresh SERVER mode"
         echo ""
-        exec ~/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
+        exec ~/.local/bin/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
     fi
 
     # Session exists and has clients - check if Claude process is actually running
@@ -106,7 +106,7 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
                             echo "   Flags only apply when starting a new SERVER session."
                             echo ""
                         fi
-                        exec ~/claudeq-client.py "$TAG"
+                        exec ~/.local/bin/claudeq-client.py "$TAG"
                     fi
                 fi
             fi
@@ -118,10 +118,10 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     tmux kill-session -t "$SESSION_NAME" 2>/dev/null
     echo "Starting fresh SERVER mode"
     echo ""
-    exec ~/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
+    exec ~/.local/bin/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
 else
     # Session doesn't exist - start SERVER
     echo "Session '$TAG' doesn't exist - starting SERVER mode"
     echo ""
-    exec ~/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
+    exec ~/.local/bin/claudeq-server.sh "$TAG" $CLAUDE_FLAGS
 fi
