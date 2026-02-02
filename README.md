@@ -179,12 +179,21 @@ The launcher automatically removes stale sockets and starts fresh.
 npm install -g @anthropic-ai/claude-code
 ```
 
-### Scripts Not Found
+### Commands Not Working
 
-Add to shell config:
+If `cq` or `claudeq` commands aren't found after installation:
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+# Reload your shell configuration
+source ~/.zshrc  # or ~/.bashrc for bash
 ```
+
+If still not working, make sure ClaudeQ is in the expected location:
+```bash
+# Check if scripts exist
+ls ~/workspace/claudeq/src/
+```
+
+If you moved the project directory, update the path in your shell config (~/.zshrc or ~/.bashrc).
 
 ## Technical Details
 
@@ -204,10 +213,10 @@ Images are sent to Claude CLI using the `@path` syntax with a required trailing 
 
 ## Uninstall
 
-```bash
-cd claudeq
-./uninstall.sh
-```
+To uninstall ClaudeQ:
+1. Remove the ClaudeQ configuration from your shell config (`~/.zshrc` or `~/.bashrc`)
+2. Delete the project directory: `rm -rf ~/workspace/claudeq`
+3. Clean up data: `rm -rf ~/.claude-queues ~/.claude-sockets`
 
 ## License
 
