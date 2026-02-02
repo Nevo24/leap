@@ -6,12 +6,12 @@ Queue multiple prompts with images in one terminal while Claude works in another
 
 ## ✨ Key Features
 
-- 🖱️ **Native scrolling in IntelliJ/JetBrains IDEs** - No tmux needed!
 - 📝 **Smart message queueing** - Auto-sends when Claude is ready
 - 🖼️ **Image support** - Paste images from clipboard
 - 🔌 **Client-server architecture** - Multiple clients per session
 - 🧹 **Auto-cleanup** - Proper socket management
 - 📊 **Real-time queue monitoring** - See messages being processed
+- 🖱️ **Native scrolling in IntelliJ/JetBrains IDEs** - No tmux needed!
 
 ## How It Works
 
