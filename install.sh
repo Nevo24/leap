@@ -35,14 +35,28 @@ echo "  Installing Python dependencies from requirements.txt..."
 if pip3 install -r "$SCRIPT_DIR/requirements.txt" > /dev/null 2>&1; then
     echo -e "${GREEN}✓ Python dependencies installed${NC}"
 else
-    echo -e "${YELLOW}⚠ Could not install via pip3${NC}"
-    echo "  Trying with user install..."
-    if pip3 install --user -r "$SCRIPT_DIR/requirements.txt"; then
+    echo -e "${YELLOW}⚠ Could not install via pip3 (may be externally-managed)${NC}"
+    echo "  Trying with --user flag..."
+    if pip3 install --user -r "$SCRIPT_DIR/requirements.txt" > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Python dependencies installed (user)${NC}"
     else
-        echo -e "${RED}✗ Failed to install dependencies${NC}"
-        echo "  Try manually: pip3 install -r $SCRIPT_DIR/requirements.txt"
-        exit 1
+        echo -e "${YELLOW}⚠ User install failed, trying --break-system-packages...${NC}"
+        if pip3 install --break-system-packages -r "$SCRIPT_DIR/requirements.txt" > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Python dependencies installed (system)${NC}"
+        else
+            echo -e "${RED}✗ All installation methods failed${NC}"
+            echo ""
+            echo "  Please install dependencies manually with one of these:"
+            echo "    1. pip3 install --user -r $SCRIPT_DIR/requirements.txt"
+            echo "    2. pip3 install --break-system-packages -r $SCRIPT_DIR/requirements.txt"
+            echo "    3. Create a venv: python3 -m venv ~/claudeq-venv && source ~/claudeq-venv/bin/activate && pip install -r $SCRIPT_DIR/requirements.txt"
+            echo ""
+            read -p "  Continue anyway? (y/N) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+        fi
     fi
 fi
 
