@@ -1,172 +1,208 @@
 # ClaudeQ
 
-**Message queueing and image support for Claude Code - queue prompts with images and send when Claude is ready.**
+**Multi-session Claude Code with message queueing and image support - works perfectly in IntelliJ with native scrolling!**
 
-Queue multiple prompts with images in one tab while Claude works in another. Auto-sends queued messages when ready for seamless workflow.
+Queue multiple prompts with images in one terminal while Claude works in another. Auto-sends queued messages when ready for a seamless workflow.
+
+## ✨ Key Features
+
+- 🖱️ **Native scrolling in IntelliJ/JetBrains IDEs** - No tmux needed!
+- 📝 **Smart message queueing** - Auto-sends when Claude is ready
+- 🖼️ **Image support** - Paste images from clipboard
+- 🔌 **Client-server architecture** - Multiple clients per session
+- 🧹 **Auto-cleanup** - Proper socket management
+- 📊 **Real-time queue monitoring** - See messages being processed
 
 ## How It Works
 
-ClaudeQ uses a **client-server model**:
-1. **First `claudeq my-cool-feature`** → Starts server (Claude CLI process that receives messages)
-2. **Second `claudeq my-cool-feature`** → Connects as client (sends queued messages to server)
+ClaudeQ uses a **PTY-based client-server model**:
 
-The same command auto-detects whether to start a server or connect as a client. You can always use `claude` directly for standard Claude CLI behavior without queueing.
+1. **Terminal 1 (Server)**: `cq my-feature` → Starts Claude with scrolling
+2. **Terminal 2+ (Clients)**: `cq my-feature` → Interactive client for queueing messages
+
+The same command auto-detects whether to start a server or connect as a client based on socket existence.
 
 ## Installation
 
 ```bash
 # 1. Install dependencies
-brew install tmux python3 node
+brew install python3 node
 npm install -g @anthropic-ai/claude-code
 
-# 2. Install ClaudeQ
+# Install pexpect for Python
+pip3 install pexpect
+
+# 2. Clone and install ClaudeQ
 git clone https://github.com/nevo24/claudeq.git
 cd claudeq
 chmod +x install.sh
 ./install.sh
 
 # 3. Reload shell
-source ~/.zshrc  # or ~/.bashrc for bash users
+source ~/.zshrc  # or ~/.bashrc for bash
 ```
 
-**Requirements:** tmux, Python 3, Node.js (for Claude CLI), Claude CLI
+**Requirements:** Python 3 with pexpect, Node.js, Claude CLI
 
 ## Usage
 
-### Start/Connect to Tagged Session
+### Quick Start
 
 ```bash
-claudeq my-cool-new-feature
+# Terminal 1 (IntelliJ terminal) - Start server
+cq my-feature
+
+# Terminal 2 (any terminal) - Queue messages
+cq my-feature
+You: How do I fix this bug?          # Queued
+You: Refactor the authentication     # Queued
 ```
 
-Automatically starts server if new, or connects as client if session exists.
+Messages auto-send to Claude when ready. Watch responses in Terminal 1!
 
-### Run Claude Without Queueing
+### With Images
 
 ```bash
-claude
+# Copy image to clipboard, then:
+You: :ip What's wrong with this UI?        # Queue with image
+You: :d :ip Explain this error now         # Send directly with image
+
+# Or attach first:
+You: :ip                                   # Attach image from clipboard
+You: What's wrong with this UI?            # Type message
 ```
 
-Standard Claude Code behavior (unchanged).
+### Direct Send (Bypass Queue)
 
-### Example Workflow
-
-**Tab 1 - Server:**
 ```bash
-claudeq my-cool-new-feature
+You: :d Urgent! Need answer now           # Send immediately
+You: :d :ip Fix this error                # Send with image immediately
 ```
-→ Claude CLI running in tmux session
-
-**Tab 2 - Client:**
-```bash
-claudeq my-cool-new-feature
-```
-→ Client interface with queueing and image support
-
-**Basic Usage:**
-```
-You: How do I fix this bug?                    # Queued automatically
-You: Refactor the authentication               # Queued automatically
-You: :d Urgent! Need answer now                # Send directly, bypass queue
-```
-
-**With Images:**
-```
-You: :ip What's wrong with this UI?            # Queue with image in one command
-You: :ip                                       # Or attach image first...
-🖼️ Image attached! Type message or press Enter to queue
-You: What's wrong with this UI?                # ...then queue with message
-
-You: :d :ip Explain this error now             # Send directly with image
-```
-
-**Queue Management:**
-```
-You: :l                                        # View queue
-📋 Queue (2 messages):
-   1. [📸] What's wrong with this UI?
-   2. Refactor the authentication
-You: :s                                        # Send next from queue
-You: :sa                                       # Send all remaining
-```
-
-See responses in Tab 1 in real-time!
-
-## Features
-
-### 📝 Smart Message Queueing (Default Behavior)
-**Messages are queued by default** and sent automatically when Claude is ready:
-```
-You: Review this code           # Queued automatically
-You: Add error handling          # Queued automatically
-You: :l                          # Show queue
-You: :sa                         # Send all
-```
-
-Need to send immediately? Use `:d`:
-```
-You: :d Urgent question!         # Sends directly, bypasses queue
-```
-
-### 🖼️ Image Support
-Paste images from clipboard:
-```
-You: :ip Explain this screenshot # Queue with image in one command
-You: :ip                         # Or attach image, then type message
-You: Explain this screenshot     # Queued with image
-
-You: :d :ip Fix this now         # Send directly with image (bypass queue)
-```
-
-Images are automatically sent to Claude CLI.
-
-**Auto-queue** automatically sends queued messages when Claude is ready - no manual intervention needed!
 
 ## Client Commands
 
-All commands are **case-insensitive** (`:D`, `:IP`, `:SEND` all work).
+All commands are **case-insensitive**.
 
 | Command | Description |
 |---------|-------------|
-| 💬 Type message | **Queue message** (auto-sends when ready) |
-| 🖼️ `:ip <msg>` or `:imagepaste <msg>` | Queue with image from clipboard |
-| ⚡ `:d <msg>` or `:direct <msg>` | **Send directly** (bypass queue) |
-| ⚡ `:d :ip <msg>` or `:direct :ip <msg>` | Send directly with image |
-| 📤 `:s` or `:send` | Send next queued message |
-| 📨 `:sa` or `:sendall` | Send all queued messages |
-| 📋 `:l` or `:list` | Show queue contents |
-| 🗑️ `:c` or `:clear` | Clear queue |
-| 👋 `:x` or `:quit` | Exit client (or `Ctrl+D`) |
+| 💬 `message` | Queue message (auto-sends) |
+| 🖼️ `:ip <msg>` | Queue with clipboard image |
+| ⚡ `:d <msg>` | Send directly (bypass queue) |
+| ⚡ `:d :ip <msg>` | Send directly with image |
+| 📋 `:l` | Show queue |
+| 🗑️ `:c` | Clear queue |
+| 📊 `:status` | Server status |
+| 👋 `:x` or `Ctrl+D` | Exit client |
 
-## Available Commands
+## Example Workflow
 
-| Command | Description |
-|---------|-------------|
-| `claudeq <tag>` | Start/connect to tagged session (auto-detects) |
-| `claude` | Run Claude directly (no queueing) |
+**IntelliJ Terminal (Server with scrolling):**
+```bash
+cq bug-fix
+
+   _____ _                 _       ___
+  / ____| |               | |     / _ \
+ | |    | | __ _ _   _  __| | ___| | | |
+ | |    | |/ _` | | | |/ _` |/ _ \ | | |
+ | |____| | (_| | |_| | (_| |  __/ |_| |
+  \_____|_|\__,_|\__,_|\__,_|\___|\___\
+
+======================================================================
+  PTY SERVER - Session: bug-fix
+======================================================================
+  All responses will appear HERE in this window.
+
+  ✅ Native scrolling in IntelliJ
+  ✅ Full terminal width
+  ✅ No tmux needed!
+```
+
+**Any Other Terminal (Client):**
+```bash
+cq bug-fix
+
+You: Find all TODO comments
+📝 Queued: Find all TODO comments (1 total)
+
+🤖 Server auto-sent 1 message(s) - 0 remaining in queue
+
+You: :ip What's wrong with this screenshot?
+🖼️ Image attached!
+📝 Queued with image: What's wrong with this screenshot? (1 total)
+```
+
+## Architecture
+
+```
+┌─────────────────────────┐
+│  Terminal 1 (IntelliJ)  │
+│                         │
+│  PTY Server             │
+│  ├─ Claude CLI          │
+│  ├─ Socket Server       │
+│  └─ Auto-sender         │
+│                         │
+│  ✅ Scrolling works!    │
+└─────────────────────────┘
+            ↑
+            │ Unix Socket
+            │
+    ┌───────┴────────┐
+    │                │
+┌───────┐      ┌───────┐
+│ Tab 2 │      │ Tab 3 │
+│       │      │       │
+│Client │      │Client │
+└───────┘      └───────┘
+```
 
 ## Troubleshooting
 
-**Scrolling in the server tab:**
-Your terminal's native scrollback works with mouse wheel for recent content. For older history (up to 50,000 lines), press `Ctrl+B` then `[` to enter copy mode, then use arrow keys or Page Up/Down to scroll. Press `q` to exit.
+### Scrolling in IntelliJ
 
-**Copying text from the server tab:**
-Select text with your mouse and copy normally (`Cmd+C` or right-click).
+**Native mouse scrolling works automatically!** 🖱️
 
-**Claude CLI not found?**
+The PTY architecture ensures IntelliJ's native scrolling works perfectly without any special configuration.
+
+### Stale Socket
+
+If you see "Socket connection failed", the server might have crashed:
+
+```bash
+# Just run the command again - it auto-detects and starts a new server
+cq my-feature
+```
+
+The launcher automatically removes stale sockets and starts fresh.
+
+### Claude CLI Not Found
+
 ```bash
 npm install -g @anthropic-ai/claude-code
 ```
 
-**Scripts not found?** Add to shell config:
+### Scripts Not Found
+
+Add to shell config:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-**Kill stale session:**
-```bash
-tmux kill-session -t claude-<tag>
-```
+## Technical Details
+
+### Files
+
+- `claudeq-main-pty.sh` - Smart launcher (auto-detects server/client)
+- `claudeq-server-pty-socket.py` - PTY server with socket listener
+- `claudeq-client-pty.py` - Interactive client with image support
+
+### How Auto-Send Works
+
+The server monitors Claude's child processes to detect when it's busy executing tools (Bash, Read, etc.). Messages are only auto-sent when Claude has no active child processes, ensuring they don't interrupt ongoing work.
+
+### Image Format
+
+Images are sent to Claude CLI using the `@path` syntax with a required trailing space. The server adds a 0.5s delay after sending the attachment path to allow Claude time to recognize the file before submitting the message.
 
 ## Uninstall
 
