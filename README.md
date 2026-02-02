@@ -25,24 +25,22 @@ The same command auto-detects whether to start a server or connect as a client b
 ## Installation
 
 ```bash
-# 1. Install dependencies
-brew install python3 node
+# 1. Install Claude CLI (required)
 npm install -g @anthropic-ai/claude-code
-
-# Install pexpect for Python
-pip3 install pexpect
 
 # 2. Clone and install ClaudeQ
 git clone https://github.com/nevo24/claudeq.git
 cd claudeq
-chmod +x install.sh
 ./install.sh
 
 # 3. Reload shell
 source ~/.zshrc  # or ~/.bashrc for bash
 ```
 
-**Requirements:** Python 3 with pexpect, Node.js, Claude CLI
+**Requirements:**
+- Python 3 (install.sh will install Python dependencies automatically via pip3)
+- Node.js and Claude CLI
+- macOS (for clipboard image support)
 
 ## Usage
 
