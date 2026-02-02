@@ -478,6 +478,13 @@ def main():
         sys.exit(1)
 
     tag = sys.argv[1]
+
+    # Validate tag doesn't start with "-"
+    if tag.startswith('-'):
+        print("Error: Tag cannot start with '-'")
+        print("Usage: claudeq-client-pty <tag>")
+        sys.exit(1)
+
     client = ClaudePTYClient(tag)
     client.run()
 

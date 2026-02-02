@@ -13,6 +13,14 @@ if [ $# -lt 1 ]; then
 fi
 
 TAG="$1"
+
+# Validate tag doesn't start with "-"
+if [[ "$TAG" == -* ]]; then
+    echo "Error: Tag cannot start with '-'" >&2
+    echo "Usage: claudeq-main-pty <tag> [message...]" >&2
+    exit 1
+fi
+
 shift
 
 SOCKET_PATH="$HOME/.claude-sockets/${TAG}.sock"
