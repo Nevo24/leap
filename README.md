@@ -170,12 +170,14 @@ ClaudeQ automatically sets terminal tab titles to help you identify sessions:
 
 **For JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.):**
 
-To enable automatic tab titles, you need to enable one setting:
+To enable automatic tab titles:
 
 1. Press `Ctrl+Alt+S` (or `Cmd+,` on Mac) to open Settings
-2. Go to **Advanced Settings**
-3. Scroll down to the **Terminal** group
-4. Check the **"Show application title"** checkbox
+2. Click **Advanced Settings** (left sidebar)
+3. Search for "term" in the search box at the top
+4. Under the **Terminal** section, check ☑️ **"Show application title"**
+
+💡 *Tip: Searching for "term" is the fastest way to find this setting!*
 
 This works with JetBrains 2025.2+ (with the reworked terminal) and should work on older versions too.
 
