@@ -59,6 +59,8 @@ if [ -S "$SOCKET_PATH" ]; then
     if test_socket_alive; then
         # Server is alive - launch client (interactive or with message)
         echo "✓ Server is running - launching client" >&2
+        # Set terminal tab name
+        echo -ne "\033]0;cq-client ${TAG}\007"
         exec "$CLIENT_SCRIPT" "$TAG" "$@"
     else
         # Stale socket - remove it and continue to server check below
@@ -78,4 +80,6 @@ if [ $# -gt 0 ]; then
 fi
 
 # No arguments and no server - start server
+# Set terminal tab name
+echo -ne "\033]0;cq-server ${TAG}\007"
 exec "$SERVER_SCRIPT" "$TAG"

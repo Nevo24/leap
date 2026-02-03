@@ -188,6 +188,16 @@ class ClaudePTYServer:
         except:
             return False
 
+    def title_keeper(self):
+        """Background thread to keep terminal title set"""
+        while self.running:
+            try:
+                sys.stdout.write(f"\033]0;cq-server {self.tag}\007")
+                sys.stdout.flush()
+            except:
+                pass
+            time.sleep(2)  # Reset title every 2 seconds
+
     def auto_sender(self):
         """Background thread to auto-send from queue"""
         while self.running:
@@ -233,6 +243,10 @@ class ClaudePTYServer:
 
     def run(self):
         """Main run loop"""
+        # Set terminal tab name
+        sys.stdout.write(f"\033]0;cq-server {self.tag}\007")
+        sys.stdout.flush()
+
         self.print_banner()
         self.spawn_claude()
 
@@ -242,8 +256,15 @@ class ClaudePTYServer:
         # Start auto-sender
         threading.Thread(target=self.auto_sender, daemon=True).start()
 
+        # Start title keeper
+        threading.Thread(target=self.title_keeper, daemon=True).start()
+
         # Handle resize signal
         signal.signal(signal.SIGWINCH, self.handle_resize)
+
+        # Set terminal title again (Claude CLI may have changed it)
+        sys.stdout.write(f"\033]0;cq-server {self.tag}\007")
+        sys.stdout.flush()
 
         # Interact with Claude
         try:
