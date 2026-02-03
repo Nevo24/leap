@@ -219,8 +219,9 @@ class ClaudePTYServer:
 
             try:
                 self.last_sent_message = msg
-                # Print notification before sending
-                print(f"\n📤 [Auto-sending from queue: {msg[:60]}{'...' if len(msg) > 60 else ''}]", file=sys.stderr, flush=True)
+                # Print notification before sending (to stdout for visibility)
+                remaining = len(self.message_queue)
+                print(f"\n🤖 Auto-sending from queue: {msg[:60]}{'...' if len(msg) > 60 else ''} ({remaining} remaining)\n", flush=True)
                 self.claude_process.send(msg)
 
                 # If message starts with @, it's an attachment - give Claude time to recognize it
