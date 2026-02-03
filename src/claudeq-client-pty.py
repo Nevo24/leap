@@ -285,10 +285,11 @@ class ClaudePTYClient:
         print(f"  Sending messages to ClaudeQ PTY server '{self.tag}'")
         print(f"  Watch responses in server tab")
         print()
+        # Hardcoded spacing for perfect arrow alignment (emojis render with varying widths)
+        # 🖼️ and 🗑️ render wider, so they need slightly MORE spaces to align
         print("  💬 Type message                        → Queue message (auto-sends)")
-        print("  🖼️  :ip <msg> or :imagepaste <msg>      → Queue with clipboard image")
+        print("  🖼️ :ip <msg> or :imagepaste <msg>      → Queue with clipboard image")
         print("  ⚡ :d <msg> or :direct <msg>           → Send directly (bypass queue)")
-        print("  ⚡ :d :ip <msg>                         → Send directly with image")
         print("  📋 :l or :list                         → Show queue")
         print("  🗑️ :c or :clear                        → Clear queue")
         print("  📊 :status                             → Server status")
