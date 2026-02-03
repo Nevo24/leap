@@ -131,20 +131,20 @@ if [ -n "$RC_FILE" ]; then
 # ClaudeQ PTY - Scrollable in IntelliJ! 🎯
 # Uses PTY (no tmux) with native scrolling
 # Server in IntelliJ, client in any terminal
-# Usage: cq <tag> [message] or claudeq <tag> [message]
-cq() {
+# Usage: claudeq <tag> [message] or cq <tag> [message]
+claudeq() {
     if [ \$# -eq 0 ]; then
         echo "Error: Tag is required"
-        echo "Usage: cq <tag> [message]"
-        echo "Example (server): cq my-feature"
-        echo "Example (client): cq my-feature 'hello Claude'"
+        echo "Usage: claudeq <tag> [message]"
+        echo "Example (server): claudeq my-feature"
+        echo "Example (client): claudeq my-feature 'hello Claude'"
         return 1
     fi
     $SRC_DIR/claudeq-main-pty.sh "\$@"
 }
 
 # Alias for convenience
-alias claudeq='cq'
+alias cq='claudeq'
 EOF
         echo -e "${GREEN}✓ Added ClaudeQ configuration to $RC_FILE${NC}"
         echo "  Using project directory: $SRC_DIR"
