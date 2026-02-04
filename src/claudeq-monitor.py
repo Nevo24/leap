@@ -227,29 +227,55 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
             time.sleep(0.3)
 
             # Try to activate the Terminal in this IDE
-            # Pass project path as environment variable if available
-            env = os.environ.copy()
+            # Create a temporary groovy script with project path hardcoded
+            import tempfile
+
             if project_path:
-                env['CLAUDEQ_PROJECT_PATH'] = project_path
-                print(f"DEBUG: Setting CLAUDEQ_PROJECT_PATH={project_path}", file=sys.stderr)
+                print(f"DEBUG: Using project_path={project_path}", file=sys.stderr)
+                # Create temporary groovy script with hardcoded path
+                groovy_template = script_dir / "activate_terminal.groovy"
+                with open(groovy_template, 'r') as f:
+                    template_content = f.read()
+
+                # Replace the env lookup with hardcoded path
+                custom_script = template_content.replace(
+                    'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
+                    f'var projectPath = "{project_path}"'
+                )
+
+                # Write to temp file
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
+                    tmp.write(custom_script)
+                    tmp_script_path = tmp.name
+
+                groovy_to_use = tmp_script_path
             else:
                 print("DEBUG: No project_path in metadata", file=sys.stderr)
+                groovy_to_use = str(groovy_script)
 
-            result = subprocess.run(
-                [idea_cmd, 'ideScript', str(groovy_script)],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                env=env
-            )
+            try:
+                result = subprocess.run(
+                    [idea_cmd, 'ideScript', groovy_to_use],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
 
-            # Print any output from groovy script
-            if result.stdout:
-                print(f"DEBUG stdout: {result.stdout}", file=sys.stderr)
-            if result.stderr:
-                print(f"DEBUG stderr: {result.stderr}", file=sys.stderr)
-            if result.returncode == 0:
-                return 'jetbrains'
+                # Print any output from groovy script
+                if result.stdout:
+                    print(f"DEBUG stdout: {result.stdout}", file=sys.stderr)
+                if result.stderr:
+                    print(f"DEBUG stderr: {result.stderr}", file=sys.stderr)
+
+                if result.returncode == 0:
+                    return 'jetbrains'
+            finally:
+                # Clean up temp file
+                if project_path and os.path.exists(groovy_to_use):
+                    try:
+                        os.unlink(groovy_to_use)
+                    except:
+                        pass
         except:
             continue
 
