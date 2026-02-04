@@ -93,12 +93,12 @@ configure-shell:
 		echo "  Please manually add configuration to your shell RC file."; \
 		exit 0; \
 	fi; \
-	if grep -q "# ClaudeQ PTY" "$$RC_FILE" 2>/dev/null; then \
+	if grep -q "# ClaudeQ" "$$RC_FILE" 2>/dev/null; then \
 		echo "$(YELLOW)⚠ ClaudeQ configuration already exists in $$RC_FILE$(NC)"; \
 		read -p "  Overwrite? (y/N) " -n 1 -r REPLY; \
 		echo; \
 		if [ "$$REPLY" = "y" ] || [ "$$REPLY" = "Y" ]; then \
-			sed -i.bak '/# ClaudeQ PTY/,/^alias cq=/d' "$$RC_FILE"; \
+			sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$$RC_FILE"; \
 			echo "$(GREEN)✓ Removed old configuration$(NC)"; \
 		else \
 			echo "  Skipping shell configuration."; \
@@ -165,7 +165,7 @@ uninstall:
 		RC_FILE="$$HOME/.bashrc"; \
 	fi; \
 	if [ -f "$$RC_FILE" ]; then \
-		sed -i.bak '/# ClaudeQ PTY/,/^alias cq=/d' "$$RC_FILE"; \
+		sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$$RC_FILE"; \
 		echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
 	fi
 	@rm -rf ~/.claude-queues ~/.claude-sockets
