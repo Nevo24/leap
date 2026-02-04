@@ -125,11 +125,15 @@ class ClaudePTYServer:
         ide = self.detect_ide()
         terminal_title = f"cq-server {self.tag}"
 
+        # Get current working directory (project path)
+        project_path = os.getcwd()
+
         metadata = {
             'ide': ide,
             'terminal_title': terminal_title,
             'tag': self.tag,
-            'pid': os.getpid()
+            'pid': os.getpid(),
+            'project_path': project_path
         }
 
         with open(self.metadata_file, 'w') as f:

@@ -55,12 +55,13 @@ def get_active_sessions():
     return sorted(sessions, key=lambda x: x['tag'])
 
 
-def find_terminal_with_title(title_pattern, preferred_ide=None):
+def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=None):
     """Find terminal window/tab with matching title using AppleScript
 
     Args:
         title_pattern: The terminal title pattern to search for
         preferred_ide: The IDE name from metadata (e.g., 'PyCharm', 'GoLand')
+        project_path: The project directory path from metadata
     """
     # Try Terminal.app first
     script = f'''
@@ -226,11 +227,17 @@ def find_terminal_with_title(title_pattern, preferred_ide=None):
             time.sleep(0.3)
 
             # Try to activate the Terminal in this IDE
+            # Pass project path as environment variable if available
+            env = os.environ.copy()
+            if project_path:
+                env['CLAUDEQ_PROJECT_PATH'] = project_path
+
             result = subprocess.run(
                 [idea_cmd, 'ideScript', str(groovy_script)],
                 capture_output=True,
                 text=True,
-                timeout=3
+                timeout=3,
+                env=env
             )
             if result.returncode == 0:
                 return 'jetbrains'
@@ -286,11 +293,12 @@ def focus_session(tag, session_type='server'):
     """Focus the terminal with the given session"""
     title_pattern = f"cq-{session_type} {tag}"
 
-    # Try to load metadata to find preferred IDE
+    # Try to load metadata to find preferred IDE and project
     metadata = load_session_metadata(tag)
     preferred_ide = metadata.get('ide') if metadata else None
+    project_path = metadata.get('project_path') if metadata else None
 
-    result = find_terminal_with_title(title_pattern, preferred_ide)
+    result = find_terminal_with_title(title_pattern, preferred_ide, project_path)
 
     if result == True:
         sg.popup_quick_message(f'✓ Focused {session_type}: {tag}',
