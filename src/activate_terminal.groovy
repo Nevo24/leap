@@ -48,7 +48,18 @@ IDE.application.invokeLater {
     }
 
     if (targetProject != null) {
-        // Get the Terminal tool window for this project
+        // First, bring the project window to front
+        import com.intellij.openapi.wm.WindowManager
+        var windowManager = WindowManager.getInstance()
+        var projectFrame = windowManager.getFrame(targetProject)
+
+        if (projectFrame != null) {
+            // Bring the window to front and focus it
+            projectFrame.toFront()
+            projectFrame.requestFocus()
+        }
+
+        // Then activate the Terminal tool window in that project
         var toolWindowManager = ToolWindowManager.getInstance(targetProject)
         var terminalWindow = toolWindowManager.getToolWindow("Terminal")
 
