@@ -174,7 +174,7 @@ class ClaudePTYServer:
 
                     # Print notification
                     remaining = len(self.message_queue)
-                    print(f"\n⚡ Force-sending from queue: {message[:60]}{'...' if len(message) > 60 else ''} ({remaining} remaining)\n", flush=True)
+                    print(f"\n⚡ Force-sent message from queue ({remaining} remaining)\n", flush=True)
 
                     # Send to Claude
                     self.claude_process.send(message)
@@ -254,7 +254,7 @@ class ClaudePTYServer:
                 self.last_sent_message = msg
                 # Print notification before sending (to stdout for visibility)
                 remaining = len(self.message_queue)
-                print(f"\n🤖 Auto-sending from queue: {msg[:60]}{'...' if len(msg) > 60 else ''} ({remaining} remaining)\n", flush=True)
+                print(f"\n🤖 Auto-sent message from queue ({remaining} remaining)\n", flush=True)
                 self.claude_process.send(msg)
 
                 # If message starts with @, it's an attachment - give Claude time to recognize it
