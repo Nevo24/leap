@@ -72,35 +72,48 @@ class ClaudePTYServer:
         # Check environment variables set by JetBrains IDEs
         terminal_emulator = os.environ.get('TERMINAL_EMULATOR', '')
 
-        # Check for JetBrains IDE - try to get specific IDE name from parent process
+        # Check for JetBrains IDE - traverse up process tree to find IDE
         if 'JetBrains' in terminal_emulator or 'jetbrains' in terminal_emulator.lower():
             try:
-                # Get parent process info using ps command (no external deps needed)
-                ppid = os.getppid()
-                result = subprocess.run(
-                    ['ps', '-p', str(ppid), '-o', 'comm='],
-                    capture_output=True,
-                    text=True,
-                    timeout=1
-                )
-                if result.returncode == 0:
-                    parent_name = result.stdout.strip().lower()
-                    if 'idea' in parent_name:
-                        return 'IntelliJ IDEA'
-                    elif 'pycharm' in parent_name:
+                # Walk up the process tree to find the IDE process
+                current_pid = os.getpid()
+                for _ in range(10):  # Check up to 10 levels up
+                    result = subprocess.run(
+                        ['ps', '-p', str(current_pid), '-o', 'ppid=,comm='],
+                        capture_output=True,
+                        text=True,
+                        timeout=1
+                    )
+                    if result.returncode != 0:
+                        break
+
+                    output = result.stdout.strip().split(None, 1)
+                    if len(output) < 2:
+                        break
+
+                    ppid = output[0]
+                    process_name = output[1].lower()
+
+                    # Check if this process is a JetBrains IDE
+                    if 'pycharm' in process_name:
                         return 'PyCharm'
-                    elif 'goland' in parent_name:
+                    elif 'goland' in process_name:
                         return 'GoLand'
-                    elif 'webstorm' in parent_name:
+                    elif 'webstorm' in process_name:
                         return 'WebStorm'
-                    elif 'phpstorm' in parent_name:
+                    elif 'phpstorm' in process_name:
                         return 'PhpStorm'
-                    elif 'rubymine' in parent_name:
+                    elif 'rubymine' in process_name:
                         return 'RubyMine'
-                    elif 'clion' in parent_name:
+                    elif 'clion' in process_name:
                         return 'CLion'
-                    elif 'datagrip' in parent_name:
+                    elif 'datagrip' in process_name:
                         return 'DataGrip'
+                    elif 'idea' in process_name and 'pycharm' not in process_name:
+                        return 'IntelliJ IDEA'
+
+                    # Move to parent
+                    current_pid = int(ppid)
             except:
                 pass
             return 'JetBrains IDE'
