@@ -123,15 +123,12 @@ configure-shell:
 	echo "" >> "$$RC_FILE"; \
 	echo "# Add JetBrains IDE CLI tools to PATH for monitor support" >> "$$RC_FILE"; \
 	JETBRAINS_PATHS=""; \
-	for app in "PyCharm" "WebStorm" "PhpStorm" "GoLand" "RubyMine" "CLion" "DataGrip"; do \
-		if [ -d "/Applications/$$app.app/Contents/MacOS" ]; then \
-			JETBRAINS_PATHS="$$JETBRAINS_PATHS:/Applications/$$app.app/Contents/MacOS"; \
-		fi; \
-	done; \
-	for intellij_app in /Applications/IntelliJ*.app; do \
-		if [ -d "$$intellij_app/Contents/MacOS" ]; then \
-			JETBRAINS_PATHS="$$JETBRAINS_PATHS:$$intellij_app/Contents/MacOS"; \
-		fi; \
+	for pattern in IntelliJ PyCharm WebStorm PhpStorm GoLand RubyMine CLion DataGrip Rider Fleet; do \
+		for app in /Applications/$$pattern*.app; do \
+			if [ -d "$$app/Contents/MacOS" ]; then \
+				JETBRAINS_PATHS="$$JETBRAINS_PATHS:$$app/Contents/MacOS"; \
+			fi; \
+		done; \
 	done; \
 	if [ -n "$$JETBRAINS_PATHS" ]; then \
 		echo "export PATH=\"\$$PATH$$JETBRAINS_PATHS\"" >> "$$RC_FILE"; \
