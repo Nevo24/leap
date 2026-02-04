@@ -45,23 +45,39 @@ def get_active_sessions():
 
         # Only include alive sessions
         if is_alive:
+            # Load metadata to get project info
+            project_name = None
+            metadata_file = SOCKET_DIR / f"{tag}.meta"
+            if metadata_file.exists():
+                try:
+                    import json
+                    with open(metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                        project_path = metadata.get('project_path', '')
+                        if project_path:
+                            project_name = os.path.basename(project_path)
+                except:
+                    pass
+
             sessions.append({
                 'tag': tag,
                 'alive': is_alive,
                 'queue_size': queue_size,
-                'socket': str(socket_file)
+                'socket': str(socket_file),
+                'project': project_name or '?'
             })
 
     return sorted(sessions, key=lambda x: x['tag'])
 
 
-def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=None):
+def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=None, terminal_title=None):
     """Find terminal window/tab with matching title using AppleScript
 
     Args:
         title_pattern: The terminal title pattern to search for
         preferred_ide: The IDE name from metadata (e.g., 'PyCharm', 'GoLand')
         project_path: The project directory path from metadata
+        terminal_title: The terminal tab title to search for (e.g., 'cq-server tag')
     """
     # Try Terminal.app first
     script = f'''
@@ -240,18 +256,27 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
             # Create a temporary groovy script with project path hardcoded
             import tempfile
 
-            if project_path:
-                # Create temporary groovy script with hardcoded path
+            if project_path or terminal_title:
+                # Create temporary groovy script with hardcoded values
                 groovy_template = script_dir / "activate_terminal.groovy"
 
                 with open(groovy_template, 'r') as f:
                     template_content = f.read()
 
-                # Replace the env lookup with hardcoded path
-                custom_script = template_content.replace(
-                    'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
-                    f'var projectPath = "{project_path}"'
-                )
+                # Replace the env lookups with hardcoded values
+                custom_script = template_content
+
+                if project_path:
+                    custom_script = custom_script.replace(
+                        'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
+                        f'var projectPath = "{project_path}"'
+                    )
+
+                if terminal_title:
+                    custom_script = custom_script.replace(
+                        'var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")',
+                        f'var terminalTabName = "{terminal_title}"'
+                    )
 
                 # Write to temp file
                 with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
@@ -274,7 +299,7 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
                     return 'jetbrains'
             finally:
                 # Clean up temp file
-                if project_path and os.path.exists(groovy_to_use):
+                if (project_path or terminal_title) and groovy_to_use != str(groovy_script) and os.path.exists(groovy_to_use):
                     try:
                         os.unlink(groovy_to_use)
                     except:
@@ -327,6 +352,7 @@ def load_session_metadata(tag):
     return None
 
 
+
 def focus_session(tag, session_type='server'):
     """Focus the terminal with the given session"""
     title_pattern = f"cq-{session_type} {tag}"
@@ -336,7 +362,37 @@ def focus_session(tag, session_type='server'):
     preferred_ide = metadata.get('ide') if metadata else None
     project_path = metadata.get('project_path') if metadata else None
 
-    result = find_terminal_with_title(title_pattern, preferred_ide, project_path)
+    # Construct the correct terminal title based on session type
+    # Metadata only has server title, so we need to build client title
+    terminal_title = f"cq-{session_type} {tag}"
+
+    # Check if the requested session type exists
+    if session_type == 'client':
+        client_lock = SOCKET_DIR / f"{tag}.client.lock"
+        if not client_lock.exists():
+            # Client not found, offer to go to server instead
+            response = sg.popup_yes_no(
+                f'Client not found for: {tag}\n\n'
+                f'Go to server instead?',
+                title='Client Not Found'
+            )
+            if response == 'Yes':
+                focus_session(tag, 'server')
+            return
+    elif session_type == 'server':
+        socket_file = SOCKET_DIR / f"{tag}.sock"
+        if not socket_file.exists():
+            # Server not found, offer to go to client instead
+            response = sg.popup_yes_no(
+                f'Server not found for: {tag}\n\n'
+                f'Go to client instead?',
+                title='Server Not Found'
+            )
+            if response == 'Yes':
+                focus_session(tag, 'client')
+            return
+
+    result = find_terminal_with_title(title_pattern, preferred_ide, project_path, terminal_title)
 
     if result == True:
         sg.popup_quick_message(f'✓ Focused {session_type}: {tag}',
@@ -389,9 +445,11 @@ def create_window(sessions):
         for session in sessions:
             status = '🟢 Active' if session['alive'] else '🔴 Dead'
             queue_info = f"Queue: {session['queue_size']}" if session['queue_size'] > 0 else ''
+            project = session.get('project', '?')
 
             row = [
-                sg.Text(f"{session['tag']}", size=(20, 1), font=('Helvetica', 11)),
+                sg.Text(f"{session['tag']}", size=(15, 1), font=('Helvetica', 11)),
+                sg.Text(f"[{project}]", size=(15, 1), font=('Helvetica', 10)),
                 sg.Text(status, size=(12, 1)),
                 sg.Text(queue_info, size=(12, 1)),
                 sg.Button('Server', key=f"server_{session['tag']}", size=(8, 1)),

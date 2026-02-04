@@ -37,9 +37,32 @@ IDE.application.invokeLater {
         var terminalWindow = toolWindowManager.getToolWindow("Terminal")
 
         if (terminalWindow != null) {
-            // Show and activate the Terminal window
+            // Show the Terminal window
             terminalWindow.show(null)
-            terminalWindow.activate(null)
+
+            // Try to find and activate the specific terminal tab by name
+            var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")
+            var foundTab = false
+
+            if (terminalTabName != null && !terminalTabName.isEmpty()) {
+                try {
+                    var contentManager = terminalWindow.getContentManager()
+                    var content = contentManager.findContent(terminalTabName)
+
+                    if (content != null) {
+                        // Found the tab with matching name - select it
+                        contentManager.setSelectedContent(content)
+                        foundTab = true
+                    }
+                } catch (Exception e) {
+                    // Continue to fallback if tab search fails
+                }
+            }
+
+            // If we didn't find a specific tab, just activate the terminal window
+            if (!foundTab) {
+                terminalWindow.activate(null)
+            }
         }
     }
 }
