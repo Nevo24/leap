@@ -12,6 +12,30 @@ SOCKET_DIR = Path.home() / ".claude-sockets"
 QUEUE_DIR = Path.home() / ".claude-queues"
 
 
+def query_server_status(socket_path):
+    """Query server for status via socket (same as client does)"""
+    try:
+        import socket as sock
+        import json
+
+        client_socket = sock.socket(sock.AF_UNIX, sock.SOCK_STREAM)
+        client_socket.settimeout(1.0)
+        client_socket.connect(str(socket_path))
+
+        data = {
+            'type': 'status',
+            'message': ''
+        }
+
+        client_socket.send(json.dumps(data).encode('utf-8'))
+        response = client_socket.recv(4096).decode('utf-8')
+        client_socket.close()
+
+        return json.loads(response)
+    except:
+        return None
+
+
 def get_active_sessions():
     """Get list of active claudeq sessions"""
     sessions = []
@@ -22,50 +46,45 @@ def get_active_sessions():
     for socket_file in SOCKET_DIR.glob("*.sock"):
         tag = socket_file.stem
 
-        # Check if socket is actually alive by testing connection
-        try:
-            import socket as sock
-            s = sock.socket(sock.AF_UNIX, sock.SOCK_STREAM)
-            s.settimeout(0.5)
-            s.connect(str(socket_file))
-            s.close()
-            is_alive = True
-        except:
-            is_alive = False
+        # Query server status via socket (same as client does)
+        status_response = query_server_status(socket_file)
 
-        # Get queue size if available
-        queue_size = 0
-        queue_file = QUEUE_DIR / f"{tag}.queue"
-        if queue_file.exists():
+        if not status_response:
+            # Server not responding, skip this session
+            continue
+
+        # Get queue size and ready status from server
+        queue_size = status_response.get('queue_size', 0)
+        is_ready = status_response.get('ready', True)
+        # "Running" means Claude is busy (NOT ready to accept next message)
+        claude_busy = not is_ready
+
+        # Load metadata to get project info and branch
+        project_name = None
+        branch_name = None
+
+        metadata_file = SOCKET_DIR / f"{tag}.meta"
+        if metadata_file.exists():
             try:
-                with open(queue_file, 'r') as f:
-                    queue_size = len([line for line in f if line.strip()])
+                import json
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
+                    project_path = metadata.get('project_path', '')
+                    if project_path:
+                        project_name = os.path.basename(project_path)
+                    branch_name = metadata.get('branch')
             except:
                 pass
 
-        # Only include alive sessions
-        if is_alive:
-            # Load metadata to get project info
-            project_name = None
-            metadata_file = SOCKET_DIR / f"{tag}.meta"
-            if metadata_file.exists():
-                try:
-                    import json
-                    with open(metadata_file, 'r') as f:
-                        metadata = json.load(f)
-                        project_path = metadata.get('project_path', '')
-                        if project_path:
-                            project_name = os.path.basename(project_path)
-                except:
-                    pass
-
-            sessions.append({
-                'tag': tag,
-                'alive': is_alive,
-                'queue_size': queue_size,
-                'socket': str(socket_file),
-                'project': project_name or '?'
-            })
+        sessions.append({
+            'tag': tag,
+            'alive': True,  # We already confirmed it's alive via status query
+            'claude_busy': claude_busy,
+            'queue_size': queue_size,
+            'socket': str(socket_file),
+            'project': project_name or 'N/A',
+            'branch': branch_name or 'N/A'
+        })
 
     return sorted(sessions, key=lambda x: x['tag'])
 
@@ -425,7 +444,7 @@ def focus_session(tag, session_type='server'):
                       f'Make sure the terminal tab title is set correctly.')
 
 
-def create_window(sessions):
+def create_window(sessions, location=None):
     """Create the monitor GUI window"""
     sg.theme('DarkBlue3')
 
@@ -438,35 +457,76 @@ def create_window(sessions):
     else:
         header = [
             [sg.Text('ClaudeQ Session Monitor', font=('Helvetica', 14, 'bold'))],
-            [sg.HorizontalSeparator()]
+            [sg.HorizontalSeparator()],
+            # Column headers
+            [
+                sg.Text('Tag', size=(13, 1), font=('Helvetica', 10, 'bold'), justification='left'),
+                sg.Text('Project', size=(16, 1), font=('Helvetica', 10, 'bold'), justification='left'),
+                sg.Text('Branch', size=(16, 1), font=('Helvetica', 10, 'bold'), justification='left'),
+                sg.Text('Status', size=(11, 1), font=('Helvetica', 10, 'bold'), justification='left'),
+                sg.Text('Queue', size=(6, 1), font=('Helvetica', 10, 'bold'), justification='left'),
+                sg.Text('Actions', size=(18, 1), font=('Helvetica', 10, 'bold'), justification='left')
+            ]
         ]
 
         session_rows = []
         for session in sessions:
-            status = '🟢 Active' if session['alive'] else '🔴 Dead'
-            queue_info = f"Queue: {session['queue_size']}" if session['queue_size'] > 0 else ''
-            project = session.get('project', '?')
+            # Status: Show if Claude is busy processing (running) or ready (idle)
+            if session.get('claude_busy', False):
+                status = '✅ Running'
+            else:
+                status = '⚪ Idle'
 
+            project = session.get('project', 'N/A')
+            branch = session.get('branch', 'N/A')
+            queue_count = session.get('queue_size', 0)
+
+            tag = session['tag']
             row = [
-                sg.Text(f"{session['tag']}", size=(15, 1), font=('Helvetica', 11)),
-                sg.Text(f"[{project}]", size=(15, 1), font=('Helvetica', 10)),
-                sg.Text(status, size=(12, 1)),
-                sg.Text(queue_info, size=(12, 1)),
-                sg.Button('Server', key=f"server_{session['tag']}", size=(8, 1)),
-                sg.Button('Client', key=f"client_{session['tag']}", size=(8, 1))
+                sg.Text(f"{tag}", size=(13, 1), font=('Helvetica', 11), justification='left'),
+                sg.Text(f"{project}", size=(16, 1), font=('Helvetica', 10), justification='left'),
+                sg.Text(f"{branch}", size=(16, 1), font=('Helvetica', 10), justification='left'),
+                sg.Text(status, size=(11, 1), justification='left', key=f"status_{tag}"),
+                sg.Text(f"{queue_count}", size=(6, 1), justification='left', key=f"queue_{tag}"),
+                sg.Button('Server', key=f"server_{tag}", size=(8, 1)),
+                sg.Button('Client', key=f"client_{tag}", size=(8, 1))
             ]
             session_rows.append(row)
 
         footer = [
             [sg.HorizontalSeparator()],
             [sg.Button('Refresh', key='refresh'),
-             sg.Checkbox('Auto (5s)', key='auto_toggle', default=False),
+             sg.Checkbox('Auto (1s)', key='auto_toggle', default=False, enable_events=True),
+             sg.Push(),
              sg.Button('Close')]
         ]
 
         layout = header + session_rows + footer
 
-    return sg.Window('ClaudeQ Monitor', layout, finalize=True)
+    return sg.Window('ClaudeQ Monitor', layout, location=location, finalize=True)
+
+
+def update_window_data(window, sessions):
+    """Update the window data without recreating it"""
+    for session in sessions:
+        tag = session['tag']
+        # Check if this session exists in the window
+        if f"status_{tag}" not in window.key_dict:
+            return False  # Session list changed, need to recreate window
+
+        # Status: Show if Claude is busy processing (running) or ready (idle)
+        if session.get('claude_busy', False):
+            status = '✅ Running'
+        else:
+            status = '⚪ Idle'
+
+        queue_count = session.get('queue_size', 0)
+
+        # Update the elements
+        window[f"status_{tag}"].update(status)
+        window[f"queue_{tag}"].update(str(queue_count))
+
+    return True  # Successfully updated
 
 
 def main():
@@ -474,21 +534,36 @@ def main():
     sessions = get_active_sessions()
     window = create_window(sessions)
     auto_refresh = False
+    current_session_tags = set(s['tag'] for s in sessions)
 
     while True:
-        # Timeout of 5000ms (5s) if auto-refresh is enabled, None otherwise
-        timeout = 5000 if auto_refresh else None
+        # Timeout of 1000ms (1s) if auto-refresh is enabled, None otherwise
+        timeout = 1000 if auto_refresh else None
         event, values = window.read(timeout=timeout)
 
         if event in (sg.WIN_CLOSED, 'Close'):
             break
 
         if event == 'refresh' or (auto_refresh and event == sg.TIMEOUT_KEY):
-            sessions = get_active_sessions()
-            window.close()
-            window = create_window(sessions)
-            if auto_refresh:
-                window['auto_toggle'].update(value=True)
+            new_sessions = get_active_sessions()
+            new_session_tags = set(s['tag'] for s in new_sessions)
+
+            # Check if session list changed (added or removed)
+            if new_session_tags != current_session_tags:
+                # Session list changed, need to recreate window
+                current_auto_state = values.get('auto_toggle', False) if values else auto_refresh
+                current_location = window.current_location()
+                window.close()
+                window = create_window(new_sessions, location=current_location)
+                if current_auto_state:
+                    window['auto_toggle'].update(value=True)
+                auto_refresh = current_auto_state
+                current_session_tags = new_session_tags
+            else:
+                # Just update the data without recreating window
+                update_window_data(window, new_sessions)
+
+            sessions = new_sessions
 
         if event == 'auto_toggle':
             auto_refresh = values.get('auto_toggle', False)

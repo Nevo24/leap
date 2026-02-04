@@ -1,7 +1,7 @@
 PACKAGE_NAME     := claudeq
 PYTHON_VERSION   := "3.10"
 REPO_PATH        := $(shell git rev-parse --show-toplevel)
-PROMPT_PREFIX    := "\n>"
+PROMPT_PREFIX    := "\n→"
 SRC_DIR          := $(REPO_PATH)/src
 
 # Colors for output

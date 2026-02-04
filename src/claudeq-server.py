@@ -31,6 +31,8 @@ class ClaudePTYServer:
         self.running = True
         self.server_socket = None
         self.last_sent_message = None  # Track last auto-sent message
+        self.last_send_time = None  # Track when we last sent a message
+        self.min_busy_duration = 3.0  # Minimum seconds to consider busy after sending
 
         # Ensure directories exist
         QUEUE_DIR.mkdir(exist_ok=True)
@@ -141,12 +143,28 @@ class ClaudePTYServer:
         # Get current working directory (project path)
         project_path = os.getcwd()
 
+        # Get git branch name
+        branch_name = None
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                cwd=project_path
+            )
+            if result.returncode == 0:
+                branch_name = result.stdout.strip()
+        except:
+            pass
+
         metadata = {
             'ide': ide,
             'terminal_title': terminal_title,
             'tag': self.tag,
             'pid': os.getpid(),
-            'project_path': project_path
+            'project_path': project_path,
+            'branch': branch_name
         }
 
         with open(self.metadata_file, 'w') as f:
@@ -245,6 +263,7 @@ class ClaudePTYServer:
                 # Send directly to Claude
                 message = msg['message']
                 self.last_sent_message = message
+                self.last_send_time = time.time()
                 self.claude_process.send(message)
 
                 # If message starts with @, it's an attachment - give Claude time to recognize it
@@ -254,9 +273,11 @@ class ClaudePTYServer:
                 self.claude_process.send('\r')
                 response = {'status': 'sent'}
             elif msg['type'] == 'status':
+                claude_alive = self.claude_process and self.claude_process.isalive()
                 response = {
                     'queue_size': len(self.message_queue),
-                    'ready': True
+                    'ready': not self.is_claude_busy(),
+                    'claude_running': claude_alive
                 }
             elif msg['type'] == 'force_send':
                 # Force-send next message from queue
@@ -264,6 +285,7 @@ class ClaudePTYServer:
                     message = self.message_queue.popleft()
                     self.save_queue()
                     self.last_sent_message = message
+                    self.last_send_time = time.time()
 
                     # Print notification
                     remaining = len(self.message_queue)
@@ -296,11 +318,17 @@ class ClaudePTYServer:
         finally:
             conn.close()
 
-    def is_claude_executing_tools(self):
-        """Check if Claude process has active child processes (tools running)"""
+    def is_claude_busy(self):
+        """Check if Claude is busy (typing response or executing tools)"""
         try:
             if not self.claude_process or not self.claude_process.isalive():
                 return False
+
+            # Check if we recently sent a message (Claude is likely typing)
+            if self.last_send_time:
+                time_since_send = time.time() - self.last_send_time
+                if time_since_send < self.min_busy_duration:
+                    return True
 
             # Get PID of the Claude process
             claude_pid = str(self.claude_process.pid)
@@ -316,6 +344,10 @@ class ClaudePTYServer:
             return len(children) > 0
         except:
             return False
+
+    def is_claude_executing_tools(self):
+        """Alias for backwards compatibility"""
+        return self.is_claude_busy()
 
     def title_keeper(self):
         """Background thread to keep terminal title set"""
@@ -345,6 +377,7 @@ class ClaudePTYServer:
 
             try:
                 self.last_sent_message = msg
+                self.last_send_time = time.time()
                 # Print notification before sending (to stdout for visibility)
                 remaining = len(self.message_queue)
                 print(f"\n🤖 Auto-sent message from queue ({remaining} remaining)\n", flush=True)
