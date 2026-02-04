@@ -443,6 +443,27 @@ class ClaudePTYClient:
                 if line_lower in [':x', ':quit', ':exit']:
                     break
 
+                # Handle trailing :ip (message followed by :ip to attach image)
+                if line_lower.endswith(' :ip') or line_lower.endswith(' :imagepaste'):
+                    if line_lower.endswith(' :ip'):
+                        msg = line[:-4].strip()
+                    else:  # ends with :imagepaste
+                        msg = line[:-12].strip()
+
+                    if check_clipboard_has_image():
+                        image_path = save_clipboard_image()
+                        if image_path:
+                            self.pending_image_path = image_path
+                            if msg:
+                                self.queue_add(msg)
+                            else:
+                                print(f"🖼️  Image attached! Type message and press Enter (or just Enter to queue image alone)")
+                        else:
+                            print("✗ Failed to save image from clipboard\n")
+                    else:
+                        print("✗ No image in clipboard\n")
+                    continue
+
                 # Regular message - queue by default
                 self.queue_add(line)
 
