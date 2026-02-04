@@ -460,7 +460,6 @@ def create_window(sessions):
         footer = [
             [sg.HorizontalSeparator()],
             [sg.Button('Refresh', key='refresh'),
-             sg.Button('Auto-refresh', key='auto_refresh'),
              sg.Checkbox('Auto (5s)', key='auto_toggle', default=False),
              sg.Button('Close')]
         ]
@@ -491,7 +490,7 @@ def main():
             if auto_refresh:
                 window['auto_toggle'].update(value=True)
 
-        if event == 'auto_refresh' or event == 'auto_toggle':
+        if event == 'auto_toggle':
             auto_refresh = values.get('auto_toggle', False)
 
         if event and event.startswith('server_'):
