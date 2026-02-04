@@ -89,6 +89,112 @@ def get_active_sessions():
     return sorted(sessions, key=lambda x: x['tag'])
 
 
+def _try_jetbrains(title_pattern, preferred_ide=None, project_path=None, terminal_title=None):
+    """Helper to try JetBrains IDEs"""
+    script_dir = Path(__file__).parent
+    groovy_script = script_dir / "activate_terminal.groovy"
+
+    cmd_to_process = {
+        'idea': 'IntelliJ IDEA',
+        'pycharm': 'PyCharm',
+        'webstorm': 'WebStorm',
+        'phpstorm': 'PhpStorm',
+        'goland': 'GoLand',
+        'rubymine': 'RubyMine',
+        'clion': 'CLion',
+        'datagrip': 'DataGrip'
+    }
+
+    # If we have a preferred IDE, check only that one first
+    if preferred_ide:
+        for cmd, process_name in cmd_to_process.items():
+            if process_name == preferred_ide or preferred_ide.lower() in process_name.lower():
+                try:
+                    # Quick check if running
+                    result = subprocess.run(
+                        ['osascript', '-e', f'tell application "System Events" to return exists (process "{process_name}")'],
+                        capture_output=True,
+                        text=True
+                    )
+                    if result.returncode == 0 and 'true' in result.stdout:
+                        # Check CLI exists
+                        if subprocess.run(['which', cmd], capture_output=True).returncode == 0:
+                            return _activate_jetbrains_ide(cmd, process_name, project_path, terminal_title, groovy_script)
+                except:
+                    pass
+
+    return False
+
+
+def _activate_jetbrains_ide(idea_cmd, ide_app_name, project_path, terminal_title, groovy_script):
+    """Activate a specific JetBrains IDE"""
+    try:
+        # Use the IDE CLI to directly open/focus the project
+        if project_path:
+            subprocess.run(
+                [idea_cmd, project_path],
+                capture_output=True,
+                text=True
+            )
+        else:
+            # Just bring the IDE to front
+            subprocess.run(
+                ['osascript', '-e', f'tell application "System Events" to tell process "{ide_app_name}" to set frontmost to true'],
+                capture_output=True
+            )
+
+        # Small delay to let the window come to front
+        import time
+        time.sleep(0.2)
+
+        # Try to activate the Terminal in this IDE
+        import tempfile
+
+        if project_path or terminal_title:
+            # Create temporary groovy script with hardcoded values
+            with open(groovy_script, 'r') as f:
+                template_content = f.read()
+
+            custom_script = template_content
+            if project_path:
+                custom_script = custom_script.replace(
+                    'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
+                    f'var projectPath = "{project_path}"'
+                )
+            if terminal_title:
+                custom_script = custom_script.replace(
+                    'var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")',
+                    f'var terminalTabName = "{terminal_title}"'
+                )
+
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
+                tmp.write(custom_script)
+                tmp_script_path = tmp.name
+
+            groovy_to_use = tmp_script_path
+        else:
+            groovy_to_use = str(groovy_script)
+
+        try:
+            result = subprocess.run(
+                [idea_cmd, 'ideScript', groovy_to_use],
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                return 'jetbrains'
+        finally:
+            if groovy_to_use != str(groovy_script) and os.path.exists(groovy_to_use):
+                try:
+                    os.unlink(groovy_to_use)
+                except:
+                    pass
+    except:
+        pass
+
+    return False
+
+
 def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=None, terminal_title=None):
     """Find terminal window/tab with matching title using AppleScript
 
@@ -98,6 +204,12 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
         project_path: The project directory path from metadata
         terminal_title: The terminal tab title to search for (e.g., 'cq-server tag')
     """
+    # If we have a preferred IDE, try JetBrains first for speed
+    if preferred_ide and any(ide in preferred_ide for ide in ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm', 'RubyMine', 'CLion', 'DataGrip']):
+        result = _try_jetbrains(title_pattern, preferred_ide, project_path, terminal_title)
+        if result:
+            return result
+
     # Try Terminal.app first
     script = f'''
     tell application "Terminal"
@@ -107,6 +219,7 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
                 if tabName contains "{title_pattern}" then
                     set frontmost of w to true
                     set selected of tab t of w to true
+                    activate
                     return true
                 end if
             end repeat
@@ -119,8 +232,7 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True,
-            timeout=2
+            text=True
         )
         if result.returncode == 0 and 'true' in result.stdout:
             return True
@@ -137,6 +249,7 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
                         select w
                         select t
                         select s
+                        activate
                         return true
                     end if
                 end repeat
@@ -150,8 +263,7 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
         result = subprocess.run(
             ['osascript', '-e', script_iterm],
             capture_output=True,
-            text=True,
-            timeout=2
+            text=True
         )
         if result.returncode == 0 and 'true' in result.stdout:
             return True
@@ -175,185 +287,17 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
         result = subprocess.run(
             ['osascript', '-e', script_vscode],
             capture_output=True,
-            text=True,
-            timeout=2
+            text=True
         )
         if result.returncode == 0 and 'true' in result.stdout:
             return 'vscode'
     except:
         pass
 
-    # Try JetBrains IDEs using idea ideScript command
-    # This activates the Terminal tool window programmatically
-    script_dir = Path(__file__).parent
-    groovy_script = script_dir / "activate_terminal.groovy"
-
-    # First, find which JetBrains IDEs are actually running
-    cmd_to_process = {
-        'idea': 'IntelliJ IDEA',
-        'pycharm': 'PyCharm',
-        'webstorm': 'WebStorm',
-        'phpstorm': 'PhpStorm',
-        'goland': 'GoLand',
-        'rubymine': 'RubyMine',
-        'clion': 'CLion',
-        'datagrip': 'DataGrip'
-    }
-
-    running_ides = []
-    for cmd, process_name in cmd_to_process.items():
-        try:
-            # Check if this IDE is running
-            check_script = f'''
-            tell application "System Events"
-                if exists (process "{process_name}") then
-                    return true
-                end if
-            end tell
-            return false
-            '''
-            result = subprocess.run(
-                ['osascript', '-e', check_script],
-                capture_output=True,
-                text=True,
-                timeout=1
-            )
-            if result.returncode == 0 and 'true' in result.stdout:
-                # Check if the CLI command exists
-                which_result = subprocess.run(
-                    ['which', cmd],
-                    capture_output=True,
-                    text=True,
-                    timeout=1
-                )
-                if which_result.returncode == 0:
-                    running_ides.append((cmd, process_name))
-        except:
-            continue
-
-    # If we have a preferred IDE from metadata, try it first
-    if preferred_ide:
-        # Move preferred IDE to front of list
-        preferred_entry = None
-        for i, (cmd, process_name) in enumerate(running_ides):
-            if process_name == preferred_ide or preferred_ide.lower() in process_name.lower():
-                preferred_entry = running_ides.pop(i)
-                break
-        if preferred_entry:
-            running_ides.insert(0, preferred_entry)
-
-    # Try each running IDE
-    for idea_cmd, ide_app_name in running_ides:
-        try:
-            # Use the IDE CLI to directly open/focus the project
-            if project_path:
-                # Use the IDE CLI command to open the specific project
-                # This will bring the correct project window to front
-                subprocess.run(
-                    [idea_cmd, project_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=3
-                )
-            else:
-                # Just bring the IDE to front
-                applescript = f'''
-                tell application "System Events"
-                    tell process "{ide_app_name}"
-                        set frontmost to true
-                    end tell
-                end tell
-                '''
-                subprocess.run(['osascript', '-e', applescript],
-                             capture_output=True, timeout=2)
-
-            # Small delay to let the window come to front
-            import time
-            time.sleep(0.3)
-
-            # Try to activate the Terminal in this IDE
-            # Create a temporary groovy script with project path hardcoded
-            import tempfile
-
-            if project_path or terminal_title:
-                # Create temporary groovy script with hardcoded values
-                groovy_template = script_dir / "activate_terminal.groovy"
-
-                with open(groovy_template, 'r') as f:
-                    template_content = f.read()
-
-                # Replace the env lookups with hardcoded values
-                custom_script = template_content
-
-                if project_path:
-                    custom_script = custom_script.replace(
-                        'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
-                        f'var projectPath = "{project_path}"'
-                    )
-
-                if terminal_title:
-                    custom_script = custom_script.replace(
-                        'var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")',
-                        f'var terminalTabName = "{terminal_title}"'
-                    )
-
-                # Write to temp file
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
-                    tmp.write(custom_script)
-                    tmp_script_path = tmp.name
-
-                groovy_to_use = tmp_script_path
-            else:
-                groovy_to_use = str(groovy_script)
-
-            try:
-                result = subprocess.run(
-                    [idea_cmd, 'ideScript', groovy_to_use],
-                    capture_output=True,
-                    text=True,
-                    timeout=3
-                )
-
-                if result.returncode == 0:
-                    return 'jetbrains'
-            finally:
-                # Clean up temp file
-                if (project_path or terminal_title) and groovy_to_use != str(groovy_script) and os.path.exists(groovy_to_use):
-                    try:
-                        os.unlink(groovy_to_use)
-                    except:
-                        pass
-        except:
-            continue
-
-    # Fallback: Just bring IDE to front using AppleScript
-    jetbrains_apps = ['IntelliJ IDEA', 'PyCharm', 'WebStorm', 'PhpStorm',
-                     'GoLand', 'RubyMine', 'CLion', 'DataGrip']
-
-    for app in jetbrains_apps:
-        script_jetbrains = f'''
-        tell application "System Events"
-            if exists (process "{app}") then
-                tell process "{app}"
-                    set frontmost to true
-                    return true
-                end tell
-            end if
-        end tell
-        return false
-        '''
-
-        try:
-            result = subprocess.run(
-                ['osascript', '-e', script_jetbrains],
-                capture_output=True,
-                text=True,
-                timeout=2
-            )
-            if result.returncode == 0 and 'true' in result.stdout:
-                return 'jetbrains_fallback'
-        except:
-            continue
+    # Try JetBrains IDEs as fallback
+    result = _try_jetbrains(title_pattern, preferred_ide, project_path, terminal_title)
+    if result:
+        return result
 
     return False
 
