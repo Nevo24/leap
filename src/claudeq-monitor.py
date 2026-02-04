@@ -117,6 +117,31 @@ def find_terminal_with_title(title_pattern):
     except:
         pass
 
+    # Try VS Code
+    script_vscode = f'''
+    tell application "System Events"
+        if exists (process "Code") then
+            tell process "Code"
+                set frontmost to true
+                return true
+            end tell
+        end if
+    end tell
+    return false
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script_vscode],
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        if result.returncode == 0 and 'true' in result.stdout:
+            return 'vscode'
+    except:
+        pass
+
     # Try JetBrains IDEs using idea ideScript command
     # This activates the Terminal tool window programmatically
     script_dir = Path(__file__).parent
@@ -220,6 +245,13 @@ def focus_session(tag, session_type='server'):
                               background_color='green',
                               text_color='white',
                               auto_close_duration=1)
+    elif result == 'vscode':
+        sg.popup_quick_message(f'✓ Brought VS Code to front\n\n'
+                              f'VS Code is now active!\n'
+                              f'You may need to manually switch to the correct terminal tab.',
+                              background_color='green',
+                              text_color='white',
+                              auto_close_duration=2)
     elif result == 'jetbrains':
         sg.popup_quick_message(f'✓ Activated Terminal tool window\n\n'
                               f'Terminal is now active in your IDE!\n'
