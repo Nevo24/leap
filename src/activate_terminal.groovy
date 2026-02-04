@@ -9,25 +9,35 @@ IDE.application.invokeLater {
     var targetProject = null
     var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")
 
+    System.err.println("=== ClaudeQ Project Matcher Debug ===")
+    System.err.println("Target project path: " + projectPath)
+    System.err.println("Available projects:")
+
     if (projectPath != null && !projectPath.isEmpty()) {
         // Find project with matching base path
-        for (project in ProjectManager.getInstance().getOpenProjects()) {
+        var allProjects = ProjectManager.getInstance().getOpenProjects()
+        for (var i = 0; i < allProjects.length; i++) {
+            var project = allProjects[i]
             var basePath = project.getBasePath()
-            // Debug: print paths for comparison
-            System.err.println("Checking project: " + project.getName() + " with path: " + basePath)
-            System.err.println("Looking for: " + projectPath)
+            var projectName = project.getName()
+
+            System.err.println("  [" + i + "] Name: '" + projectName + "'")
+            System.err.println("      Path: '" + basePath + "'")
+            System.err.println("      Match: " + (basePath != null && basePath.equals(projectPath)))
 
             if (basePath != null && basePath.equals(projectPath)) {
                 targetProject = project
-                System.err.println("Found matching project: " + project.getName())
+                System.err.println(">>> MATCHED! Using this project.")
                 break
             }
         }
     }
 
     if (targetProject == null) {
-        System.err.println("No matching project found, using first available")
+        System.err.println(">>> No match found, using first project")
     }
+    System.err.println("=====================================")
+    System.err.flush()
 
     // Fallback to first open project if no match
     if (targetProject == null) {
