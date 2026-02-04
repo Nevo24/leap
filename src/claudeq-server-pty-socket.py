@@ -139,6 +139,7 @@ class ClaudePTYServer:
 
     def handle_client(self, conn):
         """Handle client connection"""
+        response = {'status': 'error', 'message': 'Unknown error'}
         try:
             data = conn.recv(4096).decode('utf-8')
             msg = json.loads(data)
@@ -188,10 +189,17 @@ class ClaudePTYServer:
                     }
                 else:
                     response = {'status': 'empty', 'queue_size': 0}
+            else:
+                response = {'status': 'error', 'message': f"Unknown message type: {msg.get('type', 'none')}"}
 
+        except Exception as e:
+            response = {'status': 'error', 'message': str(e)}
+            print(f"Error handling client: {e}", file=sys.stderr, flush=True)
+
+        try:
             conn.send(json.dumps(response).encode('utf-8'))
-        except:
-            pass
+        except Exception as e:
+            print(f"Error sending response: {e}", file=sys.stderr, flush=True)
         finally:
             conn.close()
 
