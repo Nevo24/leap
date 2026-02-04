@@ -55,8 +55,13 @@ def get_active_sessions():
     return sorted(sessions, key=lambda x: x['tag'])
 
 
-def find_terminal_with_title(title_pattern):
-    """Find terminal window/tab with matching title using AppleScript"""
+def find_terminal_with_title(title_pattern, preferred_ide=None):
+    """Find terminal window/tab with matching title using AppleScript
+
+    Args:
+        title_pattern: The terminal title pattern to search for
+        preferred_ide: The IDE name from metadata (e.g., 'PyCharm', 'GoLand')
+    """
     # Try Terminal.app first
     script = f'''
     tell application "Terminal"
@@ -190,6 +195,17 @@ def find_terminal_with_title(title_pattern):
         except:
             continue
 
+    # If we have a preferred IDE from metadata, try it first
+    if preferred_ide:
+        # Move preferred IDE to front of list
+        preferred_entry = None
+        for i, (cmd, process_name) in enumerate(running_ides):
+            if process_name == preferred_ide or preferred_ide.lower() in process_name.lower():
+                preferred_entry = running_ides.pop(i)
+                break
+        if preferred_entry:
+            running_ides.insert(0, preferred_entry)
+
     # Try each running IDE
     for idea_cmd, ide_app_name in running_ides:
         try:
@@ -253,11 +269,28 @@ def find_terminal_with_title(title_pattern):
     return False
 
 
+def load_session_metadata(tag):
+    """Load metadata for a session"""
+    metadata_file = SOCKET_DIR / f"{tag}.meta"
+    if metadata_file.exists():
+        try:
+            import json
+            with open(metadata_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return None
+
+
 def focus_session(tag, session_type='server'):
     """Focus the terminal with the given session"""
     title_pattern = f"cq-{session_type} {tag}"
 
-    result = find_terminal_with_title(title_pattern)
+    # Try to load metadata to find preferred IDE
+    metadata = load_session_metadata(tag)
+    preferred_ide = metadata.get('ide') if metadata else None
+
+    result = find_terminal_with_title(title_pattern, preferred_ide)
 
     if result == True:
         sg.popup_quick_message(f'✓ Focused {session_type}: {tag}',

@@ -25,6 +25,7 @@ class ClaudePTYServer:
         self.tag = tag
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
+        self.metadata_file = SOCKET_DIR / f"{tag}.meta"
         self.message_queue = deque()
         self.claude_process = None
         self.running = True
@@ -45,6 +46,9 @@ class ClaudePTYServer:
         # Load existing queue
         self.load_queue()
 
+        # Save metadata about terminal environment
+        self.save_metadata()
+
         # Register cleanup to always run on exit
         atexit.register(self.cleanup)
 
@@ -62,6 +66,74 @@ class ClaudePTYServer:
         with open(self.queue_file, 'w') as f:
             for msg in self.message_queue:
                 f.write(msg + '\n')
+
+    def detect_ide(self):
+        """Detect which IDE/terminal this is running in"""
+        # Check environment variables set by JetBrains IDEs
+        terminal_emulator = os.environ.get('TERMINAL_EMULATOR', '')
+
+        # Check for JetBrains IDE - try to get specific IDE name from parent process
+        if 'JetBrains' in terminal_emulator or 'jetbrains' in terminal_emulator.lower():
+            try:
+                # Get parent process info using ps command (no external deps needed)
+                ppid = os.getppid()
+                result = subprocess.run(
+                    ['ps', '-p', str(ppid), '-o', 'comm='],
+                    capture_output=True,
+                    text=True,
+                    timeout=1
+                )
+                if result.returncode == 0:
+                    parent_name = result.stdout.strip().lower()
+                    if 'idea' in parent_name:
+                        return 'IntelliJ IDEA'
+                    elif 'pycharm' in parent_name:
+                        return 'PyCharm'
+                    elif 'goland' in parent_name:
+                        return 'GoLand'
+                    elif 'webstorm' in parent_name:
+                        return 'WebStorm'
+                    elif 'phpstorm' in parent_name:
+                        return 'PhpStorm'
+                    elif 'rubymine' in parent_name:
+                        return 'RubyMine'
+                    elif 'clion' in parent_name:
+                        return 'CLion'
+                    elif 'datagrip' in parent_name:
+                        return 'DataGrip'
+            except:
+                pass
+            return 'JetBrains IDE'
+
+        # Check for VS Code
+        if 'vscode' in terminal_emulator.lower() or os.environ.get('TERM_PROGRAM') == 'vscode':
+            return 'VS Code'
+
+        # Check for iTerm2
+        if os.environ.get('TERM_PROGRAM') == 'iTerm.app':
+            return 'iTerm2'
+
+        # Check for Terminal.app
+        if os.environ.get('TERM_PROGRAM') == 'Apple_Terminal':
+            return 'Terminal.app'
+
+        # Default
+        return 'Unknown'
+
+    def save_metadata(self):
+        """Save metadata about the session"""
+        ide = self.detect_ide()
+        terminal_title = f"cq-server {self.tag}"
+
+        metadata = {
+            'ide': ide,
+            'terminal_title': terminal_title,
+            'tag': self.tag,
+            'pid': os.getpid()
+        }
+
+        with open(self.metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
 
     def print_banner(self):
         """Print startup banner"""
@@ -343,6 +415,14 @@ class ClaudePTYServer:
                 print(f"  ℹ Socket file already gone: {self.socket_path}", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"  ✗ Could not remove socket file: {e}", file=sys.stderr, flush=True)
+
+        # Remove metadata file
+        try:
+            if self.metadata_file.exists():
+                self.metadata_file.unlink()
+                print(f"  ✓ Removed metadata file", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"  ✗ Could not remove metadata file: {e}", file=sys.stderr, flush=True)
 
         # Terminate Claude process
         if self.claude_process and self.claude_process.isalive():
