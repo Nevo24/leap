@@ -164,6 +164,30 @@ class ClaudePTYServer:
                     'queue_size': len(self.message_queue),
                     'ready': True
                 }
+            elif msg['type'] == 'force_send':
+                # Force-send next message from queue
+                if self.message_queue:
+                    message = self.message_queue.popleft()
+                    self.save_queue()
+                    self.last_sent_message = message
+
+                    # Print notification
+                    remaining = len(self.message_queue)
+                    print(f"\n⚡ Force-sending from queue: {message[:60]}{'...' if len(message) > 60 else ''} ({remaining} remaining)\n", flush=True)
+
+                    # Send to Claude
+                    self.claude_process.send(message)
+                    if message.startswith('@'):
+                        time.sleep(0.5)
+                    self.claude_process.send('\r')
+
+                    response = {
+                        'status': 'sent',
+                        'message': message,
+                        'queue_size': len(self.message_queue)
+                    }
+                else:
+                    response = {'status': 'empty', 'queue_size': 0}
 
             conn.send(json.dumps(response).encode('utf-8'))
         except:

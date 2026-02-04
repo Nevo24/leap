@@ -235,6 +235,19 @@ class ClaudePTYClient:
         else:
             print("✗ Could not get server status\n")
 
+    def force_send_next(self):
+        """Force send next message from queue"""
+        response = self.send_to_server('force_send')
+        if response:
+            if response.get('status') == 'sent':
+                msg = response.get('message', '')
+                remaining = response.get('queue_size', 0)
+                print(f"⚡ Force-sent: {msg[:60]}{'...' if len(msg) > 60 else ''} ({remaining} remaining)\n")
+            elif response.get('status') == 'empty':
+                print("✓ Queue is empty - nothing to send\n")
+        else:
+            print("✗ Could not force-send message\n")
+
     def queue_monitor(self):
         """Background thread to monitor queue changes"""
         last_size = 0
@@ -293,6 +306,7 @@ class ClaudePTYClient:
         print("  📋 :l or :list                         → Show queue")
         print("  🗑️ :c or :clear                        → Clear queue")
         print("  📊 :status                             → Server status")
+        print("  ⚡ :s or :send or :force               → Force-send next queued message")
         print("  👋 :x or :quit (Ctrl+D)                → Exit client")
         print()
         print("  🤖 Auto-queue: Server handles auto-sending")
@@ -438,6 +452,10 @@ class ClaudePTYClient:
 
                 if line_lower == ':status':
                     self.get_status()
+                    continue
+
+                if line_lower in [':s', ':send', ':force']:
+                    self.force_send_next()
                     continue
 
                 if line_lower in [':x', ':quit', ':exit']:
