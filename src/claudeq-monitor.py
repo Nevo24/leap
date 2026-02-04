@@ -210,17 +210,27 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
     # Try each running IDE
     for idea_cmd, ide_app_name in running_ides:
         try:
-            # Bring the IDE to front
-            applescript = f'''
-            tell application "System Events"
-                tell process "{ide_app_name}"
-                    set frontmost to true
+            # Use the IDE CLI to directly open/focus the project
+            if project_path:
+                # Use the IDE CLI command to open the specific project
+                # This will bring the correct project window to front
+                subprocess.run(
+                    [idea_cmd, project_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+            else:
+                # Just bring the IDE to front
+                applescript = f'''
+                tell application "System Events"
+                    tell process "{ide_app_name}"
+                        set frontmost to true
+                    end tell
                 end tell
-            end tell
-            '''
-
-            subprocess.run(['osascript', '-e', applescript],
-                         capture_output=True, timeout=2)
+                '''
+                subprocess.run(['osascript', '-e', applescript],
+                             capture_output=True, timeout=2)
 
             # Small delay to let the window come to front
             import time
@@ -231,9 +241,9 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
             import tempfile
 
             if project_path:
-                print(f"DEBUG: Using project_path={project_path}", file=sys.stderr)
                 # Create temporary groovy script with hardcoded path
                 groovy_template = script_dir / "activate_terminal.groovy"
+
                 with open(groovy_template, 'r') as f:
                     template_content = f.read()
 
@@ -250,7 +260,6 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
 
                 groovy_to_use = tmp_script_path
             else:
-                print("DEBUG: No project_path in metadata", file=sys.stderr)
                 groovy_to_use = str(groovy_script)
 
             try:
@@ -260,12 +269,6 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
                     text=True,
                     timeout=3
                 )
-
-                # Print any output from groovy script
-                if result.stdout:
-                    print(f"DEBUG stdout: {result.stdout}", file=sys.stderr)
-                if result.stderr:
-                    print(f"DEBUG stderr: {result.stderr}", file=sys.stderr)
 
                 if result.returncode == 0:
                     return 'jetbrains'

@@ -9,6 +9,7 @@ Queue multiple prompts with images in one terminal while Claude works in another
 - 📝 **Smart message queueing** - Auto-sends when Claude is ready
 - 🖼️ **Image support** - Paste images from clipboard
 - 🔌 **Client-server architecture** - Multiple clients per session
+- 🖥️ **GUI Monitor (cq-mo)** - Jump to sessions across IDEs and projects
 - 🧹 **Auto-cleanup** - Proper socket management
 - 📊 **Real-time queue monitoring** - See messages being processed
 - 🖱️ **Native scrolling in IntelliJ/JetBrains IDEs** - No tmux needed!
@@ -31,14 +32,18 @@ npm install -g @anthropic-ai/claude-code
 # 2. Clone and install ClaudeQ
 git clone https://github.com/nevo24/claudeq.git
 cd claudeq
-./install.sh
+make install
 
 # 3. Reload shell
 source ~/.zshrc  # or ~/.bashrc for bash
+
+# 4. Optional: Install monitor GUI
+make install-monitor
 ```
 
 **Requirements:**
-- Python 3 (install.sh will install Python dependencies automatically via pip3)
+- Python 3.8+
+- Poetry (auto-installed by Makefile)
 - Node.js and Claude CLI
 - macOS (for clipboard image support)
 
@@ -91,6 +96,23 @@ All commands are **case-insensitive**.
 | 🗑️ `:c` | Clear queue |
 | 📊 `:status` | Server status |
 | 👋 `:x` or `Ctrl+D` | Exit client |
+
+## Monitor GUI (cq-mo)
+
+Launch the GUI monitor to view all active sessions and quickly jump to them:
+
+```bash
+cq-mo
+```
+
+The monitor shows:
+- All active ClaudeQ sessions
+- Queue size for each session
+- Click buttons to jump to correct IDE → Project → Terminal
+
+**Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2
+
+**Note:** You may need to manually switch terminal tabs within a project using `Alt+Right/Left` after jumping.
 
 ## Example Workflow
 
@@ -214,13 +236,22 @@ ls ~/workspace/claudeq/src/
 
 If you moved the project directory, update the path in your shell config (~/.zshrc or ~/.bashrc).
 
+## Additional Commands
+
+```bash
+cq-cleanup    # Remove dead sessions
+cq-mo         # Launch monitor GUI (requires make install-monitor)
+```
+
 ## Technical Details
 
 ### Files
 
-- `claudeq-main-pty.sh` - Smart launcher (auto-detects server/client)
-- `claudeq-server-pty-socket.py` - PTY server with socket listener
-- `claudeq-client-pty.py` - Interactive client with image support
+- `claudeq-main.sh` - Smart launcher (auto-detects server/client)
+- `claudeq-server.py` - PTY server with socket listener and metadata tracking
+- `claudeq-client.py` - Interactive client with image support
+- `claudeq-monitor.py` - GUI monitor for session management
+- `activate_terminal.groovy` - JetBrains IDE automation script
 
 ### How Auto-Send Works
 
@@ -232,10 +263,15 @@ Images are sent to Claude CLI using the `@path` syntax with a required trailing 
 
 ## Uninstall
 
-To uninstall ClaudeQ:
-1. Remove the ClaudeQ configuration from your shell config (`~/.zshrc` or `~/.bashrc`)
-2. Delete the project directory: `rm -rf ~/workspace/claudeq`
-3. Clean up data: `rm -rf ~/.claude-queues ~/.claude-sockets`
+```bash
+cd claudeq
+make uninstall
+```
+
+This removes shell configuration and data directories. To also remove the Poetry virtual environment:
+```bash
+make clean
+```
 
 ## License
 
