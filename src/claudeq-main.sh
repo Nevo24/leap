@@ -12,11 +12,59 @@ else
     PYTHON_CMD="python3"
 fi
 
+# Show help if requested
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    cat << 'EOF'
+ClaudeQ - Multi-session Claude Code with message queueing
+
+USAGE:
+    cq <tag>                     Start server or connect as client
+    cq <tag> <message>           Send message to server
+    cq --help, -h                Show this help
+
+EXAMPLES:
+    # Terminal 1 (start server)
+    cq my-feature
+
+    # Terminal 2 (connect as client and queue messages)
+    cq my-feature
+    You: How do I fix this bug?
+    You: :ip Explain this screenshot
+
+    # Send message directly
+    cq my-feature "What is this error?"
+
+CLIENT COMMANDS (when connected as interactive client):
+    <message>           Queue message (auto-sends when ready)
+    :ip <msg>           Queue with clipboard image
+    :d <msg>            Send directly (bypass queue)
+    :d :ip <msg>        Send directly with image
+    :l                  Show queue
+    :c                  Clear queue
+    :status             Server status
+    :x                  Exit client
+
+OTHER COMMANDS:
+    cq-mo               Launch monitor GUI
+    cq-cleanup          Remove dead sessions
+
+JETBRAINS USERS:
+    For automatic tab titles, enable these settings:
+    1. Settings → Tools → Terminal → Engine: Classic
+    2. Advanced Settings → Terminal → ☑ 'Show application title'
+
+For more info: https://github.com/nevo24/claudeq
+EOF
+    exit 0
+fi
+
 if [ $# -lt 1 ]; then
-    echo "Usage: claudeq-main-pty <tag> [message...]"
+    echo "Usage: cq <tag> [message...]"
     echo ""
-    echo "First terminal (server): claudeq-main-pty test"
-    echo "Other terminals (client): claudeq-main-pty test 'your message'"
+    echo "First terminal (server): cq test"
+    echo "Other terminals (client): cq test 'your message'"
+    echo ""
+    echo "For more info: cq --help"
     exit 1
 fi
 
@@ -25,7 +73,8 @@ TAG="$1"
 # Validate tag doesn't start with "-"
 if [[ "$TAG" == -* ]]; then
     echo "Error: Tag cannot start with '-'" >&2
-    echo "Usage: claudeq-main-pty <tag> [message...]" >&2
+    echo "Usage: cq <tag> [message...]" >&2
+    echo "For help: cq --help" >&2
     exit 1
 fi
 

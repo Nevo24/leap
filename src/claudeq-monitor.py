@@ -413,33 +413,9 @@ def focus_session(tag, session_type='server'):
 
     result = find_terminal_with_title(title_pattern, preferred_ide, project_path, terminal_title)
 
-    if result == True:
-        sg.popup_quick_message(f'✓ Focused {session_type}: {tag}',
-                              background_color='green',
-                              text_color='white',
-                              auto_close_duration=1)
-    elif result == 'vscode':
-        sg.popup_quick_message(f'✓ Brought VS Code to front\n\n'
-                              f'VS Code is now active!\n'
-                              f'You may need to manually switch to the correct terminal tab.',
-                              background_color='green',
-                              text_color='white',
-                              auto_close_duration=2)
-    elif result == 'jetbrains':
-        sg.popup_quick_message(f'✓ Activated Terminal tool window\n\n'
-                              f'Terminal is now active in your IDE!\n'
-                              f'Switch tabs with Alt+Right/Left if needed.',
-                              background_color='green',
-                              text_color='white',
-                              auto_close_duration=2)
-    elif result == 'jetbrains_fallback':
-        sg.popup_quick_message(f'✓ Brought IDE to front\n\n'
-                              f'Note: Install "idea" CLI tool for better support:\n'
-                              f'Tools > Create Command-Line Launcher',
-                              background_color='orange',
-                              text_color='white',
-                              auto_close_duration=3)
-    else:
+    # Only show error popup if something went wrong
+    # Success cases: the terminal/IDE is now in front, don't steal focus back
+    if result == False and result != 'vscode' and result != 'jetbrains' and result != 'jetbrains_fallback':
         sg.popup_error(f'Could not find terminal for {session_type}: {tag}\n\n'
                       f'Make sure the terminal tab title is set correctly.')
 
@@ -456,19 +432,19 @@ def create_window(sessions, location=None):
         ]
     else:
         header = [
-            [sg.Text('ClaudeQ Session Monitor', font=('Helvetica', 14, 'bold'))],
-            [sg.Text('JetBrains Users: Enable CQ to name your tabs:', font=('Helvetica', 9), text_color='yellow')],
-            [sg.Text('1. Settings > Tools > Terminal > Engine: Classic', font=('Helvetica', 8), text_color='lightblue')],
-            [sg.Text('2. Advanced Settings > Terminal > ☑️ "Show application title"', font=('Helvetica', 8), text_color='lightblue')],
+            [sg.Text('ClaudeQ Session Monitor', font=('Helvetica', 17, 'bold'))],
+            [sg.Text('JetBrains Users: Enable CQ to name your tabs:', font=('Helvetica', 11), text_color='yellow')],
+            [sg.Text('1. Settings > Tools > Terminal > Engine: Classic', font=('Helvetica', 10), text_color='lightblue')],
+            [sg.Text('2. Advanced Settings > Terminal > ☑️ "Show application title"', font=('Helvetica', 10), text_color='lightblue')],
             [sg.HorizontalSeparator()],
             # Column headers
             [
-                sg.Text('Tag', size=(13, 1), font=('Helvetica', 10, 'bold'), justification='left'),
-                sg.Text('Project', size=(16, 1), font=('Helvetica', 10, 'bold'), justification='left'),
-                sg.Text('Branch', size=(16, 1), font=('Helvetica', 10, 'bold'), justification='left'),
-                sg.Text('Status', size=(11, 1), font=('Helvetica', 10, 'bold'), justification='left'),
-                sg.Text('Queue', size=(6, 1), font=('Helvetica', 10, 'bold'), justification='left'),
-                sg.Text('Actions', size=(18, 1), font=('Helvetica', 10, 'bold'), justification='left')
+                sg.Text('Tag', size=(16, 1), font=('Helvetica', 12, 'bold'), justification='left'),
+                sg.Text('Project', size=(19, 1), font=('Helvetica', 12, 'bold'), justification='left'),
+                sg.Text('Branch', size=(19, 1), font=('Helvetica', 12, 'bold'), justification='left'),
+                sg.Text('Status', size=(13, 1), font=('Helvetica', 12, 'bold'), justification='left'),
+                sg.Text('Queue', size=(7, 1), font=('Helvetica', 12, 'bold'), justification='left'),
+                sg.Text('Actions', size=(22, 1), font=('Helvetica', 12, 'bold'), justification='left')
             ]
         ]
 
@@ -486,22 +462,22 @@ def create_window(sessions, location=None):
 
             tag = session['tag']
             row = [
-                sg.Text(f"{tag}", size=(13, 1), font=('Helvetica', 11), justification='left'),
-                sg.Text(f"{project}", size=(16, 1), font=('Helvetica', 10), justification='left'),
-                sg.Text(f"{branch}", size=(16, 1), font=('Helvetica', 10), justification='left'),
-                sg.Text(status, size=(11, 1), justification='left', key=f"status_{tag}"),
-                sg.Text(f"{queue_count}", size=(6, 1), justification='left', key=f"queue_{tag}"),
-                sg.Button('Server', key=f"server_{tag}", size=(8, 1)),
-                sg.Button('Client', key=f"client_{tag}", size=(8, 1))
+                sg.Text(f"{tag}", size=(16, 1), font=('Helvetica', 13), justification='left'),
+                sg.Text(f"{project}", size=(19, 1), font=('Helvetica', 12), justification='left'),
+                sg.Text(f"{branch}", size=(19, 1), font=('Helvetica', 12), justification='left'),
+                sg.Text(status, size=(13, 1), font=('Helvetica', 12), justification='left', key=f"status_{tag}"),
+                sg.Text(f"{queue_count}", size=(7, 1), font=('Helvetica', 12), justification='left', key=f"queue_{tag}"),
+                sg.Button('Server', key=f"server_{tag}", size=(10, 1), font=('Helvetica', 13)),
+                sg.Button('Client', key=f"client_{tag}", size=(10, 1), font=('Helvetica', 13))
             ]
             session_rows.append(row)
 
         footer = [
             [sg.HorizontalSeparator()],
-            [sg.Button('Refresh', key='refresh'),
-             sg.Checkbox('Auto (1s)', key='auto_toggle', default=False, enable_events=True),
+            [sg.Button('Refresh', key='refresh', size=(10, 1), font=('Helvetica', 13)),
+             sg.Checkbox('Auto (1s)', key='auto_toggle', default=False, enable_events=True, font=('Helvetica', 13)),
              sg.Push(),
-             sg.Button('Close')]
+             sg.Button('Close', size=(10, 1), font=('Helvetica', 13))]
         ]
 
         layout = header + session_rows + footer
@@ -534,6 +510,9 @@ def update_window_data(window, sessions):
 
 def main():
     """Main monitor loop"""
+    # Set terminal title
+    print("\033]0;claudeq-monitor\007", end='', flush=True)
+
     sessions = get_active_sessions()
     window = create_window(sessions)
     auto_refresh = False
