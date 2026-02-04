@@ -174,12 +174,9 @@ class ClaudePTYClient:
             # Update local queue from server response
             queue_size = response.get('queue_size', 0)
             if has_image:
-                if message:
-                    print(f"📝 Queued with image: {message} ({queue_size} total)\n")
-                else:
-                    print(f"📝 Queued image ({queue_size} total)\n")
+                print(f"📝 Queued with image ({queue_size} total)\n")
             else:
-                print(f"📝 Queued: {message} ({queue_size} total)\n")
+                print(f"📝 Queued ({queue_size} total)\n")
         else:
             print(f"✗ Failed to queue message\n")
 
