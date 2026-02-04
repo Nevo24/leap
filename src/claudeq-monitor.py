@@ -147,58 +147,77 @@ def find_terminal_with_title(title_pattern):
     script_dir = Path(__file__).parent
     groovy_script = script_dir / "activate_terminal.groovy"
 
-    # Try to find the idea command
-    idea_commands = ['idea', 'pycharm', 'webstorm', 'phpstorm',
-                    'goland', 'rubymine', 'clion', 'datagrip']
+    # First, find which JetBrains IDEs are actually running
+    cmd_to_process = {
+        'idea': 'IntelliJ IDEA',
+        'pycharm': 'PyCharm',
+        'webstorm': 'WebStorm',
+        'phpstorm': 'PhpStorm',
+        'goland': 'GoLand',
+        'rubymine': 'RubyMine',
+        'clion': 'CLion',
+        'datagrip': 'DataGrip'
+    }
 
-    for idea_cmd in idea_commands:
+    running_ides = []
+    for cmd, process_name in cmd_to_process.items():
         try:
-            # Check if command exists
-            which_result = subprocess.run(
-                ['which', idea_cmd],
+            # Check if this IDE is running
+            check_script = f'''
+            tell application "System Events"
+                if exists (process "{process_name}") then
+                    return true
+                end if
+            end tell
+            return false
+            '''
+            result = subprocess.run(
+                ['osascript', '-e', check_script],
                 capture_output=True,
                 text=True,
                 timeout=1
             )
-            if which_result.returncode == 0:
-                # First, bring the IDE to front using AppleScript
-                ide_app_name = {
-                    'idea': 'IntelliJ IDEA',
-                    'pycharm': 'PyCharm',
-                    'webstorm': 'WebStorm',
-                    'phpstorm': 'PhpStorm',
-                    'goland': 'GoLand',
-                    'rubymine': 'RubyMine',
-                    'clion': 'CLion',
-                    'datagrip': 'DataGrip'
-                }.get(idea_cmd, 'IntelliJ IDEA')
-
-                applescript = f'''
-                tell application "System Events"
-                    if exists (process "{ide_app_name}") then
-                        tell process "{ide_app_name}"
-                            set frontmost to true
-                        end tell
-                    end if
-                end tell
-                '''
-
-                subprocess.run(['osascript', '-e', applescript],
-                             capture_output=True, timeout=2)
-
-                # Small delay to let the window come to front
-                import time
-                time.sleep(0.3)
-
-                # Now execute the IDE script to activate Terminal
-                result = subprocess.run(
-                    [idea_cmd, 'ideScript', str(groovy_script)],
+            if result.returncode == 0 and 'true' in result.stdout:
+                # Check if the CLI command exists
+                which_result = subprocess.run(
+                    ['which', cmd],
                     capture_output=True,
                     text=True,
-                    timeout=3
+                    timeout=1
                 )
-                if result.returncode == 0:
-                    return 'jetbrains'
+                if which_result.returncode == 0:
+                    running_ides.append((cmd, process_name))
+        except:
+            continue
+
+    # Try each running IDE
+    for idea_cmd, ide_app_name in running_ides:
+        try:
+            # Bring the IDE to front
+            applescript = f'''
+            tell application "System Events"
+                tell process "{ide_app_name}"
+                    set frontmost to true
+                end tell
+            end tell
+            '''
+
+            subprocess.run(['osascript', '-e', applescript],
+                         capture_output=True, timeout=2)
+
+            # Small delay to let the window come to front
+            import time
+            time.sleep(0.3)
+
+            # Try to activate the Terminal in this IDE
+            result = subprocess.run(
+                [idea_cmd, 'ideScript', str(groovy_script)],
+                capture_output=True,
+                text=True,
+                timeout=3
+            )
+            if result.returncode == 0:
+                return 'jetbrains'
         except:
             continue
 
