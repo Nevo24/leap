@@ -1,2 +1,0 @@
-pexpect>=4.8.0
-prompt_toolkit>=3.0.0

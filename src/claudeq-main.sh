@@ -2,7 +2,15 @@
 #
 # ClaudeQ PTY - Main launcher
 # Auto-detects whether to start server or client
+# Uses Poetry venv Python
 #
+
+# Use Poetry venv Python if available, otherwise fall back to system python3
+if [ -n "$CLAUDEQ_PYTHON" ]; then
+    PYTHON_CMD="$CLAUDEQ_PYTHON"
+else
+    PYTHON_CMD="python3"
+fi
 
 if [ $# -lt 1 ]; then
     echo "Usage: claudeq-main-pty <tag> [message...]"
@@ -23,14 +31,17 @@ fi
 
 shift
 
+# Get script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
 SOCKET_PATH="$HOME/.claude-sockets/${TAG}.sock"
-SERVER_SCRIPT="$HOME/workspace/claudeq/src/claudeq-server-pty-socket.py"
-CLIENT_SCRIPT="$HOME/workspace/claudeq/src/claudeq-client-pty.py"
+SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
+CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
 
 # Function to test if server is actually running
 test_socket_alive() {
     # Use Python to test socket connection
-    python3 -c "
+    "$PYTHON_CMD" -c "
 import socket
 import sys
 import os

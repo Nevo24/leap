@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "claudeq"
+version = "1.0.0"
+description = "Multi-session Claude Code with message queueing and image support"
+authors = ["Nevo Mashiach"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/nevo24/claudeq"
+repository = "https://github.com/nevo24/claudeq"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+pexpect = "^4.8.0"
+prompt-toolkit = "^3.0.0"
+
+[tool.poetry.group.monitor.dependencies]
+FreeSimpleGUI = "^5.1.0"
+
+[tool.poetry.scripts]
+claudeq-main = "claudeq.main:main"
+claudeq-monitor = "claudeq.monitor:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

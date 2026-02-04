@@ -13,6 +13,7 @@ import signal
 import socket
 import json
 import subprocess
+import atexit
 from collections import deque
 from pathlib import Path
 
@@ -43,6 +44,9 @@ class ClaudePTYServer:
 
         # Load existing queue
         self.load_queue()
+
+        # Register cleanup to always run on exit
+        atexit.register(self.cleanup)
 
     def load_queue(self):
         """Load queue from file"""
@@ -296,8 +300,10 @@ class ClaudePTYServer:
         # Start title keeper
         threading.Thread(target=self.title_keeper, daemon=True).start()
 
-        # Handle resize signal
+        # Handle signals
         signal.signal(signal.SIGWINCH, self.handle_resize)
+        signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
+        signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
 
         # Set terminal title again (Claude CLI may have changed it)
         sys.stdout.write(f"\033]0;cq-server {self.tag}\007")

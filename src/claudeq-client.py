@@ -73,10 +73,41 @@ class ClaudePTYClient:
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
         self.history_file = QUEUE_DIR / f"{tag}.history"
+        self.lock_file = SOCKET_DIR / f"{tag}.client.lock"
         self.message_queue = deque()
         self.running = True
         self.queue_monitor_thread = None
         self.pending_image_path = None  # Track pending image attachment
+
+        # Check for existing client
+        if self.lock_file.exists():
+            # Check if the lock is stale (process doesn't exist)
+            try:
+                with open(self.lock_file, 'r') as f:
+                    pid = int(f.read().strip())
+                # Check if process exists
+                try:
+                    os.kill(pid, 0)  # Signal 0 just checks if process exists
+                    # Process exists - another client is running
+                    print(f"Error: A client is already connected to server '{tag}'")
+                    print(f"Only one interactive client per server is allowed.")
+                    print(f"\nIf you're sure no other client is running, remove:")
+                    print(f"  {self.lock_file}")
+                    sys.exit(1)
+                except OSError:
+                    # Process doesn't exist - stale lock
+                    self.lock_file.unlink()
+            except:
+                # Invalid lock file - remove it
+                self.lock_file.unlink()
+
+        # Create lock file with current PID
+        with open(self.lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+
+        # Register cleanup
+        import atexit
+        atexit.register(self.cleanup_lock)
 
         # Setup prompt_toolkit if available
         if HAS_PROMPT_TOOLKIT:
@@ -279,7 +310,7 @@ class ClaudePTYClient:
     def print_banner(self):
         """Print banner"""
         # Set terminal tab title
-        print(f"\033]0;claude-client {self.tag}\007", end='', flush=True)
+        print(f"\033]0;cq-client {self.tag}\007", end='', flush=True)
 
         print("""
    _____ _                 _       ___
@@ -503,6 +534,14 @@ class ClaudePTYClient:
         if self.message_queue:
             print(f"📝 Queue has {len(self.message_queue)} messages remaining")
         print(f"PTY server '{self.tag}' is still running.\n")
+
+    def cleanup_lock(self):
+        """Remove client lock file"""
+        try:
+            if self.lock_file.exists():
+                self.lock_file.unlink()
+        except:
+            pass
 
 def main():
     if len(sys.argv) < 2:
