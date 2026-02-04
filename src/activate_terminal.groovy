@@ -12,11 +12,21 @@ IDE.application.invokeLater {
     if (projectPath != null && !projectPath.isEmpty()) {
         // Find project with matching base path
         for (project in ProjectManager.getInstance().getOpenProjects()) {
-            if (project.getBasePath() == projectPath) {
+            var basePath = project.getBasePath()
+            // Debug: print paths for comparison
+            System.err.println("Checking project: " + project.getName() + " with path: " + basePath)
+            System.err.println("Looking for: " + projectPath)
+
+            if (basePath != null && basePath.equals(projectPath)) {
                 targetProject = project
+                System.err.println("Found matching project: " + project.getName())
                 break
             }
         }
+    }
+
+    if (targetProject == null) {
+        System.err.println("No matching project found, using first available")
     }
 
     // Fallback to first open project if no match

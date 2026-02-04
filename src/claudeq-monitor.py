@@ -231,6 +231,9 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
             env = os.environ.copy()
             if project_path:
                 env['CLAUDEQ_PROJECT_PATH'] = project_path
+                print(f"DEBUG: Setting CLAUDEQ_PROJECT_PATH={project_path}", file=sys.stderr)
+            else:
+                print("DEBUG: No project_path in metadata", file=sys.stderr)
 
             result = subprocess.run(
                 [idea_cmd, 'ideScript', str(groovy_script)],
@@ -239,6 +242,12 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
                 timeout=3,
                 env=env
             )
+
+            # Print any output from groovy script
+            if result.stdout:
+                print(f"DEBUG stdout: {result.stdout}", file=sys.stderr)
+            if result.stderr:
+                print(f"DEBUG stderr: {result.stderr}", file=sys.stderr)
             if result.returncode == 0:
                 return 'jetbrains'
         except:
