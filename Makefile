@@ -18,7 +18,11 @@ install: .env install-core configure-shell
 	@echo ""
 	@echo "To start using ClaudeQ:"
 	@echo "  1. Reload your shell: source ~/.zshrc  (or ~/.bashrc)"
-	@echo "  2. Run: cq <tag-name>"
+	@echo "  2. Activate the venv: cqa  (or: claudeq-activate)"
+	@echo "  3. Run: cq <tag-name>"
+	@echo ""
+	@echo "Note: The venv is automatically used by claudeq commands,"
+	@echo "      but you can manually activate it for other purposes."
 	@echo ""
 	@echo "Optional: To install the monitor GUI, run:"
 	@echo "  make install-monitor"
@@ -35,7 +39,7 @@ install-monitor: .env
 	@poetry install --no-root --with monitor
 	@echo "$(GREEN)✓ Monitor installed successfully!$(NC)"
 	@echo ""
-	@echo "You can now run: cq-mo"
+	@echo "You can now run: claudeq-monitor (or: cqm)"
 	@echo ""
 
 .PHONY: clean
@@ -113,11 +117,18 @@ configure-shell:
 	fi; \
 	POETRY_VENV=$$(cd $(REPO_PATH) && poetry env info --path); \
 	echo "" >> "$$RC_FILE"; \
+	echo "# ===== ClaudeQ Configuration START - DO NOT REMOVE (needed for uninstall) =====" >> "$$RC_FILE"; \
 	echo "# ClaudeQ - Scrollable in JetBrains IDEs! 🎯" >> "$$RC_FILE"; \
 	echo "# Uses PTY (no tmux) with native scrolling" >> "$$RC_FILE"; \
 	echo "# Server in JetBrains, client in any terminal" >> "$$RC_FILE"; \
-	echo "# Usage: claudeq <tag> [message] or cq <tag> [message]" >> "$$RC_FILE"; \
-	echo "# Note: Always uses Poetry venv from project directory" >> "$$RC_FILE"; \
+	echo "#" >> "$$RC_FILE"; \
+	echo "# Usage: claudeq <tag> [message] (or: cq)" >> "$$RC_FILE"; \
+	echo "#        claudeq-monitor (or: cqm)" >> "$$RC_FILE"; \
+	echo "#        claudeq-cleanup (or: cqc)" >> "$$RC_FILE"; \
+	echo "#        claudeq-activate (or: cqa) - activate the venv" >> "$$RC_FILE"; \
+	echo "#" >> "$$RC_FILE"; \
+	echo "# You can modify the content below, but keep the START/END marker lines" >> "$$RC_FILE"; \
+	echo "# for proper uninstallation." >> "$$RC_FILE"; \
 	echo "export CLAUDEQ_PROJECT_DIR=\"$(REPO_PATH)\"" >> "$$RC_FILE"; \
 	echo "export CLAUDEQ_PYTHON=\"$$POETRY_VENV/bin/python3\"" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
@@ -145,15 +156,30 @@ configure-shell:
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-main.sh\" \"\$$@\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
-	echo "cq-mo() {" >> "$$RC_FILE"; \
+	echo "claudeq-monitor() {" >> "$$RC_FILE"; \
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/cq-mo-wrapper.sh\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
-	echo "cq-cleanup() {" >> "$$RC_FILE"; \
+	echo "claudeq-cleanup() {" >> "$$RC_FILE"; \
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-cleanup.sh\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
+	echo "claudeq-activate() {" >> "$$RC_FILE"; \
+	echo "    VENV_PATH=\$$(cd \"\$$CLAUDEQ_PROJECT_DIR\" && poetry env info --path 2>/dev/null)" >> "$$RC_FILE"; \
+	echo "    if [ -n \"\$$VENV_PATH\" ] && [ -f \"\$$VENV_PATH/bin/activate\" ]; then" >> "$$RC_FILE"; \
+	echo "        source \"\$$VENV_PATH/bin/activate\"" >> "$$RC_FILE"; \
+	echo "        echo \"✓ Activated ClaudeQ venv: \$$VENV_PATH\"" >> "$$RC_FILE"; \
+	echo "    else" >> "$$RC_FILE"; \
+	echo "        echo \"Error: ClaudeQ venv not found. Run 'cd \$$CLAUDEQ_PROJECT_DIR && make install'\"" >> "$$RC_FILE"; \
+	echo "        return 1" >> "$$RC_FILE"; \
+	echo "    fi" >> "$$RC_FILE"; \
+	echo "}" >> "$$RC_FILE"; \
+	echo "" >> "$$RC_FILE"; \
 	echo "alias cq='claudeq'" >> "$$RC_FILE"; \
+	echo "alias cqm='claudeq-monitor'" >> "$$RC_FILE"; \
+	echo "alias cqc='claudeq-cleanup'" >> "$$RC_FILE"; \
+	echo "alias cqa='claudeq-activate'" >> "$$RC_FILE"; \
+	echo "# ===== ClaudeQ Configuration END - DO NOT REMOVE (needed for uninstall) =====" >> "$$RC_FILE"; \
 	echo "$(GREEN)✓ Added ClaudeQ configuration to $$RC_FILE$(NC)"; \
 	echo "  Using Poetry venv: $$POETRY_VENV"
 
@@ -167,10 +193,31 @@ uninstall:
 		RC_FILE="$$HOME/.bashrc"; \
 	fi; \
 	if [ -f "$$RC_FILE" ]; then \
-		sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$$RC_FILE"; \
-		echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
+		if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
+			cp "$$RC_FILE" "$$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+			sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
+			rm -f "$$RC_FILE.bak"; \
+			echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
+			echo "  Backup created at $$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+		elif grep -q "# ClaudeQ" "$$RC_FILE"; then \
+			echo "$(YELLOW)⚠ Found legacy ClaudeQ installation$(NC)"; \
+			cp "$$RC_FILE" "$$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+			sed -i.bak '/# ClaudeQ/,/# End ClaudeQ/d' "$$RC_FILE"; \
+			sed -i.bak '/# ClaudeQ/,/^alias cq/d' "$$RC_FILE"; \
+			rm -f "$$RC_FILE.bak"; \
+			echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
+			echo "  Backup created at $$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+		else \
+			echo "  No ClaudeQ configuration found in $$RC_FILE"; \
+		fi; \
 	fi
+	@echo "$(PROMPT_PREFIX) Removing Poetry virtual environment..."
+	@poetry env remove --all 2>/dev/null || true
+	@echo "$(GREEN)✓ Removed Poetry venv$(NC)"
+	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
 	@rm -rf ~/.claude-queues ~/.claude-sockets
-	@echo "$(GREEN)✓ Cleaned up data directories$(NC)"
+	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
+	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
 	@echo ""
-	@echo "To remove the Poetry venv, run: make clean"
+	@echo "$(GREEN)✓ ClaudeQ fully uninstalled!$(NC)"
+	@echo "Project is now in clean state (like just cloned)"

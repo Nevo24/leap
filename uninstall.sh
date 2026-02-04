@@ -47,31 +47,59 @@ if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ]; then
     echo ""
     echo "🧹 Removing shell configuration..."
 
-    if grep -q "# ClaudeQ - Multi-session Claude" "$RC_FILE" 2>/dev/null; then
+    # Check for current installation with proper markers
+    if grep -q "ClaudeQ Configuration START" "$RC_FILE" 2>/dev/null; then
         # Backup RC file
         cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
 
-        # Remove ClaudeQ configuration (match the function closing brace)
-        sed -i.bak '/# ClaudeQ - Multi-session Claude/,/^}$/d' "$RC_FILE"
+        # Remove ClaudeQ configuration block (from START marker to END marker)
+        # This removes everything between markers, even if user modified content
+        # As long as the marker lines are intact, uninstall will work
+        sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
         rm -f "$RC_FILE.bak"
 
         echo -e "${GREEN}✓ Configuration removed from $RC_FILE${NC}"
+        echo "  (Backup saved)"
+    # Check for legacy ClaudeQ markers
+    elif grep -q "# ClaudeQ" "$RC_FILE" 2>/dev/null; then
+        echo -e "${YELLOW}⚠ Found legacy ClaudeQ installation${NC}"
+        cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
+
+        # Try to remove legacy format (multiple patterns for compatibility)
+        sed -i.bak '/# ClaudeQ/,/# End ClaudeQ/d' "$RC_FILE"
+        sed -i.bak '/# ClaudeQ/,/^alias cq/d' "$RC_FILE"
+        rm -f "$RC_FILE.bak"
+
+        echo -e "${GREEN}✓ Configuration removed from $RC_FILE${NC}"
+        echo "  (Backup saved)"
     else
         echo "  No ClaudeQ configuration found in $RC_FILE"
     fi
 fi
 
-# Remove queue data
+# Remove queue data and sockets
 echo ""
-read -p "Remove queue data from ~/.claude-queues/? (y/N) " -n 1 -r
-echo
+echo "🧹 Cleaning up data directories..."
+rm -rf ~/.claude-queues/ ~/.claude-sockets/
+echo -e "${GREEN}✓ Data directories removed${NC}"
 
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -rf ~/.claude-queues/
-    echo -e "${GREEN}✓ Queue data removed${NC}"
+# Remove Poetry venv
+echo ""
+echo "🧹 Removing Poetry virtual environment..."
+if command -v poetry &> /dev/null; then
+    cd "$(dirname "$0")" && poetry env remove --all 2>/dev/null || true
+    echo -e "${GREEN}✓ Poetry venv removed${NC}"
 else
-    echo "  Queue data preserved"
+    echo -e "${YELLOW}⚠ Poetry not found, skipping venv removal${NC}"
 fi
+
+# Remove cache directories
+echo ""
+echo "🧹 Cleaning up cache directories..."
+SCRIPT_DIR="$(dirname "$0")"
+rm -rf "$SCRIPT_DIR/.pytest_cache" "$SCRIPT_DIR/.coverage" "$SCRIPT_DIR/coverage.xml" \
+       "$SCRIPT_DIR/.ruff_cache" "$SCRIPT_DIR/.mypy_cache"
+echo -e "${GREEN}✓ Cache directories removed${NC}"
 
 # Kill any running ClaudeQ sessions
 echo ""
@@ -97,8 +125,9 @@ fi
 
 echo ""
 echo "================================================"
-echo -e "${GREEN}✓ ClaudeQ uninstalled successfully${NC}"
+echo -e "${GREEN}✓ ClaudeQ fully uninstalled!${NC}"
 echo "================================================"
+echo "Project is now in clean state (like just cloned)"
 echo ""
 echo "Please restart your terminal or run:"
 echo "  source $RC_FILE"
