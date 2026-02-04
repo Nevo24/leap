@@ -457,6 +457,9 @@ def create_window(sessions, location=None):
     else:
         header = [
             [sg.Text('ClaudeQ Session Monitor', font=('Helvetica', 14, 'bold'))],
+            [sg.Text('JetBrains Users: Enable CQ to name your tabs:', font=('Helvetica', 9), text_color='yellow')],
+            [sg.Text('1. Settings > Tools > Terminal > Engine: Classic', font=('Helvetica', 8), text_color='lightblue')],
+            [sg.Text('2. Advanced Settings > Terminal > ☑️ "Show application title"', font=('Helvetica', 8), text_color='lightblue')],
             [sg.HorizontalSeparator()],
             # Column headers
             [

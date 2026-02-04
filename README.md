@@ -49,6 +49,10 @@ make install-monitor
 
 ## Usage
 
+**💡 JetBrains Users:** Enable CQ to name your tabs for better monitoring:
+1. Settings → Tools → Terminal → Engine: **Classic**
+2. Advanced Settings → Terminal → ☑️ **Show application title**
+
 ### Quick Start
 
 ```bash
@@ -190,16 +194,14 @@ ClaudeQ automatically sets terminal tab titles to help you identify sessions:
 - Server tabs: `cq-server <tag>`
 - Client tabs: `cq-client <tag>`
 
-**For JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.):**
+**For JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.) - Enable CQ to name your tabs:**
 
-To enable automatic tab titles:
+⚠️ **Required Settings** (both needed for automatic tab titles):
 
-1. Press `Ctrl+Alt+S` (or `Cmd+,` on Mac) to open Settings
-2. Click **Advanced Settings** (left sidebar)
-3. Search for "term" in the search box at the top
-4. Under the **Terminal** section, check ☑️ **"Show application title"**
+1. **Settings** → **Tools** → **Terminal** → **Terminal Engine**: Select **"Classic"**
+2. **Tools** → **Advanced Settings** → Search for "term" → Under **Terminal** section, check ☑️ **"Show application title"**
 
-💡 *Tip: Searching for "term" is the fastest way to find this setting!*
+💡 *Tip: These settings enable better monitoring - ClaudeQ can track and navigate to your sessions correctly!*
 
 This works with JetBrains 2025.2+ (with the reworked terminal) and should work on older versions too.
 

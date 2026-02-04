@@ -340,6 +340,11 @@ class ClaudePTYClient:
         print("  🤖 Auto-queue: Server handles auto-sending")
         print("="*70)
         print()
+        print("  💡 JetBrains Users - Enable CQ to name your tabs:")
+        print("     1. Settings > Tools > Terminal > Engine: Classic")
+        print("     2. Advanced Settings > Terminal > ☑️ 'Show application title'")
+        print("="*70)
+        print()
 
     def run(self):
         """Run client"""
