@@ -9,9 +9,13 @@ IDE.application.invokeLater {
     var targetProject = null
     var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")
 
-    System.err.println("=== ClaudeQ Project Matcher Debug ===")
-    System.err.println("Target project path: " + projectPath)
-    System.err.println("Available projects:")
+    // Debug to file since stderr might not be captured
+    var debugFile = new java.io.File(System.getProperty("user.home") + "/.claude-sockets/groovy-debug.log")
+    var writer = new java.io.PrintWriter(new java.io.FileWriter(debugFile))
+
+    writer.println("=== ClaudeQ Project Matcher Debug ===")
+    writer.println("Target project path: " + projectPath)
+    writer.println("Available projects:")
 
     if (projectPath != null && !projectPath.isEmpty()) {
         // Find project with matching base path
@@ -21,31 +25,27 @@ IDE.application.invokeLater {
             var basePath = project.getBasePath()
             var projectName = project.getName()
 
-            System.err.println("  [" + i + "] Name: '" + projectName + "'")
-            System.err.println("      Path: '" + basePath + "'")
-            System.err.println("      Match: " + (basePath != null && basePath.equals(projectPath)))
+            writer.println("  [" + i + "] Name: '" + projectName + "'")
+            writer.println("      Path: '" + basePath + "'")
+            writer.println("      Match: " + (basePath != null && basePath.equals(projectPath)))
 
             if (basePath != null && basePath.equals(projectPath)) {
                 targetProject = project
-                System.err.println(">>> MATCHED! Using this project.")
+                writer.println(">>> MATCHED! Using this project.")
                 break
             }
         }
     }
 
     if (targetProject == null) {
-        System.err.println(">>> No match found, using first project")
-    }
-    System.err.println("=====================================")
-    System.err.flush()
-
-    // Fallback to first open project if no match
-    if (targetProject == null) {
-        var openProjects = ProjectManager.getInstance().getOpenProjects()
-        if (openProjects.length > 0) {
-            targetProject = openProjects[0]
+        writer.println(">>> No match found, using first project")
+        var allProjects = ProjectManager.getInstance().getOpenProjects()
+        if (allProjects.length > 0) {
+            targetProject = allProjects[0]
         }
     }
+    writer.println("=====================================")
+    writer.close()
 
     if (targetProject != null) {
         // First, bring the project window to front
