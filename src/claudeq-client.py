@@ -313,6 +313,7 @@ class ClaudePTYClient:
     def queue_monitor(self):
         """Background thread to monitor queue changes"""
         last_recently_sent = []  # Track last snapshot of recently_sent list
+        poll_count = 0  # Track number of polls to handle initial messages
         while self.running:
             time.sleep(0.3)  # Poll 3x per second to catch fast queue changes
 
@@ -321,6 +322,7 @@ class ClaudePTYClient:
             if not response:
                 continue
 
+            poll_count += 1
             new_size = response.get('queue_size', 0)
             current_queue = response.get('queue_contents', [])
             recently_sent = response.get('recently_sent', [])
@@ -328,12 +330,17 @@ class ClaudePTYClient:
             # Detect newly sent messages by comparing with last snapshot
             # Server appends new messages to the end of recently_sent list
             new_sent_messages = []
-            if recently_sent and last_recently_sent:
-                # Common case: recently_sent starts with last_recently_sent plus new messages
-                if len(recently_sent) >= len(last_recently_sent):
-                    if recently_sent[:len(last_recently_sent)] == last_recently_sent:
-                        # Everything after last_recently_sent is new
-                        new_sent_messages = recently_sent[len(last_recently_sent):]
+            if recently_sent:
+                if last_recently_sent:
+                    # Common case: recently_sent starts with last_recently_sent plus new messages
+                    if len(recently_sent) >= len(last_recently_sent):
+                        if recently_sent[:len(last_recently_sent)] == last_recently_sent:
+                            # Everything after last_recently_sent is new
+                            new_sent_messages = recently_sent[len(last_recently_sent):]
+                elif poll_count > 1:
+                    # Not first poll, but last was empty - all current messages are new
+                    # This handles messages sent quickly after client starts
+                    new_sent_messages = recently_sent[:]
 
             # Print notifications for new sent messages
             if new_sent_messages:
