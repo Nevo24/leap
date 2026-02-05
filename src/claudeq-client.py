@@ -292,7 +292,7 @@ class ClaudePTYClient:
         """Background thread to monitor queue changes"""
         last_queue_snapshot = []
         while self.running:
-            time.sleep(1)
+            time.sleep(0.3)  # Poll 3x per second to catch fast queue changes
 
             # Query server for authoritative queue state
             response = self.send_to_server('status')
