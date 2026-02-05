@@ -170,11 +170,7 @@ if [ -S "$SOCKET_PATH" ]; then
         # Server is alive - launch client (interactive or with message)
         echo "✓ Server is running - launching client" >&2
 
-        # Check if flags were passed - clients don't support flags
-        if [ ${#FLAGS[@]} -gt 0 ]; then
-            echo -e "\033[33m⚠️  Warning: Ignoring flags (not supported for clients): ${FLAGS[*]}\033[0m" >&2
-            echo -e "\033[33m   Flags are only used when starting a server\033[0m" >&2
-        fi
+        # Flags are silently ignored for clients (only used by server)
 
         # Set terminal tab name
         echo -ne "\033]0;cq-client ${TAG}\007"
