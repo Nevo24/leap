@@ -260,7 +260,11 @@ class ClaudePTYServer:
             if msg['type'] == 'queue':
                 self.message_queue.append(msg['message'])
                 self.save_queue()
-                response = {'status': 'queued', 'queue_size': len(self.message_queue)}
+                response = {
+                    'status': 'queued',
+                    'queue_size': len(self.message_queue),
+                    'queue_contents': list(self.message_queue)
+                }
             elif msg['type'] == 'direct':
                 # Send directly to Claude
                 message = msg['message']
@@ -317,6 +321,9 @@ class ClaudePTYServer:
 
         try:
             conn.send(json.dumps(response).encode('utf-8'))
+        except BrokenPipeError:
+            # Client disconnected - this is normal, suppress error
+            pass
         except Exception as e:
             print(f"Error sending response: {e}", file=sys.stderr, flush=True)
         finally:
@@ -439,14 +446,14 @@ class ClaudePTYServer:
         # Interact with Claude using output filter to show notifications cleanly
         def output_filter(data):
             """Filter to inject notifications at safe points"""
-            # Check for pending notifications at line breaks (safe points)
+            # Only inject after a complete line ending with newline
             with self.notification_lock:
-                if self.pending_notifications and (b'\n' in data or b'\r' in data):
-                    # Found a safe point - inject notifications
-                    notifications = '\n'.join(self.pending_notifications)
+                if self.pending_notifications and data.endswith(b'\n'):
+                    # This is a complete line - safe to inject notification
+                    notifications = '   '.join(self.pending_notifications)  # Join on same line
                     self.pending_notifications.clear()
-                    # Return notification + original data
-                    return f"\n\033[33m{notifications}\033[0m\n".encode() + data
+                    # Inject notification AFTER the complete line, in yellow
+                    return data + f"\033[33m🤖 {notifications}\033[0m\n".encode()
             return data
 
         try:

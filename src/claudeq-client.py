@@ -206,12 +206,16 @@ class ClaudePTYClient:
             self.pending_image_path = None
             has_image = True
 
-        # Only send to server - don't manage local queue file
-        # Server owns the queue file
+        # Send to server and sync local queue
         response = self.send_to_server('queue', full_message)
         if response:
-            # Update local queue from server response
+            # Sync local queue with server's authoritative state
+            queue_contents = response.get('queue_contents', [])
             queue_size = response.get('queue_size', 0)
+
+            self.message_queue.clear()
+            self.message_queue.extend(queue_contents)
+
             if has_image:
                 print(f"📝 Queued with image ({queue_size} total)\n")
             else:
