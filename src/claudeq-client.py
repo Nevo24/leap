@@ -162,11 +162,10 @@ class ClaudePTYClient:
 
     def _get_prompt(self):
         """Generate current prompt text based on queue state"""
-        prompt_prefix = f"[Queue:{len(self.message_queue)}]" if self.message_queue else ""
         if self.pending_image_path:
-            return f"{prompt_prefix}[📸] You: " if prompt_prefix else "[📸] You: "
+            return "[📸] You: "
         else:
-            return f"{prompt_prefix} You: " if prompt_prefix else "You: "
+            return "You: "
 
     def _custom_input(self):
         """Custom input using prompt_toolkit if available"""
@@ -300,7 +299,7 @@ class ClaudePTYClient:
 
     def queue_monitor(self):
         """Background thread to monitor queue changes"""
-        seen_sent_messages = set()  # Track which auto-sent messages we've notified about
+        last_recently_sent = []  # Track last snapshot of recently_sent list
         while self.running:
             time.sleep(0.3)  # Poll 3x per second to catch fast queue changes
 
@@ -313,13 +312,23 @@ class ClaudePTYClient:
             current_queue = response.get('queue_contents', [])
             recently_sent = response.get('recently_sent', [])
 
-            # Show notifications for newly auto-sent messages
-            # Server tracks recently sent messages, we track which ones we've shown
+            # Detect newly sent messages by comparing with last snapshot
+            # Find messages added to the end of recently_sent list
             new_sent_messages = []
-            for msg in recently_sent:
-                if msg not in seen_sent_messages:
-                    new_sent_messages.append(msg)
-                    seen_sent_messages.add(msg)
+            if recently_sent and last_recently_sent:
+                # Find the longest common suffix to identify new messages
+                # Start from the end of both lists and work backwards
+                common_len = 0
+                for i in range(1, min(len(recently_sent), len(last_recently_sent)) + 1):
+                    if recently_sent[-i] == last_recently_sent[-i]:
+                        common_len = i
+                    else:
+                        break
+
+                # Everything before the common suffix in recently_sent is new
+                num_new = len(recently_sent) - common_len
+                if num_new > 0:
+                    new_sent_messages = recently_sent[:num_new]
 
             # Print notifications for new sent messages
             if new_sent_messages:
@@ -330,10 +339,8 @@ class ClaudePTYClient:
                 if new_size > 0:
                     print(f"   ({new_size} remaining in queue)", flush=True)
 
-            # Limit seen_sent_messages to prevent unbounded growth
-            # Keep only messages that are still in recently_sent or current queue
-            relevant_messages = set(recently_sent) | set(current_queue)
-            seen_sent_messages &= relevant_messages
+            # Update snapshot for next iteration
+            last_recently_sent = list(recently_sent)
 
             # Sync local queue with server's authoritative state
             # Do this AFTER printing notifications so prompt timing is correct
