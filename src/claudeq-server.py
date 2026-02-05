@@ -497,48 +497,36 @@ class ClaudePTYServer:
             self.cleanup()
 
     def cleanup(self):
-        """Cleanup resources on exit"""
-        print("\n🧹 Cleaning up...", file=sys.stderr, flush=True)
-
+        """Cleanup resources on exit (silent)"""
         self.running = False
 
         # Close server socket
         if self.server_socket:
             try:
                 self.server_socket.close()
-                print("  ✓ Closed server socket", file=sys.stderr, flush=True)
-            except Exception as e:
-                print(f"  ✗ Error closing socket: {e}", file=sys.stderr, flush=True)
+            except:
+                pass
 
         # Always remove socket file, even if there are errors
         try:
             if self.socket_path.exists():
                 self.socket_path.unlink()
-                print(f"  ✓ Removed socket file: {self.socket_path}", file=sys.stderr, flush=True)
-            else:
-                print(f"  ℹ Socket file already gone: {self.socket_path}", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"  ✗ Could not remove socket file: {e}", file=sys.stderr, flush=True)
+        except:
+            pass
 
         # Remove metadata file
         try:
             if self.metadata_file.exists():
                 self.metadata_file.unlink()
-                print(f"  ✓ Removed metadata file", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"  ✗ Could not remove metadata file: {e}", file=sys.stderr, flush=True)
+        except:
+            pass
 
         # Terminate Claude process
         if self.claude_process and self.claude_process.isalive():
             try:
                 self.claude_process.terminate(force=True)
-                print("  ✓ Terminated Claude process", file=sys.stderr, flush=True)
-            except Exception as e:
-                print(f"  ✗ Error terminating Claude: {e}", file=sys.stderr, flush=True)
-
-        print("\n\nGoodbye!")
-        if self.message_queue:
-            print(f"📝 Queue has {len(self.message_queue)} messages remaining")
+            except:
+                pass
 
 def main():
     if len(sys.argv) < 2:
