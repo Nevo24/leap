@@ -13,6 +13,8 @@ import time
 import readline
 import subprocess
 import tempfile
+import signal
+import fcntl
 from collections import deque
 from pathlib import Path
 
@@ -79,35 +81,41 @@ class ClaudePTYClient:
         self.queue_monitor_thread = None
         self.pending_image_path = None  # Track pending image attachment
 
-        # Check for existing client
-        if self.lock_file.exists():
-            # Check if the lock is stale (process doesn't exist)
+        # Use exclusive file locking to prevent multiple clients
+        # Open/create lock file in write mode
+        try:
+            self.lock_fd = open(self.lock_file, 'w')
+            # Try to acquire exclusive lock (non-blocking)
+            fcntl.flock(self.lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # We got the lock! Write our PID
+            self.lock_fd.write(str(os.getpid()))
+            self.lock_fd.flush()
+        except BlockingIOError:
+            # Lock is held by another process
+            # Try to read the PID to show in error message
             try:
                 with open(self.lock_file, 'r') as f:
-                    pid = int(f.read().strip())
-                # Check if process exists
-                try:
-                    os.kill(pid, 0)  # Signal 0 just checks if process exists
-                    # Process exists - another client is running
-                    print(f"Error: A client is already connected to server '{tag}'")
-                    print(f"Only one interactive client per server is allowed.")
-                    print(f"\nIf you're sure no other client is running, remove:")
-                    print(f"  {self.lock_file}")
-                    sys.exit(1)
-                except OSError:
-                    # Process doesn't exist - stale lock
-                    self.lock_file.unlink()
+                    pid = f.read().strip()
+                    pid_info = f" (PID: {pid})"
             except:
-                # Invalid lock file - remove it
-                self.lock_file.unlink()
+                pid_info = ""
 
-        # Create lock file with current PID
-        with open(self.lock_file, 'w') as f:
-            f.write(str(os.getpid()))
+            print(f"\n❌ Error: Another client is already connected to server '{tag}'{pid_info}")
+            print(f"Only one interactive client per server is allowed.\n")
+            print(f"If you're sure no other client is running, remove:")
+            print(f"  {self.lock_file}\n")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error creating lock file: {e}")
+            sys.exit(1)
 
-        # Register cleanup
+        # Register cleanup for normal exit and signals
         import atexit
         atexit.register(self.cleanup_lock)
+
+        # Handle termination signals to ensure cleanup
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
 
         # Setup prompt_toolkit if available
         if HAS_PROMPT_TOOLKIT:
@@ -541,12 +549,23 @@ class ClaudePTYClient:
         print(f"PTY server '{self.tag}' is still running.\n")
 
     def cleanup_lock(self):
-        """Remove client lock file"""
+        """Remove client lock file and release lock"""
         try:
+            # Release the file lock
+            if hasattr(self, 'lock_fd') and self.lock_fd:
+                fcntl.flock(self.lock_fd.fileno(), fcntl.LOCK_UN)
+                self.lock_fd.close()
+            # Remove the lock file
             if self.lock_file.exists():
                 self.lock_file.unlink()
         except:
             pass
+
+    def _signal_handler(self, signum, frame):
+        """Handle termination signals"""
+        print("\n\nExiting...")
+        self.cleanup_lock()
+        sys.exit(0)
 
 def main():
     if len(sys.argv) < 2:
