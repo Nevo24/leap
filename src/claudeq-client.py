@@ -286,26 +286,35 @@ class ClaudePTYClient:
 
     def queue_monitor(self):
         """Background thread to monitor queue changes"""
-        last_size = 0
+        last_queue_snapshot = []
         while self.running:
             time.sleep(1)
 
-            # Query server for authoritative queue size
+            # Query server for authoritative queue state
             response = self.send_to_server('status')
             if not response:
                 continue
 
             new_size = response.get('queue_size', 0)
+            current_queue = response.get('queue_contents', [])
 
-            # Update local queue representation
-            # (We maintain local deque for display purposes only)
-            if new_size == 0:
-                self.message_queue.clear()
+            # Sync local queue with server's authoritative state
+            self.message_queue.clear()
+            self.message_queue.extend(current_queue)
 
-            # Notify if queue decreased (message was auto-sent)
-            if new_size < last_size and last_size > 0:
-                messages_sent = last_size - new_size
-                print(f"\n🤖 Server auto-sent {messages_sent} message(s) - {new_size} remaining in queue", flush=True)
+            # Detect if messages were auto-sent (compare snapshots)
+            if last_queue_snapshot and len(last_queue_snapshot) > len(current_queue):
+                # Find which messages were sent (removed from front of queue)
+                num_sent = len(last_queue_snapshot) - len(current_queue)
+
+                for i in range(num_sent):
+                    if i < len(last_queue_snapshot):
+                        msg = last_queue_snapshot[i]
+                        msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
+                        print(f"\n🤖 Server auto-sent: {msg_preview}", flush=True)
+
+                if new_size > 0:
+                    print(f"   ({new_size} remaining in queue)", flush=True)
 
                 # Reprint prompt for non-prompt_toolkit
                 if not HAS_PROMPT_TOOLKIT:
@@ -313,7 +322,8 @@ class ClaudePTYClient:
                     prompt = f"{prompt_prefix} You: " if prompt_prefix else "You: "
                     print(prompt, end='', flush=True)
 
-            last_size = new_size
+            # Update snapshot for next iteration
+            last_queue_snapshot = list(current_queue)
 
     def print_banner(self):
         """Print banner"""

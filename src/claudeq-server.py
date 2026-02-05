@@ -33,6 +33,8 @@ class ClaudePTYServer:
         self.last_sent_message = None  # Track last auto-sent message
         self.last_send_time = None  # Track when we last sent a message
         self.min_busy_duration = 3.0  # Minimum seconds to consider busy after sending
+        self.pending_notifications = []  # Buffer for notifications
+        self.notification_lock = threading.Lock()  # Protect notification buffer
 
         # Ensure directories exist
         QUEUE_DIR.mkdir(exist_ok=True)
@@ -276,6 +278,7 @@ class ClaudePTYServer:
                 claude_alive = self.claude_process and self.claude_process.isalive()
                 response = {
                     'queue_size': len(self.message_queue),
+                    'queue_contents': list(self.message_queue),  # Include actual queue
                     'ready': not self.is_claude_busy(),
                     'claude_running': claude_alive
                 }
@@ -287,9 +290,10 @@ class ClaudePTYServer:
                     self.last_sent_message = message
                     self.last_send_time = time.time()
 
-                    # Print notification
+                    # Queue notification (don't print directly to avoid terminal mess)
                     remaining = len(self.message_queue)
-                    print(f"\n⚡ Force-sent message from queue ({remaining} remaining)\n", flush=True)
+                    with self.notification_lock:
+                        self.pending_notifications.append(f"⚡ Force-sent from queue ({remaining} remaining)")
 
                     # Send to Claude
                     self.claude_process.send(message)
@@ -378,9 +382,10 @@ class ClaudePTYServer:
             try:
                 self.last_sent_message = msg
                 self.last_send_time = time.time()
-                # Print notification before sending (to stdout for visibility)
+                # Queue notification (don't print directly to avoid terminal mess)
                 remaining = len(self.message_queue)
-                print(f"\n🤖 Auto-sent message from queue ({remaining} remaining)\n", flush=True)
+                with self.notification_lock:
+                    self.pending_notifications.append(f"🤖 Auto-sent from queue ({remaining} remaining)")
                 self.claude_process.send(msg)
 
                 # If message starts with @, it's an attachment - give Claude time to recognize it
@@ -431,9 +436,21 @@ class ClaudePTYServer:
         sys.stdout.write(f"\033]0;cq-server {self.tag}\007")
         sys.stdout.flush()
 
-        # Interact with Claude
+        # Interact with Claude using output filter to show notifications cleanly
+        def output_filter(data):
+            """Filter to inject notifications at safe points"""
+            # Check for pending notifications at line breaks (safe points)
+            with self.notification_lock:
+                if self.pending_notifications and (b'\n' in data or b'\r' in data):
+                    # Found a safe point - inject notifications
+                    notifications = '\n'.join(self.pending_notifications)
+                    self.pending_notifications.clear()
+                    # Return notification + original data
+                    return f"\n\033[33m{notifications}\033[0m\n".encode() + data
+            return data
+
         try:
-            self.claude_process.interact()
+            self.claude_process.interact(output_filter=output_filter)
         except (KeyboardInterrupt, SystemExit):
             pass
         except Exception as e:
