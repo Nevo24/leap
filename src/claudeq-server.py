@@ -257,6 +257,12 @@ class ClaudePTYServer:
         response = {'status': 'error', 'message': 'Unknown error'}
         try:
             data = conn.recv(4096).decode('utf-8')
+
+            # Check if data is empty (client disconnected or sent nothing)
+            if not data or not data.strip():
+                # Silent return for empty data - likely client disconnect
+                return
+
             msg = json.loads(data)
 
             if msg['type'] == 'queue':
@@ -327,6 +333,9 @@ class ClaudePTYServer:
             else:
                 response = {'status': 'error', 'message': f"Unknown message type: {msg.get('type', 'none')}"}
 
+        except json.JSONDecodeError as e:
+            response = {'status': 'error', 'message': 'Invalid JSON'}
+            print(f"Error: Received invalid JSON from client: {e}", file=sys.stderr, flush=True)
         except Exception as e:
             response = {'status': 'error', 'message': str(e)}
             print(f"Error handling client: {e}", file=sys.stderr, flush=True)
