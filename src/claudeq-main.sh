@@ -172,10 +172,8 @@ if [ -S "$SOCKET_PATH" ]; then
 
         # Check if flags were passed - clients don't support flags
         if [ ${#FLAGS[@]} -gt 0 ]; then
-            echo -e "\033[31mError: Flags are not supported for clients\033[0m" >&2
-            echo -e "\033[31mFlags are only used when starting a server\033[0m" >&2
-            echo -e "\033[31mUnsupported flags: ${FLAGS[*]}\033[0m" >&2
-            exit 1
+            echo -e "\033[33m⚠️  Warning: Ignoring flags (not supported for clients): ${FLAGS[*]}\033[0m" >&2
+            echo -e "\033[33m   Flags are only used when starting a server\033[0m" >&2
         fi
 
         # Set terminal tab name
