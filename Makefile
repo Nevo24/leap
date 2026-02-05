@@ -153,6 +153,8 @@ configure-shell:
 	echo "        echo \"Example (client): claudeq my-feature 'hello Claude'\"" >> "$$RC_FILE"; \
 	echo "        return 1" >> "$$RC_FILE"; \
 	echo "    fi" >> "$$RC_FILE"; \
+	echo "    # Flags (starting with --) can be passed and will be used by server only" >> "$$RC_FILE"; \
+	echo "    # Example: claudeq my-tag --dangerously-skip-permissions" >> "$$RC_FILE"; \
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-main.sh\" \"\$$@\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \

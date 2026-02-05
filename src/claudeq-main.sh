@@ -81,6 +81,23 @@ fi
 
 shift
 
+# Parse arguments to separate flags from messages
+# Flags (starting with --) are passed to server only
+# Messages are passed to client only
+FLAGS=()
+ARGS=()
+while [ $# -gt 0 ]; do
+    if [[ "$1" == --* ]]; then
+        FLAGS+=("$1")
+    else
+        ARGS+=("$1")
+    fi
+    shift
+done
+
+# Restore positional parameters with non-flag arguments
+set -- "${ARGS[@]}"
+
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -167,4 +184,4 @@ fi
 # No arguments and no server - start server
 # Set terminal tab name
 echo -ne "\033]0;cq-server ${TAG}\007"
-exec "$SERVER_SCRIPT" "$TAG"
+exec "$SERVER_SCRIPT" "$TAG" "${FLAGS[@]}"
