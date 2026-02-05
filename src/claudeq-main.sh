@@ -87,6 +87,33 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 SOCKET_PATH="$HOME/.claude-sockets/${TAG}.sock"
 SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
 CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
+SOCKET_DIR="$HOME/.claude-sockets"
+
+# Auto-cleanup dead sockets (silent, runs in background)
+cleanup_dead_sockets() {
+    if [ -d "$SOCKET_DIR" ]; then
+        for sock in "$SOCKET_DIR"/*.sock; do
+            [ -e "$sock" ] || continue
+            # Test if socket is alive
+            if ! "$PYTHON_CMD" -c "
+import socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.1)
+    s.connect('$sock')
+    s.close()
+    sys.exit(0)
+except:
+    sys.exit(1)
+" 2>/dev/null; then
+                rm -f "$sock" 2>/dev/null
+            fi
+        done
+    fi
+}
+
+# Run cleanup in background to avoid delaying startup
+cleanup_dead_sockets &
 
 # Function to test if server is actually running
 test_socket_alive() {
