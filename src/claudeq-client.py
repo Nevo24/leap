@@ -313,22 +313,14 @@ class ClaudePTYClient:
             recently_sent = response.get('recently_sent', [])
 
             # Detect newly sent messages by comparing with last snapshot
-            # Find messages added to the end of recently_sent list
+            # Server appends new messages to the end of recently_sent list
             new_sent_messages = []
             if recently_sent and last_recently_sent:
-                # Find the longest common suffix to identify new messages
-                # Start from the end of both lists and work backwards
-                common_len = 0
-                for i in range(1, min(len(recently_sent), len(last_recently_sent)) + 1):
-                    if recently_sent[-i] == last_recently_sent[-i]:
-                        common_len = i
-                    else:
-                        break
-
-                # Everything before the common suffix in recently_sent is new
-                num_new = len(recently_sent) - common_len
-                if num_new > 0:
-                    new_sent_messages = recently_sent[:num_new]
+                # Common case: recently_sent starts with last_recently_sent plus new messages
+                if len(recently_sent) >= len(last_recently_sent):
+                    if recently_sent[:len(last_recently_sent)] == last_recently_sent:
+                        # Everything after last_recently_sent is new
+                        new_sent_messages = recently_sent[len(last_recently_sent):]
 
             # Print notifications for new sent messages
             if new_sent_messages:
