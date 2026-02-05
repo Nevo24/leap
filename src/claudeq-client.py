@@ -336,8 +336,11 @@ class ClaudePTYClient:
                     msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
                     print(f"\n🤖 Server auto-sent: {msg_preview}", flush=True)
 
+                # Show queue status after sending
                 if new_size > 0:
                     print(f"   ({new_size} remaining in queue)", flush=True)
+                else:
+                    print(f"   (queue empty)", flush=True)
 
             # Update snapshot for next iteration
             last_recently_sent = list(recently_sent)
