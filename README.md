@@ -8,7 +8,7 @@ Queue multiple prompts with images in one terminal while Claude works in another
 
 - 📝 **Smart message queueing** - Auto-sends when Claude is ready
 - 🖼️ **Image support** - Paste images from clipboard
-- 🔌 **Client-server architecture** - Multiple clients per session
+- 🔌 **Client-server architecture** - One client per session
 - 🖥️ **GUI Monitor (cq-mo)** - Jump to sessions across IDEs and projects
 - 🧹 **Auto-cleanup** - Proper socket management
 - 📊 **Real-time queue monitoring** - See messages being processed
@@ -19,7 +19,9 @@ Queue multiple prompts with images in one terminal while Claude works in another
 ClaudeQ uses a **PTY-based client-server model**:
 
 1. **Terminal 1 (Server)**: `cq my-feature` → Starts Claude with scrolling
-2. **Terminal 2+ (Clients)**: `cq my-feature` → Interactive client for queueing messages
+2. **Terminal 2 (Client)**: `cq my-feature` → Interactive client for queueing messages
+
+**Note:** Only one client can connect to a server at a time (enforced via lock file).
 
 The same command auto-detects whether to start a server or connect as a client based on socket existence.
 
@@ -48,10 +50,6 @@ make install-monitor
 - macOS (for clipboard image support)
 
 ## Usage
-
-**💡 JetBrains Users:** Enable CQ to name your tabs for better monitoring:
-1. Settings → Tools → Terminal → Engine: **Classic**
-2. Advanced Settings → Terminal → ☑️ **Show application title**
 
 ### Quick Start
 
@@ -100,6 +98,13 @@ All commands are **case-insensitive**.
 | 🗑️ `:c` | Clear queue |
 | 📊 `:status` | Server status |
 | 👋 `:x` or `Ctrl+D` | Exit client |
+
+### 💡 JetBrains Users
+
+Enable CQ to name your tabs for better monitoring:
+
+1. **Settings → Tools → Terminal → Engine: Classic**
+2. **Advanced Settings → Terminal → ☑️ Show application title**
 
 ## Monitor GUI (cq-mo)
 
