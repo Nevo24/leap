@@ -320,12 +320,6 @@ class ClaudePTYClient:
                 if new_size > 0:
                     print(f"   ({new_size} remaining in queue)", flush=True)
 
-                # Reprint prompt for non-prompt_toolkit
-                if not HAS_PROMPT_TOOLKIT:
-                    prompt_prefix = f"[Queue:{new_size}]" if new_size > 0 else ""
-                    prompt = f"{prompt_prefix} You: " if prompt_prefix else "You: "
-                    print(prompt, end='', flush=True)
-
             # Update snapshot for next iteration
             last_queue_snapshot = list(current_queue)
 
