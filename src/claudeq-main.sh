@@ -20,7 +20,15 @@ ClaudeQ - Multi-session Claude Code with message queueing
 USAGE:
     cq <tag>                     Start server or connect as client
     cq <tag> <message>           Send message to server
+    cq <tag> [--flags]           Start server with flags (passed to Claude CLI)
     cq --help, -h                Show this help
+
+FLAGS (server only):
+    Flags starting with -- are passed directly to Claude CLI when starting a server.
+    They are NOT supported for clients (connecting to existing server).
+
+    Example:
+        cq my-tag --dangerously-skip-permissions
 
 EXAMPLES:
     # Terminal 1 (start server)
