@@ -87,6 +87,30 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 SOCKET_PATH="$HOME/.claude-sockets/${TAG}.sock"
 SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
 CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
+SOCKET_DIR="$HOME/.claude-sockets"
+QUEUE_DIR="$HOME/.claude-queues"
+
+# Auto-cleanup dead sockets (silent, runs in background)
+cleanup_dead_sockets() {
+    if [ -d "$SOCKET_DIR" ]; then
+        for sock in "$SOCKET_DIR"/*.sock 2>/dev/null; do
+            [ -e "$sock" ] || continue
+            local tag=$(basename "$sock" .sock)
+
+            # Check if server process is running for this tag
+            if ! ps aux | grep -E "claudeq-server.py $tag\$" | grep -v grep > /dev/null 2>&1; then
+                # No server process - socket is dead, remove it silently
+                rm -f "$sock" 2>/dev/null
+                rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
+                rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
+                rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
+            fi
+        done
+    fi
+}
+
+# Run cleanup in background to avoid delaying startup
+cleanup_dead_sockets &
 
 # Function to test if server is actually running
 test_socket_alive() {
