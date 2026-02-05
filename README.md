@@ -94,6 +94,7 @@ All commands are **case-insensitive**.
 | 🖼️ `:ip <msg>` | Queue with clipboard image |
 | ⚡ `:d <msg>` | Send directly (bypass queue) |
 | ⚡ `:d :ip <msg>` | Send directly with image |
+| ⚡ `:f` | Force-send next queued message |
 | 📋 `:l` | Show queue |
 | 🗑️ `:c` | Clear queue |
 | 📊 `:status` | Server status |
@@ -158,31 +159,6 @@ You: Find all TODO comments
 You: :ip What's wrong with this screenshot?
 🖼️ Image attached!
 📝 Queued with image: What's wrong with this screenshot? (1 total)
-```
-
-## Architecture
-
-```
-┌─────────────────────────┐
-│  Terminal 1 (IntelliJ)  │
-│                         │
-│  PTY Server             │
-│  ├─ Claude CLI          │
-│  ├─ Socket Server       │
-│  └─ Auto-sender         │
-│                         │
-│  ✅ Scrolling works!    │
-└─────────────────────────┘
-            ↑
-            │ Unix Socket
-            │
-    ┌───────┴────────┐
-    │                │
-┌───────┐      ┌───────┐
-│ Tab 2 │      │ Tab 3 │
-│       │      │       │
-│Client │      │Client │
-└───────┘      └───────┘
 ```
 
 ## Troubleshooting
