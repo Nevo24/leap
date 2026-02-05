@@ -21,8 +21,9 @@ QUEUE_DIR = Path.home() / ".claude-queues"
 SOCKET_DIR = Path.home() / ".claude-sockets"
 
 class ClaudePTYServer:
-    def __init__(self, tag):
+    def __init__(self, tag, flags=None):
         self.tag = tag
+        self.flags = flags or []
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
         self.metadata_file = SOCKET_DIR / f"{tag}.meta"
@@ -225,10 +226,10 @@ class ClaudePTYServer:
             print("Error: 'claude' command not found")
             sys.exit(1)
 
-        # Spawn Claude with standard settings
+        # Spawn Claude with any flags passed through
         self.claude_process = pexpect.spawn(
             claude_path,
-            ['--dangerously-skip-permissions'],
+            args=self.flags,
             dimensions=(rows, cols)
         )
 
@@ -549,10 +550,13 @@ def main():
     # Validate tag doesn't start with "-"
     if tag.startswith('-'):
         print("Error: Tag cannot start with '-'")
-        print("Usage: claudeq-server-pty-socket <tag>")
+        print("Usage: claudeq-server-pty-socket <tag> [flags...]")
         sys.exit(1)
 
-    server = ClaudePTYServer(tag)
+    # Collect all flags from remaining arguments to pass to Claude CLI
+    flags = [arg for arg in sys.argv[2:] if arg.startswith('--')]
+
+    server = ClaudePTYServer(tag, flags=flags)
     server.run()
 
 if __name__ == "__main__":

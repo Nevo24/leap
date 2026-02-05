@@ -161,6 +161,15 @@ if [ -S "$SOCKET_PATH" ]; then
     if test_socket_alive; then
         # Server is alive - launch client (interactive or with message)
         echo "✓ Server is running - launching client" >&2
+
+        # Check if flags were passed - clients don't support flags
+        if [ ${#FLAGS[@]} -gt 0 ]; then
+            echo "Error: Flags are not supported for clients" >&2
+            echo "Flags are only used when starting a server" >&2
+            echo "Unsupported flags: ${FLAGS[*]}" >&2
+            exit 1
+        fi
+
         # Set terminal tab name
         echo -ne "\033]0;cq-client ${TAG}\007"
         exec "$CLIENT_SCRIPT" "$TAG" "$@"
