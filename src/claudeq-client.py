@@ -290,7 +290,7 @@ class ClaudePTYClient:
 
     def queue_monitor(self):
         """Background thread to monitor queue changes"""
-        last_queue_snapshot = []
+        seen_sent_messages = set()  # Track which auto-sent messages we've notified about
         while self.running:
             time.sleep(0.3)  # Poll 3x per second to catch fast queue changes
 
@@ -301,44 +301,34 @@ class ClaudePTYClient:
 
             new_size = response.get('queue_size', 0)
             current_queue = response.get('queue_contents', [])
+            recently_sent = response.get('recently_sent', [])
 
-            # Detect if messages were auto-sent by comparing queue contents
-            # Do this BEFORE syncing local queue so prompt shows correct state
-            if last_queue_snapshot:
-                sent_messages = []
+            # Show notifications for newly auto-sent messages
+            # Server tracks recently sent messages, we track which ones we've shown
+            new_sent_messages = []
+            for msg in recently_sent:
+                if msg not in seen_sent_messages:
+                    new_sent_messages.append(msg)
+                    seen_sent_messages.add(msg)
 
-                # Find how many messages were sent from the front of the queue
-                # Queue is FIFO, so we check if current_queue matches the tail of last_queue_snapshot
-                for num_sent in range(len(last_queue_snapshot) + 1):
-                    remaining_from_last = last_queue_snapshot[num_sent:]
+            # Print notifications for new sent messages
+            if new_sent_messages:
+                for msg in new_sent_messages:
+                    msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
+                    print(f"\n🤖 Server auto-sent: {msg_preview}", flush=True)
 
-                    # Check if current queue starts with the remaining messages from last snapshot
-                    if len(remaining_from_last) == 0:
-                        # All messages from last snapshot were sent
-                        sent_messages = last_queue_snapshot[:]
-                        break
-                    elif len(current_queue) >= len(remaining_from_last):
-                        # Check if current starts with remaining
-                        if current_queue[:len(remaining_from_last)] == remaining_from_last:
-                            sent_messages = last_queue_snapshot[:num_sent]
-                            break
+                if new_size > 0:
+                    print(f"   ({new_size} remaining in queue)", flush=True)
 
-                # Print notifications for sent messages
-                if sent_messages:
-                    for msg in sent_messages:
-                        msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
-                        print(f"\n🤖 Server auto-sent: {msg_preview}", flush=True)
-
-                    if new_size > 0:
-                        print(f"   ({new_size} remaining in queue)", flush=True)
+            # Limit seen_sent_messages to prevent unbounded growth
+            # Keep only messages that are still in recently_sent or current queue
+            relevant_messages = set(recently_sent) | set(current_queue)
+            seen_sent_messages &= relevant_messages
 
             # Sync local queue with server's authoritative state
             # Do this AFTER printing notifications so prompt timing is correct
             self.message_queue.clear()
             self.message_queue.extend(current_queue)
-
-            # Update snapshot for next iteration
-            last_queue_snapshot = list(current_queue)
 
     def print_banner(self):
         """Print banner"""

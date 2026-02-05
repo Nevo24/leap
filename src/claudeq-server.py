@@ -35,6 +35,8 @@ class ClaudePTYServer:
         self.min_busy_duration = 3.0  # Minimum seconds to consider busy after sending
         self.pending_notifications = []  # Buffer for notifications
         self.notification_lock = threading.Lock()  # Protect notification buffer
+        self.recently_sent = []  # Track recently auto-sent messages for client notifications
+        self.recently_sent_lock = threading.Lock()  # Protect recently_sent list
 
         # Ensure directories exist
         QUEUE_DIR.mkdir(exist_ok=True)
@@ -280,9 +282,12 @@ class ClaudePTYServer:
                 response = {'status': 'sent'}
             elif msg['type'] == 'status':
                 claude_alive = self.claude_process and self.claude_process.isalive()
+                with self.recently_sent_lock:
+                    recently_sent_copy = list(self.recently_sent)
                 response = {
                     'queue_size': len(self.message_queue),
                     'queue_contents': list(self.message_queue),  # Include actual queue
+                    'recently_sent': recently_sent_copy,  # Include recently auto-sent messages
                     'ready': not self.is_claude_busy(),
                     'claude_running': claude_alive
                 }
@@ -304,6 +309,13 @@ class ClaudePTYServer:
                     if message.startswith('@'):
                         time.sleep(0.5)
                     self.claude_process.send('\r')
+
+                    # Track for client notifications
+                    with self.recently_sent_lock:
+                        self.recently_sent.append(message)
+                        # Keep only last 20 messages
+                        if len(self.recently_sent) > 20:
+                            self.recently_sent.pop(0)
 
                     response = {
                         'status': 'sent',
@@ -400,6 +412,13 @@ class ClaudePTYServer:
                     time.sleep(0.5)
 
                 self.claude_process.send('\r')
+
+                # Track for client notifications
+                with self.recently_sent_lock:
+                    self.recently_sent.append(msg)
+                    # Keep only last 20 messages
+                    if len(self.recently_sent) > 20:
+                        self.recently_sent.pop(0)
             except:
                 # Re-queue if failed
                 self.message_queue.appendleft(msg)
