@@ -122,8 +122,8 @@ cleanup_dead_sockets() {
             [ -e "$sock" ] || continue
             local tag=$(basename "$sock" .sock)
 
-            # Check if server process is running for this tag
-            if ! ps aux | grep -E "claudeq-server.py $tag\$" | grep -v grep > /dev/null 2>&1; then
+            # Check if server process is running for this tag (allow flags after tag)
+            if ! ps aux | grep -E "claudeq-server.py $tag(\s|$)" | grep -v grep > /dev/null 2>&1; then
                 # No server process - socket is dead, remove it silently
                 rm -f "$sock" 2>/dev/null
                 rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null

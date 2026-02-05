@@ -17,8 +17,8 @@ if [ -d "$SOCKET_DIR" ]; then
 
         tag=$(basename "$socket_file" .sock)
 
-        # Check if server process is running for this tag
-        if ps aux | grep -E "claudeq-server.py $tag\$" | grep -v grep > /dev/null 2>&1; then
+        # Check if server process is running for this tag (allow flags after tag)
+        if ps aux | grep -E "claudeq-server.py $tag(\s|$)" | grep -v grep > /dev/null 2>&1; then
             # Server process exists - socket is alive, skip it
             continue
         fi
