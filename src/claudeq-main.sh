@@ -39,6 +39,7 @@ CLIENT COMMANDS (when connected as interactive client):
     :ip <msg>           Queue with clipboard image
     :d <msg>            Send directly (bypass queue)
     :d :ip <msg>        Send directly with image
+    :f                  Force-send next queued message
     :l                  Show queue
     :c                  Clear queue
     :status             Server status
