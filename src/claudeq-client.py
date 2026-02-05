@@ -302,11 +302,8 @@ class ClaudePTYClient:
             new_size = response.get('queue_size', 0)
             current_queue = response.get('queue_contents', [])
 
-            # Sync local queue with server's authoritative state
-            self.message_queue.clear()
-            self.message_queue.extend(current_queue)
-
             # Detect if messages were auto-sent by comparing queue contents
+            # Do this BEFORE syncing local queue so prompt shows correct state
             if last_queue_snapshot:
                 sent_messages = []
 
@@ -334,6 +331,11 @@ class ClaudePTYClient:
 
                     if new_size > 0:
                         print(f"   ({new_size} remaining in queue)", flush=True)
+
+            # Sync local queue with server's authoritative state
+            # Do this AFTER printing notifications so prompt timing is correct
+            self.message_queue.clear()
+            self.message_queue.extend(current_queue)
 
             # Update snapshot for next iteration
             last_queue_snapshot = list(current_queue)
