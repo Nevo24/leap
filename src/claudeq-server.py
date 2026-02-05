@@ -457,6 +457,7 @@ class ClaudePTYServer:
         signal.signal(signal.SIGWINCH, self.handle_resize)
         signal.signal(signal.SIGTERM, lambda sig, frame: sys.exit(0))
         signal.signal(signal.SIGINT, lambda sig, frame: sys.exit(0))
+        signal.signal(signal.SIGHUP, lambda sig, frame: sys.exit(0))  # Terminal closed
 
         # Set terminal title again (Claude CLI may have changed it)
         sys.stdout.write(f"\033]0;cq-server {self.tag}\007")
