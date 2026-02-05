@@ -17,23 +17,19 @@ if [ -d "$SOCKET_DIR" ]; then
 
         tag=$(basename "$socket_file" .sock)
 
-        # Test if socket is alive
-        if ! python3 -c "
-import socket, sys
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(0.5)
-    s.connect('$socket_file')
-    s.close()
-    sys.exit(0)
-except:
-    sys.exit(1)
-" 2>/dev/null; then
-            echo "  Removing dead session: $tag"
-            rm -f "$socket_file"
-            rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
-            ((removed_count++))
+        # Check if server process is running for this tag
+        if ps aux | grep -E "claudeq-server.py $tag\$" | grep -v grep > /dev/null 2>&1; then
+            # Server process exists - socket is alive, skip it
+            continue
         fi
+
+        # No server process - socket is dead, remove it
+        echo "  Removing dead session: $tag"
+        rm -f "$socket_file"
+        rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
+        rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
+        rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
+        ((removed_count++))
     done
 fi
 
