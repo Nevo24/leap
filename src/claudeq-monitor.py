@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-ClaudeQ Monitor - GUI to view and manage active claudeq sessions
+ClaudeQ Monitor - GUI to view and manage active claudeq sessions (PyQt5 version)
 """
 import sys
 import os
 import subprocess
 from pathlib import Path
-import FreeSimpleGUI as sg
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QTableWidget, QTableWidgetItem,
+                             QPushButton, QLabel, QCheckBox, QHeaderView, QMessageBox)
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QIcon
 
 SOCKET_DIR = Path.home() / ".claude-sockets"
 QUEUE_DIR = Path.home() / ".claude-queues"
 
 
 def query_server_status(socket_path):
-    """Query server for status via socket (same as client does)"""
+    """Query server for status via socket"""
     try:
         import socket as sock
         import json
@@ -22,11 +26,7 @@ def query_server_status(socket_path):
         client_socket.settimeout(1.0)
         client_socket.connect(str(socket_path))
 
-        data = {
-            'type': 'status',
-            'message': ''
-        }
-
+        data = {'type': 'status', 'message': ''}
         client_socket.send(json.dumps(data).encode('utf-8'))
         response = client_socket.recv(4096).decode('utf-8')
         client_socket.close()
@@ -45,21 +45,15 @@ def get_active_sessions():
 
     for socket_file in SOCKET_DIR.glob("*.sock"):
         tag = socket_file.stem
-
-        # Query server status via socket (same as client does)
         status_response = query_server_status(socket_file)
 
         if not status_response:
-            # Server not responding, skip this session
             continue
 
-        # Get queue size and ready status from server
         queue_size = status_response.get('queue_size', 0)
         is_ready = status_response.get('ready', True)
-        # "Running" means Claude is busy (NOT ready to accept next message)
         claude_busy = not is_ready
 
-        # Load metadata to get project info and branch
         project_name = None
         branch_name = None
 
@@ -78,139 +72,107 @@ def get_active_sessions():
 
         sessions.append({
             'tag': tag,
-            'alive': True,  # We already confirmed it's alive via status query
             'claude_busy': claude_busy,
             'queue_size': queue_size,
-            'socket': str(socket_file),
             'project': project_name or 'N/A',
-            'branch': branch_name or 'N/A'
+            'branch': branch_name or 'N/A',
+            'project_path': metadata.get('project_path', '') if metadata_file.exists() else None,
+            'ide': metadata.get('ide', '') if metadata_file.exists() else None,
         })
 
     return sorted(sessions, key=lambda x: x['tag'])
 
 
-def _try_jetbrains(title_pattern, preferred_ide=None, project_path=None, terminal_title=None):
-    """Helper to try JetBrains IDEs"""
-    script_dir = Path(__file__).parent
-    groovy_script = script_dir / "activate_terminal.groovy"
-
-    cmd_to_process = {
-        'idea': 'IntelliJ IDEA',
-        'pycharm': 'PyCharm',
-        'webstorm': 'WebStorm',
-        'phpstorm': 'PhpStorm',
-        'goland': 'GoLand',
-        'rubymine': 'RubyMine',
-        'clion': 'CLion',
-        'datagrip': 'DataGrip'
-    }
-
-    # If we have a preferred IDE, check only that one first
-    if preferred_ide:
-        for cmd, process_name in cmd_to_process.items():
-            if process_name == preferred_ide or preferred_ide.lower() in process_name.lower():
-                try:
-                    # Quick check if running
-                    result = subprocess.run(
-                        ['osascript', '-e', f'tell application "System Events" to return exists (process "{process_name}")'],
-                        capture_output=True,
-                        text=True
-                    )
-                    if result.returncode == 0 and 'true' in result.stdout:
-                        # Check CLI exists
-                        if subprocess.run(['which', cmd], capture_output=True).returncode == 0:
-                            return _activate_jetbrains_ide(cmd, process_name, project_path, terminal_title, groovy_script)
-                except:
-                    pass
-
-    return False
-
-
-def _activate_jetbrains_ide(idea_cmd, ide_app_name, project_path, terminal_title, groovy_script):
-    """Activate a specific JetBrains IDE"""
-    try:
-        # Use the IDE CLI to directly open/focus the project
-        if project_path:
-            subprocess.run(
-                [idea_cmd, project_path],
-                capture_output=True,
-                text=True
-            )
-        else:
-            # Just bring the IDE to front
-            subprocess.run(
-                ['osascript', '-e', f'tell application "System Events" to tell process "{ide_app_name}" to set frontmost to true'],
-                capture_output=True
-            )
-
-        # Small delay to let the window come to front
-        import time
-        time.sleep(0.2)
-
-        # Try to activate the Terminal in this IDE
-        import tempfile
-
-        if project_path or terminal_title:
-            # Create temporary groovy script with hardcoded values
-            with open(groovy_script, 'r') as f:
-                template_content = f.read()
-
-            custom_script = template_content
-            if project_path:
-                custom_script = custom_script.replace(
-                    'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
-                    f'var projectPath = "{project_path}"'
-                )
-            if terminal_title:
-                custom_script = custom_script.replace(
-                    'var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")',
-                    f'var terminalTabName = "{terminal_title}"'
-                )
-
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
-                tmp.write(custom_script)
-                tmp_script_path = tmp.name
-
-            groovy_to_use = tmp_script_path
-        else:
-            groovy_to_use = str(groovy_script)
-
-        try:
-            result = subprocess.run(
-                [idea_cmd, 'ideScript', groovy_to_use],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
-                return 'jetbrains'
-        finally:
-            if groovy_to_use != str(groovy_script) and os.path.exists(groovy_to_use):
-                try:
-                    os.unlink(groovy_to_use)
-                except:
-                    pass
-    except:
-        pass
-
-    return False
-
-
 def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=None, terminal_title=None):
-    """Find terminal window/tab with matching title using AppleScript
+    """Find terminal window/tab with matching title"""
+    # Try JetBrains IDEs first if preferred IDE is specified
+    if preferred_ide and any(ide in preferred_ide for ide in ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm']):
+        script_dir = Path(__file__).parent
+        groovy_script = script_dir / "activate_terminal.groovy"
 
-    Args:
-        title_pattern: The terminal title pattern to search for
-        preferred_ide: The IDE name from metadata (e.g., 'PyCharm', 'GoLand')
-        project_path: The project directory path from metadata
-        terminal_title: The terminal tab title to search for (e.g., 'cq-server tag')
-    """
-    # If we have a preferred IDE, try JetBrains first for speed
-    if preferred_ide and any(ide in preferred_ide for ide in ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm', 'RubyMine', 'CLion', 'DataGrip']):
-        result = _try_jetbrains(title_pattern, preferred_ide, project_path, terminal_title)
-        if result:
-            return result
+        # Check for groovy script in Resources if running from .app
+        if not groovy_script.exists():
+            groovy_script = script_dir.parent / "Resources" / "activate_terminal.groovy"
 
-    # Try Terminal.app first
+        if groovy_script.exists():
+            ide_cmd_map = {
+                'PyCharm': 'pycharm',
+                'IntelliJ IDEA': 'idea',
+                'GoLand': 'goland',
+                'WebStorm': 'webstorm',
+                'PhpStorm': 'phpstorm',
+            }
+
+            ide_cmd = ide_cmd_map.get(preferred_ide)
+            if ide_cmd:
+                try:
+                    import tempfile
+                    # Create a temporary groovy script with hardcoded values
+                    with open(groovy_script, 'r') as f:
+                        template_content = f.read()
+
+                    custom_script = template_content
+                    if project_path:
+                        custom_script = custom_script.replace(
+                            'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
+                            f'var projectPath = "{project_path}"'
+                        )
+                    if terminal_title:
+                        custom_script = custom_script.replace(
+                            'var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")',
+                            f'var terminalTabName = "{terminal_title}"'
+                        )
+
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
+                        tmp.write(custom_script)
+                        tmp_script_path = tmp.name
+
+                    try:
+                        # Expand PATH to include JetBrains CLI tools
+                        import glob
+                        env = os.environ.copy()
+                        jetbrains_paths = []
+
+                        # Find JetBrains .app bundles
+                        for pattern in ['IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
+                                       'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
+                                       'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app']:
+                            for app in glob.glob(f'/Applications/{pattern}'):
+                                jetbrains_paths.append(f'{app}/Contents/MacOS')
+
+                        if jetbrains_paths:
+                            env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+
+                        # First, open/focus the project if we have a project path
+                        if project_path:
+                            subprocess.run(
+                                [ide_cmd, project_path],
+                                capture_output=True,
+                                env=env,
+                                timeout=5
+                            )
+                            # Give IDE time to open/focus
+                            import time
+                            time.sleep(0.3)
+
+                        # Then run the groovy script to activate terminal
+                        result = subprocess.run(
+                            [ide_cmd, 'ideScript', tmp_script_path],
+                            capture_output=True,
+                            timeout=5,
+                            env=env
+                        )
+                        if result.returncode == 0:
+                            return True
+                    finally:
+                        try:
+                            os.unlink(tmp_script_path)
+                        except:
+                            pass
+                except:
+                    pass
+
+    # Try Terminal.app
     script = f'''
     tell application "Terminal"
         repeat with w in windows
@@ -229,11 +191,7 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
     '''
 
     try:
-        result = subprocess.run(
-            ['osascript', '-e', script],
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
         if result.returncode == 0 and 'true' in result.stdout:
             return True
     except:
@@ -260,249 +218,204 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
     '''
 
     try:
-        result = subprocess.run(
-            ['osascript', '-e', script_iterm],
-            capture_output=True,
-            text=True
-        )
+        result = subprocess.run(['osascript', '-e', script_iterm], capture_output=True, text=True)
         if result.returncode == 0 and 'true' in result.stdout:
             return True
     except:
         pass
 
-    # Try VS Code
-    script_vscode = f'''
-    tell application "System Events"
-        if exists (process "Code") then
-            tell process "Code"
-                set frontmost to true
-                return true
-            end tell
-        end if
-    end tell
-    return false
-    '''
-
-    try:
-        result = subprocess.run(
-            ['osascript', '-e', script_vscode],
-            capture_output=True,
-            text=True
-        )
-        if result.returncode == 0 and 'true' in result.stdout:
-            return 'vscode'
-    except:
-        pass
-
-    # Try JetBrains IDEs as fallback
-    result = _try_jetbrains(title_pattern, preferred_ide, project_path, terminal_title)
-    if result:
-        return result
-
     return False
-
-
-def load_session_metadata(tag):
-    """Load metadata for a session"""
-    metadata_file = SOCKET_DIR / f"{tag}.meta"
-    if metadata_file.exists():
-        try:
-            import json
-            with open(metadata_file, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return None
-
 
 
 def focus_session(tag, session_type='server'):
     """Focus the terminal with the given session"""
-    title_pattern = f"cq-{session_type} {tag}"
+    # Load metadata
+    metadata_file = SOCKET_DIR / f"{tag}.meta"
+    metadata = None
+    if metadata_file.exists():
+        try:
+            import json
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+        except:
+            pass
 
-    # Try to load metadata to find preferred IDE and project
-    metadata = load_session_metadata(tag)
     preferred_ide = metadata.get('ide') if metadata else None
     project_path = metadata.get('project_path') if metadata else None
+    title_pattern = f"cq-{session_type} {tag}"
+    terminal_title = title_pattern
 
-    # Construct the correct terminal title based on session type
-    # Metadata only has server title, so we need to build client title
-    terminal_title = f"cq-{session_type} {tag}"
-
-    # Check if the requested session type exists
+    # Check if session exists
     if session_type == 'client':
         client_lock = SOCKET_DIR / f"{tag}.client.lock"
         if not client_lock.exists():
-            # Client not found, offer to go to server instead
-            response = sg.popup_yes_no(
-                f'Client not found for: {tag}\n\n'
-                f'Go to server instead?',
-                title='Client Not Found'
-            )
-            if response == 'Yes':
+            reply = QMessageBox.question(None, 'Client Not Found',
+                                        f'Client not found for: {tag}\n\nGo to server instead?',
+                                        QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
                 focus_session(tag, 'server')
             return
     elif session_type == 'server':
         socket_file = SOCKET_DIR / f"{tag}.sock"
         if not socket_file.exists():
-            # Server not found, offer to go to client instead
-            response = sg.popup_yes_no(
-                f'Server not found for: {tag}\n\n'
-                f'Go to client instead?',
-                title='Server Not Found'
-            )
-            if response == 'Yes':
+            reply = QMessageBox.question(None, 'Server Not Found',
+                                        f'Server not found for: {tag}\n\nGo to client instead?',
+                                        QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
                 focus_session(tag, 'client')
             return
 
+    # Try to find and focus the terminal
     result = find_terminal_with_title(title_pattern, preferred_ide, project_path, terminal_title)
 
-    # Only show error popup if something went wrong
-    # Success cases: the terminal/IDE is now in front, don't steal focus back
-    if result == False and result != 'vscode' and result != 'jetbrains' and result != 'jetbrains_fallback':
-        sg.popup_error(f'Could not find terminal for {session_type}: {tag}\n\n'
-                      f'Make sure the terminal tab title is set correctly.')
+    if not result:
+        QMessageBox.warning(None, 'Navigation Failed',
+                           f'Could not navigate to {session_type}: {tag}\n\n'
+                           'Make sure terminal tab titles are configured correctly.')
 
 
-def create_window(sessions, location=None):
-    """Create the monitor GUI window"""
-    sg.theme('DarkBlue3')
+class MonitorWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.sessions = []
 
-    if not sessions:
-        layout = [
-            [sg.Text('No active ClaudeQ sessions found', font=('Helvetica', 12))],
-            [sg.Text('')],
-            [sg.Button('Refresh', key='refresh'), sg.Button('Close')]
+        # Setup auto-refresh timer BEFORE init_ui (so signal handler can access it)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.auto_refresh)
+
+        self.init_ui()
+        self.refresh_data()
+
+        # Start timer after UI is initialized
+        self.timer.start(1000)  # Start with 1 second interval
+
+    def init_ui(self):
+        self.setWindowTitle('ClaudeQ Monitor')
+        self.setGeometry(100, 100, 900, 600)
+
+        # Set app icon
+        icon_paths = [
+            Path(__file__).parent.parent / "assets" / "claudeq-icon.png",
+            Path(__file__).parent / "claudeq-icon.png",
         ]
-    else:
-        header = [
-            [sg.Text('ClaudeQ Session Monitor', font=('Helvetica', 17, 'bold'))],
-            [sg.Text('JetBrains Users: Enable CQ to name your tabs:', font=('Helvetica', 11), text_color='yellow')],
-            [sg.Text('1. Settings > Tools > Terminal > Engine: Classic', font=('Helvetica', 10), text_color='lightblue')],
-            [sg.Text('2. Advanced Settings > Terminal > ☑️ "Show application title"', font=('Helvetica', 10), text_color='lightblue')],
-            [sg.HorizontalSeparator()],
-            # Column headers
-            [
-                sg.Text('Tag', size=(16, 1), font=('Helvetica', 12, 'bold'), justification='left'),
-                sg.Text('Project', size=(19, 1), font=('Helvetica', 12, 'bold'), justification='left'),
-                sg.Text('Branch', size=(19, 1), font=('Helvetica', 12, 'bold'), justification='left'),
-                sg.Text('Status', size=(13, 1), font=('Helvetica', 12, 'bold'), justification='left'),
-                sg.Text('Queue', size=(7, 1), font=('Helvetica', 12, 'bold'), justification='left'),
-                sg.Text('Actions', size=(22, 1), font=('Helvetica', 12, 'bold'), justification='left')
-            ]
-        ]
+        for icon_path in icon_paths:
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+                break
 
-        session_rows = []
-        for session in sessions:
-            # Status: Show if Claude is busy processing (running) or ready (idle)
-            if session.get('claude_busy', False):
-                status = '✅ Running'
-            else:
-                status = '⚪ Idle'
+        # Main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout()
+        main_widget.setLayout(layout)
 
-            project = session.get('project', 'N/A')
-            branch = session.get('branch', 'N/A')
-            queue_count = session.get('queue_size', 0)
+        # Help text
+        help_label = QLabel('JetBrains Users: Enable CQ to name your tabs:\n'
+                           '1. Settings > Tools > Terminal > Engine: Classic\n'
+                           '2. Advanced Settings > Terminal > ☑ "Show application title"')
+        help_label.setStyleSheet('color: #FFA500; font-size: 10px;')
+        layout.addWidget(help_label)
 
-            tag = session['tag']
-            row = [
-                sg.Text(f"{tag}", size=(16, 1), font=('Helvetica', 13), justification='left'),
-                sg.Text(f"{project}", size=(19, 1), font=('Helvetica', 12), justification='left'),
-                sg.Text(f"{branch}", size=(19, 1), font=('Helvetica', 12), justification='left'),
-                sg.Text(status, size=(13, 1), font=('Helvetica', 12), justification='left', key=f"status_{tag}"),
-                sg.Text(f"{queue_count}", size=(7, 1), font=('Helvetica', 12), justification='left', key=f"queue_{tag}"),
-                sg.Button('Server', key=f"server_{tag}", size=(10, 1), font=('Helvetica', 13)),
-                sg.Button('Client', key=f"client_{tag}", size=(10, 1), font=('Helvetica', 13))
-            ]
-            session_rows.append(row)
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(['Tag', 'Project', 'Branch', 'Status', 'Queue', 'Server', 'Client'])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setSelectionMode(QTableWidget.NoSelection)
+        layout.addWidget(self.table)
 
-        footer = [
-            [sg.HorizontalSeparator()],
-            [sg.Button('Refresh', key='refresh', size=(10, 1), font=('Helvetica', 13)),
-             sg.Checkbox('Auto (1s)', key='auto_toggle', default=False, enable_events=True, font=('Helvetica', 13)),
-             sg.Push(),
-             sg.Button('Close', size=(10, 1), font=('Helvetica', 13))]
-        ]
+        # Bottom controls
+        bottom_layout = QHBoxLayout()
 
-        layout = header + session_rows + footer
+        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn.clicked.connect(self.refresh_data)
+        bottom_layout.addWidget(self.refresh_btn)
 
-    return sg.Window('ClaudeQ Monitor', layout, location=location, finalize=True)
+        self.auto_check = QCheckBox('Auto (1s)')
+        self.auto_check.setChecked(True)  # Default to enabled
+        self.auto_check.stateChanged.connect(self.toggle_auto_refresh)
+        bottom_layout.addWidget(self.auto_check)
 
+        bottom_layout.addStretch()
 
-def update_window_data(window, sessions):
-    """Update the window data without recreating it"""
-    for session in sessions:
-        tag = session['tag']
-        # Check if this session exists in the window
-        if f"status_{tag}" not in window.key_dict:
-            return False  # Session list changed, need to recreate window
+        close_btn = QPushButton('Close')
+        close_btn.clicked.connect(self.close)
+        bottom_layout.addWidget(close_btn)
 
-        # Status: Show if Claude is busy processing (running) or ready (idle)
-        if session.get('claude_busy', False):
-            status = '✅ Running'
+        layout.addLayout(bottom_layout)
+
+    def refresh_data(self):
+        """Refresh session data and update table"""
+        self.sessions = get_active_sessions()
+        self.update_table()
+
+    def update_table(self):
+        """Update table with current sessions"""
+        self.table.setRowCount(len(self.sessions))
+
+        if not self.sessions:
+            self.table.setRowCount(1)
+            self.table.setItem(0, 0, QTableWidgetItem('No active sessions'))
+            return
+
+        for row, session in enumerate(self.sessions):
+            # Tag
+            self.table.setItem(row, 0, QTableWidgetItem(session['tag']))
+
+            # Project
+            self.table.setItem(row, 1, QTableWidgetItem(session['project']))
+
+            # Branch
+            self.table.setItem(row, 2, QTableWidgetItem(session['branch']))
+
+            # Status
+            status = '✅ Running' if session['claude_busy'] else '⚪ Idle'
+            self.table.setItem(row, 3, QTableWidgetItem(status))
+
+            # Queue
+            self.table.setItem(row, 4, QTableWidgetItem(str(session['queue_size'])))
+
+            # Server button
+            server_btn = QPushButton('Server')
+            server_btn.clicked.connect(lambda checked, t=session['tag']: focus_session(t, 'server'))
+            self.table.setCellWidget(row, 5, server_btn)
+
+            # Client button
+            client_btn = QPushButton('Client')
+            client_btn.clicked.connect(lambda checked, t=session['tag']: focus_session(t, 'client'))
+            self.table.setCellWidget(row, 6, client_btn)
+
+    def auto_refresh(self):
+        """Auto-refresh callback"""
+        self.refresh_data()
+
+    def toggle_auto_refresh(self, state):
+        """Toggle auto-refresh on/off"""
+        if state == Qt.Checked:
+            self.timer.start(1000)  # 1 second
         else:
-            status = '⚪ Idle'
-
-        queue_count = session.get('queue_size', 0)
-
-        # Update the elements
-        window[f"status_{tag}"].update(status)
-        window[f"queue_{tag}"].update(str(queue_count))
-
-    return True  # Successfully updated
+            self.timer.stop()
 
 
 def main():
-    """Main monitor loop"""
-    # Set terminal title
-    print("\033]0;claudeq-monitor\007", end='', flush=True)
+    """Main entry point"""
+    app = QApplication(sys.argv)
+    app.setApplicationName('ClaudeQ Monitor')
 
-    sessions = get_active_sessions()
-    window = create_window(sessions)
-    auto_refresh = False
-    current_session_tags = set(s['tag'] for s in sessions)
-
-    while True:
-        # Timeout of 1000ms (1s) if auto-refresh is enabled, None otherwise
-        timeout = 1000 if auto_refresh else None
-        event, values = window.read(timeout=timeout)
-
-        if event in (sg.WIN_CLOSED, 'Close'):
+    # Set app icon for Dock
+    icon_paths = [
+        Path(__file__).parent.parent / "assets" / "claudeq-icon.png",
+        Path(__file__).parent / "claudeq-icon.png",
+    ]
+    for icon_path in icon_paths:
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
             break
 
-        if event == 'refresh' or (auto_refresh and event == sg.TIMEOUT_KEY):
-            new_sessions = get_active_sessions()
-            new_session_tags = set(s['tag'] for s in new_sessions)
+    window = MonitorWindow()
+    window.show()
 
-            # Check if session list changed (added or removed)
-            if new_session_tags != current_session_tags:
-                # Session list changed, need to recreate window
-                current_auto_state = values.get('auto_toggle', False) if values else auto_refresh
-                current_location = window.current_location()
-                window.close()
-                window = create_window(new_sessions, location=current_location)
-                if current_auto_state:
-                    window['auto_toggle'].update(value=True)
-                auto_refresh = current_auto_state
-                current_session_tags = new_session_tags
-            else:
-                # Just update the data without recreating window
-                update_window_data(window, new_sessions)
-
-            sessions = new_sessions
-
-        if event == 'auto_toggle':
-            auto_refresh = values.get('auto_toggle', False)
-
-        if event and event.startswith('server_'):
-            tag = event.replace('server_', '')
-            focus_session(tag, 'server')
-
-        if event and event.startswith('client_'):
-            tag = event.replace('client_', '')
-            focus_session(tag, 'client')
-
-    window.close()
+    sys.exit(app.exec_())
 
 
 if __name__ == '__main__':

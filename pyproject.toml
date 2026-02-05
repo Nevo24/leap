@@ -14,7 +14,8 @@ pexpect = "^4.8.0"
 prompt-toolkit = "^3.0.0"
 
 [tool.poetry.group.monitor.dependencies]
-FreeSimpleGUI = "^5.1.0"
+PyQt5 = "^5.15.0"
+py2app = "^0.28"
 
 [tool.poetry.scripts]
 claudeq-main = "claudeq.main:main"

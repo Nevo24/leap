@@ -7,12 +7,7 @@ Queue multiple prompts with images in one terminal while Claude works in another
 ## ✨ Key Features
 
 - 📝 **Smart message queueing** - Auto-sends when Claude is ready
-- 🖼️ **Image support** - Paste images from clipboard
-- 🔌 **Client-server architecture** - One client per session
-- 🖥️ **GUI Monitor (cq-mo)** - Jump to sessions across IDEs and projects
-- 🧹 **Auto-cleanup** - Proper socket management
-- 📊 **Real-time queue monitoring** - See messages being processed
-- 🖱️ **Native scrolling in IntelliJ/JetBrains IDEs** - No tmux needed!
+- 🖥️ **Real-time GUI queue monitoring** - See messages being processed + Jump to sessions across IDEs and projects
 
 ## How It Works
 
@@ -21,11 +16,19 @@ ClaudeQ uses a **PTY-based client-server model**:
 1. **Terminal 1 (Server)**: `cq my-feature` → Starts Claude with scrolling
 2. **Terminal 2 (Client)**: `cq my-feature` → Interactive client for queueing messages
 
-**Note:** Only one client can connect to a server at a time (enforced via lock file).
+**Note:** Only one client can connect to a server at a time
 
 The same command auto-detects whether to start a server or connect as a client based on socket existence.
 
+## Platform Compatibility
+
+**macOS**: Full support (all features)
+**Linux**: Core features work (queueing, auto-send). Image support and monitor navigation require adaptation.
+**Windows**: Not supported (PTY/Unix sockets incompatible)
+
 ## Installation
+
+### Core Installation
 
 ```bash
 # 1. Install Claude CLI (required)
@@ -38,10 +41,20 @@ make install
 
 # 3. Reload shell
 source ~/.zshrc  # or ~/.bashrc for bash
+```
 
-# 4. Optional: Install monitor GUI
+### Monitor GUI (Optional)
+
+The monitor is a native macOS app that shows all active sessions and lets you jump to them.
+
+```bash
 make install-monitor
 ```
+
+This will:
+- Build the app with py2app (PyQt5)
+- Install to `/Applications/ClaudeQ Monitor.app`
+- Launch from Spotlight, Applications folder, or pin to Dock
 
 **Requirements:**
 - Python 3.8+
@@ -107,13 +120,14 @@ Enable CQ to name your tabs for better monitoring:
 1. **Settings → Tools → Terminal → Engine: Classic**
 2. **Advanced Settings → Terminal → ☑️ Show application title**
 
-## Monitor GUI (cq-mo)
+## Monitor GUI
 
-Launch the GUI monitor to view all active sessions and quickly jump to them:
+Launch the GUI monitor to view all active sessions and quickly jump to them.
 
-```bash
-cq-mo
-```
+After running `make install-monitor`, launch from:
+- Spotlight: Search "ClaudeQ Monitor"
+- Applications folder: Double-click `ClaudeQ Monitor.app`
+- Dock: Pin the app for quick access
 
 The monitor shows:
 - All active ClaudeQ sessions
@@ -222,8 +236,7 @@ If you moved the project directory, update the path in your shell config (~/.zsh
 ## Additional Commands
 
 ```bash
-cq-cleanup    # Remove dead sessions
-cq-mo         # Launch monitor GUI (requires make install-monitor)
+cq-cleanup    # Remove dead sessions (or: cqc)
 ```
 
 ## Technical Details
@@ -246,15 +259,28 @@ Images are sent to Claude CLI using the `@path` syntax with a required trailing 
 
 ## Uninstall
 
+### Uninstall Monitor Only
+
+Removes only the monitor app from `/Applications` and cleans build artifacts:
+
 ```bash
-cd claudeq
+make uninstall-monitor
+```
+
+### Uninstall Everything
+
+Removes all ClaudeQ components (core + monitor):
+
+```bash
 make uninstall
 ```
 
-This removes shell configuration and data directories. To also remove the Poetry virtual environment:
-```bash
-make clean
-```
+This removes:
+- Shell configuration from `.zshrc`/`.bashrc`
+- Poetry virtual environment
+- ClaudeQ Monitor.app from `/Applications`
+- Session data (`~/.claude-sockets`, `~/.claude-queues`)
+- Build artifacts (`build/`, `dist/`)
 
 ## License
 

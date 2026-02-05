@@ -37,9 +37,21 @@ install-core:
 install-monitor: .env
 	@echo "$(PROMPT_PREFIX) Installing monitor dependencies..."
 	@poetry install --no-root --with monitor
+	@echo "$(PROMPT_PREFIX) Building ClaudeQ Monitor.app with py2app..."
+	@cd $(REPO_PATH) && poetry run python setup.py py2app > /dev/null 2>&1
+	@echo "$(PROMPT_PREFIX) Installing ClaudeQ Monitor.app to /Applications..."
+	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
+	fi
+	@sudo cp -R "$(REPO_PATH)/dist/ClaudeQ Monitor.app" /Applications/
 	@echo "$(GREEN)✓ Monitor installed successfully!$(NC)"
 	@echo ""
-	@echo "You can now run: claudeq-monitor (or: cqm)"
+	@echo "Launch ClaudeQ Monitor from:"
+	@echo "  • Spotlight: Search 'ClaudeQ Monitor'"
+	@echo "  • Applications: Double-click ClaudeQ Monitor.app"
+	@echo "  • Dock: Pin it for quick access"
+	@echo ""
+	@echo "$(YELLOW)Note: Custom icon in Dock works perfectly!$(NC)"
 	@echo ""
 
 .PHONY: clean
@@ -48,6 +60,8 @@ clean:
 	@poetry env remove --all
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
 	@rm -rf ~/.claude-queues ~/.claude-sockets
+	@rm -rf build dist
+	@echo "$(GREEN)✓ Cleaned up build artifacts$(NC)"
 
 .PHONY: lock
 lock: .env
@@ -81,7 +95,6 @@ configure-shell:
 	@chmod +x $(SRC_DIR)/claudeq-server.py
 	@chmod +x $(SRC_DIR)/claudeq-client.py
 	@chmod +x $(SRC_DIR)/claudeq-cleanup.sh
-	@chmod +x $(SRC_DIR)/cq-mo-wrapper.sh
 	@chmod +x $(SRC_DIR)/claudeq-monitor.py
 	@$(MAKE) .detect-shell
 
@@ -123,7 +136,6 @@ configure-shell:
 	echo "# Server in JetBrains, client in any terminal" >> "$$RC_FILE"; \
 	echo "#" >> "$$RC_FILE"; \
 	echo "# Usage: claudeq <tag> [message] (or: cq)" >> "$$RC_FILE"; \
-	echo "#        claudeq-monitor (or: cqm)" >> "$$RC_FILE"; \
 	echo "#        claudeq-cleanup (or: cqc)" >> "$$RC_FILE"; \
 	echo "#        claudeq-activate (or: cqa) - activate the venv" >> "$$RC_FILE"; \
 	echo "#" >> "$$RC_FILE"; \
@@ -158,10 +170,6 @@ configure-shell:
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-main.sh\" \"\$$@\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
-	echo "claudeq-monitor() {" >> "$$RC_FILE"; \
-	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/cq-mo-wrapper.sh\"" >> "$$RC_FILE"; \
-	echo "}" >> "$$RC_FILE"; \
-	echo "" >> "$$RC_FILE"; \
 	echo "claudeq-cleanup() {" >> "$$RC_FILE"; \
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-cleanup.sh\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
@@ -178,12 +186,23 @@ configure-shell:
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
 	echo "alias cq='claudeq'" >> "$$RC_FILE"; \
-	echo "alias cqm='claudeq-monitor'" >> "$$RC_FILE"; \
 	echo "alias cqc='claudeq-cleanup'" >> "$$RC_FILE"; \
 	echo "alias cqa='claudeq-activate'" >> "$$RC_FILE"; \
 	echo "# ===== ClaudeQ Configuration END - DO NOT REMOVE (needed for uninstall) =====" >> "$$RC_FILE"; \
 	echo "$(GREEN)✓ Added ClaudeQ configuration to $$RC_FILE$(NC)"; \
 	echo "  Using Poetry venv: $$POETRY_VENV"
+
+.PHONY: uninstall-monitor
+uninstall-monitor:
+	@echo "$(PROMPT_PREFIX) Uninstalling ClaudeQ Monitor..."
+	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
+		echo "$(GREEN)✓ Removed ClaudeQ Monitor.app from /Applications$(NC)"; \
+	else \
+		echo "  ClaudeQ Monitor.app not found in /Applications"; \
+	fi
+	@rm -rf build dist
+	@echo "$(GREEN)✓ Monitor uninstalled successfully!$(NC)"
 
 .PHONY: uninstall
 uninstall:
@@ -219,7 +238,15 @@ uninstall:
 	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
 	@rm -rf ~/.claude-queues ~/.claude-sockets
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
+	@rm -rf build dist setup.py
 	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
+	@echo "$(PROMPT_PREFIX) Removing ClaudeQ Monitor.app from /Applications..."
+	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
+		echo "$(GREEN)✓ Removed ClaudeQ Monitor.app$(NC)"; \
+	else \
+		echo "  ClaudeQ Monitor.app not found in /Applications"; \
+	fi
 	@echo ""
 	@echo "$(GREEN)✓ ClaudeQ fully uninstalled!$(NC)"
 	@echo "Project is now in clean state (like just cloned)"
