@@ -306,19 +306,34 @@ class ClaudePTYClient:
             self.message_queue.clear()
             self.message_queue.extend(current_queue)
 
-            # Detect if messages were auto-sent (compare snapshots)
-            if last_queue_snapshot and len(last_queue_snapshot) > len(current_queue):
-                # Find which messages were sent (removed from front of queue)
-                num_sent = len(last_queue_snapshot) - len(current_queue)
+            # Detect if messages were auto-sent by comparing queue contents
+            if last_queue_snapshot:
+                sent_messages = []
 
-                for i in range(num_sent):
-                    if i < len(last_queue_snapshot):
-                        msg = last_queue_snapshot[i]
+                # Find how many messages were sent from the front of the queue
+                # Queue is FIFO, so we check if current_queue matches the tail of last_queue_snapshot
+                for num_sent in range(len(last_queue_snapshot) + 1):
+                    remaining_from_last = last_queue_snapshot[num_sent:]
+
+                    # Check if current queue starts with the remaining messages from last snapshot
+                    if len(remaining_from_last) == 0:
+                        # All messages from last snapshot were sent
+                        sent_messages = last_queue_snapshot[:]
+                        break
+                    elif len(current_queue) >= len(remaining_from_last):
+                        # Check if current starts with remaining
+                        if current_queue[:len(remaining_from_last)] == remaining_from_last:
+                            sent_messages = last_queue_snapshot[:num_sent]
+                            break
+
+                # Print notifications for sent messages
+                if sent_messages:
+                    for msg in sent_messages:
                         msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
                         print(f"\n🤖 Server auto-sent: {msg_preview}", flush=True)
 
-                if new_size > 0:
-                    print(f"   ({new_size} remaining in queue)", flush=True)
+                    if new_size > 0:
+                        print(f"   ({new_size} remaining in queue)", flush=True)
 
             # Update snapshot for next iteration
             last_queue_snapshot = list(current_queue)
