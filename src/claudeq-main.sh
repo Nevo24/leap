@@ -93,7 +93,7 @@ QUEUE_DIR="$HOME/.claude-queues"
 # Auto-cleanup dead sockets (silent, runs in background)
 cleanup_dead_sockets() {
     if [ -d "$SOCKET_DIR" ]; then
-        for sock in "$SOCKET_DIR"/*.sock 2>/dev/null; do
+        for sock in "$SOCKET_DIR"/*.sock; do
             [ -e "$sock" ] || continue
             local tag=$(basename "$sock" .sock)
 
