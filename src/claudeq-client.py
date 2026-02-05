@@ -160,12 +160,22 @@ class ClaudePTYClient:
             except:
                 pass
 
-    def _custom_input(self, prompt):
+    def _get_prompt(self):
+        """Generate current prompt text based on queue state"""
+        prompt_prefix = f"[Queue:{len(self.message_queue)}]" if self.message_queue else ""
+        if self.pending_image_path:
+            return f"{prompt_prefix}[📸] You: " if prompt_prefix else "[📸] You: "
+        else:
+            return f"{prompt_prefix} You: " if prompt_prefix else "You: "
+
+    def _custom_input(self):
         """Custom input using prompt_toolkit if available"""
         if HAS_PROMPT_TOOLKIT and self.prompt_session:
-            return self.prompt_session.prompt(prompt)
+            # Use callable prompt for dynamic updates
+            return self.prompt_session.prompt(self._get_prompt)
         else:
-            return input(prompt)
+            # Static prompt for basic input()
+            return input(self._get_prompt())
 
     def check_server_exists(self):
         """Check if PTY server is running by checking socket"""
@@ -397,15 +407,8 @@ class ClaudePTYClient:
                 context_manager.__enter__()
 
             while True:
-                # Prompt
-                prompt_prefix = f"[Queue:{len(self.message_queue)}]" if self.message_queue else ""
-                if self.pending_image_path:
-                    prompt = f"{prompt_prefix}[📸] You: " if prompt_prefix else "[📸] You: "
-                else:
-                    prompt = f"{prompt_prefix} You: " if prompt_prefix else "You: "
-
                 try:
-                    line = self._custom_input(prompt).strip()
+                    line = self._custom_input().strip()
                 except EOFError:
                     break
 
