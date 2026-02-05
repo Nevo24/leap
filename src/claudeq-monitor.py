@@ -172,6 +172,46 @@ def find_terminal_with_title(title_pattern, preferred_ide=None, project_path=Non
                 except:
                     pass
 
+    # Try VS Code
+    if preferred_ide and 'VS Code' in preferred_ide:
+        try:
+            import time
+            import shutil
+
+            # Expand PATH to include common locations
+            env = os.environ.copy()
+            extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
+            current_path = env.get('PATH', '')
+            for path in extra_paths:
+                if path not in current_path and os.path.exists(path):
+                    env['PATH'] = f"{path}:{current_path}"
+                    current_path = env['PATH']
+
+            # Try to open project if 'code' command is available
+            code_path = shutil.which('code', path=env.get('PATH'))
+            if project_path and code_path:
+                result = subprocess.run([code_path, project_path],
+                                      capture_output=True, timeout=5, env=env)
+                if result.returncode == 0:
+                    time.sleep(0.3)
+
+            # Activate VS Code (bring to front)
+            vscode_script = '''
+            tell application "Visual Studio Code"
+                activate
+            end tell
+            '''
+
+            result = subprocess.run(['osascript', '-e', vscode_script],
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return True
+        except Exception as e:
+            # Log error for debugging
+            import sys
+            print(f"VS Code navigation error: {e}", file=sys.stderr)
+            pass
+
     # Try Terminal.app
     script = f'''
     tell application "Terminal"
@@ -310,9 +350,9 @@ class MonitorWindow(QMainWindow):
         main_widget.setLayout(layout)
 
         # Help text
-        help_label = QLabel('JetBrains Users: Enable CQ to name your tabs:\n'
-                           '1. Settings > Tools > Terminal > Engine: Classic\n'
-                           '2. Advanced Settings > Terminal > ☑ "Show application title"')
+        help_label = QLabel('Setup Tips:\n'
+                           '• JetBrains: Settings > Tools > Terminal > Engine: Classic\n'
+                           '  Advanced Settings > Terminal > ☑ "Show application title"')
         help_label.setStyleSheet('color: #FFA500; font-size: 10px;')
         layout.addWidget(help_label)
 

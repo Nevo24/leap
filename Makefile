@@ -96,7 +96,48 @@ configure-shell:
 	@chmod +x $(SRC_DIR)/claudeq-client.py
 	@chmod +x $(SRC_DIR)/claudeq-cleanup.sh
 	@chmod +x $(SRC_DIR)/claudeq-monitor.py
+	@$(MAKE) .configure-vscode
 	@$(MAKE) .detect-shell
+
+.PHONY: .configure-vscode
+.configure-vscode:
+	@# Configure VS Code CLI and settings
+	@if [ -d "/Applications/Visual Studio Code.app" ]; then \
+		echo "$(PROMPT_PREFIX) Configuring VS Code..."; \
+		\
+		VSCODE_BIN="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"; \
+		CODE_SYMLINK="/usr/local/bin/code"; \
+		\
+		if [ -f "$$VSCODE_BIN" ] && [ ! -f "$$CODE_SYMLINK" ]; then \
+			echo "  Installing VS Code CLI command..."; \
+			sudo ln -s "$$VSCODE_BIN" "$$CODE_SYMLINK" 2>/dev/null && \
+			echo "$(GREEN)  ✓ VS Code CLI installed: code command available$(NC)" || \
+			echo "$(YELLOW)  ⚠ Could not install code command (may need sudo)$(NC)"; \
+		elif [ -f "$$CODE_SYMLINK" ]; then \
+			echo "  ✓ VS Code CLI already installed"; \
+		fi; \
+		\
+		VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
+		if [ -f "$$VSCODE_SETTINGS" ]; then \
+			if ! grep -q "terminal.integrated.tabs.title" "$$VSCODE_SETTINGS"; then \
+				echo "  Updating VS Code settings for terminal titles..."; \
+				cp "$$VSCODE_SETTINGS" "$$VSCODE_SETTINGS.backup-$$(date +%Y%m%d-%H%M%S)"; \
+				python3 -c "import json, sys; \
+					data = json.load(open('$$VSCODE_SETTINGS')); \
+					data['terminal.integrated.tabs.title'] = '\$${sequence}'; \
+					json.dump(data, open('$$VSCODE_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
+				echo "$(GREEN)  ✓ VS Code settings updated (backup created)$(NC)" || \
+				echo "$(YELLOW)  ⚠ Could not update VS Code settings$(NC)"; \
+			else \
+				echo "  ✓ VS Code terminal title setting already configured"; \
+			fi; \
+		elif [ -d "$$HOME/Library/Application Support/Code/User" ]; then \
+			echo "  Creating VS Code settings.json..."; \
+			echo '{\n    "terminal.integrated.tabs.title": "$${sequence}"\n}' > "$$VSCODE_SETTINGS" && \
+			echo "$(GREEN)  ✓ VS Code settings.json created$(NC)" || \
+			echo "$(YELLOW)  ⚠ Could not create settings.json$(NC)"; \
+		fi; \
+	fi
 
 .PHONY: .detect-shell
 .detect-shell:
@@ -238,7 +279,7 @@ uninstall:
 	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
 	@rm -rf ~/.claude-queues ~/.claude-sockets
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
-	@rm -rf build dist setup.py
+	@rm -rf build dist
 	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
 	@echo "$(PROMPT_PREFIX) Removing ClaudeQ Monitor.app from /Applications..."
 	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
@@ -246,6 +287,19 @@ uninstall:
 		echo "$(GREEN)✓ Removed ClaudeQ Monitor.app$(NC)"; \
 	else \
 		echo "  ClaudeQ Monitor.app not found in /Applications"; \
+	fi
+	@echo "$(PROMPT_PREFIX) Removing VS Code configuration..."
+	@CODE_SYMLINK="/usr/local/bin/code"; \
+	if [ -L "$$CODE_SYMLINK" ] && [ "$$(readlink "$$CODE_SYMLINK")" = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" ]; then \
+		sudo rm -f "$$CODE_SYMLINK" 2>/dev/null && \
+		echo "$(GREEN)✓ Removed VS Code CLI symlink$(NC)" || \
+		echo "$(YELLOW)⚠ Could not remove code symlink (may need sudo)$(NC)"; \
+	fi; \
+	VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
+	if [ -f "$$VSCODE_SETTINGS" ] && grep -q "terminal.integrated.tabs.title" "$$VSCODE_SETTINGS"; then \
+		echo "$(YELLOW)⚠ VS Code settings.json still contains ClaudeQ setting$(NC)"; \
+		echo "  To remove: Open VS Code settings.json and delete 'terminal.integrated.tabs.title' line"; \
+		echo "  (Backup files: $$VSCODE_SETTINGS.backup-*)"; \
 	fi
 	@echo ""
 	@echo "$(GREEN)✓ ClaudeQ fully uninstalled!$(NC)"

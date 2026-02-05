@@ -113,12 +113,18 @@ All commands are **case-insensitive**.
 | 📊 `:status` | Server status |
 | 👋 `:x` or `Ctrl+D` | Exit client |
 
-### 💡 JetBrains Users
+### 💡 IDE Configuration
 
-Enable CQ to name your tabs for better monitoring:
+**Terminal tab naming is automatically configured during installation!**
 
+**JetBrains IDEs:** You still need to enable these settings manually:
 1. **Settings → Tools → Terminal → Engine: Classic**
 2. **Advanced Settings → Terminal → ☑️ Show application title**
+
+**VS Code:** Automatically configured by `make install` ✅
+- Installs `code` CLI command
+- Adds `terminal.integrated.tabs.title` setting to settings.json
+- Restart VS Code if it was already open
 
 ## Monitor GUI
 
@@ -136,7 +142,10 @@ The monitor shows:
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2
 
-**Note:** You may need to manually switch terminal tabs within a project using `Alt+Right/Left` after jumping.
+**Notes:**
+- **JetBrains IDEs**: Jumps to specific terminal tab automatically (requires Classic terminal + "Show application title" setting)
+- **VS Code**: Opens project and activates window (requires terminal.integrated.tabs.title setting)
+- **Terminal.app/iTerm2**: Jumps to specific tab automatically
 
 ## Example Workflow
 
@@ -183,13 +192,13 @@ You: :ip What's wrong with this screenshot?
 
 The PTY architecture ensures IntelliJ's native scrolling works perfectly without any special configuration.
 
-### Terminal Tab Titles in JetBrains IDEs
+### Terminal Tab Titles in IDEs
 
 ClaudeQ automatically sets terminal tab titles to help you identify sessions:
 - Server tabs: `cq-server <tag>`
 - Client tabs: `cq-client <tag>`
 
-**For JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.) - Enable CQ to name your tabs:**
+#### JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.)
 
 ⚠️ **Required Settings** (both needed for automatic tab titles):
 
@@ -199,6 +208,22 @@ ClaudeQ automatically sets terminal tab titles to help you identify sessions:
 💡 *Tip: These settings enable better monitoring - ClaudeQ can track and navigate to your sessions correctly!*
 
 This works with JetBrains 2025.2+ (with the reworked terminal) and should work on older versions too.
+
+#### VS Code
+
+✅ **Automatically configured during installation!**
+
+When you run `make install`, ClaudeQ will:
+1. Install the `code` CLI command (creates symlink to `/usr/local/bin/code`)
+2. Update your VS Code settings.json with: `"terminal.integrated.tabs.title": "${sequence}"`
+3. Create a backup of your settings before modifying
+
+**After installation:**
+- Restart VS Code if it was already running
+- Terminal tabs will automatically be named `cq-server <tag>` and `cq-client <tag>`
+- Monitor navigation will jump to the correct project window
+
+💡 *Tip: If you prefer to configure manually, the setting tells VS Code to use terminal titles from escape sequences!*
 
 ### Stale Socket
 

@@ -39,3 +39,7 @@ test/
 # Local development
 .env
 .local/
+
+# py2app build artifacts
+build/
+dist/
