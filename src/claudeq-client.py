@@ -278,9 +278,22 @@ class ClaudePTYClient:
         """Get server status"""
         response = self.send_to_server('status')
         if response:
-            print(f"Server status:")
-            print(f"  Queue size: {response.get('queue_size', '?')}")
-            print(f"  Ready: {response.get('ready', False)}\n")
+            queue_size = response.get('queue_size', 0)
+            queue_contents = response.get('queue_contents', [])
+            ready = response.get('ready', False)
+
+            print(f"\n📊 Server status:")
+            print(f"  Ready: {'✓' if ready else '✗'}")
+            print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
+
+            if queue_contents:
+                print(f"\n  Messages in queue (1 = next):")
+                for i, msg in enumerate(queue_contents, 1):
+                    msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
+                    print(f"    {i}. {msg_preview}")
+            else:
+                print(f"  (queue is empty)")
+            print()
         else:
             print("✗ Could not get server status\n")
 
