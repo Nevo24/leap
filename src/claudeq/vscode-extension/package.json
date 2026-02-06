@@ -1,0 +1,26 @@
+{
+  "name": "claudeq-terminal-selector",
+  "displayName": "ClaudeQ Terminal Selector",
+  "description": "Allows ClaudeQ Monitor to select terminal tabs by name",
+  "version": "1.0.0",
+  "publisher": "claudeq",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeq.selectTerminal",
+        "title": "ClaudeQ: Select Terminal by Name"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nevo24/claudeq"
+  },
+  "license": "MIT"
+}

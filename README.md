@@ -1,6 +1,6 @@
 # ClaudeQ
 
-**Multi-session Claude Code with message queueing and image support - works perfectly in IntelliJ with native scrolling!**
+**Multi-session Claude Code with message queueing and image support - works perfectly in IntelliJ and VS Code with native scrolling!**
 
 Queue multiple prompts with images in one terminal while Claude works in another. Auto-sends queued messages when ready for a seamless workflow.
 
@@ -144,7 +144,7 @@ The monitor shows:
 
 **Notes:**
 - **JetBrains IDEs**: Jumps to specific terminal tab automatically (requires Classic terminal + "Show application title" setting)
-- **VS Code**: Opens project and activates window (requires terminal.integrated.tabs.title setting)
+- **VS Code**: Jumps to specific terminal tab automatically (auto-configured during installation)
 - **Terminal.app/iTerm2**: Jumps to specific tab automatically
 
 ## Example Workflow
@@ -216,14 +216,20 @@ This works with JetBrains 2025.2+ (with the reworked terminal) and should work o
 When you run `make install`, ClaudeQ will:
 1. Install the `code` CLI command (creates symlink to `/usr/local/bin/code`)
 2. Update your VS Code settings.json with: `"terminal.integrated.tabs.title": "${sequence}"`
-3. Create a backup of your settings before modifying
+3. Install the "ClaudeQ Terminal Selector" extension (enables automatic tab switching)
+4. Create a backup of your settings before modifying
 
 **After installation:**
 - Restart VS Code if it was already running
 - Terminal tabs will automatically be named `cq-server <tag>` and `cq-client <tag>`
-- Monitor navigation will jump to the correct project window
+- **Monitor navigation will jump to the correct project AND select the correct terminal tab**
+- View the extension: Cmd+Shift+X → Search "ClaudeQ"
 
-💡 *Tip: If you prefer to configure manually, the setting tells VS Code to use terminal titles from escape sequences!*
+**Requirements:**
+- Node.js and npm (for extension packaging)
+- VS Code installed in `/Applications`
+
+💡 *Tip: The extension runs silently in the background watching for terminal selection requests from the monitor!*
 
 ### Stale Socket
 

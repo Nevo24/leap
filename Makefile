@@ -3,6 +3,7 @@ PYTHON_VERSION   := "3.10"
 REPO_PATH        := $(shell git rev-parse --show-toplevel)
 PROMPT_PREFIX    := "\n→"
 SRC_DIR          := $(REPO_PATH)/src
+SCRIPTS_DIR      := $(SRC_DIR)/scripts
 
 # Colors for output
 GREEN  := \033[0;32m
@@ -54,6 +55,10 @@ install-monitor: .env
 	@echo "$(YELLOW)Note: Custom icon in Dock works perfectly!$(NC)"
 	@echo ""
 
+.PHONY: run-monitor
+run-monitor:
+	@PYTHONPATH=$(SRC_DIR) poetry run python -c "from claudeq.monitor.app import main; main()"
+
 .PHONY: clean
 clean:
 	@echo "$(PROMPT_PREFIX) Cleaning up..."
@@ -91,11 +96,11 @@ update: .env
 .PHONY: configure-shell
 configure-shell:
 	@echo "$(PROMPT_PREFIX) Configuring shell..."
-	@chmod +x $(SRC_DIR)/claudeq-main.sh
-	@chmod +x $(SRC_DIR)/claudeq-server.py
-	@chmod +x $(SRC_DIR)/claudeq-client.py
-	@chmod +x $(SRC_DIR)/claudeq-cleanup.sh
-	@chmod +x $(SRC_DIR)/claudeq-monitor.py
+	@chmod +x $(SCRIPTS_DIR)/claudeq-main.sh
+	@chmod +x $(SCRIPTS_DIR)/claudeq-server.py
+	@chmod +x $(SCRIPTS_DIR)/claudeq-client.py
+	@chmod +x $(SCRIPTS_DIR)/claudeq-cleanup.sh
+	@chmod +x $(SCRIPTS_DIR)/claudeq-monitor.py
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .detect-shell
 
@@ -119,23 +124,52 @@ configure-shell:
 		\
 		VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
 		if [ -f "$$VSCODE_SETTINGS" ]; then \
-			if ! grep -q "terminal.integrated.tabs.title" "$$VSCODE_SETTINGS"; then \
+			TITLE_VALUE=$$(python3 -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
+			SHELL_INT=$$(python3 -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.shellIntegration.enabled', 'NOT_SET'))" 2>/dev/null); \
+			NEEDS_UPDATE=false; \
+			[ "$$TITLE_VALUE" != "\$${sequence}" ] && NEEDS_UPDATE=true; \
+			[ "$$SHELL_INT" != "True" ] && NEEDS_UPDATE=true; \
+			if [ "$$NEEDS_UPDATE" = "true" ]; then \
 				echo "  Updating VS Code settings for terminal titles..."; \
 				cp "$$VSCODE_SETTINGS" "$$VSCODE_SETTINGS.backup-$$(date +%Y%m%d-%H%M%S)"; \
 				python3 -c "import json, sys; \
 					data = json.load(open('$$VSCODE_SETTINGS')); \
 					data['terminal.integrated.tabs.title'] = '\$${sequence}'; \
+					data['terminal.integrated.shellIntegration.enabled'] = True; \
 					json.dump(data, open('$$VSCODE_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
 				echo "$(GREEN)  ✓ VS Code settings updated (backup created)$(NC)" || \
 				echo "$(YELLOW)  ⚠ Could not update VS Code settings$(NC)"; \
 			else \
-				echo "  ✓ VS Code terminal title setting already configured"; \
+				echo "  ✓ VS Code terminal title settings already configured"; \
 			fi; \
 		elif [ -d "$$HOME/Library/Application Support/Code/User" ]; then \
 			echo "  Creating VS Code settings.json..."; \
-			echo '{\n    "terminal.integrated.tabs.title": "$${sequence}"\n}' > "$$VSCODE_SETTINGS" && \
+			mkdir -p "$$HOME/Library/Application Support/Code/User" && \
+			printf '{\n    "terminal.integrated.tabs.title": "\$${sequence}",\n    "terminal.integrated.shellIntegration.enabled": true\n}' > "$$VSCODE_SETTINGS" && \
 			echo "$(GREEN)  ✓ VS Code settings.json created$(NC)" || \
 			echo "$(YELLOW)  ⚠ Could not create settings.json$(NC)"; \
+		fi; \
+		\
+		echo "  Installing ClaudeQ Terminal Selector extension..."; \
+		CODE_PATH=$$(which code 2>/dev/null); \
+		NPM_PATH=$$(which npm 2>/dev/null); \
+		if [ -n "$$CODE_PATH" ]; then \
+			EXT_INSTALLED=$$($$CODE_PATH --list-extensions 2>/dev/null | grep -q "claudeq.claudeq-terminal-selector" && echo "yes" || echo "no"); \
+			if [ "$$EXT_INSTALLED" = "no" ]; then \
+				if [ -n "$$NPM_PATH" ]; then \
+					cd "$(REPO_PATH)/src/claudeq/vscode-extension" && \
+					npx --yes @vscode/vsce package --out claudeq-terminal-selector.vsix >/dev/null 2>&1 && \
+					$$CODE_PATH --install-extension claudeq-terminal-selector.vsix --force >/dev/null 2>&1 && \
+					echo "$(GREEN)  ✓ ClaudeQ extension installed$(NC)" || \
+					echo "$(YELLOW)  ⚠ Could not install extension$(NC)"; \
+				else \
+					echo "$(YELLOW)  ⚠ npm not found, skipping extension install$(NC)"; \
+				fi; \
+			else \
+				echo "  ✓ ClaudeQ extension already installed"; \
+			fi; \
+		else \
+			echo "$(YELLOW)  ⚠ code command not found, skipping extension install$(NC)"; \
 		fi; \
 	fi
 
@@ -208,11 +242,11 @@ configure-shell:
 	echo "    fi" >> "$$RC_FILE"; \
 	echo "    # Flags (starting with --) can be passed and will be used by server only" >> "$$RC_FILE"; \
 	echo "    # Example: claudeq my-tag --dangerously-skip-permissions" >> "$$RC_FILE"; \
-	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-main.sh\" \"\$$@\"" >> "$$RC_FILE"; \
+	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh\" \"\$$@\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
 	echo "claudeq-cleanup() {" >> "$$RC_FILE"; \
-	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/claudeq-cleanup.sh\"" >> "$$RC_FILE"; \
+	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-cleanup.sh\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
 	echo "claudeq-activate() {" >> "$$RC_FILE"; \

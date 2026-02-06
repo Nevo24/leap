@@ -18,8 +18,10 @@ PyQt5 = "^5.15.0"
 py2app = "^0.28"
 
 [tool.poetry.scripts]
-claudeq-main = "claudeq.main:main"
-claudeq-monitor = "claudeq.monitor:main"
+cq = "claudeq.main:main"
+cq-server = "claudeq.server.server:main"
+cq-client = "claudeq.client.client:main"
+cq-monitor = "claudeq.monitor.app:main"
 
 [build-system]
 requires = ["poetry-core"]

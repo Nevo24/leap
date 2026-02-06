@@ -109,6 +109,9 @@ set -- "${ARGS[@]}"
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Add src directory to PYTHONPATH so claudeq package can be found
+export PYTHONPATH="${SCRIPT_DIR}/..:${PYTHONPATH}"
+
 SOCKET_PATH="$HOME/.claude-sockets/${TAG}.sock"
 SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
 CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
