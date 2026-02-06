@@ -43,6 +43,7 @@ class ClaudeQClient:
         self.running = True
         self.pending_image_path: Optional[str] = None
         self.monitor_thread: Optional[threading.Thread] = None
+        self.show_auto_sent_notifications = True  # Toggle for auto-sent notifications
 
         # Initialize paths
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
@@ -136,8 +137,8 @@ class ClaudeQClient:
                 elif poll_count > 1:
                     new_sent_messages = recently_sent[:]
 
-            # Print notifications for new sent messages
-            if new_sent_messages:
+            # Print notifications for new sent messages (if enabled)
+            if new_sent_messages and self.show_auto_sent_notifications:
                 for msg in new_sent_messages:
                     msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
                     print(f"\n🤖 Server auto-sent: {msg_preview}", flush=True)
@@ -256,10 +257,10 @@ class ClaudeQClient:
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
             if queue_contents:
-                print("\n  Messages in queue (1 = next):")
-                for i, msg in enumerate(queue_contents, 1):
-                    msg_preview = msg[:60] + '...' if len(msg) > 60 else msg
-                    print(f"    {i}. {msg_preview}")
+                print("\n  Messages in queue (0=first, use ':e <index>' to edit):")
+                for i, msg in enumerate(queue_contents):
+                    msg_preview = msg[:70] + '...' if len(msg) > 70 else msg
+                    print(f"    [{i}] {msg_preview}")
             else:
                 print("  (queue is empty)")
             print()
@@ -280,6 +281,47 @@ class ClaudeQClient:
         else:
             print("✗ Could not force-send message\n")
 
+    def _edit_message(self, index: int) -> None:
+        """
+        Edit a queued message by index.
+
+        Args:
+            index: Queue index (0-based) of message to edit.
+        """
+        # Get the message by index
+        response = self.socket.get_message_for_edit(index)
+        if not response or response.get('status') != 'ok':
+            print(f"✗ Invalid index: {index}\n")
+            return
+
+        msg_id = response.get('id', '')
+        original_message = response.get('message', '')
+
+        # Display what we're editing
+        print(f"\nEditing <{msg_id}>:")
+        msg_preview = original_message[:80] + '...' if len(original_message) > 80 else original_message
+        print(f'"{msg_preview}"')
+        print()
+
+        # Prompt for new message
+        try:
+            new_message = input("New message (or Ctrl+D to cancel): ").strip()
+
+            if not new_message:
+                print("✗ Edit cancelled (empty message)\n")
+                return
+
+            # Send edit request
+            edit_response = self.socket.edit_message(msg_id, new_message)
+            if edit_response and edit_response.get('status') == 'ok':
+                print(f"✓ Edited message <{msg_id}>\n")
+            else:
+                error_msg = edit_response.get('message', 'Unknown error') if edit_response else 'Communication error'
+                print(f"✗ {error_msg}\n")
+
+        except EOFError:
+            print("\n✗ Edit cancelled\n")
+
     def _print_startup_banner(self) -> None:
         """Print client startup banner."""
         print(f"\033]0;cq-client {self.tag}\007", end='', flush=True)
@@ -292,6 +334,7 @@ class ClaudeQClient:
         print("  🖼️ :ip <msg> or :imagepaste <msg>      → Queue with clipboard image")
         print("  ⚡ :d <msg> or :direct <msg>           → Send directly (bypass queue)")
         print("  📋 :l or :list                         → Show queue")
+        print("  ✏️ :e <index> or :edit <index>         → Edit queued message by index")
         print("  🗑️ :c or :clear                        → Clear queue")
         print("  📊 :status                             → Server status")
         print("  ⚡ :f or :force                        → Force-send next queued message")
@@ -303,6 +346,8 @@ class ClaudeQClient:
         print("  💡 JetBrains Users - Enable CQ to name your tabs:")
         print("     1. Settings > Tools > Terminal > Engine: Classic")
         print("     2. Advanced Settings > Terminal > ☑️ 'Show application title'")
+        print()
+        print("  🔔 Toggle auto-sent notifications: :auto-sent on/off  (or :asm on/off)")
         print("=" * 70)
         print()
 
@@ -391,6 +436,40 @@ class ClaudeQClient:
         # :f / :force
         if line_lower in [':f', ':force']:
             self._force_send()
+            return True
+
+        # :e / :edit
+        if line_lower.startswith(':e ') or line_lower.startswith(':edit '):
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                print("Usage: :e <index>  (e.g., :e 0 to edit first message)\n")
+                return True
+
+            try:
+                index = int(parts[1])
+                self._edit_message(index)
+            except ValueError:
+                print("✗ Invalid index - must be a number\n")
+            return True
+
+        # :auto-sent / :asm (toggle auto-sent notifications)
+        if line_lower.startswith(':auto-sent ') or line_lower.startswith(':asm '):
+            parts = line_lower.split(None, 1)
+            if len(parts) < 2:
+                status = "on" if self.show_auto_sent_notifications else "off"
+                print(f"Auto-sent notifications: {status}")
+                print("Usage: :auto-sent on/off  or  :asm on/off\n")
+                return True
+
+            toggle = parts[1].strip()
+            if toggle in ['on', 'true', '1', 'yes']:
+                self.show_auto_sent_notifications = True
+                print("✓ Auto-sent notifications enabled\n")
+            elif toggle in ['off', 'false', '0', 'no']:
+                self.show_auto_sent_notifications = False
+                print("✓ Auto-sent notifications disabled\n")
+            else:
+                print("✗ Invalid option. Use: on/off\n")
             return True
 
         # :x / :quit / :exit

@@ -128,6 +128,24 @@ class ClaudeQServer:
                 }
             return {'status': 'empty', 'queue_size': 0}
 
+        elif msg_type == 'get_message':
+            index = msg.get('index', -1)
+            msg_data = self.queue.get_message_by_index(index)
+            if msg_data:
+                return {
+                    'status': 'ok',
+                    'id': msg_data['id'],
+                    'message': msg_data['msg']
+                }
+            return {'status': 'error', 'message': 'Invalid index'}
+
+        elif msg_type == 'edit_message':
+            msg_id = msg.get('id', '')
+            new_message = msg.get('new_message', '')
+            if self.queue.edit_message_by_id(msg_id, new_message):
+                return {'status': 'ok', 'message': 'Message edited'}
+            return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
+
         return {'status': 'error', 'message': f"Unknown message type: {msg_type}"}
 
     def _send_to_claude(self, message: str) -> None:

@@ -117,13 +117,16 @@ All commands are **case-insensitive**.
 
 **Terminal tab naming is automatically configured during installation!**
 
-**JetBrains IDEs:** You still need to enable these settings manually:
-1. **Settings → Tools → Terminal → Engine: Classic**
-2. **Advanced Settings → Terminal → ☑️ Show application title**
+**JetBrains IDEs:** Automatically configured by `make install` ✅
+- Sets **Terminal Engine** to **Classic**
+- Enables **Show application title** in Advanced Settings
+- Configures all installed JetBrains IDEs (IntelliJ, PyCharm, GoLand, WebStorm, etc.)
+- **Restart your JetBrains IDEs** for changes to take effect
 
 **VS Code:** Automatically configured by `make install` ✅
 - Installs `code` CLI command
 - Adds `terminal.integrated.tabs.title` setting to settings.json
+- Installs the "ClaudeQ Terminal Selector" extension
 - Restart VS Code if it was already open
 
 ## Monitor GUI
@@ -200,14 +203,17 @@ ClaudeQ automatically sets terminal tab titles to help you identify sessions:
 
 #### JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.)
 
-⚠️ **Required Settings** (both needed for automatic tab titles):
+✅ **Automatically configured during installation!**
 
-1. **Settings** → **Tools** → **Terminal** → **Terminal Engine**: Select **"Classic"**
-2. **Tools** → **Advanced Settings** → Search for "term" → Under **Terminal** section, check ☑️ **"Show application title"**
+The `make install` command automatically configures these settings for all installed JetBrains IDEs:
+1. **Terminal Engine**: Set to **"Classic"**
+2. **Show application title**: Enabled in Advanced Settings
 
-💡 *Tip: These settings enable better monitoring - ClaudeQ can track and navigate to your sessions correctly!*
+**After installation, restart your JetBrains IDEs** for the changes to take effect.
 
-This works with JetBrains 2025.2+ (with the reworked terminal) and should work on older versions too.
+💡 *These settings enable automatic terminal tab naming and allow ClaudeQ Monitor to track and navigate to your sessions correctly!*
+
+Supports JetBrains 2024.2+ and newer versions.
 
 #### VS Code
 

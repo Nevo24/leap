@@ -71,3 +71,52 @@ class SocketClient:
     def force_send_next(self) -> Optional[dict[str, Any]]:
         """Force send the next queued message."""
         return self.send('force_send')
+
+    def get_message_for_edit(self, index: int) -> Optional[dict[str, Any]]:
+        """
+        Get a message by index for editing.
+
+        Args:
+            index: Queue index (0-based).
+
+        Returns:
+            Dictionary with 'id' and 'message', or None on error.
+        """
+        try:
+            client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client_socket.connect(str(self.socket_path))
+
+            data = {'type': 'get_message', 'index': index}
+            client_socket.send(json.dumps(data).encode('utf-8'))
+            response = client_socket.recv(4096).decode('utf-8')
+            client_socket.close()
+
+            return json.loads(response)
+        except (socket.error, json.JSONDecodeError, OSError) as e:
+            print(f"Error communicating with server: {e}")
+            return None
+
+    def edit_message(self, msg_id: str, new_message: str) -> Optional[dict[str, Any]]:
+        """
+        Edit a message by its ID.
+
+        Args:
+            msg_id: Message ID to edit.
+            new_message: New message content.
+
+        Returns:
+            Server response dictionary, or None on error.
+        """
+        try:
+            client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client_socket.connect(str(self.socket_path))
+
+            data = {'type': 'edit_message', 'id': msg_id, 'new_message': new_message}
+            client_socket.send(json.dumps(data).encode('utf-8'))
+            response = client_socket.recv(4096).decode('utf-8')
+            client_socket.close()
+
+            return json.loads(response)
+        except (socket.error, json.JSONDecodeError, OSError) as e:
+            print(f"Error communicating with server: {e}")
+            return None

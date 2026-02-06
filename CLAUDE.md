@@ -23,7 +23,8 @@ src/
 │   ├── claudeq-server.py        # Thin launcher → ClaudeQServer
 │   ├── claudeq-client.py        # Thin launcher → ClaudeQClient
 │   ├── claudeq-monitor.py       # Thin launcher → MonitorWindow
-│   └── claudeq_monitor_launcher.py  # py2app entry point
+│   ├── claudeq_monitor_launcher.py  # py2app entry point
+│   └── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
 │
 └── claudeq/                     # Main Python package
     ├── __init__.py              # Version, exports
@@ -89,10 +90,46 @@ assets/
 | `<message>` | Queue message (auto-sends when ready) |
 | `:ip <msg>` | Queue with clipboard image |
 | `:d <msg>` | Send directly (bypass queue) |
+| `:e <index>` | Edit queued message by index (0=first) |
 | `:f` | Force-send next queued message |
 | `:l` | Show queue |
 | `:status` | Server status |
 | `:x` | Exit client |
+
+### Message Editing
+
+Each queued message gets a unique 6-character ID (e.g., `a1b2c3`). When listing the queue with `:l`, messages display as:
+
+```
+[0] <a1b2c3> Fix the bug in server.py
+[1] <d4e5f6> Add tests for auth module
+```
+
+**Edit workflow:**
+1. Run `:l` to see queue with indices and IDs
+2. Run `:e <index>` (e.g., `:e 0`) to edit a message
+3. System shows the message ID and content
+4. Enter new message (or Ctrl+D to cancel)
+5. If the message was already sent (ID not found), you'll see "too late" error
+
+**Key features:**
+- Messages tracked by ID, not position
+- Safe against race conditions (queue changing during edit)
+- Works even if message moves position in queue
+- Backward compatible with old queue files (auto-migrates)
+
+### Auto-Sent Notifications
+
+Control whether the client displays notifications when the server auto-sends messages:
+
+```
+:auto-sent on     # Enable notifications (default)
+:auto-sent off    # Disable notifications
+:asm on/off       # Short version
+```
+
+When enabled, you'll see: `🤖 Server auto-sent: Your message... (2 remaining)`
+When disabled, messages send silently in the background.
 
 ## Architecture Flow
 
@@ -120,13 +157,16 @@ Listens on Unix socket for client messages
 ## IDE Setup
 
 ### JetBrains (PyCharm, IntelliJ, etc.)
-For terminal tab titles:
-1. Settings → Tools → Terminal → Engine: **Classic**
-2. Advanced Settings → Terminal → ☑ **"Show application title"**
+**Automatically configured during `make install`** ✅
+- Terminal Engine set to **Classic**
+- "Show application title" enabled in Advanced Settings
+- Configures all installed IDEs (2024.2+)
+- **Restart IDEs** after installation
 
 ### VS Code
-- Terminal selector extension is auto-installed during `make install`
-- Terminal tabs will show numbered labels (1, 2, 3...)
+**Automatically configured during `make install`** ✅
+- Terminal selector extension auto-installed
+- Terminal tabs show numbered labels (1, 2, 3...)
 - Monitor can select specific tabs automatically
 - View installed extension: Cmd+Shift+X → Search "ClaudeQ"
 

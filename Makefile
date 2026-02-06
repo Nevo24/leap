@@ -19,11 +19,9 @@ install: .env install-core configure-shell
 	@echo ""
 	@echo "To start using ClaudeQ:"
 	@echo "  1. Reload your shell: source ~/.zshrc  (or ~/.bashrc)"
-	@echo "  2. Activate the venv: cqa  (or: claudeq-activate)"
-	@echo "  3. Run: cq <tag-name>"
+	@echo "  2. Run: cq <tag-name>"
 	@echo ""
-	@echo "Note: The venv is automatically used by claudeq commands,"
-	@echo "      but you can manually activate it for other purposes."
+	@echo "Note: The venv is automatically used by claudeq commands."
 	@echo ""
 	@echo "Optional: To install the monitor GUI, run:"
 	@echo "  make install-monitor"
@@ -51,8 +49,6 @@ install-monitor: .env
 	@echo "  • Spotlight: Search 'ClaudeQ Monitor'"
 	@echo "  • Applications: Double-click ClaudeQ Monitor.app"
 	@echo "  • Dock: Pin it for quick access"
-	@echo ""
-	@echo "$(YELLOW)Note: Custom icon in Dock works perfectly!$(NC)"
 	@echo ""
 
 .PHONY: run-monitor
@@ -102,6 +98,7 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/claudeq-cleanup.sh
 	@chmod +x $(SCRIPTS_DIR)/claudeq-monitor.py
 	@$(MAKE) .configure-vscode
+	@$(MAKE) .configure-jetbrains
 	@$(MAKE) .detect-shell
 
 .PHONY: .configure-vscode
@@ -170,6 +167,63 @@ configure-shell:
 			fi; \
 		else \
 			echo "$(YELLOW)  ⚠ code command not found, skipping extension install$(NC)"; \
+		fi; \
+	fi
+
+.PHONY: .configure-jetbrains
+.configure-jetbrains:
+	@# Configure JetBrains IDEs terminal settings
+	@if [ -d "$$HOME/Library/Application Support/JetBrains" ]; then \
+		echo "$(PROMPT_PREFIX) Configuring JetBrains IDEs..."; \
+		CONFIGURED_COUNT=0; \
+		for IDE_DIR in "$$HOME/Library/Application Support/JetBrains"/*20*; do \
+			if [ -d "$$IDE_DIR/options" ]; then \
+				IDE_NAME=$$(basename "$$IDE_DIR"); \
+				TERMINAL_XML="$$IDE_DIR/options/terminal.xml"; \
+				ADVANCED_XML="$$IDE_DIR/options/advancedSettings.xml"; \
+				NEEDS_UPDATE=false; \
+				\
+				if [ -f "$$TERMINAL_XML" ]; then \
+					CURRENT_ENGINE=$$(grep -o 'terminalEngine.*value="[^"]*"' "$$TERMINAL_XML" 2>/dev/null | grep -o 'value="[^"]*"' | cut -d'"' -f2); \
+					if [ "$$CURRENT_ENGINE" != "CLASSIC" ]; then \
+						NEEDS_UPDATE=true; \
+					fi; \
+				else \
+					NEEDS_UPDATE=true; \
+				fi; \
+				\
+				if [ -f "$$ADVANCED_XML" ]; then \
+					SHOW_TITLE=$$(grep 'terminal.show.application.title' "$$ADVANCED_XML" 2>/dev/null | grep -o 'value="[^"]*"' | cut -d'"' -f2); \
+					if [ "$$SHOW_TITLE" != "true" ]; then \
+						NEEDS_UPDATE=true; \
+					fi; \
+				else \
+					NEEDS_UPDATE=true; \
+				fi; \
+				\
+				if [ "$$NEEDS_UPDATE" = "true" ]; then \
+					mkdir -p "$$IDE_DIR/options"; \
+					\
+					if [ -f "$$TERMINAL_XML" ]; then \
+						cp "$$TERMINAL_XML" "$$TERMINAL_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
+					fi; \
+					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
+					\
+					if [ -f "$$ADVANCED_XML" ]; then \
+						cp "$$ADVANCED_XML" "$$ADVANCED_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
+					fi; \
+					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
+					\
+					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
+					CONFIGURED_COUNT=$$((CONFIGURED_COUNT + 1)); \
+				fi; \
+			fi; \
+		done; \
+		\
+		if [ $$CONFIGURED_COUNT -gt 0 ]; then \
+			echo "  $(YELLOW)⚠ Restart JetBrains IDEs for changes to take effect$(NC)"; \
+		else \
+			echo "  ✓ All JetBrains IDEs already configured"; \
 		fi; \
 	fi
 
