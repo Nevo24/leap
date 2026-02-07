@@ -5,6 +5,7 @@ Orchestrates PTY handling, socket server, and queue management.
 """
 
 import atexit
+import re
 import shutil
 import signal
 import subprocess
@@ -32,6 +33,13 @@ class ClaudeQServer:
     Manages a Claude CLI session with message queueing and socket-based
     client communication.
     """
+
+    # Matches OSC escape sequences that set the terminal title (params 0, 1, 2),
+    # terminated by BEL (\x07) or ST (\x1b\\).  Stripped from PTY output so
+    # Claude CLI cannot override the "cq-server <tag>" tab name.
+    _OSC_TITLE_RE: re.Pattern[bytes] = re.compile(
+        rb'\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)'
+    )
 
     def __init__(self, tag: str, flags: Optional[list[str]] = None):
         """
@@ -244,14 +252,19 @@ class ClaudeQServer:
 
     def _output_filter(self, data: bytes) -> bytes:
         """
-        Filter PTY output to inject notifications.
+        Filter PTY output to inject notifications and strip title escapes.
 
         Args:
             data: Raw output bytes.
 
         Returns:
-            Filtered output bytes with notifications injected.
+            Filtered output bytes with title sequences removed and
+            notifications injected.
         """
+        # Strip OSC title-change sequences so Claude CLI cannot override
+        # the "cq-server <tag>" tab name used by the monitor for navigation.
+        data = self._OSC_TITLE_RE.sub(b'', data)
+
         with self._notification_lock:
             if self.pending_notifications and data.endswith(b'\n'):
                 notifications = '   '.join(self.pending_notifications)
