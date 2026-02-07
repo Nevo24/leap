@@ -198,6 +198,8 @@ killall Dock
 make install           # Install core + configure shell
 make install-monitor   # Build and install GUI app
 make run-monitor       # Run monitor from source (no build needed)
+make update            # Update to latest version (git pull + rebuild)
+make update-deps       # Update Python dependencies only
 make uninstall         # Full cleanup
 make clean             # Remove build artifacts
 ```

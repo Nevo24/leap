@@ -62,6 +62,38 @@ This will:
 - Node.js and Claude CLI
 - macOS (for clipboard image support)
 
+## Updating
+
+Keep ClaudeQ up to date with the latest features and fixes:
+
+```bash
+make update
+```
+
+**Note:** You must run `make install` first before using `make update`. If ClaudeQ isn't installed, you'll see an error message.
+
+This will:
+- Pull the latest code from git
+- Update all Python dependencies
+- Rebuild the monitor app (if installed)
+- Update IDE configurations (VS Code & JetBrains)
+- Optionally update shell configuration (prompts you first)
+- **Preserve all your data** (queues, history, settings in `.storage/`)
+
+**Note:** If you have uncommitted changes or merge conflicts, git pull will fail gracefully. Resolve conflicts and run `make update` again.
+
+### Update Options
+
+```bash
+make update          # Full update (recommended)
+make update-deps     # Update Python packages only (no git pull)
+```
+
+After updating, reload your shell if the configuration was updated:
+```bash
+source ~/.zshrc  # or ~/.bashrc for bash
+```
+
 ## Usage
 
 ### Quick Start
@@ -104,14 +136,19 @@ All commands are **case-insensitive**.
 | Command | Description |
 |---------|-------------|
 | 💬 `message` | Queue message (auto-sends) |
-| 🖼️ `!ip <msg>` | Queue with clipboard image |
-| ⚡ `!d <msg>` | Send directly (bypass queue) |
-| ⚡ `!d !ip <msg>` | Send directly with image |
-| ⚡ `!f` | Force-send next queued message |
-| 📋 `!l` | Show queue |
-| 🗑️ `!c` | Clear queue |
+| 📷 `!ip <msg>` or `!imagepaste` | Queue with clipboard image |
+| ⚡ `!d <msg>` or `!direct` | Send directly (bypass queue) |
+| 📋 `!l` or `!list` | Show queue |
+| 📝 `!e <index>` or `!edit` | Edit queued message by index |
+| 🗑️ `!c` or `!clear` | Clear queue |
 | 📊 `!status` | Server status |
-| 👋 `!x` or `Ctrl+D` | Exit client |
+| 🔥 `!f` or `!force` | Force-send next queued message |
+| 👋 `!x` or `!quit` (`Ctrl+D`) | Exit client |
+
+**Additional commands:**
+| Command | Description |
+|---------|-------------|
+| 🔔 `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
 
 ### 💡 IDE Configuration
 
@@ -270,11 +307,16 @@ ls ~/workspace/claudeq/src/
 
 If you moved the project directory, update the path in your shell config (~/.zshrc or ~/.bashrc).
 
-## Additional Commands
+## Runtime Commands
+
+Commands available after installation:
 
 ```bash
-cq-cleanup    # Remove dead sessions (or: cqc)
+cq <tag>           # Start server or connect client
+cq-cleanup         # Remove dead sessions (or: cqc)
 ```
+
+For installation and maintenance commands, see [Make Commands Reference](#make-commands-reference) above.
 
 ## Technical Details
 
@@ -294,30 +336,70 @@ The server monitors Claude's child processes to detect when it's busy executing 
 
 Images are sent to Claude CLI using the `@path` syntax with a required trailing space. The server adds a 0.5s delay after sending the attachment path to allow Claude time to recognize the file before submitting the message.
 
-## Uninstall
+## Make Commands Reference
 
-### Uninstall Monitor Only
+All available Make commands for managing ClaudeQ:
 
-Removes only the monitor app from `/Applications` and cleans build artifacts:
+### Installation & Updates
 
-```bash
-make uninstall-monitor
-```
+| Command | Description | When to Use |
+|---------|-------------|-------------|
+| `make install` | Install ClaudeQ core | First-time setup after cloning |
+| `make install-monitor` | Build and install monitor GUI | Add GUI app after core install |
+| `make update` | Update to latest version | Pull new code + rebuild everything |
+| `make update-deps` | Update Python packages only | Update dependencies without git pull |
 
-### Uninstall Everything
+### Development & Testing
 
-Removes all ClaudeQ components (core + monitor):
+| Command | Description | When to Use |
+|---------|-------------|-------------|
+| `make run-monitor` | Run monitor from source | Quick testing during development (no .app build needed) |
 
-```bash
-make uninstall
-```
+### Cleanup
 
-This removes:
-- Shell configuration from `.zshrc`/`.bashrc`
-- Poetry virtual environment
-- ClaudeQ Monitor.app from `/Applications`
-- Session data (`.storage/`)
-- Build artifacts (`build/`, `dist/`)
+| Command | Description | When to Use |
+|---------|-------------|-------------|
+| `make uninstall-monitor` | Remove monitor app only | Keep core, remove GUI |
+| `make uninstall` | Remove everything | Complete uninstallation |
+| `make clean` | Clean build artifacts | Free up disk space, clear caches |
+
+### Command Details
+
+**`make install`**
+- Installs core dependencies via Poetry
+- Adds shell configuration (`cq` alias) to ~/.zshrc or ~/.bashrc
+- Configures VS Code and JetBrains IDEs
+- Creates `.storage/` directory
+- **Does NOT pull git code** (assumes fresh clone)
+
+**`make install-monitor`**
+- Installs monitor dependencies (PyQt5)
+- Builds native macOS app with py2app
+- Installs to `/Applications/ClaudeQ Monitor.app`
+- Requires `make install` to be run first
+
+**`make update`**
+- Pulls latest code from git
+- Updates all dependencies
+- Rebuilds monitor if installed
+- Updates IDE configurations
+- Optionally updates shell config (prompts first)
+- **Preserves all data** in `.storage/`
+- **Requires prior `make install`**
+
+**`make run-monitor`**
+- Runs monitor directly from Python source
+- No app build required (instant startup)
+- Perfect for development - make changes and immediately test
+- Uses: `poetry run python -c "from claudeq.monitor.app import main; main()"`
+
+**`make uninstall`**
+- Prompts before removing shell configuration
+- Removes Poetry virtual environment
+- Removes monitor app from `/Applications`
+- Cleans all data in `.storage/`
+- Attempts to remove VS Code configuration
+- Creates backup of shell config before removing
 
 ## License
 
