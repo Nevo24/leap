@@ -46,3 +46,6 @@ dist/
 
 # VS Code extension packaging
 src/claudeq/vscode-extension/*.vsix
+.venv-path
+# Storage directory (user data: settings, queues, history, sockets)
+.storage/

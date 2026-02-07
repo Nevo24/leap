@@ -12,6 +12,8 @@ repository = "https://github.com/nevo24/claudeq"
 python = "^3.8"
 pexpect = "^4.8.0"
 prompt-toolkit = "^3.0.0"
+wcwidth = "^0.6.0"
+rich = "^14.3.2"
 
 [tool.poetry.group.monitor.dependencies]
 PyQt5 = "^5.15.0"

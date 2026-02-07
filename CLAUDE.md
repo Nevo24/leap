@@ -75,30 +75,33 @@ assets/
 
 ## Runtime Data Files
 
+All runtime data is stored in the centralized `.storage` directory at the project root:
+
 | File | Location |
 |------|----------|
-| Queue | `~/.claude-queues/<tag>.queue` |
-| Socket | `~/.claude-sockets/<tag>.sock` |
-| Metadata | `~/.claude-sockets/<tag>.meta` |
-| Client lock | `~/.claude-sockets/<tag>.client.lock` |
-| History | `~/.claude-queues/<tag>.history` |
+| Settings | `.storage/settings.json` |
+| Queue | `.storage/queues/<tag>.queue` |
+| History | `.storage/queues/<tag>.history` |
+| Socket | `.storage/sockets/<tag>.sock` |
+| Metadata | `.storage/sockets/<tag>.meta` |
+| Client lock | `.storage/sockets/<tag>.client.lock` |
 
 ## Client Commands
 
 | Command | Action |
 |---------|--------|
 | `<message>` | Queue message (auto-sends when ready) |
-| `:ip <msg>` | Queue with clipboard image |
-| `:d <msg>` | Send directly (bypass queue) |
-| `:e <index>` | Edit queued message by index (0=first) |
-| `:f` | Force-send next queued message |
-| `:l` | Show queue |
-| `:status` | Server status |
-| `:x` | Exit client |
+| `!ip <msg>` | Queue with clipboard image |
+| `!d <msg>` | Send directly (bypass queue) |
+| `!e <index>` | Edit queued message by index (0=first) |
+| `!f` | Force-send next queued message |
+| `!l` | Show queue |
+| `!status` | Server status |
+| `!x` | Exit client |
 
 ### Message Editing
 
-Each queued message gets a unique 6-character ID (e.g., `a1b2c3`). When listing the queue with `:l`, messages display as:
+Each queued message gets a unique 6-character ID (e.g., `a1b2c3`). When listing the queue with `!l`, messages display as:
 
 ```
 [0] <a1b2c3> Fix the bug in server.py
@@ -106,8 +109,8 @@ Each queued message gets a unique 6-character ID (e.g., `a1b2c3`). When listing 
 ```
 
 **Edit workflow:**
-1. Run `:l` to see queue with indices and IDs
-2. Run `:e <index>` (e.g., `:e 0`) to edit a message
+1. Run `!l` to see queue with indices and IDs
+2. Run `!e <index>` (e.g., `!e 0`) to edit a message
 3. System shows the message ID and content
 4. Enter new message (or Ctrl+D to cancel)
 5. If the message was already sent (ID not found), you'll see "too late" error
@@ -123,9 +126,9 @@ Each queued message gets a unique 6-character ID (e.g., `a1b2c3`). When listing 
 Control whether the client displays notifications when the server auto-sends messages:
 
 ```
-:auto-sent on     # Enable notifications (default)
-:auto-sent off    # Disable notifications
-:asm on/off       # Short version
+!auto-sent on     # Enable notifications (default)
+!auto-sent off    # Disable notifications
+!asm on/off       # Short version
 ```
 
 When enabled, you'll see: `🤖 Server auto-sent: Your message... (2 remaining)`
@@ -174,7 +177,7 @@ Listens on Unix socket for client messages
 
 **"Another client already connected"**
 ```bash
-rm ~/.claude-sockets/<tag>.client.lock
+rm .storage/sockets/<tag>.client.lock
 ```
 
 **Stale sockets**

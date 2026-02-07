@@ -82,19 +82,19 @@ Messages auto-send to Claude when ready. Watch responses in Terminal 1!
 
 ```bash
 # Copy image to clipboard, then:
-You: :ip What's wrong with this UI?        # Queue with image
-You: :d :ip Explain this error now         # Send directly with image
+You: !ip What's wrong with this UI?        # Queue with image
+You: !d !ip Explain this error now         # Send directly with image
 
 # Or attach first:
-You: :ip                                   # Attach image from clipboard
+You: !ip                                   # Attach image from clipboard
 You: What's wrong with this UI?            # Type message
 ```
 
 ### Direct Send (Bypass Queue)
 
 ```bash
-You: :d Urgent! Need answer now           # Send immediately
-You: :d :ip Fix this error                # Send with image immediately
+You: !d Urgent! Need answer now           # Send immediately
+You: !d !ip Fix this error                # Send with image immediately
 ```
 
 ## Client Commands
@@ -104,14 +104,14 @@ All commands are **case-insensitive**.
 | Command | Description |
 |---------|-------------|
 | 💬 `message` | Queue message (auto-sends) |
-| 🖼️ `:ip <msg>` | Queue with clipboard image |
-| ⚡ `:d <msg>` | Send directly (bypass queue) |
-| ⚡ `:d :ip <msg>` | Send directly with image |
-| ⚡ `:f` | Force-send next queued message |
-| 📋 `:l` | Show queue |
-| 🗑️ `:c` | Clear queue |
-| 📊 `:status` | Server status |
-| 👋 `:x` or `Ctrl+D` | Exit client |
+| 🖼️ `!ip <msg>` | Queue with clipboard image |
+| ⚡ `!d <msg>` | Send directly (bypass queue) |
+| ⚡ `!d !ip <msg>` | Send directly with image |
+| ⚡ `!f` | Force-send next queued message |
+| 📋 `!l` | Show queue |
+| 🗑️ `!c` | Clear queue |
+| 📊 `!status` | Server status |
+| 👋 `!x` or `Ctrl+D` | Exit client |
 
 ### 💡 IDE Configuration
 
@@ -182,7 +182,7 @@ You: Find all TODO comments
 
 🤖 Server auto-sent 1 message(s) - 0 remaining in queue
 
-You: :ip What's wrong with this screenshot?
+You: !ip What's wrong with this screenshot?
 🖼️ Image attached!
 📝 Queued with image: What's wrong with this screenshot? (1 total)
 ```
@@ -316,7 +316,7 @@ This removes:
 - Shell configuration from `.zshrc`/`.bashrc`
 - Poetry virtual environment
 - ClaudeQ Monitor.app from `/Applications`
-- Session data (`~/.claude-sockets`, `~/.claude-queues`)
+- Session data (`.storage/`)
 - Build artifacts (`build/`, `dist/`)
 
 ## License

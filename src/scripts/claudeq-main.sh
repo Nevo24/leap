@@ -5,11 +5,35 @@
 # Uses Poetry venv Python
 #
 
-# Use Poetry venv Python if available, otherwise fall back to system python3
-if [ -n "$CLAUDEQ_PYTHON" ]; then
+# Find and enforce virtualenv Python usage (NEVER use system python3)
+# Primary source: .venv-path file (written by make install)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VENV_PATH_FILE="$PROJECT_DIR/.venv-path"
+
+if [ -f "$VENV_PATH_FILE" ]; then
+    # Read virtualenv path from file (most reliable, always current)
+    VENV_BASE=$(cat "$VENV_PATH_FILE")
+    PYTHON_CMD="$VENV_BASE/bin/python3"
+
+    if [ ! -x "$PYTHON_CMD" ]; then
+        echo "❌ Error: Python not found at $PYTHON_CMD" >&2
+        echo "   The .venv-path file exists but points to an invalid location." >&2
+        echo "   Fix: Run 'make install' in the ClaudeQ project directory" >&2
+        exit 1
+    fi
+elif [ -n "$CLAUDEQ_PYTHON" ] && [ -x "$CLAUDEQ_PYTHON" ]; then
+    # Fallback: Use CLAUDEQ_PYTHON from .zshrc (legacy support)
     PYTHON_CMD="$CLAUDEQ_PYTHON"
 else
-    PYTHON_CMD="python3"
+    # FAIL: No valid Python found
+    echo "❌ Error: ClaudeQ virtualenv not found!" >&2
+    echo "" >&2
+    echo "   Missing .venv-path file in project directory." >&2
+    echo "   This file is created automatically by 'make install'." >&2
+    echo "" >&2
+    echo "   Fix: Run 'make install' in: $PROJECT_DIR" >&2
+    exit 1
 fi
 
 # Show help if requested
@@ -37,21 +61,21 @@ EXAMPLES:
     # Terminal 2 (connect as client and queue messages)
     cq my-feature
     You: How do I fix this bug?
-    You: :ip Explain this screenshot
+    You: !ip Explain this screenshot
 
     # Send message directly
     cq my-feature "What is this error?"
 
 CLIENT COMMANDS (when connected as interactive client):
     <message>           Queue message (auto-sends when ready)
-    :ip <msg>           Queue with clipboard image
-    :d <msg>            Send directly (bypass queue)
-    :d :ip <msg>        Send directly with image
-    :f                  Force-send next queued message
-    :l                  Show queue
-    :c                  Clear queue
-    :status             Server status
-    :x                  Exit client
+    !ip <msg>           Queue with clipboard image
+    !d <msg>            Send directly (bypass queue)
+    !d !ip <msg>        Send directly with image
+    !f                  Force-send next queued message
+    !l                  Show queue
+    !c                  Clear queue
+    !status             Server status
+    !x                  Exit client
 
 OTHER COMMANDS:
     cq-mo               Launch monitor GUI
@@ -112,11 +136,13 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Add src directory to PYTHONPATH so claudeq package can be found
 export PYTHONPATH="${SCRIPT_DIR}/..:${PYTHONPATH}"
 
-SOCKET_PATH="$HOME/.claude-sockets/${TAG}.sock"
+# Storage paths (centralized in .storage folder at project root)
+STORAGE_DIR="$PROJECT_DIR/.storage"
+SOCKET_DIR="$STORAGE_DIR/sockets"
+QUEUE_DIR="$STORAGE_DIR/queues"
+SOCKET_PATH="$SOCKET_DIR/${TAG}.sock"
 SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
 CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
-SOCKET_DIR="$HOME/.claude-sockets"
-QUEUE_DIR="$HOME/.claude-queues"
 
 # Auto-cleanup dead sockets (silent, runs in background)
 cleanup_dead_sockets() {
@@ -177,7 +203,7 @@ if [ -S "$SOCKET_PATH" ]; then
 
         # Set terminal tab name
         echo -ne "\033]0;cq-client ${TAG}\007"
-        exec "$CLIENT_SCRIPT" "$TAG" "$@"
+        exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "$@"
     else
         # Stale socket - remove it and continue to server check below
         echo "🧹 Removing stale socket for '$TAG'" >&2
@@ -198,4 +224,4 @@ fi
 # No arguments and no server - start server
 # Set terminal tab name
 echo -ne "\033]0;cq-server ${TAG}\007"
-exec "$SERVER_SCRIPT" "$TAG" "${FLAGS[@]}"
+exec "$PYTHON_CMD" "$SERVER_SCRIPT" "$TAG" "${FLAGS[@]}"

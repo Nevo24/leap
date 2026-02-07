@@ -66,7 +66,7 @@ clean:
 	@echo "$(PROMPT_PREFIX) Cleaning up..."
 	@poetry env remove --all
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
-	@rm -rf ~/.claude-queues ~/.claude-sockets
+	@rm -rf .storage
 	@rm -rf build dist
 	@echo "$(GREEN)✓ Cleaned up build artifacts$(NC)"
 
@@ -385,7 +385,7 @@ uninstall:
 	@poetry env remove --all 2>/dev/null || true
 	@echo "$(GREEN)✓ Removed Poetry venv$(NC)"
 	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
-	@rm -rf ~/.claude-queues ~/.claude-sockets
+	@rm -rf .storage
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
 	@rm -rf build dist
 	@rm -f "$(REPO_PATH)/.venv-path"

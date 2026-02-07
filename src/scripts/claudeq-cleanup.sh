@@ -3,8 +3,12 @@
 # ClaudeQ Cleanup - Remove dead/stale sessions
 #
 
-SOCKET_DIR="$HOME/.claude-sockets"
-QUEUE_DIR="$HOME/.claude-queues"
+# Find the storage directory (in project root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+STORAGE_DIR="$PROJECT_DIR/.storage"
+SOCKET_DIR="$STORAGE_DIR/sockets"
+QUEUE_DIR="$STORAGE_DIR/queues"
 
 echo "🧹 Cleaning up dead ClaudeQ sessions..."
 echo ""

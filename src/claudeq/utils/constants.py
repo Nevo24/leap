@@ -8,9 +8,15 @@ used across the application.
 from pathlib import Path
 from typing import Final
 
-# Directory paths
-QUEUE_DIR: Final[Path] = Path.home() / ".claude-queues"
-SOCKET_DIR: Final[Path] = Path.home() / ".claude-sockets"
+# Storage directory (all user data in one place, in the project root)
+STORAGE_DIR: Final[Path] = Path(__file__).parent.parent.parent.parent / ".storage"
+
+# Directory paths (now inside .storage)
+QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"
+SOCKET_DIR: Final[Path] = STORAGE_DIR / "sockets"
+
+# Settings file
+SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
 # Timing constants
 MIN_BUSY_DURATION: Final[float] = 3.0  # Minimum seconds to consider busy after sending
@@ -46,3 +52,10 @@ JETBRAINS_IDES: Final[dict] = {
     'datagrip': 'DataGrip',
     'idea': 'IntelliJ IDEA',
 }
+
+
+def ensure_storage_dirs() -> None:
+    """Ensure all storage directories exist."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    SOCKET_DIR.mkdir(parents=True, exist_ok=True)

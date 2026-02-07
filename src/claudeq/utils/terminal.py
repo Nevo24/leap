@@ -55,13 +55,13 @@ def print_banner(session_type: str, tag: str) -> None:
         session_type: Either 'server' or 'client'.
         tag: The session tag name.
     """
-    banner = """
+    banner = r"""
    _____ _                 _       ___
-  / ____| |               | |     / _ \\
+  / ____| |               | |     / _ \
  | |    | | __ _ _   _  __| | ___| | | |
- | |    | |/ _` | | | |/ _` |/ _ \\ | | |
+ | |    | |/ _` | | | |/ _` |/ _ \ | | |
  | |____| | (_| | |_| | (_| |  __/ |_| |
-  \\_____|_|\\__,_|\\__,_|\\__,_|\\___|\\___\\
+  \_____|_|\__,_|\__,_|\__,_|\___|\___|
 """
     print(banner)
     print("=" * 70)

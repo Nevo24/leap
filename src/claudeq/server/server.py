@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, MIN_BUSY_DURATION, POLL_INTERVAL, TITLE_RESET_INTERVAL
+    QUEUE_DIR, SOCKET_DIR, MIN_BUSY_DURATION, POLL_INTERVAL, TITLE_RESET_INTERVAL,
+    ensure_storage_dirs
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.server.pty_handler import PTYHandler
@@ -43,13 +44,12 @@ class ClaudeQServer:
         self.tag = tag
         self.running = True
 
+        # Ensure storage directories exist
+        ensure_storage_dirs()
+
         # Initialize paths
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
-
-        # Ensure directories exist
-        QUEUE_DIR.mkdir(exist_ok=True)
-        SOCKET_DIR.mkdir(exist_ok=True)
 
         # Remove stale socket file
         if self.socket_path.exists():

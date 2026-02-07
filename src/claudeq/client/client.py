@@ -6,6 +6,7 @@ Interactive client for sending messages to a ClaudeQ server.
 
 import atexit
 import fcntl
+import json
 import os
 import signal
 import sys
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from claudeq.utils.constants import QUEUE_DIR, SOCKET_DIR
+from claudeq.utils.constants import QUEUE_DIR, SOCKET_DIR, SETTINGS_FILE, ensure_storage_dirs
 from claudeq.utils.terminal import print_banner
 from claudeq.client.socket_client import SocketClient
 from claudeq.client.image_handler import (
@@ -44,13 +45,18 @@ class ClaudeQClient:
         self.running = True
         self.pending_image_path: Optional[str] = None
         self.monitor_thread: Optional[threading.Thread] = None
-        self.show_auto_sent_notifications = True  # Toggle for auto-sent notifications
+
+        # Ensure storage directories exist
+        ensure_storage_dirs()
 
         # Initialize paths
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
         self.history_file = QUEUE_DIR / f"{tag}.history"
         self.lock_file = SOCKET_DIR / f"{tag}.client.lock"
+
+        # Load settings from file (persistent across all clients)
+        self.show_auto_sent_notifications = self._load_settings().get('show_auto_sent_notifications', True)
 
         # Acquire exclusive lock
         self._acquire_lock()
@@ -99,6 +105,36 @@ class ClaudeQClient:
                 self.lock_file.unlink()
         except OSError:
             pass
+
+    def _load_settings(self) -> dict:
+        """
+        Load settings from JSON file.
+
+        Returns:
+            Dictionary of settings, or empty dict if file doesn't exist.
+        """
+        try:
+            if SETTINGS_FILE.exists():
+                with open(SETTINGS_FILE, 'r') as f:
+                    return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
+
+    def _save_settings(self, settings: dict) -> None:
+        """
+        Save settings to JSON file.
+
+        Args:
+            settings: Dictionary of settings to save.
+        """
+        try:
+            # Ensure directory exists
+            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(SETTINGS_FILE, 'w') as f:
+                json.dump(settings, f, indent=2)
+        except OSError as e:
+            print(f"⚠️  Warning: Could not save settings: {e}")
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle termination signals."""
@@ -481,10 +517,18 @@ class ClaudeQClient:
             toggle = parts[1].strip()
             if toggle in ['on', 'true', '1', 'yes']:
                 self.show_auto_sent_notifications = True
-                print("✓ Auto-sent notifications enabled\n")
+                # Save to settings file (affects all clients)
+                settings = self._load_settings()
+                settings['show_auto_sent_notifications'] = True
+                self._save_settings(settings)
+                print("✓ Auto-sent notifications enabled (saved globally)\n")
             elif toggle in ['off', 'false', '0', 'no']:
                 self.show_auto_sent_notifications = False
-                print("✓ Auto-sent notifications disabled\n")
+                # Save to settings file (affects all clients)
+                settings = self._load_settings()
+                settings['show_auto_sent_notifications'] = False
+                self._save_settings(settings)
+                print("✓ Auto-sent notifications disabled (saved globally)\n")
             else:
                 print("✗ Invalid option. Use: on/off\n")
             return True
