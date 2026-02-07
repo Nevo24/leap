@@ -25,6 +25,7 @@ from claudeq.client.image_handler import (
 from claudeq.client.input_handler import InputHandler
 
 
+
 class ClaudeQClient:
     """
     ClaudeQ PTY Client.
@@ -190,7 +191,7 @@ class ClaudeQClient:
 
     def _handle_imagepaste(self, msg: Optional[str], is_direct: bool = False) -> bool:
         """
-        Handle :ip or :imagepaste command.
+        Handle !ip or !imagepaste command.
 
         Args:
             msg: Optional message to send with image.
@@ -257,7 +258,7 @@ class ClaudeQClient:
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
             if queue_contents:
-                print("\n  Messages in queue (0=first, use ':e <index>' to edit):")
+                print("\n  Messages in queue (0=first, use '!e <index>' to edit):")
                 for i, msg in enumerate(queue_contents):
                     msg_preview = msg[:70] + '...' if len(msg) > 70 else msg
                     print(f"    [{i}] {msg_preview}")
@@ -330,24 +331,40 @@ class ClaudeQClient:
         print(f"  Sending messages to ClaudeQ PTY server '{self.tag}'")
         print("  Watch responses in server tab")
         print()
-        print("  💬 Type message                        → Queue message (auto-sends)")
-        print("  🖼️ :ip <msg> or :imagepaste <msg>      → Queue with clipboard image")
-        print("  ⚡ :d <msg> or :direct <msg>           → Send directly (bypass queue)")
-        print("  📋 :l or :list                         → Show queue")
-        print("  ✏️ :e <index> or :edit <index>         → Edit queued message by index")
-        print("  🗑️ :c or :clear                        → Clear queue")
-        print("  📊 :status                             → Server status")
-        print("  ⚡ :f or :force                        → Force-send next queued message")
-        print("  👋 :x or :quit (Ctrl+D)                → Exit client")
+
+        # ANSI CHA (Cursor Horizontal Absolute): \033[nG
+        # Moves cursor to exact column n, REGARDLESS of emoji width rendering.
+        # This is immune to terminals disagreeing on emoji widths.
+        COL_CMD = 9     # Column where command text starts (after emoji + padding)
+        COL_DESC = 40   # Column where description starts
+
+        # ANSI color codes
+        CYAN = "\033[36m"
+        RESET = "\033[0m"
+
+        # All emojis: single codepoint, no variation selectors (FE0F)
+        # This avoids the worst cross-terminal width inconsistencies
+        commands = [
+            ("\U0001F4AC", "Type message",          "Queue message (auto-sends)"),
+            ("\U0001F4F7", "!ip <msg> or !imagepaste", "Queue with clipboard image"),
+            ("\u26A1",     "!d <msg> or !direct",   "Send directly (bypass queue)"),
+            ("\U0001F4CB", "!l or !list",           "Show queue"),
+            ("\U0001F4DD", "!e <index> or !edit",   "Edit queued message by index"),
+            ("\U0001F5D1", "!c or !clear",          "Clear queue"),
+            ("\U0001F4CA", "!status",               "Server status"),
+            ("\U0001F525", "!f or !force",          "Force-send next queued message"),  # fire (U+1F525)
+            ("\U0001F44B", "!x or !quit (Ctrl+D)",  "Exit client"),
+        ]
+
+        for emoji, cmd, desc in commands:
+            # Print emoji, jump to cmd column, print cmd in cyan, jump to desc column
+            sys.stdout.write(f"  {emoji}\033[{COL_CMD}G{CYAN}{cmd}{RESET}")
+            sys.stdout.write(f"\033[{COL_DESC}G\u2192 {desc}\n")
+        sys.stdout.flush()
         print()
         print("  🤖 Auto-queue: Server handles auto-sending")
-        print("=" * 70)
         print()
-        print("  💡 JetBrains Users - Enable CQ to name your tabs:")
-        print("     1. Settings > Tools > Terminal > Engine: Classic")
-        print("     2. Advanced Settings > Terminal > ☑️ 'Show application title'")
-        print()
-        print("  🔔 Toggle auto-sent notifications: :auto-sent on/off  (or :asm on/off)")
+        print("  🔔 Toggle auto-sent notifications: !auto-sent on/off  (or !asm on/off)")
         print("=" * 70)
         print()
 
@@ -372,16 +389,16 @@ class ClaudeQClient:
             return True
 
         # Check for image file in line
-        if not self.pending_image_path and not line_lower.startswith(':'):
+        if not self.pending_image_path and not line_lower.startswith('!'):
             line = self._process_image_in_line(line)
 
-        # :ip / :imagepaste
-        if line_lower.startswith(':ip') or line_lower.startswith(':imagepaste'):
-            if line_lower.startswith(':ip '):
+        # !ip / !imagepaste
+        if line_lower.startswith('!ip') or line_lower.startswith('!imagepaste'):
+            if line_lower.startswith('!ip '):
                 msg = line[4:].strip()
-            elif line_lower.startswith(':imagepaste '):
+            elif line_lower.startswith('!imagepaste '):
                 msg = line[12:].strip()
-            elif line_lower in [':ip', ':imagepaste']:
+            elif line_lower in ['!ip', '!imagepaste']:
                 msg = None
             else:
                 return True
@@ -389,23 +406,23 @@ class ClaudeQClient:
             self._handle_imagepaste(msg)
             return True
 
-        # :d / :direct
-        if line_lower.startswith(':d ') or line_lower.startswith(':d:ip') or line_lower.startswith(':direct '):
-            if line_lower.startswith(':d:ip'):
+        # !d / !direct
+        if line_lower.startswith('!d ') or line_lower.startswith('!d!ip') or line_lower.startswith('!direct '):
+            if line_lower.startswith('!d!ip'):
                 rest = line[2:].strip()
-            elif line_lower.startswith(':d '):
+            elif line_lower.startswith('!d '):
                 rest = line[3:].strip()
             else:
                 rest = line[8:].strip()
 
             rest_lower = rest.lower()
 
-            if rest_lower.startswith(':ip') or rest_lower.startswith(':imagepaste'):
-                if rest_lower.startswith(':ip '):
+            if rest_lower.startswith('!ip') or rest_lower.startswith('!imagepaste'):
+                if rest_lower.startswith('!ip '):
                     msg = rest[4:].strip()
-                elif rest_lower.startswith(':ip'):
+                elif rest_lower.startswith('!ip'):
                     msg = rest[3:].strip()
-                elif rest_lower.startswith(':imagepaste '):
+                elif rest_lower.startswith('!imagepaste '):
                     msg = rest[12:].strip()
                 else:
                     msg = rest[11:].strip()
@@ -418,31 +435,31 @@ class ClaudeQClient:
                     print("✗ No message provided\n")
             return True
 
-        # :l / :list
-        if line_lower in [':l', ':list']:
+        # !l / !list
+        if line_lower in ['!l', '!list']:
             self._show_status()
             return True
 
-        # :c / :clear
-        if line_lower in [':c', ':clear']:
+        # !c / !clear
+        if line_lower in ['!c', '!clear']:
             print("⚠ Queue is managed by server\n")
             return True
 
-        # :status
-        if line_lower == ':status':
+        # !status
+        if line_lower == '!status':
             self._show_status()
             return True
 
-        # :f / :force
-        if line_lower in [':f', ':force']:
+        # !f / !force
+        if line_lower in ['!f', '!force']:
             self._force_send()
             return True
 
-        # :e / :edit
-        if line_lower.startswith(':e ') or line_lower.startswith(':edit '):
+        # !e / !edit
+        if line_lower.startswith('!e ') or line_lower.startswith('!edit '):
             parts = line.split(None, 1)
             if len(parts) < 2:
-                print("Usage: :e <index>  (e.g., :e 0 to edit first message)\n")
+                print("Usage: !e <index>  (e.g., !e 0 to edit first message)\n")
                 return True
 
             try:
@@ -452,13 +469,13 @@ class ClaudeQClient:
                 print("✗ Invalid index - must be a number\n")
             return True
 
-        # :auto-sent / :asm (toggle auto-sent notifications)
-        if line_lower.startswith(':auto-sent ') or line_lower.startswith(':asm '):
+        # !auto-sent / !asm (toggle auto-sent notifications)
+        if line_lower.startswith('!auto-sent ') or line_lower.startswith('!asm '):
             parts = line_lower.split(None, 1)
             if len(parts) < 2:
                 status = "on" if self.show_auto_sent_notifications else "off"
                 print(f"Auto-sent notifications: {status}")
-                print("Usage: :auto-sent on/off  or  :asm on/off\n")
+                print("Usage: !auto-sent on/off  or  !asm on/off\n")
                 return True
 
             toggle = parts[1].strip()
@@ -472,13 +489,13 @@ class ClaudeQClient:
                 print("✗ Invalid option. Use: on/off\n")
             return True
 
-        # :x / :quit / :exit
-        if line_lower in [':x', ':quit', ':exit']:
+        # !x / !quit / !exit
+        if line_lower in ['!x', '!quit', '!exit']:
             return False
 
-        # Trailing :ip
-        if line_lower.endswith(' :ip') or line_lower.endswith(' :imagepaste'):
-            if line_lower.endswith(' :ip'):
+        # Trailing !ip
+        if line_lower.endswith(' !ip') or line_lower.endswith(' !imagepaste'):
+            if line_lower.endswith(' !ip'):
                 msg = line[:-4].strip()
             else:
                 msg = line[:-12].strip()

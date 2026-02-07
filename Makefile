@@ -1,7 +1,7 @@
 PACKAGE_NAME     := claudeq
 PYTHON_VERSION   := "3.10"
 REPO_PATH        := $(shell git rev-parse --show-toplevel)
-PROMPT_PREFIX    := "\n→"
+PROMPT_PREFIX    := "→"
 SRC_DIR          := $(REPO_PATH)/src
 SCRIPTS_DIR      := $(SRC_DIR)/scripts
 
@@ -14,7 +14,7 @@ NC     := \033[0m
 default: install
 
 .PHONY: install
-install: .env install-core configure-shell
+install: .env install-core write-venv-path configure-shell
 	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using ClaudeQ:"
@@ -31,6 +31,12 @@ install: .env install-core configure-shell
 install-core:
 	@echo "$(PROMPT_PREFIX) Installing core dependencies..."
 	@poetry install --no-root --without monitor
+
+.PHONY: write-venv-path
+write-venv-path:
+	@echo "$(PROMPT_PREFIX) Writing virtualenv path to .venv-path..."
+	@poetry env info --path > "$(REPO_PATH)/.venv-path"
+	@echo "   Saved: $$(cat $(REPO_PATH)/.venv-path)/bin/python3"
 
 .PHONY: install-monitor
 install-monitor: .env
@@ -175,7 +181,7 @@ configure-shell:
 	@# Configure JetBrains IDEs terminal settings
 	@if [ -d "$$HOME/Library/Application Support/JetBrains" ]; then \
 		echo "$(PROMPT_PREFIX) Configuring JetBrains IDEs..."; \
-		CONFIGURED_COUNT=0; \
+		CONFIGURED_IDES=""; \
 		for IDE_DIR in "$$HOME/Library/Application Support/JetBrains"/*20*; do \
 			if [ -d "$$IDE_DIR/options" ]; then \
 				IDE_NAME=$$(basename "$$IDE_DIR"); \
@@ -184,7 +190,7 @@ configure-shell:
 				NEEDS_UPDATE=false; \
 				\
 				if [ -f "$$TERMINAL_XML" ]; then \
-					CURRENT_ENGINE=$$(grep -o 'terminalEngine.*value="[^"]*"' "$$TERMINAL_XML" 2>/dev/null | grep -o 'value="[^"]*"' | cut -d'"' -f2); \
+					CURRENT_ENGINE=$$(grep 'name="terminalEngine"' "$$TERMINAL_XML" 2>/dev/null | grep -o 'value="[^"]*"' | head -1 | cut -d'"' -f2); \
 					if [ "$$CURRENT_ENGINE" != "CLASSIC" ]; then \
 						NEEDS_UPDATE=true; \
 					fi; \
@@ -215,15 +221,43 @@ configure-shell:
 					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
 					\
 					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
-					CONFIGURED_COUNT=$$((CONFIGURED_COUNT + 1)); \
+					if [ -z "$$CONFIGURED_IDES" ]; then \
+						CONFIGURED_IDES="$$IDE_NAME"; \
+					else \
+						CONFIGURED_IDES="$$CONFIGURED_IDES|$$IDE_NAME"; \
+					fi; \
+				else \
+					echo "  ✓ $$IDE_NAME already configured"; \
 				fi; \
 			fi; \
 		done; \
 		\
-		if [ $$CONFIGURED_COUNT -gt 0 ]; then \
-			echo "  $(YELLOW)⚠ Restart JetBrains IDEs for changes to take effect$(NC)"; \
-		else \
-			echo "  ✓ All JetBrains IDEs already configured"; \
+		if [ -n "$$CONFIGURED_IDES" ]; then \
+			RUNNING_IDES=""; \
+			OLD_IFS=$$IFS; \
+			IFS='|'; \
+			for IDE in $$CONFIGURED_IDES; do \
+				if ps aux | grep -i "$$IDE" | grep -v grep > /dev/null 2>&1; then \
+					if [ -z "$$RUNNING_IDES" ]; then \
+						RUNNING_IDES="$$IDE"; \
+					else \
+						RUNNING_IDES="$$RUNNING_IDES|$$IDE"; \
+					fi; \
+				fi; \
+			done; \
+			IFS=$$OLD_IFS; \
+			\
+			if [ -n "$$RUNNING_IDES" ]; then \
+				echo "  $(YELLOW)⚠ Please restart these running IDEs for changes to take effect:$(NC)"; \
+				OLD_IFS=$$IFS; \
+				IFS='|'; \
+				for IDE in $$RUNNING_IDES; do \
+					echo "     • $$IDE"; \
+				done; \
+				IFS=$$OLD_IFS; \
+			else \
+				echo "  $(GREEN)✓ Configured IDEs are not currently running - changes will apply on next launch$(NC)"; \
+			fi; \
 		fi; \
 	fi
 
@@ -266,12 +300,10 @@ configure-shell:
 	echo "#" >> "$$RC_FILE"; \
 	echo "# Usage: claudeq <tag> [message] (or: cq)" >> "$$RC_FILE"; \
 	echo "#        claudeq-cleanup (or: cqc)" >> "$$RC_FILE"; \
-	echo "#        claudeq-activate (or: cqa) - activate the venv" >> "$$RC_FILE"; \
 	echo "#" >> "$$RC_FILE"; \
 	echo "# You can modify the content below, but keep the START/END marker lines" >> "$$RC_FILE"; \
 	echo "# for proper uninstallation." >> "$$RC_FILE"; \
 	echo "export CLAUDEQ_PROJECT_DIR=\"$(REPO_PATH)\"" >> "$$RC_FILE"; \
-	echo "export CLAUDEQ_PYTHON=\"$$POETRY_VENV/bin/python3\"" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
 	echo "# Add JetBrains IDE CLI tools to PATH for monitor support" >> "$$RC_FILE"; \
 	JETBRAINS_PATHS=""; \
@@ -303,20 +335,8 @@ configure-shell:
 	echo "    \"\$$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-cleanup.sh\"" >> "$$RC_FILE"; \
 	echo "}" >> "$$RC_FILE"; \
 	echo "" >> "$$RC_FILE"; \
-	echo "claudeq-activate() {" >> "$$RC_FILE"; \
-	echo "    VENV_PATH=\$$(cd \"\$$CLAUDEQ_PROJECT_DIR\" && poetry env info --path 2>/dev/null)" >> "$$RC_FILE"; \
-	echo "    if [ -n \"\$$VENV_PATH\" ] && [ -f \"\$$VENV_PATH/bin/activate\" ]; then" >> "$$RC_FILE"; \
-	echo "        source \"\$$VENV_PATH/bin/activate\"" >> "$$RC_FILE"; \
-	echo "        echo \"✓ Activated ClaudeQ venv: \$$VENV_PATH\"" >> "$$RC_FILE"; \
-	echo "    else" >> "$$RC_FILE"; \
-	echo "        echo \"Error: ClaudeQ venv not found. Run 'cd \$$CLAUDEQ_PROJECT_DIR && make install'\"" >> "$$RC_FILE"; \
-	echo "        return 1" >> "$$RC_FILE"; \
-	echo "    fi" >> "$$RC_FILE"; \
-	echo "}" >> "$$RC_FILE"; \
-	echo "" >> "$$RC_FILE"; \
 	echo "alias cq='claudeq'" >> "$$RC_FILE"; \
 	echo "alias cqc='claudeq-cleanup'" >> "$$RC_FILE"; \
-	echo "alias cqa='claudeq-activate'" >> "$$RC_FILE"; \
 	echo "# ===== ClaudeQ Configuration END - DO NOT REMOVE (needed for uninstall) =====" >> "$$RC_FILE"; \
 	echo "$(GREEN)✓ Added ClaudeQ configuration to $$RC_FILE$(NC)"; \
 	echo "  Using Poetry venv: $$POETRY_VENV"
@@ -368,6 +388,7 @@ uninstall:
 	@rm -rf ~/.claude-queues ~/.claude-sockets
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
 	@rm -rf build dist
+	@rm -f "$(REPO_PATH)/.venv-path"
 	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
 	@echo "$(PROMPT_PREFIX) Removing ClaudeQ Monitor.app from /Applications..."
 	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
