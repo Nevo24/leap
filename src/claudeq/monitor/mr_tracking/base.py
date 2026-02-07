@@ -50,3 +50,31 @@ class SCMProvider(ABC):
         Returns:
             MRStatus with current state and details.
         """
+
+    @abstractmethod
+    def scan_cq_commands(self, project_path: str, branch: str) -> list:
+        """Scan for /cq commands in MR discussion threads.
+
+        Args:
+            project_path: The project path (e.g., 'user/repo').
+            branch: The source branch name.
+
+        Returns:
+            List of CqCommand instances found.
+        """
+
+    @abstractmethod
+    def acknowledge_cq_command(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+        """Post acknowledgment reply to a /cq thread.
+
+        Returns:
+            True on success.
+        """
+
+    @abstractmethod
+    def report_no_session(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+        """Post error reply when no matching CQ session is found.
+
+        Returns:
+            True on success.
+        """

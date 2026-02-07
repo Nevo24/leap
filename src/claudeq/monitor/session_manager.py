@@ -30,8 +30,14 @@ def query_server_status(socket_path: Path) -> Optional[dict[str, Any]]:
 
         data = {'type': 'status', 'message': ''}
         client_socket.send(json.dumps(data).encode('utf-8'))
-        response = client_socket.recv(4096).decode('utf-8')
+        chunks = []
+        while True:
+            chunk = client_socket.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
         client_socket.close()
+        response = b''.join(chunks).decode('utf-8')
 
         return json.loads(response)
     except (socket.error, json.JSONDecodeError, OSError):

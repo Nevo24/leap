@@ -69,7 +69,20 @@ class SocketHandler:
         """
         response: dict[str, Any] = {'status': 'error', 'message': 'Unknown error'}
         try:
-            data = conn.recv(4096).decode('utf-8')
+            conn.settimeout(5.0)
+            chunks = []
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                # Try to parse — if valid JSON, we have the full message
+                try:
+                    json.loads(b''.join(chunks))
+                    break
+                except json.JSONDecodeError:
+                    continue
+            data = b''.join(chunks).decode('utf-8')
 
             # Check if data is empty (client disconnected)
             if not data or not data.strip():

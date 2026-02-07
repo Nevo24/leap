@@ -15,7 +15,8 @@ from typing import Optional
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QCheckBox, QHeaderView, QMessageBox
+    QPushButton, QLabel, QCheckBox, QHeaderView, QMessageBox,
+    QInputDialog
 )
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QCursor
@@ -146,6 +147,7 @@ class GitLabPollerWorker(QThread):
     """Background worker that polls GitLab for MR statuses."""
 
     results_ready = pyqtSignal(dict)
+    cq_commands_ready = pyqtSignal(list)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -161,6 +163,8 @@ class GitLabPollerWorker(QThread):
             return
 
         results: dict[str, MRStatus] = {}
+        all_cq_commands = []
+
         for session in self._sessions:
             tag = session['tag']
             project_path = session.get('project_path')
@@ -182,7 +186,18 @@ class GitLabPollerWorker(QThread):
                 logger.debug("Error polling MR for tag %s", tag, exc_info=True)
                 results[tag] = MRStatus(state=MRState.NO_MR)
 
+            # Scan for /cq commands
+            try:
+                cq_commands = self._provider.scan_cq_commands(
+                    remote_info.project_path, remote_info.branch
+                )
+                all_cq_commands.extend(cq_commands)
+            except Exception:
+                logger.debug("Error scanning /cq for tag %s", tag, exc_info=True)
+
         self.results_ready.emit(results)
+        if all_cq_commands:
+            self.cq_commands_ready.emit(all_cq_commands)
 
 
 class MonitorWindow(QMainWindow):
@@ -352,6 +367,7 @@ class MonitorWindow(QMainWindow):
         worker = GitLabPollerWorker(self)
         worker.configure(self._gitlab_provider, self.sessions)
         worker.results_ready.connect(self._on_gitlab_results)
+        worker.cq_commands_ready.connect(self._on_cq_commands)
         worker.finished.connect(self._on_gitlab_worker_finished)
         self._gitlab_worker = worker
         worker.start()
@@ -370,6 +386,75 @@ class MonitorWindow(QMainWindow):
             return
         self._mr_statuses.update(results)
         self._update_mr_column()
+
+    def _on_cq_commands(self, commands: list) -> None:
+        """Handle /cq commands detected during GitLab polling."""
+        if not self.isVisible() or not self._gitlab_provider:
+            return
+
+        # Pause polling while handling commands (dialogs may block)
+        self._gitlab_timer.stop()
+
+        from claudeq.monitor.mr_tracking.cq_command import format_cq_message
+        from claudeq.monitor.cq_sender import send_to_cq_session
+
+        for cmd in commands:
+            tag, no_match = self._match_session_for_cq(cmd)
+            if tag:
+                message = format_cq_message(cmd)
+                sent = send_to_cq_session(tag, message)
+                if sent:
+                    logger.info("/cq from MR !%s sent to session '%s'", cmd.mr_iid, tag)
+                else:
+                    logger.error("Failed to send /cq message to session '%s'", tag)
+                # Always acknowledge to prevent re-processing on next poll
+                self._gitlab_provider.acknowledge_cq_command(
+                    cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                )
+            elif no_match:
+                # Truly no sessions found — report on GitLab
+                self._gitlab_provider.report_no_session(
+                    cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                )
+                logger.info("No session match for /cq from MR !%s (%s)",
+                            cmd.mr_iid, cmd.project_path)
+            # else: user cancelled dialog — do nothing, will retry next poll
+
+        # Resume polling
+        config = load_gitlab_config()
+        interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
+        self._gitlab_timer.start(interval * 1000)
+
+    def _match_session_for_cq(self, cmd) -> tuple[Optional[str], bool]:
+        """Match a /cq command to a CQ session by project path.
+
+        Returns (tag, no_match) where:
+        - (tag, False) — matched a session
+        - (None, True) — no sessions match at all
+        - (None, False) — user cancelled the dialog
+        """
+        matching = []
+        for session in self.sessions:
+            if not session.get('project_path'):
+                continue
+            remote_info = get_git_remote_info(session['project_path'])
+            if remote_info and remote_info.project_path == cmd.project_path:
+                matching.append(session)
+
+        if len(matching) == 1:
+            return matching[0]['tag'], False
+        elif len(matching) > 1:
+            tags = [s['tag'] for s in matching]
+            tag, ok = QInputDialog.getItem(
+                self, 'Select Session',
+                f'Multiple sessions for {cmd.project_path}.\n'
+                f'MR !{cmd.mr_iid}: "{cmd.mr_title}"\n'
+                f'Pick one:',
+                tags, 0, False
+            )
+            return (tag, False) if ok else (None, False)
+        else:
+            return None, True
 
     def _refresh_data(self) -> None:
         """Refresh session data and update table."""

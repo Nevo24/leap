@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Optional
 
 import gitlab
 
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
+
+CQ_ACK_MESSAGE = "[bot msg] claudeQ is on it!"
+CQ_NO_SESSION_MESSAGE = "[bot msg] No matching ClaudeQ session found for this project."
 
 
 class GitLabProvider(SCMProvider):
@@ -194,3 +199,153 @@ class GitLabProvider(SCMProvider):
         if isinstance(author, dict):
             return author.get('username', '')
         return getattr(author, 'username', '')
+
+    def scan_cq_commands(self, project_path: str, branch: str) -> list[CqCommand]:
+        """Scan open MRs for /cq commands from the configured user."""
+        project = self._get_project(project_path)
+        if not project:
+            return []
+
+        try:
+            mrs = project.mergerequests.list(
+                state='opened',
+                source_branch=branch,
+                get_all=False,
+            )
+        except Exception:
+            logger.debug("Failed to list MRs for /cq scan: %s branch %s", project_path, branch)
+            return []
+
+        commands = []
+        for mr in mrs:
+            try:
+                mr_full = project.mergerequests.get(mr.iid)
+                discussions = mr_full.discussions.list(get_all=True)
+            except Exception:
+                logger.debug("Failed to fetch discussions for MR !%s", mr.iid)
+                continue
+
+            for discussion in discussions:
+                cmd = self._check_discussion_for_cq(
+                    project, project_path, mr, discussion, branch
+                )
+                if cmd:
+                    commands.append(cmd)
+
+        return commands
+
+    def _check_discussion_for_cq(
+        self, project, project_path: str, mr, discussion, branch: str
+    ) -> Optional[CqCommand]:
+        """Check a single discussion for a /cq trigger."""
+        notes = discussion.attributes.get('notes', [])
+        if not notes:
+            return None
+
+        # Check if any note is /cq from the configured user
+        has_cq_trigger = False
+        for note in notes:
+            body = note.get('body', '').strip()
+            author = self._note_author(note)
+            if body == '/cq' and author == self._username:
+                has_cq_trigger = True
+                break
+
+        if not has_cq_trigger:
+            return None
+
+        # Check if already acknowledged
+        for note in notes:
+            if CQ_ACK_MESSAGE in note.get('body', ''):
+                return None
+
+        # Extract thread notes (excluding system notes)
+        thread_notes = []
+        for note in notes:
+            if note.get('system', False):
+                continue
+            thread_notes.append({
+                'author': self._note_author(note),
+                'body': note.get('body', ''),
+                'created_at': note.get('created_at', ''),
+            })
+
+        # Extract code context from the first note's position
+        file_path = None
+        old_line = None
+        new_line = None
+        code_snippet = None
+
+        first_note = notes[0]
+        position = first_note.get('position')
+        if position:
+            file_path = position.get('new_path') or position.get('old_path')
+            new_line = position.get('new_line')
+            old_line = position.get('old_line')
+
+            if file_path:
+                code_snippet = self._fetch_code_snippet(
+                    project, file_path, branch, new_line or old_line
+                )
+
+        return CqCommand(
+            project_path=project_path,
+            mr_iid=mr.iid,
+            mr_title=mr.title,
+            mr_url=mr.web_url,
+            discussion_id=discussion.id,
+            thread_notes=thread_notes,
+            file_path=file_path,
+            old_line=old_line,
+            new_line=new_line,
+            code_snippet=code_snippet,
+        )
+
+    def _fetch_code_snippet(
+        self, project, file_path: str, branch: str, target_line: Optional[int]
+    ) -> Optional[str]:
+        """Fetch a code snippet around the target line from GitLab."""
+        if not target_line:
+            return None
+        try:
+            f = project.files.get(file_path=file_path, ref=branch)
+            content = base64.b64decode(f.content).decode('utf-8')
+            lines = content.splitlines()
+
+            # Extract ~5 lines around target (2 before, target, 2 after)
+            start = max(0, target_line - 3)
+            end = min(len(lines), target_line + 2)
+            return "\n".join(lines[start:end])
+        except Exception:
+            logger.debug("Failed to fetch code snippet for %s:%s", file_path, target_line)
+            return None
+
+    def acknowledge_cq_command(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+        """Post 'claudeQ is on it!' reply to the discussion thread."""
+        project = self._get_project(project_path)
+        if not project:
+            return False
+        try:
+            mr = project.mergerequests.get(mr_iid)
+            discussion = mr.discussions.get(discussion_id)
+            discussion.notes.create({"body": CQ_ACK_MESSAGE})
+            return True
+        except Exception:
+            logger.error("Failed to acknowledge /cq on MR !%s discussion %s",
+                         mr_iid, discussion_id, exc_info=True)
+            return False
+
+    def report_no_session(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+        """Post error reply when no matching CQ session is found."""
+        project = self._get_project(project_path)
+        if not project:
+            return False
+        try:
+            mr = project.mergerequests.get(mr_iid)
+            discussion = mr.discussions.get(discussion_id)
+            discussion.notes.create({"body": CQ_NO_SESSION_MESSAGE})
+            return True
+        except Exception:
+            logger.error("Failed to post no-session reply on MR !%s discussion %s",
+                         mr_iid, discussion_id, exc_info=True)
+            return False

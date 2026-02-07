@@ -39,8 +39,15 @@ class SocketClient:
 
             data = {'type': msg_type, 'message': message}
             client_socket.send(json.dumps(data).encode('utf-8'))
-            response = client_socket.recv(4096).decode('utf-8')
+            client_socket.settimeout(5.0)
+            chunks = []
+            while True:
+                chunk = client_socket.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
             client_socket.close()
+            response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
         except (socket.error, json.JSONDecodeError, OSError) as e:
@@ -88,8 +95,15 @@ class SocketClient:
 
             data = {'type': 'get_message', 'index': index}
             client_socket.send(json.dumps(data).encode('utf-8'))
-            response = client_socket.recv(4096).decode('utf-8')
+            client_socket.settimeout(5.0)
+            chunks = []
+            while True:
+                chunk = client_socket.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
             client_socket.close()
+            response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
         except (socket.error, json.JSONDecodeError, OSError) as e:
@@ -113,8 +127,15 @@ class SocketClient:
 
             data = {'type': 'edit_message', 'id': msg_id, 'new_message': new_message}
             client_socket.send(json.dumps(data).encode('utf-8'))
-            response = client_socket.recv(4096).decode('utf-8')
+            client_socket.settimeout(5.0)
+            chunks = []
+            while True:
+                chunk = client_socket.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
             client_socket.close()
+            response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
         except (socket.error, json.JSONDecodeError, OSError) as e:
