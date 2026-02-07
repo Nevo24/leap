@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any, Optional
 
+from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -487,62 +488,66 @@ class MonitorWindow(QMainWindow):
             item.setText(text)
 
     def _update_table(self) -> None:
-        """Update table with current sessions."""
+        """Update table with current sessions.
+
+        Creates fresh cell widgets each refresh to avoid dangling C++ pointers.
+        When setRowCount() shrinks the table, Qt auto-deletes cell widgets in
+        removed rows. Caching widgets across refreshes risks SIGSEGV when a
+        stale Python reference to a destroyed C++ widget is reused.
+        """
         new_count = len(self.sessions)
 
-        if not self.sessions:
-            if self.table.rowCount() != 1:
-                self.table.setRowCount(1)
-            self._set_cell_text(0, 0, 'No active sessions')
-            return
+        self.table.setUpdatesEnabled(False)
+        try:
+            # Stop pulsing and release all cached widget references BEFORE
+            # modifying the table.  This ensures we never hold a Python
+            # reference to a widget that Qt is about to destroy.
+            for widget in self._mr_widgets.values():
+                try:
+                    widget.set_pulsing(False)
+                except RuntimeError:
+                    pass  # C++ object already deleted
+            self._mr_widgets.clear()
 
-        # Only resize if row count actually changed
-        if self.table.rowCount() != new_count:
+            if not self.sessions:
+                self.table.setRowCount(1)
+                self._set_cell_text(0, 0, 'No active sessions')
+                return
+
             self.table.setRowCount(new_count)
 
-        for row, session in enumerate(self.sessions):
-            tag = session['tag']
+            for row, session in enumerate(self.sessions):
+                tag = session['tag']
 
-            # Text cells — only update if value changed
-            self._set_cell_text(row, self.COL_TAG, tag)
-            self._set_cell_text(row, self.COL_PROJECT, session['project'])
-            self._set_cell_text(row, self.COL_BRANCH, session['branch'])
+                # Text cells — only update if value changed
+                self._set_cell_text(row, self.COL_TAG, tag)
+                self._set_cell_text(row, self.COL_PROJECT, session['project'])
+                self._set_cell_text(row, self.COL_BRANCH, session['branch'])
 
-            status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
-            self._set_cell_text(row, self.COL_STATUS, status)
-            self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
+                status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
+                self._set_cell_text(row, self.COL_STATUS, status)
+                self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-            # MR — reuse existing PulsingLabel widget
-            mr_widget = self._mr_widgets.get(tag)
-            if not mr_widget:
+                # MR — fresh PulsingLabel every refresh (never cache across cycles)
                 mr_widget = PulsingLabel()
                 self._mr_widgets[tag] = mr_widget
-            self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
-            if self.table.cellWidget(row, self.COL_MR) is not mr_widget:
+                self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
                 self.table.setCellWidget(row, self.COL_MR, mr_widget)
 
-            # Buttons — reuse existing, only create if missing
-            if not self.table.cellWidget(row, self.COL_SERVER):
+                # Buttons — fresh every refresh to match current session tags
                 server_btn = QPushButton('Server')
                 server_btn.clicked.connect(
                     lambda checked, t=tag: focus_session(t, 'server')
                 )
                 self.table.setCellWidget(row, self.COL_SERVER, server_btn)
 
-            if not self.table.cellWidget(row, self.COL_CLIENT):
                 client_btn = QPushButton('Client')
                 client_btn.clicked.connect(
                     lambda checked, t=tag: focus_session(t, 'client')
                 )
                 self.table.setCellWidget(row, self.COL_CLIENT, client_btn)
-
-        # Clean up widgets for sessions that no longer exist
-        active_tags = {s['tag'] for s in self.sessions}
-        stale = [t for t in self._mr_widgets if t not in active_tags]
-        for t in stale:
-            widget = self._mr_widgets.pop(t)
-            widget.set_pulsing(False)
-            widget.deleteLater()
+        finally:
+            self.table.setUpdatesEnabled(True)
 
     def _update_mr_column(self) -> None:
         """Update just the MR column widgets without rebuilding the whole table."""
@@ -552,13 +557,14 @@ class MonitorWindow(QMainWindow):
                 continue
             tag = tag_item.text()
             mr_widget = self._mr_widgets.get(tag)
-            # Check widget exists and hasn't been deleted
-            if mr_widget and not mr_widget.isHidden():
-                try:
-                    self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
-                except RuntimeError:
-                    # Widget was deleted, remove from cache
-                    self._mr_widgets.pop(tag, None)
+            if not mr_widget or sip.isdeleted(mr_widget):
+                self._mr_widgets.pop(tag, None)
+                continue
+            try:
+                self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
+            except RuntimeError:
+                # Widget was deleted, remove from cache
+                self._mr_widgets.pop(tag, None)
 
     def _apply_mr_status(self, widget: PulsingLabel, status: Optional[MRStatus]) -> None:
         """Apply MR status to a PulsingLabel widget."""

@@ -159,9 +159,11 @@ class ClaudeQServer:
         self.last_send_time = time.time()
         self.pty.send(message)
 
-        # Image attachments need extra time
+        # Image attachments: '@' triggers Claude CLI's file-mention mode.
+        # First \r confirms the file selection, second \r submits the message.
         if message.startswith('@'):
             time.sleep(0.5)
+            self.pty.send('\r')
 
         self.pty.send('\r')
 
