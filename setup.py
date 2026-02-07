@@ -6,8 +6,11 @@ from setuptools import setup, find_packages
 
 # Launcher script for py2app
 APP = ['src/scripts/claudeq_monitor_launcher.py']
-DATA_FILES = [('', ['src/claudeq/monitor/resources/activate_terminal.groovy',
-                    'assets/claudeq-icon.png'])]
+DATA_FILES = [
+    ('', ['src/claudeq/monitor/resources/activate_terminal.groovy',
+          'assets/claudeq-icon.png']),
+    ('.storage', ['.storage/project-path', '.storage/venv-path'])
+]
 OPTIONS = {
     'argv_emulation': False,
     'iconfile': 'assets/claudeq-icon.icns',

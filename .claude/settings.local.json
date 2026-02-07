@@ -28,7 +28,8 @@
       "WebFetch(domain:wcwidth.readthedocs.io)",
       "WebFetch(domain:youtrack.jetbrains.com)",
       "WebFetch(domain:iterm2.com)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "Bash(make install-monitor:*)"
     ]
   }
 }

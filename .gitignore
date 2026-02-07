@@ -42,7 +42,7 @@ test/
 
 # py2app build artifacts
 build/
-dist/
+.dist/
 
 # VS Code extension packaging
 src/claudeq/vscode-extension/*.vsix

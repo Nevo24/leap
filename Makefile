@@ -1,5 +1,5 @@
 PACKAGE_NAME     := claudeq
-PYTHON_VERSION   := "3.10"
+PYTHON_VERSION   := "3.12"
 REPO_PATH        := $(shell git rev-parse --show-toplevel)
 PROMPT_PREFIX    := "→"
 SRC_DIR          := $(REPO_PATH)/src
@@ -14,7 +14,7 @@ NC     := \033[0m
 default: install
 
 .PHONY: install
-install: .env install-core write-venv-path configure-shell
+install: .env install-core ensure-storage write-install-metadata configure-shell
 	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using ClaudeQ:"
@@ -32,23 +32,31 @@ install-core:
 	@echo "$(PROMPT_PREFIX) Installing core dependencies..."
 	@poetry install --no-root --without monitor
 
-.PHONY: write-venv-path
-write-venv-path:
-	@echo "$(PROMPT_PREFIX) Writing virtualenv path to .venv-path..."
+.PHONY: ensure-storage
+ensure-storage:
+	@mkdir -p "$(REPO_PATH)/.storage"
+
+.PHONY: write-install-metadata
+write-install-metadata: ensure-storage
+	@echo "$(PROMPT_PREFIX) Writing installation metadata to .storage/..."
+	@poetry env info --path > "$(REPO_PATH)/.storage/venv-path"
+	@echo "$(REPO_PATH)" > "$(REPO_PATH)/.storage/project-path"
+	@echo "   Saved venv: $$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"
+	@echo "   Saved project: $$(cat $(REPO_PATH)/.storage/project-path)"
+	@# Keep legacy .venv-path for backward compatibility (can be removed later)
 	@poetry env info --path > "$(REPO_PATH)/.venv-path"
-	@echo "   Saved: $$(cat $(REPO_PATH)/.venv-path)/bin/python3"
 
 .PHONY: install-monitor
-install-monitor: .env
+install-monitor: .env ensure-storage write-install-metadata
 	@echo "$(PROMPT_PREFIX) Installing monitor dependencies..."
 	@poetry install --no-root --with monitor
 	@echo "$(PROMPT_PREFIX) Building ClaudeQ Monitor.app with py2app..."
-	@cd $(REPO_PATH) && poetry run python setup.py py2app > /dev/null 2>&1
+	@cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1
 	@echo "$(PROMPT_PREFIX) Installing ClaudeQ Monitor.app to /Applications..."
 	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
 		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
 	fi
-	@sudo cp -R "$(REPO_PATH)/dist/ClaudeQ Monitor.app" /Applications/
+	@sudo cp -R "$(REPO_PATH)/.dist/ClaudeQ Monitor.app" /Applications/
 	@echo "$(GREEN)✓ Monitor installed successfully!$(NC)"
 	@echo ""
 	@echo "Launch ClaudeQ Monitor from:"
@@ -67,7 +75,7 @@ clean:
 	@poetry env remove --all
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
 	@rm -rf .storage
-	@rm -rf build dist
+	@rm -rf build .dist
 	@echo "$(GREEN)✓ Cleaned up build artifacts$(NC)"
 
 .PHONY: lock
@@ -350,7 +358,7 @@ uninstall-monitor:
 	else \
 		echo "  ClaudeQ Monitor.app not found in /Applications"; \
 	fi
-	@rm -rf build dist
+	@rm -rf build .dist
 	@echo "$(GREEN)✓ Monitor uninstalled successfully!$(NC)"
 
 .PHONY: uninstall
@@ -387,7 +395,7 @@ uninstall:
 	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
 	@rm -rf .storage
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
-	@rm -rf build dist
+	@rm -rf build .dist
 	@rm -f "$(REPO_PATH)/.venv-path"
 	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
 	@echo "$(PROMPT_PREFIX) Removing ClaudeQ Monitor.app from /Applications..."

@@ -8,8 +8,45 @@ used across the application.
 from pathlib import Path
 from typing import Final
 
+
+def _find_project_root() -> Path:
+    """
+    Find the ClaudeQ project root directory.
+
+    Priority order:
+    1. Read from .storage/project-path (written during installation)
+    2. Calculate from current file location (development fallback)
+
+    Returns:
+        Path to the project root containing .storage directory.
+    """
+    current = Path(__file__).resolve()
+
+    # Strategy 1: Try to find .storage/project-path by walking up the tree
+    # This works both from source and from bundled app
+    for parent in [current, *current.parents]:
+        storage_dir = parent / ".storage"
+        project_path_file = storage_dir / "project-path"
+        if project_path_file.exists():
+            try:
+                project_root = Path(project_path_file.read_text().strip())
+                if project_root.exists():
+                    return project_root
+            except (OSError, ValueError):
+                pass
+
+    # Strategy 2: Calculate from source location (development fallback)
+    # From src/claudeq/utils/constants.py → project root (4 levels up)
+    calculated_root = current.parent.parent.parent.parent
+    if calculated_root.exists():
+        return calculated_root
+
+    # Strategy 3: Last resort - use home directory (should never happen)
+    return Path.home() / ".claudeq"
+
+
 # Storage directory (all user data in one place, in the project root)
-STORAGE_DIR: Final[Path] = Path(__file__).parent.parent.parent.parent / ".storage"
+STORAGE_DIR: Final[Path] = _find_project_root() / ".storage"
 
 # Directory paths (now inside .storage)
 QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"

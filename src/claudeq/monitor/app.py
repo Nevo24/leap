@@ -119,13 +119,6 @@ class MonitorWindow(QMainWindow):
         layout = QVBoxLayout()
         main_widget.setLayout(layout)
 
-        # Help text
-        help_label = QLabel(
-            '✓ Terminal tab naming is automatically configured during installation\n'
-            '  (JetBrains & VS Code settings are set up by `make install`)'
-        )
-        help_label.setStyleSheet('color: #00AA00; font-size: 10px;')
-        layout.addWidget(help_label)
 
         # Table
         self.table = QTableWidget()

@@ -6,10 +6,16 @@
 #
 
 # Find and enforce virtualenv Python usage (NEVER use system python3)
-# Primary source: .venv-path file (written by make install)
+# Primary source: .storage/venv-path file (written by make install)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-VENV_PATH_FILE="$PROJECT_DIR/.venv-path"
+STORAGE_DIR="$PROJECT_DIR/.storage"
+VENV_PATH_FILE="$STORAGE_DIR/venv-path"
+
+# Fallback to legacy location if new location doesn't exist
+if [ ! -f "$VENV_PATH_FILE" ] && [ -f "$PROJECT_DIR/.venv-path" ]; then
+    VENV_PATH_FILE="$PROJECT_DIR/.venv-path"
+fi
 
 if [ -f "$VENV_PATH_FILE" ]; then
     # Read virtualenv path from file (most reliable, always current)
@@ -18,7 +24,7 @@ if [ -f "$VENV_PATH_FILE" ]; then
 
     if [ ! -x "$PYTHON_CMD" ]; then
         echo "❌ Error: Python not found at $PYTHON_CMD" >&2
-        echo "   The .venv-path file exists but points to an invalid location." >&2
+        echo "   The venv-path file exists but points to an invalid location." >&2
         echo "   Fix: Run 'make install' in the ClaudeQ project directory" >&2
         exit 1
     fi
@@ -29,7 +35,7 @@ else
     # FAIL: No valid Python found
     echo "❌ Error: ClaudeQ virtualenv not found!" >&2
     echo "" >&2
-    echo "   Missing .venv-path file in project directory." >&2
+    echo "   Missing .storage/venv-path file in project directory." >&2
     echo "   This file is created automatically by 'make install'." >&2
     echo "" >&2
     echo "   Fix: Run 'make install' in: $PROJECT_DIR" >&2
@@ -80,11 +86,6 @@ CLIENT COMMANDS (when connected as interactive client):
 OTHER COMMANDS:
     cq-mo               Launch monitor GUI
     cq-cleanup          Remove dead sessions
-
-JETBRAINS USERS:
-    For automatic tab titles, enable these settings:
-    1. Settings → Tools → Terminal → Engine: Classic
-    2. Advanced Settings → Terminal → ☑ 'Show application title'
 
 For more info: https://github.com/nevo24/claudeq
 EOF
