@@ -12,11 +12,6 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STORAGE_DIR="$PROJECT_DIR/.storage"
 VENV_PATH_FILE="$STORAGE_DIR/venv-path"
 
-# Fallback to legacy location if new location doesn't exist
-if [ ! -f "$VENV_PATH_FILE" ] && [ -f "$PROJECT_DIR/.venv-path" ]; then
-    VENV_PATH_FILE="$PROJECT_DIR/.venv-path"
-fi
-
 if [ -f "$VENV_PATH_FILE" ]; then
     # Read virtualenv path from file (most reliable, always current)
     VENV_BASE=$(cat "$VENV_PATH_FILE")
@@ -73,14 +68,16 @@ EXAMPLES:
     cq my-feature "What is this error?"
 
 CLIENT COMMANDS (when connected as interactive client):
+    !h or !help         Show help
     <message>           Queue message (auto-sends when ready)
     !ip <msg>           Queue with clipboard image
     !d <msg>            Send directly (bypass queue)
     !d !ip <msg>        Send directly with image
-    !f                  Force-send next queued message
+    !e <index>          Edit queued message by index
     !l                  Show queue
     !c                  Clear queue
     !status             Server status
+    !f                  Force-send next queued message
     !x                  Exit client
 
 OTHER COMMANDS:

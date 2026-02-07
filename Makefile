@@ -80,8 +80,6 @@ write-install-metadata: ensure-storage
 	@echo "$(REPO_PATH)" > "$(REPO_PATH)/.storage/project-path"
 	@echo "   Saved venv: $$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"
 	@echo "   Saved project: $$(cat $(REPO_PATH)/.storage/project-path)"
-	@# Keep legacy .venv-path for backward compatibility (can be removed later)
-	@poetry env info --path > "$(REPO_PATH)/.venv-path"
 
 .PHONY: install-monitor
 install-monitor: .env ensure-storage write-install-metadata
@@ -393,7 +391,6 @@ uninstall:
 	@rm -rf .storage
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
 	@rm -rf build .dist
-	@rm -f "$(REPO_PATH)/.venv-path"
 	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
 	@echo "$(PROMPT_PREFIX) Removing ClaudeQ Monitor.app from /Applications..."
 	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \

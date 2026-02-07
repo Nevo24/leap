@@ -90,14 +90,16 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 
 | Command | Action |
 |---------|--------|
+| `!h` or `!help` | Show help |
 | `<message>` | Queue message (auto-sends when ready) |
-| `!ip <msg>` | Queue with clipboard image |
-| `!d <msg>` | Send directly (bypass queue) |
-| `!e <index>` | Edit queued message by index (0=first) |
-| `!f` | Force-send next queued message |
-| `!l` | Show queue |
+| `!ip <msg>` or `!imagepaste <msg>` | Queue with clipboard image |
+| `!d <msg>` or `!direct <msg>` | Send directly (bypass queue) |
+| `!e <index>` or `!edit <index>` | Edit queued message by index (0=first) |
+| `!l` or `!list` | Show queue |
+| `!c` or `!clear` | Clear queue |
 | `!status` | Server status |
-| `!x` | Exit client |
+| `!f` or `!force` | Force-send next queued message |
+| `!x` or `!quit` (`Ctrl+D`) | Exit client |
 
 ### Message Editing
 

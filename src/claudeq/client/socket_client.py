@@ -13,22 +13,34 @@ from typing import Any, Optional
 class SocketClient:
     """Client for communicating with ClaudeQ server via Unix socket."""
 
-    def __init__(self, socket_path: Path):
+    def __init__(self, socket_path: Path, error_callback=None):
         """
         Initialize socket client.
 
         Args:
             socket_path: Path to the server's Unix socket.
+            error_callback: Optional callback to check if errors should be printed.
+                          Should return True to print, False to suppress.
         """
         self.socket_path = socket_path
+        # Extract tag from socket path (e.g., .storage/sockets/mytag.sock -> mytag)
+        self.tag = socket_path.stem
+        self._error_callback = error_callback
 
-    def send(self, msg_type: str, message: str = "") -> Optional[dict[str, Any]]:
+    def _should_print_error(self) -> bool:
+        """Check if errors should be printed (respects rate limiting)."""
+        if self._error_callback:
+            return self._error_callback()
+        return True
+
+    def send(self, msg_type: str, message: str = "", silent: bool = False) -> Optional[dict[str, Any]]:
         """
         Send a message to the server and get response.
 
         Args:
             msg_type: Message type ('queue', 'direct', 'status', 'force_send').
             message: Message content.
+            silent: If True, suppress error messages.
 
         Returns:
             Server response dictionary, or None on error.
@@ -50,8 +62,22 @@ class SocketClient:
             response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
-        except (socket.error, json.JSONDecodeError, OSError) as e:
-            print(f"Error communicating with server: {e}")
+        except socket.error as e:
+            if not silent and self._should_print_error():
+                print(f"Error: Cannot connect to ClaudeQ server")
+                print(f"  → Check if there's a terminal running: cq-server {self.tag}")
+                print(f"  → Details: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            if not silent and self._should_print_error():
+                print(f"Error: Server sent malformed response")
+                print(f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state")
+                print(f"  → Try restarting the server by closing and reopening: cq {self.tag}")
+                print(f"  → Details: {e}")
+            return None
+        except OSError as e:
+            if not silent and self._should_print_error():
+                print(f"Error communicating with server: {e}")
             return None
 
     def is_server_running(self) -> bool:
@@ -71,20 +97,21 @@ class SocketClient:
         """Send a message directly to Claude."""
         return self.send('direct', message)
 
-    def get_status(self) -> Optional[dict[str, Any]]:
+    def get_status(self, silent: bool = False) -> Optional[dict[str, Any]]:
         """Get server status."""
-        return self.send('status')
+        return self.send('status', silent=silent)
 
     def force_send_next(self) -> Optional[dict[str, Any]]:
         """Force send the next queued message."""
         return self.send('force_send')
 
-    def get_message_for_edit(self, index: int) -> Optional[dict[str, Any]]:
+    def get_message_for_edit(self, index: int, silent: bool = False) -> Optional[dict[str, Any]]:
         """
         Get a message by index for editing.
 
         Args:
             index: Queue index (0-based).
+            silent: If True, suppress error messages.
 
         Returns:
             Dictionary with 'id' and 'message', or None on error.
@@ -106,17 +133,32 @@ class SocketClient:
             response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
-        except (socket.error, json.JSONDecodeError, OSError) as e:
-            print(f"Error communicating with server: {e}")
+        except socket.error as e:
+            if not silent and self._should_print_error():
+                print(f"Error: Cannot connect to ClaudeQ server")
+                print(f"  → Check if there's a terminal running: cq-server {self.tag}")
+                print(f"  → Details: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            if not silent and self._should_print_error():
+                print(f"Error: Server sent malformed response")
+                print(f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state")
+                print(f"  → Try restarting the server by closing and reopening: cq {self.tag}")
+                print(f"  → Details: {e}")
+            return None
+        except OSError as e:
+            if not silent and self._should_print_error():
+                print(f"Error communicating with server: {e}")
             return None
 
-    def edit_message(self, msg_id: str, new_message: str) -> Optional[dict[str, Any]]:
+    def edit_message(self, msg_id: str, new_message: str, silent: bool = False) -> Optional[dict[str, Any]]:
         """
         Edit a message by its ID.
 
         Args:
             msg_id: Message ID to edit.
             new_message: New message content.
+            silent: If True, suppress error messages.
 
         Returns:
             Server response dictionary, or None on error.
@@ -138,6 +180,20 @@ class SocketClient:
             response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
-        except (socket.error, json.JSONDecodeError, OSError) as e:
-            print(f"Error communicating with server: {e}")
+        except socket.error as e:
+            if not silent and self._should_print_error():
+                print(f"Error: Cannot connect to ClaudeQ server")
+                print(f"  → Check if there's a terminal running: cq-server {self.tag}")
+                print(f"  → Details: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            if not silent and self._should_print_error():
+                print(f"Error: Server sent malformed response")
+                print(f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state")
+                print(f"  → Try restarting the server by closing and reopening: cq {self.tag}")
+                print(f"  → Details: {e}")
+            return None
+        except OSError as e:
+            if not silent and self._should_print_error():
+                print(f"Error communicating with server: {e}")
             return None

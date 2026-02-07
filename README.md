@@ -135,12 +135,13 @@ All commands are **case-insensitive**.
 
 | Command | Description |
 |---------|-------------|
+| 📖 `!h` or `!help` | Show help |
 | 💬 `message` | Queue message (auto-sends) |
-| 📷 `!ip <msg>` or `!imagepaste` | Queue with clipboard image |
-| ⚡ `!d <msg>` or `!direct` | Send directly (bypass queue) |
+| 📷 `!ip <msg>` or `!imagepaste <msg>` | Queue with clipboard image |
+| 📤 `!d <msg>` or `!direct <msg>` | Send directly (bypass queue) |
 | 📋 `!l` or `!list` | Show queue |
-| 📝 `!e <index>` or `!edit` | Edit queued message by index |
-| 🗑️ `!c` or `!clear` | Clear queue |
+| 📝 `!e <index>` or `!edit <index>` | Edit queued message by index |
+| 🧹 `!c` or `!clear` | Clear queue |
 | 📊 `!status` | Server status |
 | 🔥 `!f` or `!force` | Force-send next queued message |
 | 👋 `!x` or `!quit` (`Ctrl+D`) | Exit client |

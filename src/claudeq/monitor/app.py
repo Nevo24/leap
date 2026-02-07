@@ -136,11 +136,15 @@ class PulsingLabel(QLabel):
             super().mousePressEvent(event)
 
     def _animate(self) -> None:
-        self._phase += 0.05
-        # Oscillate opacity between 0.3 and 1.0
-        opacity = 0.65 + 0.35 * math.sin(self._phase)
-        r, g, b = 230, 150, 0  # orange
-        self.setStyleSheet(f'color: rgba({r}, {g}, {b}, {opacity:.2f}); font-weight: bold;')
+        try:
+            self._phase += 0.05
+            # Oscillate opacity between 0.3 and 1.0
+            opacity = 0.65 + 0.35 * math.sin(self._phase)
+            r, g, b = 230, 150, 0  # orange
+            self.setStyleSheet(f'color: rgba({r}, {g}, {b}, {opacity:.2f}); font-weight: bold;')
+        except Exception:
+            # Silently stop pulsing if animation fails
+            self._pulse_timer.stop()
 
 
 class GitLabPollerWorker(QThread):
@@ -381,49 +385,62 @@ class MonitorWindow(QMainWindow):
 
     def _on_gitlab_results(self, results: dict) -> None:
         """Handle GitLab poll results (runs in main thread via signal)."""
-        # Safety check: ensure window hasn't been closed
-        if not self.isVisible():
-            return
-        self._mr_statuses.update(results)
-        self._update_mr_column()
+        try:
+            # Safety check: ensure window hasn't been closed
+            if not self.isVisible():
+                return
+            self._mr_statuses.update(results)
+            self._update_mr_column()
+        except Exception:
+            logger.exception("Error handling GitLab results")
 
     def _on_cq_commands(self, commands: list) -> None:
         """Handle /cq commands detected during GitLab polling."""
-        if not self.isVisible() or not self._gitlab_provider:
-            return
+        try:
+            if not self.isVisible() or not self._gitlab_provider:
+                return
 
-        # Pause polling while handling commands (dialogs may block)
-        self._gitlab_timer.stop()
+            # Pause polling while handling commands (dialogs may block)
+            self._gitlab_timer.stop()
 
-        from claudeq.monitor.mr_tracking.cq_command import format_cq_message
-        from claudeq.monitor.cq_sender import send_to_cq_session
+            from claudeq.monitor.mr_tracking.cq_command import format_cq_message
+            from claudeq.monitor.cq_sender import send_to_cq_session
 
-        for cmd in commands:
-            tag, no_match = self._match_session_for_cq(cmd)
-            if tag:
-                message = format_cq_message(cmd)
-                sent = send_to_cq_session(tag, message)
-                if sent:
-                    logger.info("/cq from MR !%s sent to session '%s'", cmd.mr_iid, tag)
-                else:
-                    logger.error("Failed to send /cq message to session '%s'", tag)
-                # Always acknowledge to prevent re-processing on next poll
-                self._gitlab_provider.acknowledge_cq_command(
-                    cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                )
-            elif no_match:
-                # Truly no sessions found — report on GitLab
-                self._gitlab_provider.report_no_session(
-                    cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                )
-                logger.info("No session match for /cq from MR !%s (%s)",
-                            cmd.mr_iid, cmd.project_path)
-            # else: user cancelled dialog — do nothing, will retry next poll
+            for cmd in commands:
+                tag, no_match = self._match_session_for_cq(cmd)
+                if tag:
+                    message = format_cq_message(cmd)
+                    sent = send_to_cq_session(tag, message)
+                    if sent:
+                        logger.info("/cq from MR !%s sent to session '%s'", cmd.mr_iid, tag)
+                    else:
+                        logger.error("Failed to send /cq message to session '%s'", tag)
+                    # Always acknowledge to prevent re-processing on next poll
+                    self._gitlab_provider.acknowledge_cq_command(
+                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                    )
+                elif no_match:
+                    # Truly no sessions found — report on GitLab
+                    self._gitlab_provider.report_no_session(
+                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                    )
+                    logger.info("No session match for /cq from MR !%s (%s)",
+                                cmd.mr_iid, cmd.project_path)
+                # else: user cancelled dialog — do nothing, will retry next poll
 
-        # Resume polling
-        config = load_gitlab_config()
-        interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
-        self._gitlab_timer.start(interval * 1000)
+            # Resume polling
+            config = load_gitlab_config()
+            interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
+            self._gitlab_timer.start(interval * 1000)
+        except Exception:
+            logger.exception("Error handling /cq commands")
+            # Ensure polling resumes even if there's an error
+            try:
+                config = load_gitlab_config()
+                interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
+                self._gitlab_timer.start(interval * 1000)
+            except Exception:
+                logger.exception("Failed to restart GitLab polling timer")
 
     def _match_session_for_cq(self, cmd) -> tuple[Optional[str], bool]:
         """Match a /cq command to a CQ session by project path.
@@ -577,7 +594,10 @@ class MonitorWindow(QMainWindow):
 
     def _auto_refresh(self) -> None:
         """Auto-refresh callback."""
-        self._refresh_data()
+        try:
+            self._refresh_data()
+        except Exception:
+            logger.exception("Error in auto-refresh")
 
     def _toggle_include_bots(self, state: int) -> None:
         """Toggle bot comment inclusion and persist."""

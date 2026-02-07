@@ -29,7 +29,7 @@ def send_to_cq_session(tag: str, message: str) -> bool:
         client_socket.settimeout(5.0)
         client_socket.connect(str(socket_path))
 
-        data = {'type': 'queue', 'message': message}
+        data = {'type': 'queue', 'message': '[gitlab] ' + message}
         client_socket.sendall(json.dumps(data).encode('utf-8'))
         chunks = []
         while True:

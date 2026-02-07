@@ -61,8 +61,12 @@ class ClaudeQClient:
         # Acquire exclusive lock
         self._acquire_lock()
 
+        # Error tracking for rate limiting
+        self._last_socket_error_time = 0
+        self._socket_error_cooldown = 5.0  # Only show error once per 5 seconds
+
         # Initialize components
-        self.socket = SocketClient(self.socket_path)
+        self.socket = SocketClient(self.socket_path, error_callback=self._should_print_socket_error)
         self.input_handler = InputHandler(self.history_file, self._get_prompt)
 
         # Register cleanup
@@ -151,18 +155,34 @@ class ClaudeQClient:
     def _queue_monitor_loop(self) -> None:
         """Background thread to monitor queue changes."""
         last_recently_sent: list[str] = []
+        last_queue_contents: list[str] = []
         poll_count = 0
 
         while self.running:
             time.sleep(0.3)
 
-            response = self.socket.get_status()
+            # Use silent mode for background polling (errors are rate-limited via callback)
+            response = self.socket.get_status(silent=False)
             if not response:
                 continue
 
             poll_count += 1
             new_size = response.get('queue_size', 0)
             recently_sent = response.get('recently_sent', [])
+            queue_contents = response.get('queue_contents', [])
+
+            # Detect externally added messages (e.g. from GitLab via monitor)
+            if poll_count > 1 and self.show_auto_sent_notifications:
+                last_ids = {self._extract_queue_id(m) for m in last_queue_contents}
+                for entry in queue_contents:
+                    entry_id = self._extract_queue_id(entry)
+                    if entry_id and entry_id not in last_ids:
+                        # Extract message body after the ID tag
+                        msg_body = entry.split('> ', 1)[1] if '> ' in entry else entry
+                        if msg_body.startswith('[gitlab] '):
+                            preview = msg_body[9:69] + '...' if len(msg_body) > 78 else msg_body[9:]
+                            print(f"\n📩 GitLab review queued: {preview}", flush=True)
+                            print(f"   ({new_size} in queue)", flush=True)
 
             # Detect newly sent messages
             new_sent_messages: list[str] = []
@@ -186,6 +206,22 @@ class ClaudeQClient:
                     print("   (queue empty)", flush=True)
 
             last_recently_sent = list(recently_sent)
+            last_queue_contents = list(queue_contents)
+
+    def _should_print_socket_error(self) -> bool:
+        """Check if enough time has passed to print another socket error."""
+        current_time = time.time()
+        if current_time - self._last_socket_error_time >= self._socket_error_cooldown:
+            self._last_socket_error_time = current_time
+            return True
+        return False
+
+    @staticmethod
+    def _extract_queue_id(entry: str) -> Optional[str]:
+        """Extract the message ID from a queue entry like '<a1b2c3> message'."""
+        if entry.startswith('<') and '>' in entry:
+            return entry[1:entry.index('>')]
+        return None
 
     def _process_image_in_line(self, line: str) -> str:
         """
@@ -359,6 +395,36 @@ class ClaudeQClient:
         except EOFError:
             print("\n✗ Edit cancelled\n")
 
+    def _print_commands_help(self) -> None:
+        """Print the commands help section.
+
+        All emojis must be 2 display columns wide for consistent alignment.
+        Avoid single-width emojis (e.g. ⚡ U+26A1) as they render inconsistently.
+        """
+        CMD_WIDTH = 35
+
+        commands = [
+            ("\U0001F4D6", "!h or !help",                     "Show this help"),
+            ("\U0001F4AC", "Type message",                    "Queue message (auto-sends)"),
+            ("\U0001F4F7", "!ip <msg> or !imagepaste <msg>",  "Queue with clipboard image"),
+            ("\U0001F4E4", "!d <msg> or !direct <msg>",       "Send directly (bypass queue)"),
+            ("\U0001F4CB", "!l or !list",                     "Show queue"),
+            ("\U0001F4DD", "!e <index> or !edit <index>",     "Edit queued message by index"),
+            ("\U0001F9F9", "!c or !clear",                    "Clear queue"),
+            ("\U0001F4CA", "!status",                         "Server status"),
+            ("\U0001F525", "!f or !force",                    "Force-send next queued message"),
+            ("\U0001F44B", "!x or !quit (Ctrl+D)",            "Exit client"),
+        ]
+
+        for emoji, cmd, desc in commands:
+            print(f"  {emoji}  {cmd.ljust(CMD_WIDTH)} \u2192 {desc}")
+        print()
+        print("  \U0001F916 Auto-queue: Server handles auto-sending")
+        print()
+        print("  \U0001F514 Toggle auto-sent notifications: !auto-sent on/off  (or !asm on/off)")
+        print("=" * 70)
+        print()
+
     def _print_startup_banner(self) -> None:
         """Print client startup banner."""
         print(f"\033]0;cq-client {self.tag}\007", end='', flush=True)
@@ -368,41 +434,7 @@ class ClaudeQClient:
         print("  Watch responses in server tab")
         print()
 
-        # ANSI CHA (Cursor Horizontal Absolute): \033[nG
-        # Moves cursor to exact column n, REGARDLESS of emoji width rendering.
-        # This is immune to terminals disagreeing on emoji widths.
-        COL_CMD = 9     # Column where command text starts (after emoji + padding)
-        COL_DESC = 40   # Column where description starts
-
-        # ANSI color codes
-        CYAN = "\033[36m"
-        RESET = "\033[0m"
-
-        # All emojis: single codepoint, no variation selectors (FE0F)
-        # This avoids the worst cross-terminal width inconsistencies
-        commands = [
-            ("\U0001F4AC", "Type message",          "Queue message (auto-sends)"),
-            ("\U0001F4F7", "!ip <msg> or !imagepaste", "Queue with clipboard image"),
-            ("\u26A1",     "!d <msg> or !direct",   "Send directly (bypass queue)"),
-            ("\U0001F4CB", "!l or !list",           "Show queue"),
-            ("\U0001F4DD", "!e <index> or !edit",   "Edit queued message by index"),
-            ("\U0001F5D1", "!c or !clear",          "Clear queue"),
-            ("\U0001F4CA", "!status",               "Server status"),
-            ("\U0001F525", "!f or !force",          "Force-send next queued message"),  # fire (U+1F525)
-            ("\U0001F44B", "!x or !quit (Ctrl+D)",  "Exit client"),
-        ]
-
-        for emoji, cmd, desc in commands:
-            # Print emoji, jump to cmd column, print cmd in cyan, jump to desc column
-            sys.stdout.write(f"  {emoji}\033[{COL_CMD}G{CYAN}{cmd}{RESET}")
-            sys.stdout.write(f"\033[{COL_DESC}G\u2192 {desc}\n")
-        sys.stdout.flush()
-        print()
-        print("  🤖 Auto-queue: Server handles auto-sending")
-        print()
-        print("  🔔 Toggle auto-sent notifications: !auto-sent on/off  (or !asm on/off)")
-        print("=" * 70)
-        print()
+        self._print_commands_help()
 
     def _process_command(self, line: str) -> bool:
         """
@@ -424,6 +456,12 @@ class ClaudeQClient:
         if not line:
             return True
 
+        # !h / !help
+        if line_lower in ['!h', '!help']:
+            print()
+            self._print_commands_help()
+            return True
+
         # Check for image file in line
         if not self.pending_image_path and not line_lower.startswith('!'):
             line = self._process_image_in_line(line)
@@ -443,6 +481,9 @@ class ClaudeQClient:
             return True
 
         # !d / !direct
+        if line_lower in ['!d', '!direct']:
+            print("Usage: !d <msg>  (e.g., !d fix the bug)\n")
+            return True
         if line_lower.startswith('!d ') or line_lower.startswith('!d!ip') or line_lower.startswith('!direct '):
             if line_lower.startswith('!d!ip'):
                 rest = line[2:].strip()
@@ -492,6 +533,9 @@ class ClaudeQClient:
             return True
 
         # !e / !edit
+        if line_lower in ['!e', '!edit']:
+            print("Usage: !e <index>  (e.g., !e 0 to edit first message)\n")
+            return True
         if line_lower.startswith('!e ') or line_lower.startswith('!edit '):
             parts = line.split(None, 1)
             if len(parts) < 2:
@@ -506,6 +550,11 @@ class ClaudeQClient:
             return True
 
         # !auto-sent / !asm (toggle auto-sent notifications)
+        if line_lower in ['!auto-sent', '!asm']:
+            status = "on" if self.show_auto_sent_notifications else "off"
+            print(f"Auto-sent notifications: {status}")
+            print("Usage: !auto-sent on/off  (or !asm on/off)\n")
+            return True
         if line_lower.startswith('!auto-sent ') or line_lower.startswith('!asm '):
             parts = line_lower.split(None, 1)
             if len(parts) < 2:
