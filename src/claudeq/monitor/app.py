@@ -478,55 +478,63 @@ class MonitorWindow(QMainWindow):
         self.sessions = get_active_sessions()
         self._update_table()
 
+    def _set_cell_text(self, row: int, col: int, text: str) -> None:
+        """Set cell text only if it changed, to avoid flicker."""
+        item = self.table.item(row, col)
+        if item is None:
+            self.table.setItem(row, col, QTableWidgetItem(text))
+        elif item.text() != text:
+            item.setText(text)
+
     def _update_table(self) -> None:
         """Update table with current sessions."""
-        self.table.setRowCount(len(self.sessions))
+        new_count = len(self.sessions)
 
         if not self.sessions:
-            self.table.setRowCount(1)
-            self.table.setItem(0, 0, QTableWidgetItem('No active sessions'))
+            if self.table.rowCount() != 1:
+                self.table.setRowCount(1)
+            self._set_cell_text(0, 0, 'No active sessions')
             return
+
+        # Only resize if row count actually changed
+        if self.table.rowCount() != new_count:
+            self.table.setRowCount(new_count)
 
         for row, session in enumerate(self.sessions):
             tag = session['tag']
 
-            # Tag
-            self.table.setItem(row, self.COL_TAG, QTableWidgetItem(tag))
+            # Text cells — only update if value changed
+            self._set_cell_text(row, self.COL_TAG, tag)
+            self._set_cell_text(row, self.COL_PROJECT, session['project'])
+            self._set_cell_text(row, self.COL_BRANCH, session['branch'])
 
-            # Project
-            self.table.setItem(row, self.COL_PROJECT, QTableWidgetItem(session['project']))
+            status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
+            self._set_cell_text(row, self.COL_STATUS, status)
+            self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-            # Branch
-            self.table.setItem(row, self.COL_BRANCH, QTableWidgetItem(session['branch']))
-
-            # MR — use PulsingLabel widget
+            # MR — reuse existing PulsingLabel widget
             mr_widget = self._mr_widgets.get(tag)
             if not mr_widget:
                 mr_widget = PulsingLabel()
                 self._mr_widgets[tag] = mr_widget
             self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
-            self.table.setCellWidget(row, self.COL_MR, mr_widget)
+            if self.table.cellWidget(row, self.COL_MR) is not mr_widget:
+                self.table.setCellWidget(row, self.COL_MR, mr_widget)
 
-            # Status
-            status = '✅ Running' if session['claude_busy'] else '⚪ Idle'
-            self.table.setItem(row, self.COL_STATUS, QTableWidgetItem(status))
+            # Buttons — reuse existing, only create if missing
+            if not self.table.cellWidget(row, self.COL_SERVER):
+                server_btn = QPushButton('Server')
+                server_btn.clicked.connect(
+                    lambda checked, t=tag: focus_session(t, 'server')
+                )
+                self.table.setCellWidget(row, self.COL_SERVER, server_btn)
 
-            # Queue
-            self.table.setItem(row, self.COL_QUEUE, QTableWidgetItem(str(session['queue_size'])))
-
-            # Server button
-            server_btn = QPushButton('Server')
-            server_btn.clicked.connect(
-                lambda checked, t=tag: focus_session(t, 'server')
-            )
-            self.table.setCellWidget(row, self.COL_SERVER, server_btn)
-
-            # Client button
-            client_btn = QPushButton('Client')
-            client_btn.clicked.connect(
-                lambda checked, t=tag: focus_session(t, 'client')
-            )
-            self.table.setCellWidget(row, self.COL_CLIENT, client_btn)
+            if not self.table.cellWidget(row, self.COL_CLIENT):
+                client_btn = QPushButton('Client')
+                client_btn.clicked.connect(
+                    lambda checked, t=tag: focus_session(t, 'client')
+                )
+                self.table.setCellWidget(row, self.COL_CLIENT, client_btn)
 
         # Clean up widgets for sessions that no longer exist
         active_tags = {s['tag'] for s in self.sessions}
