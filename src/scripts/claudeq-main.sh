@@ -101,9 +101,9 @@ fi
 
 TAG="$1"
 
-# Validate tag doesn't start with "-"
-if [[ "$TAG" == -* ]]; then
-    echo "Error: Tag cannot start with '-'" >&2
+# Validate tag: alphanumeric, hyphens, underscores only
+if [[ ! "$TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    echo "Error: Tag must contain only letters, numbers, hyphens, and underscores" >&2
     echo "Usage: cq <tag> [message...]" >&2
     echo "For help: cq --help" >&2
     exit 1
