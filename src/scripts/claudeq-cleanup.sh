@@ -31,6 +31,7 @@ if [ -d "$SOCKET_DIR" ]; then
         echo "  Removing dead session: $tag"
         rm -f "$socket_file"
         rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
+        rm -f "$QUEUE_DIR/$tag.history" 2>/dev/null
         rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
         rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
         ((removed_count++))

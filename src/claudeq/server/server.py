@@ -312,6 +312,12 @@ class ClaudeQServer:
         self.socket_handler.cleanup()
         self.metadata.cleanup()
         self.pty.terminate()
+        # Remove queue file if empty (no pending messages)
+        if self.queue.is_empty and self.queue_file.exists():
+            try:
+                self.queue_file.unlink()
+            except OSError:
+                pass
 
 
 def main() -> None:
