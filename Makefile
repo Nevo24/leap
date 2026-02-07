@@ -371,20 +371,32 @@ uninstall:
 		RC_FILE="$$HOME/.bashrc"; \
 	fi; \
 	if [ -f "$$RC_FILE" ]; then \
-		if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
-			cp "$$RC_FILE" "$$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
-			sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
-			rm -f "$$RC_FILE.bak"; \
-			echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
-			echo "  Backup created at $$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
-		elif grep -q "# ClaudeQ" "$$RC_FILE"; then \
-			echo "$(YELLOW)⚠ Found legacy ClaudeQ installation$(NC)"; \
-			cp "$$RC_FILE" "$$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
-			sed -i.bak '/# ClaudeQ/,/# End ClaudeQ/d' "$$RC_FILE"; \
-			sed -i.bak '/# ClaudeQ/,/^alias cq/d' "$$RC_FILE"; \
-			rm -f "$$RC_FILE.bak"; \
-			echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
-			echo "  Backup created at $$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+		if grep -q "ClaudeQ Configuration START" "$$RC_FILE" || grep -q "# ClaudeQ" "$$RC_FILE"; then \
+			echo "$(YELLOW)⚠ ClaudeQ configuration found in $$RC_FILE$(NC)"; \
+			read -p "  Remove shell configuration? (Y/n) " -n 1 -r REPLY; \
+			echo; \
+			if [ -z "$$REPLY" ] || [ "$$REPLY" = "y" ] || [ "$$REPLY" = "Y" ]; then \
+				if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
+					cp "$$RC_FILE" "$$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+					sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
+					rm -f "$$RC_FILE.bak"; \
+					echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
+					echo "  Backup created: $$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+				elif grep -q "# ClaudeQ" "$$RC_FILE"; then \
+					echo "  (Found legacy ClaudeQ installation)"; \
+					cp "$$RC_FILE" "$$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+					sed -i.bak '/# ClaudeQ/,/# End ClaudeQ/d' "$$RC_FILE"; \
+					sed -i.bak '/# ClaudeQ/,/^alias cq/d' "$$RC_FILE"; \
+					rm -f "$$RC_FILE.bak"; \
+					echo "$(GREEN)✓ Removed ClaudeQ configuration from $$RC_FILE$(NC)"; \
+					echo "  Backup created: $$RC_FILE.backup-uninstall-$$(date +%Y%m%d-%H%M%S)"; \
+				fi; \
+			else \
+				echo "  Skipped shell configuration removal."; \
+				echo "  To manually remove later, delete lines between:"; \
+				echo "    '# ===== ClaudeQ Configuration START =====' and"; \
+				echo "    '# ===== ClaudeQ Configuration END ====='"; \
+			fi; \
 		else \
 			echo "  No ClaudeQ configuration found in $$RC_FILE"; \
 		fi; \
