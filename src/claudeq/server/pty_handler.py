@@ -69,17 +69,6 @@ class PTYHandler:
         if self.process:
             self.process.send(message)
 
-    def send_line(self, message: str) -> None:
-        """
-        Send a message followed by carriage return.
-
-        Args:
-            message: Message to send.
-        """
-        if self.process:
-            self.process.send(message)
-            self.process.send('\r')
-
     def is_alive(self) -> bool:
         """Check if the Claude process is still running."""
         return self.process is not None and self.process.isalive()

@@ -2,14 +2,13 @@
 """
 Helper script to configure JetBrains IDE XML settings.
 """
-import sys
+import os
 import re
+import sys
 
 
-def update_terminal_xml(file_path):
+def update_terminal_xml(file_path: str) -> None:
     """Update terminal.xml to set engine to CLASSIC."""
-    import os
-
     # Create new file if it doesn't exist
     if not os.path.exists(file_path):
         content = '''<application>
@@ -55,10 +54,8 @@ def update_terminal_xml(file_path):
         f.write(content)
 
 
-def update_advanced_settings_xml(file_path):
+def update_advanced_settings_xml(file_path: str) -> None:
     """Update advancedSettings.xml to enable show application title."""
-    import os
-
     # Create new file if it doesn't exist
     if not os.path.exists(file_path):
         content = '''<application>

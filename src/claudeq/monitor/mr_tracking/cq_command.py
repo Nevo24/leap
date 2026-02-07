@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -13,11 +14,11 @@ class CqCommand:
     mr_title: str
     mr_url: str
     discussion_id: str
-    thread_notes: list[dict]  # [{author, body, created_at}, ...]
-    file_path: str | None = None
-    old_line: int | None = None
-    new_line: int | None = None
-    code_snippet: str | None = None
+    thread_notes: list[dict[str, str]]  # [{author, body, created_at}, ...]
+    file_path: Optional[str] = None
+    old_line: Optional[int] = None
+    new_line: Optional[int] = None
+    code_snippet: Optional[str] = None
 
 
 def format_cq_message(cmd: CqCommand) -> str:

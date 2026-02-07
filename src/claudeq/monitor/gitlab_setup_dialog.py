@@ -1,10 +1,11 @@
 """GitLab connection setup dialog for ClaudeQ Monitor."""
 
 import webbrowser
+from typing import Optional
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QMessageBox, QSpinBox,
+    QPushButton, QMessageBox, QSpinBox, QWidget,
 )
 from PyQt5.QtCore import Qt
 
@@ -14,11 +15,11 @@ from claudeq.monitor.mr_tracking.config import load_gitlab_config, save_gitlab_c
 class GitLabSetupDialog(QDialog):
     """Dialog for configuring GitLab connection."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Connect GitLab')
         self.setMinimumWidth(450)
-        self._verified_username: str | None = None
+        self._verified_username: Optional[str] = None
         self._init_ui()
         self._load_existing()
 

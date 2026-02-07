@@ -7,13 +7,17 @@ Handles communication with the ClaudeQ server via Unix socket.
 import json
 import socket
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 class SocketClient:
     """Client for communicating with ClaudeQ server via Unix socket."""
 
-    def __init__(self, socket_path: Path, error_callback=None):
+    def __init__(
+        self,
+        socket_path: Path,
+        error_callback: Optional[Callable[[], bool]] = None
+    ) -> None:
         """
         Initialize socket client.
 
@@ -23,8 +27,7 @@ class SocketClient:
                           Should return True to print, False to suppress.
         """
         self.socket_path = socket_path
-        # Extract tag from socket path (e.g., .storage/sockets/mytag.sock -> mytag)
-        self.tag = socket_path.stem
+        self.tag: str = socket_path.stem
         self._error_callback = error_callback
 
     def _should_print_error(self) -> bool:
@@ -33,13 +36,14 @@ class SocketClient:
             return self._error_callback()
         return True
 
-    def send(self, msg_type: str, message: str = "", silent: bool = False) -> Optional[dict[str, Any]]:
+    def _send_request(
+        self, data: dict[str, Any], silent: bool = False
+    ) -> Optional[dict[str, Any]]:
         """
-        Send a message to the server and get response.
+        Send a request to the server and return the parsed response.
 
         Args:
-            msg_type: Message type ('queue', 'direct', 'status', 'force_send').
-            message: Message content.
+            data: Request payload dictionary.
             silent: If True, suppress error messages.
 
         Returns:
@@ -49,10 +53,9 @@ class SocketClient:
             client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             client_socket.connect(str(self.socket_path))
 
-            data = {'type': msg_type, 'message': message}
             client_socket.send(json.dumps(data).encode('utf-8'))
             client_socket.settimeout(5.0)
-            chunks = []
+            chunks: list[bytes] = []
             while True:
                 chunk = client_socket.recv(65536)
                 if not chunk:
@@ -71,14 +74,37 @@ class SocketClient:
         except json.JSONDecodeError as e:
             if not silent and self._should_print_error():
                 print(f"Error: Server sent malformed response")
-                print(f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state")
-                print(f"  → Try restarting the server by closing and reopening: cq {self.tag}")
+                print(
+                    f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state"
+                )
+                print(
+                    f"  → Try restarting the server by closing and reopening:"
+                    f" cq {self.tag}"
+                )
                 print(f"  → Details: {e}")
             return None
         except OSError as e:
             if not silent and self._should_print_error():
                 print(f"Error communicating with server: {e}")
             return None
+
+    def send(
+        self, msg_type: str, message: str = "", silent: bool = False
+    ) -> Optional[dict[str, Any]]:
+        """
+        Send a typed message to the server and get response.
+
+        Args:
+            msg_type: Message type ('queue', 'direct', 'status', 'force_send').
+            message: Message content.
+            silent: If True, suppress error messages.
+
+        Returns:
+            Server response dictionary, or None on error.
+        """
+        return self._send_request(
+            {'type': msg_type, 'message': message}, silent=silent
+        )
 
     def is_server_running(self) -> bool:
         """
@@ -105,7 +131,9 @@ class SocketClient:
         """Force send the next queued message."""
         return self.send('force_send')
 
-    def get_message_for_edit(self, index: int, silent: bool = False) -> Optional[dict[str, Any]]:
+    def get_message_for_edit(
+        self, index: int, silent: bool = False
+    ) -> Optional[dict[str, Any]]:
         """
         Get a message by index for editing.
 
@@ -116,42 +144,13 @@ class SocketClient:
         Returns:
             Dictionary with 'id' and 'message', or None on error.
         """
-        try:
-            client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client_socket.connect(str(self.socket_path))
+        return self._send_request(
+            {'type': 'get_message', 'index': index}, silent=silent
+        )
 
-            data = {'type': 'get_message', 'index': index}
-            client_socket.send(json.dumps(data).encode('utf-8'))
-            client_socket.settimeout(5.0)
-            chunks = []
-            while True:
-                chunk = client_socket.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            client_socket.close()
-            response = b''.join(chunks).decode('utf-8')
-
-            return json.loads(response)
-        except socket.error as e:
-            if not silent and self._should_print_error():
-                print(f"Error: Cannot connect to ClaudeQ server")
-                print(f"  → Check if there's a terminal running: cq-server {self.tag}")
-                print(f"  → Details: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            if not silent and self._should_print_error():
-                print(f"Error: Server sent malformed response")
-                print(f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state")
-                print(f"  → Try restarting the server by closing and reopening: cq {self.tag}")
-                print(f"  → Details: {e}")
-            return None
-        except OSError as e:
-            if not silent and self._should_print_error():
-                print(f"Error communicating with server: {e}")
-            return None
-
-    def edit_message(self, msg_id: str, new_message: str, silent: bool = False) -> Optional[dict[str, Any]]:
+    def edit_message(
+        self, msg_id: str, new_message: str, silent: bool = False
+    ) -> Optional[dict[str, Any]]:
         """
         Edit a message by its ID.
 
@@ -163,37 +162,7 @@ class SocketClient:
         Returns:
             Server response dictionary, or None on error.
         """
-        try:
-            client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            client_socket.connect(str(self.socket_path))
-
-            data = {'type': 'edit_message', 'id': msg_id, 'new_message': new_message}
-            client_socket.send(json.dumps(data).encode('utf-8'))
-            client_socket.settimeout(5.0)
-            chunks = []
-            while True:
-                chunk = client_socket.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            client_socket.close()
-            response = b''.join(chunks).decode('utf-8')
-
-            return json.loads(response)
-        except socket.error as e:
-            if not silent and self._should_print_error():
-                print(f"Error: Cannot connect to ClaudeQ server")
-                print(f"  → Check if there's a terminal running: cq-server {self.tag}")
-                print(f"  → Details: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            if not silent and self._should_print_error():
-                print(f"Error: Server sent malformed response")
-                print(f"  → The ClaudeQ server (tag: {self.tag}) may be in a bad state")
-                print(f"  → Try restarting the server by closing and reopening: cq {self.tag}")
-                print(f"  → Details: {e}")
-            return None
-        except OSError as e:
-            if not silent and self._should_print_error():
-                print(f"Error communicating with server: {e}")
-            return None
+        return self._send_request(
+            {'type': 'edit_message', 'id': msg_id, 'new_message': new_message},
+            silent=silent,
+        )

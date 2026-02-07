@@ -12,11 +12,10 @@ import signal
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 from claudeq.utils.constants import QUEUE_DIR, SOCKET_DIR, SETTINGS_FILE, ensure_storage_dirs
-from claudeq.utils.terminal import print_banner
+from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.client.socket_client import SocketClient
 from claudeq.client.image_handler import (
     check_clipboard_has_image,
@@ -427,7 +426,7 @@ class ClaudeQClient:
 
     def _print_startup_banner(self) -> None:
         """Print client startup banner."""
-        print(f"\033]0;cq-client {self.tag}\007", end='', flush=True)
+        set_terminal_title(f"cq-client {self.tag}")
         print_banner('client', self.tag)
 
         print(f"  Sending messages to ClaudeQ PTY server '{self.tag}'")
@@ -435,6 +434,109 @@ class ClaudeQClient:
         print()
 
         self._print_commands_help()
+
+    def _handle_direct_command(self, line: str) -> None:
+        """
+        Handle !d / !direct command with optional image attachment.
+
+        Args:
+            line: Full input line starting with !d or !direct.
+        """
+        line_lower = line.lower()
+
+        if line_lower.startswith('!d!ip'):
+            rest = line[2:].strip()
+        elif line_lower.startswith('!d '):
+            rest = line[3:].strip()
+        else:
+            rest = line[8:].strip()  # !direct
+
+        rest_lower = rest.lower()
+
+        if rest_lower.startswith('!ip') or rest_lower.startswith('!imagepaste'):
+            if rest_lower.startswith('!ip '):
+                msg = rest[4:].strip()
+            elif rest_lower.startswith('!ip'):
+                msg = rest[3:].strip()
+            elif rest_lower.startswith('!imagepaste '):
+                msg = rest[12:].strip()
+            else:
+                msg = rest[11:].strip()
+
+            self._handle_imagepaste(msg if msg else "", is_direct=True)
+        else:
+            if rest:
+                self._send_direct(rest)
+            else:
+                print("✗ No message provided\n")
+
+    def _handle_auto_sent_toggle(self, line_lower: str) -> None:
+        """
+        Handle !auto-sent / !asm toggle command.
+
+        Args:
+            line_lower: Lowercased input line.
+        """
+        parts = line_lower.split(None, 1)
+        if len(parts) < 2:
+            status = "on" if self.show_auto_sent_notifications else "off"
+            print(f"Auto-sent notifications: {status}")
+            print("Usage: !auto-sent on/off  or  !asm on/off\n")
+            return
+
+        toggle = parts[1].strip()
+        if toggle in ['on', 'true', '1', 'yes']:
+            self.show_auto_sent_notifications = True
+            settings = self._load_settings()
+            settings['show_auto_sent_notifications'] = True
+            self._save_settings(settings)
+            print("✓ Auto-sent notifications enabled (saved globally)\n")
+        elif toggle in ['off', 'false', '0', 'no']:
+            self.show_auto_sent_notifications = False
+            settings = self._load_settings()
+            settings['show_auto_sent_notifications'] = False
+            self._save_settings(settings)
+            print("✓ Auto-sent notifications disabled (saved globally)\n")
+        else:
+            print("✗ Invalid option. Use: on/off\n")
+
+    def _handle_edit_command(self, line: str) -> None:
+        """
+        Handle !e / !edit command.
+
+        Args:
+            line: Full input line starting with !e or !edit.
+        """
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            print("Usage: !e <index>  (e.g., !e 0 to edit first message)\n")
+            return
+
+        try:
+            index = int(parts[1])
+            self._edit_message(index)
+        except ValueError:
+            print("✗ Invalid index - must be a number\n")
+
+    def _handle_imagepaste_command(self, line: str) -> None:
+        """
+        Handle !ip / !imagepaste command parsing.
+
+        Args:
+            line: Full input line starting with !ip or !imagepaste.
+        """
+        line_lower = line.lower()
+
+        if line_lower.startswith('!ip '):
+            msg = line[4:].strip()
+        elif line_lower.startswith('!imagepaste '):
+            msg = line[12:].strip()
+        elif line_lower in ['!ip', '!imagepaste']:
+            msg = None
+        else:
+            return
+
+        self._handle_imagepaste(msg)
 
     def _process_command(self, line: str) -> bool:
         """
@@ -468,48 +570,16 @@ class ClaudeQClient:
 
         # !ip / !imagepaste
         if line_lower.startswith('!ip') or line_lower.startswith('!imagepaste'):
-            if line_lower.startswith('!ip '):
-                msg = line[4:].strip()
-            elif line_lower.startswith('!imagepaste '):
-                msg = line[12:].strip()
-            elif line_lower in ['!ip', '!imagepaste']:
-                msg = None
-            else:
-                return True
-
-            self._handle_imagepaste(msg)
+            self._handle_imagepaste_command(line)
             return True
 
         # !d / !direct
         if line_lower in ['!d', '!direct']:
             print("Usage: !d <msg>  (e.g., !d fix the bug)\n")
             return True
-        if line_lower.startswith('!d ') or line_lower.startswith('!d!ip') or line_lower.startswith('!direct '):
-            if line_lower.startswith('!d!ip'):
-                rest = line[2:].strip()
-            elif line_lower.startswith('!d '):
-                rest = line[3:].strip()
-            else:
-                rest = line[8:].strip()
-
-            rest_lower = rest.lower()
-
-            if rest_lower.startswith('!ip') or rest_lower.startswith('!imagepaste'):
-                if rest_lower.startswith('!ip '):
-                    msg = rest[4:].strip()
-                elif rest_lower.startswith('!ip'):
-                    msg = rest[3:].strip()
-                elif rest_lower.startswith('!imagepaste '):
-                    msg = rest[12:].strip()
-                else:
-                    msg = rest[11:].strip()
-
-                self._handle_imagepaste(msg if msg else "", is_direct=True)
-            else:
-                if rest:
-                    self._send_direct(rest)
-                else:
-                    print("✗ No message provided\n")
+        if (line_lower.startswith('!d ') or line_lower.startswith('!d!ip')
+                or line_lower.startswith('!direct ')):
+            self._handle_direct_command(line)
             return True
 
         # !l / !list
@@ -537,49 +607,17 @@ class ClaudeQClient:
             print("Usage: !e <index>  (e.g., !e 0 to edit first message)\n")
             return True
         if line_lower.startswith('!e ') or line_lower.startswith('!edit '):
-            parts = line.split(None, 1)
-            if len(parts) < 2:
-                print("Usage: !e <index>  (e.g., !e 0 to edit first message)\n")
-                return True
-
-            try:
-                index = int(parts[1])
-                self._edit_message(index)
-            except ValueError:
-                print("✗ Invalid index - must be a number\n")
+            self._handle_edit_command(line)
             return True
 
-        # !auto-sent / !asm (toggle auto-sent notifications)
+        # !auto-sent / !asm
         if line_lower in ['!auto-sent', '!asm']:
             status = "on" if self.show_auto_sent_notifications else "off"
             print(f"Auto-sent notifications: {status}")
             print("Usage: !auto-sent on/off  (or !asm on/off)\n")
             return True
         if line_lower.startswith('!auto-sent ') or line_lower.startswith('!asm '):
-            parts = line_lower.split(None, 1)
-            if len(parts) < 2:
-                status = "on" if self.show_auto_sent_notifications else "off"
-                print(f"Auto-sent notifications: {status}")
-                print("Usage: !auto-sent on/off  or  !asm on/off\n")
-                return True
-
-            toggle = parts[1].strip()
-            if toggle in ['on', 'true', '1', 'yes']:
-                self.show_auto_sent_notifications = True
-                # Save to settings file (affects all clients)
-                settings = self._load_settings()
-                settings['show_auto_sent_notifications'] = True
-                self._save_settings(settings)
-                print("✓ Auto-sent notifications enabled (saved globally)\n")
-            elif toggle in ['off', 'false', '0', 'no']:
-                self.show_auto_sent_notifications = False
-                # Save to settings file (affects all clients)
-                settings = self._load_settings()
-                settings['show_auto_sent_notifications'] = False
-                self._save_settings(settings)
-                print("✓ Auto-sent notifications disabled (saved globally)\n")
-            else:
-                print("✗ Invalid option. Use: on/off\n")
+            self._handle_auto_sent_toggle(line_lower)
             return True
 
         # !x / !quit / !exit

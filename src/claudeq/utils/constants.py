@@ -68,7 +68,7 @@ TERM_TITLE_PREFIX: Final[str] = "\033]0;"
 TERM_TITLE_SUFFIX: Final[str] = "\007"
 
 # Colors for terminal output
-COLORS: Final[dict] = {
+COLORS: Final[dict[str, str]] = {
     "yellow": "\033[33m",
     "green": "\033[32m",
     "red": "\033[31m",
@@ -76,13 +76,15 @@ COLORS: Final[dict] = {
 }
 
 # Supported image extensions
-IMAGE_EXTENSIONS: Final[tuple] = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
+IMAGE_EXTENSIONS: Final[tuple[str, ...]] = (
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'
+)
 
 # GitLab polling
 GITLAB_POLL_INTERVAL: Final[int] = 30  # seconds between MR status polls
 
 # JetBrains IDE process names
-JETBRAINS_IDES: Final[dict] = {
+JETBRAINS_IDES: Final[dict[str, str]] = {
     'pycharm': 'PyCharm',
     'goland': 'GoLand',
     'webstorm': 'WebStorm',

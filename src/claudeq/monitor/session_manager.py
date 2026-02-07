@@ -6,11 +6,11 @@ Discovers and tracks active ClaudeQ sessions.
 
 import json
 import os
-import socket
 from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import SOCKET_DIR
+from claudeq.utils.socket_utils import send_socket_request
 
 
 def query_server_status(socket_path: Path) -> Optional[dict[str, Any]]:
@@ -23,25 +23,9 @@ def query_server_status(socket_path: Path) -> Optional[dict[str, Any]]:
     Returns:
         Status response dictionary or None on error.
     """
-    try:
-        client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client_socket.settimeout(1.0)
-        client_socket.connect(str(socket_path))
-
-        data = {'type': 'status', 'message': ''}
-        client_socket.send(json.dumps(data).encode('utf-8'))
-        chunks = []
-        while True:
-            chunk = client_socket.recv(65536)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        client_socket.close()
-        response = b''.join(chunks).decode('utf-8')
-
-        return json.loads(response)
-    except (socket.error, json.JSONDecodeError, OSError):
-        return None
+    return send_socket_request(
+        socket_path, {'type': 'status', 'message': ''}, timeout=1.0
+    )
 
 
 def load_session_metadata(tag: str) -> Optional[dict[str, Any]]:

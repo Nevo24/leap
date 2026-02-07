@@ -32,8 +32,9 @@ src/
     │
     ├── utils/                   # Shared utilities
     │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors
-    │   ├── terminal.py          # Terminal title, colors, banner
-    │   └── ide_detection.py     # IDE detection, git branch
+    │   ├── terminal.py          # Terminal title, banner
+    │   ├── ide_detection.py     # IDE detection, git branch
+    │   └── socket_utils.py     # Shared Unix socket send/recv helper
     │
     ├── server/                  # PTY Server
     │   ├── server.py            # ClaudeQServer - main orchestrator
@@ -51,7 +52,15 @@ src/
     ├── monitor/                 # GUI Monitor (PyQt5)
     │   ├── app.py               # MonitorWindow
     │   ├── session_manager.py   # Session discovery
+    │   ├── cq_sender.py         # Socket sender for /cq commands
+    │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   ├── navigation.py        # IDE terminal navigation
+    │   ├── mr_tracking/         # MR tracking subsystem
+    │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus
+    │   │   ├── config.py        # GitLab/monitor preferences persistence
+    │   │   ├── gitlab_provider.py # GitLab API implementation
+    │   │   ├── git_utils.py     # Git remote URL parsing
+    │   │   └── cq_command.py    # /cq command data model + formatting
     │   └── resources/
     │       └── activate_terminal.groovy  # JetBrains script
     │
@@ -67,11 +76,14 @@ assets/
 
 ## Key Classes
 
-| Class | File | Purpose |
-|-------|------|---------|
+| Class / Function | File | Purpose |
+|------------------|------|---------|
 | `ClaudeQServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
 | `ClaudeQClient` | `client/client.py` | Interactive client with image support |
+| `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI for session management |
+| `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
+| `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 
 ## Runtime Data Files
 
@@ -158,6 +170,14 @@ Listens on Unix socket for client messages
 - **Server** → `src/claudeq/server/`, update `ClaudeQServer`
 - **Client** → `src/claudeq/client/`, update `ClaudeQClient`
 - **Monitor** → `src/claudeq/monitor/`, update `MonitorWindow`
+- **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a CQ server via Unix socket. Do not duplicate the connect/send/recv pattern.
+
+## Code Conventions
+
+- **Type hints**: 100% coverage on all function signatures and return types. Use `Optional[X]` (not `X | None`) for consistency.
+- **Imports**: All imports at module top level. No inline imports except for optional dependencies (`prompt_toolkit`, `gitlab`).
+- **Client commands**: Each command handler is extracted into a private `_handle_*` method on `ClaudeQClient`. The `_process_command` dispatcher delegates to these handlers.
+- **Socket pattern**: `SocketClient._send_request()` is the single source of truth for client→server socket communication. `send_socket_request()` in `utils/socket_utils.py` is the lightweight variant for monitor/session_manager code that doesn't need rate-limited error reporting.
 
 ## IDE Setup
 

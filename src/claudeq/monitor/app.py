@@ -10,7 +10,7 @@ import signal
 import sys
 import webbrowser
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -19,9 +19,9 @@ from PyQt5.QtWidgets import (
     QInputDialog
 )
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QIcon, QCursor
+from PyQt5.QtGui import QIcon, QCursor, QMouseEvent, QCloseEvent
 
-from claudeq.utils.constants import SOCKET_DIR, GITLAB_POLL_INTERVAL
+from claudeq.utils.constants import GITLAB_POLL_INTERVAL
 from claudeq.monitor.session_manager import (
     get_active_sessions,
     load_session_metadata,
@@ -35,7 +35,7 @@ from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
 logger = logging.getLogger(__name__)
 
 
-def _find_icon() -> Path | None:
+def _find_icon() -> Optional[Path]:
     """Find the app icon, works both from source and .app bundle."""
     # From source: src/claudeq/monitor/app.py → project_root/assets/
     candidate = Path(__file__).parent.parent.parent.parent / "assets" / "claudeq-icon.png"
@@ -101,11 +101,11 @@ def focus_session(tag: str, session_type: str = 'server') -> None:
 class PulsingLabel(QLabel):
     """A label that can pulse its text color for attention."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._pulsing = False
+        self._pulsing: bool = False
         self._mr_url: Optional[str] = None
-        self._phase = 0.0
+        self._phase: float = 0.0
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(50)
@@ -129,7 +129,7 @@ class PulsingLabel(QLabel):
         else:
             self.setCursor(QCursor(Qt.ArrowCursor))
 
-    def mousePressEvent(self, event) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._mr_url and event.button() == Qt.LeftButton:
             webbrowser.open(self._mr_url)
         else:
@@ -153,12 +153,12 @@ class GitLabPollerWorker(QThread):
     results_ready = pyqtSignal(dict)
     cq_commands_ready = pyqtSignal(list)
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._provider = None
-        self._sessions: list[dict] = []
+        self._provider: Optional['SCMProvider'] = None
+        self._sessions: list[dict[str, Any]] = []
 
-    def configure(self, provider, sessions: list[dict]) -> None:
+    def configure(self, provider: 'SCMProvider', sessions: list[dict[str, Any]]) -> None:
         self._provider = provider
         self._sessions = list(sessions)
 
@@ -383,7 +383,7 @@ class MonitorWindow(QMainWindow):
             self._gitlab_worker.deleteLater()
             self._gitlab_worker = None
 
-    def _on_gitlab_results(self, results: dict) -> None:
+    def _on_gitlab_results(self, results: dict[str, MRStatus]) -> None:
         """Handle GitLab poll results (runs in main thread via signal)."""
         try:
             # Safety check: ensure window hasn't been closed
@@ -394,7 +394,7 @@ class MonitorWindow(QMainWindow):
         except Exception:
             logger.exception("Error handling GitLab results")
 
-    def _on_cq_commands(self, commands: list) -> None:
+    def _on_cq_commands(self, commands: list[Any]) -> None:
         """Handle /cq commands detected during GitLab polling."""
         try:
             if not self.isVisible() or not self._gitlab_provider:
@@ -442,7 +442,7 @@ class MonitorWindow(QMainWindow):
             except Exception:
                 logger.exception("Failed to restart GitLab polling timer")
 
-    def _match_session_for_cq(self, cmd) -> tuple[Optional[str], bool]:
+    def _match_session_for_cq(self, cmd: Any) -> tuple[Optional[str], bool]:
         """Match a /cq command to a CQ session by project path.
 
         Returns (tag, no_match) where:
@@ -610,7 +610,7 @@ class MonitorWindow(QMainWindow):
             self._mr_statuses.clear()
             self._start_gitlab_poll()
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event - cleanup threads and timers."""
         try:
             # Stop all timers
@@ -655,7 +655,7 @@ def main() -> None:
     window.show()
 
     # Handle Ctrl+C gracefully
-    def signal_handler(sig, frame):
+    def signal_handler(sig: int, frame: Any) -> None:
         window.close()
         app.quit()
 

@@ -6,10 +6,10 @@ Manages Unix socket server for client connections.
 
 import json
 import socket
+import sys
 import threading
-import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 
 class SocketHandler:
@@ -93,11 +93,9 @@ class SocketHandler:
 
         except json.JSONDecodeError as e:
             response = {'status': 'error', 'message': 'Invalid JSON'}
-            import sys
             print(f"Error: Received invalid JSON from client: {e}", file=sys.stderr, flush=True)
         except Exception as e:
             response = {'status': 'error', 'message': str(e)}
-            import sys
             print(f"Error handling client: {e}", file=sys.stderr, flush=True)
 
         try:
@@ -106,7 +104,6 @@ class SocketHandler:
             # Client disconnected - normal, suppress error
             pass
         except Exception as e:
-            import sys
             print(f"Error sending response: {e}", file=sys.stderr, flush=True)
         finally:
             conn.close()

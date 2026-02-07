@@ -13,8 +13,6 @@ from claudeq.utils.constants import (
 )
 from claudeq.utils.terminal import (
     set_terminal_title,
-    print_colored,
-    get_terminal_size,
     print_banner,
 )
 from claudeq.utils.ide_detection import detect_ide, get_git_branch
