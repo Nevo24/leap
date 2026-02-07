@@ -127,7 +127,7 @@ class ClaudeQServer:
                 with self._notification_lock:
                     remaining = self.queue.size
                     self.pending_notifications.append(
-                        f"⚡ Force-sent from queue ({remaining} remaining)"
+                        f"🔥 Force-sent from queue ({remaining} remaining)"
                     )
                 return {
                     'status': 'sent',
@@ -269,7 +269,7 @@ class ClaudeQServer:
             if self.pending_notifications and data.endswith(b'\n'):
                 notifications = '   '.join(self.pending_notifications)
                 self.pending_notifications.clear()
-                return data + f"\033[33m🤖 {notifications}\033[0m\n".encode()
+                return data + f"\033[33m{notifications}\033[0m\n".encode()
         return data
 
     def _print_startup_banner(self) -> None:

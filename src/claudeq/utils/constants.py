@@ -82,6 +82,7 @@ IMAGE_EXTENSIONS: Final[tuple[str, ...]] = (
 
 # GitLab polling
 GITLAB_POLL_INTERVAL: Final[int] = 30  # seconds between MR status polls
+GITLAB_MAX_CONCURRENT_POLLS: Final[int] = 10  # max parallel API requests per poll cycle
 
 # JetBrains IDE process names
 JETBRAINS_IDES: Final[dict[str, str]] = {

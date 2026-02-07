@@ -84,15 +84,21 @@ class GitLabProvider(SCMProvider):
             )
 
         unresponded = 0
+        first_note_id: Optional[int] = None
         for discussion in discussions:
             if self._is_unresponded_thread(discussion, project, mr_iid):
                 unresponded += 1
+                if first_note_id is None:
+                    notes = discussion.attributes.get('notes', [])
+                    if notes:
+                        first_note_id = notes[0].get('id')
 
         if unresponded > 0:
             return MRStatus(
                 state=MRState.UNRESPONDED,
                 unresponded_count=unresponded,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
+                first_unresponded_note_id=first_note_id,
             )
 
         return MRStatus(

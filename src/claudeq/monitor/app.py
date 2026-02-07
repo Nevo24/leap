@@ -9,6 +9,7 @@ import math
 import signal
 import sys
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Optional
 
@@ -22,7 +23,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QCursor, QMouseEvent, QCloseEvent
 
-from claudeq.utils.constants import GITLAB_POLL_INTERVAL
+from claudeq.utils.constants import GITLAB_MAX_CONCURRENT_POLLS, GITLAB_POLL_INTERVAL
 from claudeq.monitor.session_manager import (
     get_active_sessions,
     load_session_metadata,
@@ -168,41 +169,55 @@ class GitLabPollerWorker(QThread):
             return
 
         results: dict[str, MRStatus] = {}
-        all_cq_commands = []
+        all_cq_commands: list[Any] = []
 
-        for session in self._sessions:
-            tag = session['tag']
-            project_path = session.get('project_path')
-            if not project_path:
-                results[tag] = MRStatus(state=MRState.NO_MR)
-                continue
-
-            remote_info = get_git_remote_info(project_path)
-            if not remote_info:
-                results[tag] = MRStatus(state=MRState.NO_MR)
-                continue
-
-            try:
-                status = self._provider.get_mr_status(
-                    remote_info.project_path, remote_info.branch
-                )
-                results[tag] = status
-            except Exception:
-                logger.debug("Error polling MR for tag %s", tag, exc_info=True)
-                results[tag] = MRStatus(state=MRState.NO_MR)
-
-            # Scan for /cq commands
-            try:
-                cq_commands = self._provider.scan_cq_commands(
-                    remote_info.project_path, remote_info.branch
-                )
-                all_cq_commands.extend(cq_commands)
-            except Exception:
-                logger.debug("Error scanning /cq for tag %s", tag, exc_info=True)
+        # Poll sessions in parallel — each session's API calls are independent.
+        with ThreadPoolExecutor(max_workers=GITLAB_MAX_CONCURRENT_POLLS) as pool:
+            futures = {
+                pool.submit(self._poll_session, session): session['tag']
+                for session in self._sessions
+            }
+            for future in as_completed(futures):
+                tag = futures[future]
+                try:
+                    status, cq_commands = future.result()
+                    results[tag] = status
+                    all_cq_commands.extend(cq_commands)
+                except Exception:
+                    logger.debug("Error polling session %s", tag, exc_info=True)
+                    results[tag] = MRStatus(state=MRState.NO_MR)
 
         self.results_ready.emit(results)
         if all_cq_commands:
             self.cq_commands_ready.emit(all_cq_commands)
+
+    def _poll_session(self, session: dict[str, Any]) -> tuple[MRStatus, list[Any]]:
+        """Poll a single session for MR status and /cq commands."""
+        project_path = session.get('project_path')
+        if not project_path:
+            return MRStatus(state=MRState.NO_MR), []
+
+        remote_info = get_git_remote_info(project_path)
+        if not remote_info:
+            return MRStatus(state=MRState.NO_MR), []
+
+        try:
+            status = self._provider.get_mr_status(
+                remote_info.project_path, remote_info.branch
+            )
+        except Exception:
+            logger.debug("Error polling MR for tag %s", session['tag'], exc_info=True)
+            status = MRStatus(state=MRState.NO_MR)
+
+        cq_commands: list[Any] = []
+        try:
+            cq_commands = self._provider.scan_cq_commands(
+                remote_info.project_path, remote_info.branch
+            )
+        except Exception:
+            logger.debug("Error scanning /cq for tag %s", session['tag'], exc_info=True)
+
+        return status, cq_commands
 
 
 class MonitorWindow(QMainWindow):
@@ -604,7 +619,11 @@ class MonitorWindow(QMainWindow):
                 f'{status.unresponded_count} unresponded thread(s).'
             )
             widget.set_pulsing(True)
-            widget.set_mr_url(status.mr_url)
+            # Jump directly to first unresolved comment thread
+            url = status.mr_url
+            if url and status.first_unresponded_note_id:
+                url = f'{url}#note_{status.first_unresponded_note_id}'
+            widget.set_mr_url(url)
 
     def _auto_refresh(self) -> None:
         """Auto-refresh callback."""
@@ -618,10 +637,9 @@ class MonitorWindow(QMainWindow):
         include = state == Qt.Checked
         self._prefs['include_bots'] = include
         save_monitor_prefs(self._prefs)
-        # Rebuild provider with new setting and re-poll
+        # Update filter and re-poll (keep stale statuses visible until fresh ones arrive)
         if self._gitlab_provider:
             self._gitlab_provider._filter_bots = not include
-            self._mr_statuses.clear()
             self._start_gitlab_poll()
 
     def closeEvent(self, event: QCloseEvent) -> None:

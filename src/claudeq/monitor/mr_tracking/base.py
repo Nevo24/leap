@@ -22,6 +22,7 @@ class MRStatus:
     mr_url: Optional[str] = None
     mr_title: Optional[str] = None
     mr_iid: Optional[int] = None
+    first_unresponded_note_id: Optional[int] = None
 
 
 class SCMProvider(ABC):
