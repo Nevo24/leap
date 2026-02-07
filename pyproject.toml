@@ -17,6 +17,7 @@ rich = "^14.3.2"
 
 [tool.poetry.group.monitor.dependencies]
 PyQt5 = "^5.15.0"
+python-gitlab = "^8.0.0"
 py2app = "^0.28"
 
 [tool.poetry.scripts]

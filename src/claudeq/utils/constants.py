@@ -78,6 +78,9 @@ COLORS: Final[dict] = {
 # Supported image extensions
 IMAGE_EXTENSIONS: Final[tuple] = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp')
 
+# GitLab polling
+GITLAB_POLL_INTERVAL: Final[int] = 30  # seconds between MR status polls
+
 # JetBrains IDE process names
 JETBRAINS_IDES: Final[dict] = {
     'pycharm': 'PyCharm',
