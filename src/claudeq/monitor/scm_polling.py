@@ -14,6 +14,36 @@ from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
 logger = logging.getLogger(__name__)
 
 
+class SCMOneShotWorker(QThread):
+    """Background worker for a single MR status check (non-blocking Track MR)."""
+
+    result_ready = pyqtSignal(str, object)  # (tag, MRStatus)
+    error = pyqtSignal(str, str)  # (tag, error_message)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._provider: Optional[SCMProvider] = None
+        self._tag: str = ''
+        self._project_path: str = ''
+        self._branch: str = ''
+
+    def configure(self, provider: SCMProvider, tag: str, project_path: str, branch: str) -> None:
+        self._provider = provider
+        self._tag = tag
+        self._project_path = project_path
+        self._branch = branch
+
+    def run(self) -> None:
+        if not self._provider:
+            return
+        try:
+            status = self._provider.get_mr_status(self._project_path, self._branch)
+            self.result_ready.emit(self._tag, status)
+        except Exception:
+            logger.debug("One-shot MR check failed for %s", self._tag, exc_info=True)
+            self.error.emit(self._tag, 'Failed to query GitLab.')
+
+
 class SCMPollerWorker(QThread):
     """Background worker that polls an SCM provider for MR statuses."""
 

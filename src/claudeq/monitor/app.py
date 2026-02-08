@@ -31,7 +31,7 @@ from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import load_gitlab_config, load_monitor_prefs, save_monitor_prefs
 from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
 from claudeq.monitor.ui_widgets import PulsingLabel
-from claudeq.monitor.scm_polling import SCMPollerWorker
+from claudeq.monitor.scm_polling import SCMOneShotWorker, SCMPollerWorker
 from claudeq.monitor.monitor_utils import find_icon, focus_session
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,7 @@ class MonitorWindow(QMainWindow):
         self._scm_polling = False
         self._shutting_down = False
         self._tracked_tags: set[str] = set()
+        self._checking_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
 
         # Setup auto-refresh timer before init_ui
@@ -408,8 +409,13 @@ class MonitorWindow(QMainWindow):
                 self._set_cell_text(row, self.COL_STATUS, status)
                 self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-                # MR — "Track MR" button for untracked, PulsingLabel for tracked
-                if tag in self._tracked_tags:
+                # MR column: "Track MR" → "Checking..." → tracked PulsingLabel
+                if tag in self._checking_tags:
+                    checking_label = PulsingLabel()
+                    checking_label.setText('Checking...')
+                    checking_label.setStyleSheet('color: grey; font-style: italic;')
+                    self.table.setCellWidget(row, self.COL_MR, checking_label)
+                elif tag in self._tracked_tags:
                     mr_widget = PulsingLabel()
                     self._mr_widgets[tag] = mr_widget
                     self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
@@ -479,7 +485,7 @@ class MonitorWindow(QMainWindow):
             self.table.setUpdatesEnabled(True)
 
     def _start_tracking(self, tag: str) -> None:
-        """Start MR tracking for a session after a one-shot check."""
+        """Start MR tracking for a session via a background one-shot check."""
         if not self._scm_provider:
             QMessageBox.information(
                 self, 'GitLab Not Connected',
@@ -502,32 +508,46 @@ class MonitorWindow(QMainWindow):
             QMessageBox.information(self, 'No MR Found', 'Could not determine Git remote info.')
             return
 
-        # One-shot check — may briefly block the UI
-        try:
-            status = self._scm_provider.get_mr_status(
-                remote_info.project_path, remote_info.branch
-            )
-        except Exception:
-            QMessageBox.warning(self, 'Error', 'Failed to query GitLab.')
-            return
+        # Show "Checking..." while the API call runs in the background
+        self._checking_tags.add(tag)
+        self._update_table()
+
+        # Run the API call in a background thread
+        worker = SCMOneShotWorker(self)
+        worker.configure(self._scm_provider, tag, remote_info.project_path, remote_info.branch)
+        worker.result_ready.connect(self._on_tracking_result)
+        worker.error.connect(self._on_tracking_error)
+        worker.finished.connect(worker.deleteLater)
+        self._scm_worker = worker
+        worker.start()
+
+    def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
+        """Handle the result of a one-shot MR check."""
+        self._checking_tags.discard(tag)
 
         if status.state == MRState.NO_MR:
+            self._update_table()
             QMessageBox.information(
                 self, 'No MR Found',
-                f'No open merge request found for branch:\n{remote_info.branch}'
+                'No open merge request found for this branch.'
             )
             return
 
-        # MR found — start tracking
+        # MR found — promote to tracked
         self._tracked_tags.add(tag)
         self._mr_statuses[tag] = status
         self._update_table()
 
-        # Ensure the poll timer is running for ongoing updates
         if not self._scm_poll_timer.isActive():
             config = load_gitlab_config()
             interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
             self._scm_poll_timer.start(interval * 1000)
+
+    def _on_tracking_error(self, tag: str, message: str) -> None:
+        """Handle an error from a one-shot MR check."""
+        self._checking_tags.discard(tag)
+        self._update_table()
+        QMessageBox.warning(self, 'Error', message)
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
         """Prompt for confirmation and close a server session."""
