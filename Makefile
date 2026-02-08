@@ -266,7 +266,8 @@ configure-shell:
 					npx --yes @vscode/vsce package --out claudeq-terminal-selector.vsix >/dev/null 2>&1 && \
 					$$CODE_PATH --install-extension claudeq-terminal-selector.vsix --force >/dev/null 2>&1 && \
 					rm -f claudeq-terminal-selector.vsix && \
-					echo "$(GREEN)  ✓ ClaudeQ extension installed (v$$REPO_VERSION)$(NC)" || \
+					echo "$(GREEN)  ✓ ClaudeQ extension installed (v$$REPO_VERSION)$(NC)" && \
+					echo "$(YELLOW)    → Reload VS Code: Cmd+Shift+P → 'Developer: Reload Window'$(NC)" || \
 					echo "$(YELLOW)  ⚠ Could not install extension$(NC)"; \
 				else \
 					echo "$(YELLOW)  ⚠ npm not found, skipping extension install$(NC)"; \
