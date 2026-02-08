@@ -246,6 +246,7 @@ class MonitorWindow(QMainWindow):
         self._gitlab_provider = None
         self._gitlab_worker: Optional[GitLabPollerWorker] = None
         self._polling_in_progress = False
+        self._shutting_down = False
         self._prefs = load_monitor_prefs()
 
         # Setup auto-refresh timer before init_ui
@@ -410,6 +411,8 @@ class MonitorWindow(QMainWindow):
 
     def _start_gitlab_poll(self) -> None:
         """Start a background GitLab poll for all sessions."""
+        if self._shutting_down:
+            return
         if not self._gitlab_provider or self._polling_in_progress:
             return
         if not self.sessions:
@@ -433,8 +436,9 @@ class MonitorWindow(QMainWindow):
 
     def _on_gitlab_results(self, results: dict[str, MRStatus]) -> None:
         """Handle GitLab poll results (runs in main thread via signal)."""
+        if self._shutting_down:
+            return
         try:
-            # Safety check: ensure window hasn't been closed
             if not self.isVisible():
                 return
             self._mr_statuses.update(results)
@@ -444,6 +448,8 @@ class MonitorWindow(QMainWindow):
 
     def _on_cq_commands(self, commands: list[Any]) -> None:
         """Handle /cq commands detected during GitLab polling."""
+        if self._shutting_down:
+            return
         try:
             if not self.isVisible() or not self._gitlab_provider:
                 return
@@ -754,6 +760,8 @@ class MonitorWindow(QMainWindow):
 
     def _auto_refresh(self) -> None:
         """Auto-refresh callback."""
+        if self._shutting_down:
+            return
         try:
             self._refresh_data()
         except Exception:
@@ -770,38 +778,35 @@ class MonitorWindow(QMainWindow):
             self._start_gitlab_poll()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Handle window close event - cleanup threads and timers."""
+        """Handle window close event - save prefs then force-exit the process.
+
+        QThread.terminate() does not work on Python threads, and the
+        GitLabPollerWorker's ThreadPoolExecutor can block indefinitely on
+        network I/O.  Instead of trying to join threads gracefully (which
+        hangs), we save state and then os._exit() to guarantee the process
+        dies immediately.
+        """
+        # Prevent timers and signal handlers from firing during shutdown
+        self._shutting_down = True
+        self.timer.stop()
+        self._gitlab_timer.stop()
+
+        # Save window geometry and column widths
         try:
-            # Save window geometry and column widths
             geom = self.geometry()
             self._prefs['window_geometry'] = [geom.x(), geom.y(), geom.width(), geom.height()]
             self._prefs['column_widths'] = [
                 self.table.columnWidth(col) for col in range(self.table.columnCount())
             ]
             save_monitor_prefs(self._prefs)
+        except Exception:
+            logger.debug("Failed to save monitor prefs on close", exc_info=True)
 
-            # Stop all timers
-            self.timer.stop()
-            self._gitlab_timer.stop()
-
-            # Terminate background thread — no need to wait, process is exiting
-            if self._gitlab_worker:
-                try:
-                    if self._gitlab_worker.isRunning():
-                        self._gitlab_worker.terminate()
-                except RuntimeError:
-                    pass
-
-            # Stop all pulsing animations
-            for widget in self._mr_widgets.values():
-                try:
-                    widget.set_pulsing(False)
-                except RuntimeError:
-                    # Widget already deleted
-                    pass
-        finally:
-            event.accept()
-            QApplication.instance().quit()
+        # Accept the close event, then hard-exit.  os._exit() skips atexit
+        # handlers and thread joins — the only reliable way to exit when
+        # background threads may be stuck in blocking network calls.
+        event.accept()
+        os._exit(0)
 
 
 def main() -> None:
