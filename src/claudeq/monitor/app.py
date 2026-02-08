@@ -235,6 +235,8 @@ class MonitorWindow(QMainWindow):
     COL_SERVER = 6
     COL_CLIENT = 7
 
+    DEFAULT_COLUMN_WIDTHS = [100, 160, 160, 100, 110, 60, 130, 130]
+
     def __init__(self) -> None:
         """Initialize the monitor window."""
         super().__init__()
@@ -264,7 +266,13 @@ class MonitorWindow(QMainWindow):
     def _init_ui(self) -> None:
         """Initialize the user interface."""
         self.setWindowTitle('ClaudeQ Monitor')
-        self.setGeometry(100, 100, 1000, 600)
+
+        # Restore saved window geometry or center on screen
+        saved_geom = self._prefs.get('window_geometry')
+        if saved_geom and len(saved_geom) == 4:
+            self.setGeometry(*saved_geom)
+        else:
+            self._center_on_screen()
 
         # Set app icon
         self._set_window_icon()
@@ -287,17 +295,25 @@ class MonitorWindow(QMainWindow):
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
 
-        # Set default column widths
-        self.table.setColumnWidth(self.COL_TAG, 120)
-        self.table.setColumnWidth(self.COL_PROJECT, 180)
-        self.table.setColumnWidth(self.COL_BRANCH, 150)
-        self.table.setColumnWidth(self.COL_MR, 80)
-        self.table.setColumnWidth(self.COL_STATUS, 100)
-        self.table.setColumnWidth(self.COL_QUEUE, 70)
-        self.table.setColumnWidth(self.COL_SERVER, 80)
-        # Client column will stretch to fill remaining space
+        # Restore saved column widths or use sensible defaults
+        saved_widths = self._prefs.get('column_widths')
+        if saved_widths and len(saved_widths) == 8:
+            for col, width in enumerate(saved_widths):
+                self.table.setColumnWidth(col, width)
+        else:
+            for col, width in enumerate(self.DEFAULT_COLUMN_WIDTHS):
+                self.table.setColumnWidth(col, width)
 
         self.table.setSelectionMode(QTableWidget.NoSelection)
+
+        # Top controls
+        top_layout = QHBoxLayout()
+        top_layout.addStretch()
+        reset_cols_btn = QPushButton('Reset Window Size')
+        reset_cols_btn.clicked.connect(self._reset_window_size)
+        top_layout.addWidget(reset_cols_btn)
+        layout.addLayout(top_layout)
+
         layout.addWidget(self.table)
 
         # Bottom controls
@@ -330,6 +346,20 @@ class MonitorWindow(QMainWindow):
         icon_path = _find_icon()
         if icon_path:
             self.setWindowIcon(QIcon(str(icon_path)))
+
+    def _center_on_screen(self) -> None:
+        """Resize to default dimensions and center on screen."""
+        self.resize(1150, 600)
+        screen = QApplication.primaryScreen().availableGeometry()
+        x = (screen.width() - 1150) // 2 + screen.x()
+        y = (screen.height() - 600) // 2 + screen.y()
+        self.move(x, y)
+
+    def _reset_window_size(self) -> None:
+        """Reset window geometry and column widths to defaults."""
+        self._center_on_screen()
+        for col, width in enumerate(self.DEFAULT_COLUMN_WIDTHS):
+            self.table.setColumnWidth(col, width)
 
     def _init_gitlab_provider(self) -> None:
         """Load GitLab config and create provider if configured."""
@@ -742,21 +772,24 @@ class MonitorWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event - cleanup threads and timers."""
         try:
+            # Save window geometry and column widths
+            geom = self.geometry()
+            self._prefs['window_geometry'] = [geom.x(), geom.y(), geom.width(), geom.height()]
+            self._prefs['column_widths'] = [
+                self.table.columnWidth(col) for col in range(self.table.columnCount())
+            ]
+            save_monitor_prefs(self._prefs)
+
             # Stop all timers
             self.timer.stop()
             self._gitlab_timer.stop()
 
-            # Wait for background thread to finish
+            # Terminate background thread — no need to wait, process is exiting
             if self._gitlab_worker:
                 try:
                     if self._gitlab_worker.isRunning():
-                        self._gitlab_worker.wait(2000)  # Wait up to 2 seconds
-                        if self._gitlab_worker.isRunning():
-                            # Force terminate if still running
-                            self._gitlab_worker.terminate()
-                            self._gitlab_worker.wait()
+                        self._gitlab_worker.terminate()
                 except RuntimeError:
-                    # Worker already deleted
                     pass
 
             # Stop all pulsing animations
@@ -768,6 +801,7 @@ class MonitorWindow(QMainWindow):
                     pass
         finally:
             event.accept()
+            QApplication.instance().quit()
 
 
 def main() -> None:
