@@ -14,6 +14,43 @@ from pathlib import Path
 from typing import Optional
 
 
+def close_terminal_with_title(
+    title_pattern: str,
+    preferred_ide: Optional[str] = None,
+    project_path: Optional[str] = None,
+    terminal_title: Optional[str] = None
+) -> bool:
+    """
+    Close terminal window/tab with matching title.
+
+    Args:
+        title_pattern: Pattern to match in terminal title.
+        preferred_ide: Preferred IDE to try first.
+        project_path: Project path for IDE navigation.
+        terminal_title: Exact terminal title to match.
+
+    Returns:
+        True if terminal was found and closed.
+    """
+    jetbrains_ides = ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
+                      'RubyMine', 'CLion', 'DataGrip', 'JetBrains']
+    if preferred_ide and any(ide in preferred_ide for ide in jetbrains_ides):
+        if _close_jetbrains(preferred_ide, project_path, terminal_title):
+            return True
+
+    if preferred_ide and 'VS Code' in preferred_ide:
+        if _close_vscode(project_path, terminal_title or title_pattern):
+            return True
+
+    if _close_terminal_app(title_pattern):
+        return True
+
+    if _close_iterm2(title_pattern):
+        return True
+
+    return False
+
+
 def find_terminal_with_title(
     title_pattern: str,
     preferred_ide: Optional[str] = None,
@@ -240,6 +277,207 @@ def _navigate_iterm2(title_pattern: str) -> bool:
                         select t
                         select s
                         activate
+                        return true
+                    end if
+                end repeat
+            end repeat
+        end repeat
+    end tell
+    return false
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _close_jetbrains(
+    ide: str,
+    project_path: Optional[str],
+    terminal_title: Optional[str]
+) -> bool:
+    """Close a terminal tab in JetBrains IDE."""
+    if not terminal_title:
+        return False
+
+    ide_cmd_map = {
+        'PyCharm': 'pycharm',
+        'IntelliJ IDEA': 'idea',
+        'GoLand': 'goland',
+        'WebStorm': 'webstorm',
+        'PhpStorm': 'phpstorm',
+    }
+
+    ide_cmd = ide_cmd_map.get(ide)
+    if not ide_cmd:
+        return False
+
+    project_match = ""
+    if project_path:
+        project_match = f'''
+    for (var i = 0; i < allProjects.length; i++) {{
+        var project = allProjects[i]
+        if (project.getBasePath() != null && project.getBasePath().equals("{project_path}")) {{
+            targetProject = project
+            break
+        }}
+    }}'''
+
+    groovy_script = f'''import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.project.ProjectManager
+
+IDE.application.invokeLater {{
+    var targetProject = null
+    var allProjects = ProjectManager.getInstance().getOpenProjects()
+    {project_match}
+    if (targetProject == null && allProjects.length > 0) {{
+        targetProject = allProjects[0]
+    }}
+    if (targetProject != null) {{
+        var toolWindowManager = ToolWindowManager.getInstance(targetProject)
+        var terminalWindow = toolWindowManager.getToolWindow("Terminal")
+        if (terminalWindow != null) {{
+            try {{
+                var contentManager = terminalWindow.getContentManager()
+                var content = contentManager.findContent("{terminal_title}")
+                if (content != null) {{
+                    contentManager.removeContent(content, true)
+                }}
+            }} catch (Exception e) {{
+            }}
+        }}
+    }}
+}}
+'''
+
+    try:
+        env = os.environ.copy()
+        jetbrains_paths = []
+        for pattern in ['IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
+                        'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
+                        'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app']:
+            for app in glob.glob(f'/Applications/{pattern}'):
+                jetbrains_paths.append(f'{app}/Contents/MacOS')
+        if jetbrains_paths:
+            env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
+            tmp.write(groovy_script)
+            tmp_script_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                [ide_cmd, 'ideScript', tmp_script_path],
+                capture_output=True,
+                timeout=5,
+                env=env
+            )
+            return result.returncode == 0
+        finally:
+            try:
+                os.unlink(tmp_script_path)
+            except OSError:
+                pass
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _close_vscode(project_path: Optional[str], terminal_name: str) -> bool:
+    """Close a terminal tab in VS Code by writing a close request file."""
+    try:
+        env = os.environ.copy()
+        extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
+        current_path = env.get('PATH', '')
+        for p in extra_paths:
+            if p not in current_path and os.path.exists(p):
+                env['PATH'] = f"{p}:{current_path}"
+                current_path = env['PATH']
+
+        code_path = shutil.which('code', path=env.get('PATH'))
+        if not code_path:
+            return False
+
+        if project_path:
+            subprocess.run(
+                [code_path, project_path],
+                capture_output=True,
+                timeout=5,
+                env=env
+            )
+            time.sleep(0.3)
+
+        request_file = os.path.expanduser('~/.claudeq-terminal-request')
+        with open(request_file, 'w') as f:
+            f.write(f'close:{terminal_name}')
+        time.sleep(0.1)
+        return True
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _close_terminal_app(title_pattern: str) -> bool:
+    """Close a terminal tab in Terminal.app."""
+    script = f'''
+    tell application "Terminal"
+        repeat with w in windows
+            set tabCount to count of tabs of w
+            repeat with t from 1 to tabCount
+                set tabName to custom title of tab t of w
+                if tabName contains "{title_pattern}" then
+                    if tabCount is 1 then
+                        close w
+                    else
+                        set frontmost of w to true
+                        set selected of tab t of w to true
+                        activate
+                        tell application "System Events"
+                            tell process "Terminal"
+                                keystroke "w" using command down
+                            end tell
+                        end tell
+                    end if
+                    return true
+                end if
+            end repeat
+        end repeat
+    end tell
+    return false
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _close_iterm2(title_pattern: str) -> bool:
+    """Close a terminal tab/session in iTerm2."""
+    script = f'''
+    tell application "iTerm"
+        repeat with w in windows
+            repeat with t in tabs of w
+                repeat with s in sessions of t
+                    if name of s contains "{title_pattern}" then
+                        close s
                         return true
                     end if
                 end repeat

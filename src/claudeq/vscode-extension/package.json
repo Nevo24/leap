@@ -2,7 +2,7 @@
   "name": "claudeq-terminal-selector",
   "displayName": "ClaudeQ Terminal Selector",
   "description": "Allows ClaudeQ Monitor to select terminal tabs by name",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "claudeq",
   "engines": {
     "vscode": "^1.70.0"

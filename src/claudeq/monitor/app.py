@@ -6,6 +6,7 @@ PyQt5-based GUI for viewing and managing active ClaudeQ sessions.
 
 import logging
 import math
+import os
 import signal
 import sys
 import webbrowser
@@ -23,13 +24,14 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon, QCursor, QMouseEvent, QCloseEvent
 
-from claudeq.utils.constants import GITLAB_MAX_CONCURRENT_POLLS, GITLAB_POLL_INTERVAL
+from claudeq.utils.constants import GITLAB_MAX_CONCURRENT_POLLS, GITLAB_POLL_INTERVAL, SOCKET_DIR
+from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.session_manager import (
     get_active_sessions,
     load_session_metadata,
     session_exists
 )
-from claudeq.monitor.navigation import find_terminal_with_title
+from claudeq.monitor.navigation import close_terminal_with_title, find_terminal_with_title
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import load_gitlab_config, load_monitor_prefs, save_monitor_prefs
 from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
@@ -549,20 +551,115 @@ class MonitorWindow(QMainWindow):
                 self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
                 self.table.setCellWidget(row, self.COL_MR, mr_widget)
 
-                # Buttons — fresh every refresh to match current session tags
+                # Server button + close button
+                server_pid = session.get('server_pid')
+                server_container = QWidget()
+                server_layout = QHBoxLayout(server_container)
+                server_layout.setContentsMargins(0, 0, 0, 0)
+                server_layout.setSpacing(2)
+
                 server_btn = QPushButton('Server')
                 server_btn.clicked.connect(
                     lambda checked, t=tag: focus_session(t, 'server')
                 )
-                self.table.setCellWidget(row, self.COL_SERVER, server_btn)
+                server_layout.addWidget(server_btn)
+
+                server_x = QPushButton('X')
+                server_x.setFixedSize(24, server_btn.sizeHint().height())
+                server_x.setStyleSheet(
+                    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                )
+                server_x.setToolTip(f'Close server {tag}')
+                server_x.clicked.connect(
+                    lambda checked, t=tag, pid=server_pid: self._close_server(t, pid)
+                )
+                server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
+                self.table.setCellWidget(row, self.COL_SERVER, server_container)
+
+                # Client button + close button
+                client_pid = session.get('client_pid')
+                client_container = QWidget()
+                client_layout = QHBoxLayout(client_container)
+                client_layout.setContentsMargins(0, 0, 0, 0)
+                client_layout.setSpacing(2)
 
                 client_btn = QPushButton('Client')
                 client_btn.clicked.connect(
                     lambda checked, t=tag: focus_session(t, 'client')
                 )
-                self.table.setCellWidget(row, self.COL_CLIENT, client_btn)
+                client_layout.addWidget(client_btn)
+
+                if client_pid is not None:
+                    client_x = QPushButton('X')
+                    client_x.setFixedSize(24, client_btn.sizeHint().height())
+                    client_x.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    client_x.setToolTip(f'Close client {tag}')
+                    client_x.clicked.connect(
+                        lambda checked, t=tag, pid=client_pid: self._close_client(t, pid)
+                    )
+                    client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
+
+                self.table.setCellWidget(row, self.COL_CLIENT, client_container)
         finally:
             self.table.setUpdatesEnabled(True)
+
+    def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
+        """Prompt for confirmation and close a server session."""
+        reply = QMessageBox.question(
+            self,
+            'Close Server',
+            f"Close server '{tag}'?\n\nThis will terminate the Claude CLI session.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Kill the process
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(socket_path, {'type': 'shutdown'}, timeout=3.0)
+        if not (response and response.get('status') == 'ok'):
+            if server_pid:
+                try:
+                    os.kill(server_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+        # Close the terminal tab
+        metadata = load_session_metadata(tag)
+        preferred_ide = metadata.get('ide') if metadata else None
+        project_path = metadata.get('project_path') if metadata else None
+        close_terminal_with_title(
+            f"cq-server {tag}", preferred_ide, project_path, f"cq-server {tag}"
+        )
+
+    def _close_client(self, tag: str, client_pid: Optional[int]) -> None:
+        """Prompt for confirmation and close a client session."""
+        reply = QMessageBox.question(
+            self,
+            'Close Client',
+            f"Close client '{tag}'?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        if client_pid:
+            try:
+                os.kill(client_pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+        # Close the terminal tab
+        metadata = load_session_metadata(tag)
+        preferred_ide = metadata.get('ide') if metadata else None
+        project_path = metadata.get('project_path') if metadata else None
+        close_terminal_with_title(
+            f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
+        )
 
     def _update_mr_column(self) -> None:
         """Update just the MR column widgets without rebuilding the whole table."""

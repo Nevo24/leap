@@ -154,6 +154,12 @@ class ClaudeQServer:
                 return {'status': 'ok', 'message': 'Message edited'}
             return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
 
+        elif msg_type == 'shutdown':
+            # Use a thread so we can return the response before exiting.
+            # sys.exit(0) triggers atexit cleanup (stops socket, terminates PTY, removes files).
+            threading.Thread(target=lambda: sys.exit(0), daemon=True).start()
+            return {'status': 'ok'}
+
         return {'status': 'error', 'message': f"Unknown message type: {msg_type}"}
 
     def _send_to_claude(self, message: str) -> None:

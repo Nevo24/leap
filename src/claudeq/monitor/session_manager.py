@@ -85,6 +85,25 @@ def get_active_sessions() -> list[dict[str, Any]]:
             branch_name = metadata.get('branch')
             ide = metadata.get('ide')
 
+        # Server PID from metadata
+        server_pid: Optional[int] = None
+        if metadata:
+            pid_val = metadata.get('pid')
+            if pid_val is not None:
+                server_pid = int(pid_val)
+
+        # Client PID from lock file
+        client_pid: Optional[int] = None
+        client_lock = SOCKET_DIR / f"{tag}.client.lock"
+        if client_lock.exists():
+            try:
+                with open(client_lock, 'r') as f:
+                    pid_str = f.read().strip()
+                    if pid_str:
+                        client_pid = int(pid_str)
+            except (OSError, ValueError):
+                pass
+
         sessions.append({
             'tag': tag,
             'claude_busy': claude_busy,
@@ -93,6 +112,8 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'branch': branch_name or 'N/A',
             'project_path': project_path,
             'ide': ide,
+            'server_pid': server_pid,
+            'client_pid': client_pid,
         })
 
     return sorted(sessions, key=lambda x: x['tag'])

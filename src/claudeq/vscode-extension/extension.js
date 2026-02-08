@@ -29,9 +29,14 @@ function activate(context) {
         watcher = fs.watch(path.dirname(REQUEST_FILE), (eventType, filename) => {
             if (filename === '.claudeq-terminal-request' && fs.existsSync(REQUEST_FILE)) {
                 try {
-                    const terminalName = fs.readFileSync(REQUEST_FILE, 'utf8').trim();
-                    if (terminalName) {
-                        selectTerminalByName(terminalName);
+                    const content = fs.readFileSync(REQUEST_FILE, 'utf8').trim();
+                    if (content) {
+                        if (content.startsWith('close:')) {
+                            const terminalName = content.substring(6);
+                            closeTerminalByName(terminalName);
+                        } else {
+                            selectTerminalByName(content);
+                        }
                         // Delete the request file after processing
                         fs.unlinkSync(REQUEST_FILE);
                     }
@@ -45,6 +50,20 @@ function activate(context) {
     }
 
     context.subscriptions.push({ dispose: () => watcher && watcher.close() });
+}
+
+function closeTerminalByName(terminalName) {
+    const terminals = vscode.window.terminals;
+
+    if (!terminals || terminals.length === 0) {
+        return;
+    }
+
+    const terminal = terminals.find(t => t.name && t.name.includes(terminalName));
+
+    if (terminal) {
+        terminal.dispose();
+    }
 }
 
 function selectTerminalByName(terminalName) {
