@@ -5,8 +5,11 @@ from typing import Optional
 
 from PyQt5.QtWidgets import QMessageBox
 
-from claudeq.monitor.session_manager import load_session_metadata, session_exists
-from claudeq.monitor.navigation import find_terminal_with_title
+from claudeq.monitor.session_manager import (
+    load_session_metadata, session_exists, is_client_lock_held,
+)
+from claudeq.monitor.navigation import find_terminal_with_title, open_terminal_with_command
+from claudeq.utils.constants import SOCKET_DIR
 
 
 def find_icon() -> Optional[Path]:
@@ -27,6 +30,16 @@ def find_icon() -> Optional[Path]:
     return None
 
 
+def _remove_client_lock(tag: str) -> None:
+    """Remove the client lock file so a new client can connect."""
+    lock_file = SOCKET_DIR / f"{tag}.client.lock"
+    try:
+        if lock_file.exists():
+            lock_file.unlink()
+    except OSError:
+        pass
+
+
 def focus_session(tag: str, session_type: str = 'server') -> None:
     """
     Focus the terminal with the given session.
@@ -43,16 +56,19 @@ def focus_session(tag: str, session_type: str = 'server') -> None:
 
     # Check if session exists
     if not session_exists(tag, session_type):
-        other_type = 'server' if session_type == 'client' else 'client'
         reply = QMessageBox.question(
             None,
             f'{session_type.capitalize()} Not Found',
             f'{session_type.capitalize()} not found for: {tag}\n\n'
-            f'Go to {other_type} instead?',
+            f'Open a new {session_type}?',
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            focus_session(tag, other_type)
+            open_terminal_with_command(
+                f'cq {tag}',
+                preferred_ide=preferred_ide,
+                project_path=project_path,
+            )
         return
 
     # Try to find and focus the terminal
@@ -64,9 +80,34 @@ def focus_session(tag: str, session_type: str = 'server') -> None:
     )
 
     if not result:
-        QMessageBox.warning(
-            None,
-            'Navigation Failed',
-            f'Could not navigate to {session_type}: {tag}\n\n'
-            'Make sure terminal tab titles are configured correctly.'
-        )
+        # For clients: check if lock is held by a live process we can't find
+        if session_type == 'client' and is_client_lock_held(tag):
+            reply = QMessageBox.question(
+                None,
+                'Client Not Found',
+                f'A client is connected to \'{tag}\' but its terminal '
+                f'could not be found.\n\n'
+                f'Replace it with a new client?',
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                _remove_client_lock(tag)
+                open_terminal_with_command(
+                    f'cq {tag}',
+                    preferred_ide=preferred_ide,
+                    project_path=project_path,
+                )
+        else:
+            reply = QMessageBox.question(
+                None,
+                'Navigation Failed',
+                f'Could not find terminal tab for {session_type}: {tag}\n\n'
+                f'Open a new {session_type}?',
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                open_terminal_with_command(
+                    f'cq {tag}',
+                    preferred_ide=preferred_ide,
+                    project_path=project_path,
+                )

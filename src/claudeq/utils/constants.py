@@ -5,6 +5,7 @@ This module contains all paths, directories, and configuration values
 used across the application.
 """
 
+import json
 from pathlib import Path
 from typing import Final
 
@@ -51,6 +52,7 @@ STORAGE_DIR: Final[Path] = _find_project_root() / ".storage"
 # Directory paths (now inside .storage)
 QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"
 SOCKET_DIR: Final[Path] = STORAGE_DIR / "sockets"
+HISTORY_DIR: Final[Path] = STORAGE_DIR / "history"
 
 # Settings file
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
@@ -102,3 +104,51 @@ def ensure_storage_dirs() -> None:
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     SOCKET_DIR.mkdir(parents=True, exist_ok=True)
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_default_settings() -> dict:
+    """
+    Get default settings for ClaudeQ.
+
+    Returns:
+        Dictionary with default settings.
+    """
+    return {
+        "show_auto_sent_notifications": True,
+        "history_ttl_days": 3
+    }
+
+
+def load_settings() -> dict:
+    """
+    Load settings from JSON file with defaults.
+
+    Returns:
+        Dictionary of settings with defaults for missing keys.
+    """
+    defaults = get_default_settings()
+    try:
+        if SETTINGS_FILE.exists():
+            with open(SETTINGS_FILE, 'r') as f:
+                user_settings = json.load(f)
+                # Merge with defaults (user settings override defaults)
+                return {**defaults, **user_settings}
+    except (json.JSONDecodeError, OSError):
+        pass
+    return defaults
+
+
+def save_settings(settings: dict) -> None:
+    """
+    Save settings to JSON file.
+
+    Args:
+        settings: Dictionary of settings to save.
+    """
+    try:
+        ensure_storage_dirs()
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+    except OSError:
+        pass

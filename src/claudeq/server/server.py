@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, MIN_BUSY_DURATION, POLL_INTERVAL, TITLE_RESET_INTERVAL,
-    ensure_storage_dirs
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, MIN_BUSY_DURATION, POLL_INTERVAL, TITLE_RESET_INTERVAL,
+    ensure_storage_dirs, load_settings
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.server.pty_handler import PTYHandler
@@ -78,9 +78,16 @@ class ClaudeQServer:
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
+        # Clean up old history files
+        self._cleanup_old_history_files()
+
         # Load existing queue and save metadata
         self.queue.load()
         self.metadata.save()
+
+        # Prompt user about old queue messages
+        if not self.queue.is_empty:
+            self._prompt_load_old_queue()
 
         # Register cleanup
         atexit.register(self.cleanup)
@@ -180,6 +187,104 @@ class ClaudeQServer:
             self.pty.send('\r')
 
         self.pty.send('\r')
+
+    def _prompt_load_old_queue(self) -> None:
+        """Prompt user to load or discard old queued messages."""
+        print(f"\n⚠️  Found {self.queue.size} unsent message{'s' if self.queue.size != 1 else ''} from previous session:\n")
+
+        # Show preview (first 60 chars of each message)
+        preview_count = min(5, self.queue.size)
+        contents = self.queue.get_contents()
+
+        for i in range(preview_count):
+            msg_with_id = contents[i]
+            # Extract message part (after "id> ")
+            msg_start = msg_with_id.find('> ')
+            if msg_start != -1:
+                msg = msg_with_id[msg_start + 2:]
+            else:
+                msg = msg_with_id
+
+            msg_preview = msg[:60]
+            if len(msg) > 60:
+                msg_preview += "..."
+            print(f"  [{i}] {msg_preview}")
+
+        if self.queue.size > preview_count:
+            print(f"  ... and {self.queue.size - preview_count} more")
+
+        print("\nLoad these messages? [Y/n/d] (Y=load, n=discard, d=show full): ", end='', flush=True)
+
+        try:
+            response = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            response = 'y'  # Default to loading
+
+        if response == 'd':
+            # Show full details
+            self._show_queue_details()
+            print("\nLoad these messages? [Y/n]: ", end='', flush=True)
+            try:
+                response = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                response = 'y'
+
+        if response == 'n':
+            # Discard queue
+            self.queue.clear()
+            if self.queue_file.exists():
+                self.queue_file.unlink()
+            print("✓ Discarded old messages\n")
+        else:
+            # Load queue (default)
+            print(f"✓ Loaded {self.queue.size} message{'s' if self.queue.size != 1 else ''}\n")
+
+    def _show_queue_details(self) -> None:
+        """Show full queue contents."""
+        print("\n" + "=" * 70)
+        print("Full message queue:")
+        print("=" * 70)
+        contents = self.queue.get_contents()
+        for i, msg_with_id in enumerate(contents):
+            # Extract ID and message
+            msg_start = msg_with_id.find('> ')
+            if msg_start != -1:
+                msg_id = msg_with_id[1:msg_start]  # Skip leading '<'
+                msg = msg_with_id[msg_start + 2:]
+            else:
+                msg_id = "unknown"
+                msg = msg_with_id
+
+            print(f"\n[{i}] <{msg_id}>")
+            print(f"    {msg}")
+        print("=" * 70)
+
+    def _cleanup_old_history_files(self) -> None:
+        """Clean up history files older than configured TTL."""
+        try:
+            settings = load_settings()
+            ttl_days = settings.get('history_ttl_days', 3)
+            ttl_seconds = ttl_days * 24 * 60 * 60
+            current_time = time.time()
+
+            # Find all .history files
+            if not HISTORY_DIR.exists():
+                return
+
+            for history_file in HISTORY_DIR.glob('*.history'):
+                try:
+                    # Check file age
+                    file_mtime = history_file.stat().st_mtime
+                    age_seconds = current_time - file_mtime
+
+                    if age_seconds > ttl_seconds:
+                        history_file.unlink()
+                except OSError:
+                    # Skip files we can't access
+                    pass
+        except Exception:
+            # Don't fail startup if cleanup fails
+            pass
 
     def _is_busy(self) -> bool:
         """

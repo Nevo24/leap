@@ -93,10 +93,92 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 |------|----------|
 | Settings | `.storage/settings.json` |
 | Queue | `.storage/queues/<tag>.queue` |
-| History | `.storage/queues/<tag>.history` |
+| History | `.storage/history/<tag>.history` |
 | Socket | `.storage/sockets/<tag>.sock` |
 | Metadata | `.storage/sockets/<tag>.meta` |
 | Client lock | `.storage/sockets/<tag>.client.lock` |
+
+## File Cleanup & Lifecycle
+
+ClaudeQ has multiple cleanup mechanisms. This table shows **exactly** which function cleans which files and when it runs:
+
+### Cleanup Functions
+
+| Function Name | Location | Files Cleaned | Server Up | Server Down | Client Up | Client Down | Manual `cq-cleanup` | Monitor Up | Monitor Down |
+|--------------|----------|---------------|-----------|-------------|-----------|-------------|---------------------|------------|--------------|
+| `ClaudeQServer.cleanup()` | `server/server.py:434` | `.sock`<br>`.meta`<br>`.queue` (if empty)<br>PTY process | | ✅ | | | | | ✅ (via shutdown msg) |
+| `ClaudeQClient._cleanup_lock()` | `client/client.py:103` | `.client.lock` | | | | ✅ | | | |
+| `ClaudeQClient._cleanup_temp_images()` | `client/client.py:117` | `/tmp/*.png` (temp images) | | | | ✅ | | | |
+| `ClaudeQServer._cleanup_old_history_files()` | `server/server.py:262` | `.history` (older than TTL) | ✅ | | | | | | |
+| `cleanup_dead_sockets()` | `claudeq-main.sh:148` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead) | ✅ (background) | | | | | | |
+| `cq-cleanup` script | `claudeq-cleanup.sh` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead) | | | | | ✅ | | |
+
+**Legend:**
+- ✅ = Cleanup runs at this event
+- (dead) = Only cleans files for sessions with no running server process
+- (if empty) = Conditional cleanup
+
+### File Lifecycle Reference
+
+| File | Created When | Cleaned By | Persistence |
+|------|--------------|------------|-------------|
+| `.sock` | Server starts | Server exit, dead session cleanup | Temporary |
+| `.meta` | Server starts | Server exit, dead session cleanup | Temporary |
+| `.queue` | First message queued | Server exit (if empty), dead session cleanup, user discard | Until empty or discarded |
+| `.history` | First user input | History TTL cleanup on server startup | Deleted after `history_ttl_days` (default: 3) |
+| `.client.lock` | Client connects | Client exit, dead session cleanup | Temporary |
+| `/tmp/*.png` | `!ip` command | Client exit | Temporary |
+
+### Settings Configuration
+
+Edit `.storage/settings.json` to customize:
+
+```json
+{
+  "show_auto_sent_notifications": true,  // Show "🤖 Auto-sent" messages
+  "history_ttl_days": 3                  // Delete .history files older than N days
+}
+```
+
+**Common TTL values:**
+- `1` = Delete after 1 day (aggressive)
+- `3` = Default (balanced)
+- `7` = Keep for a week
+- `30` = Keep for a month
+
+### Queue Prompt on Server Startup
+
+When server starts with existing queued messages:
+
+```
+⚠️  Found 3 unsent messages from previous session:
+
+  [0] Fix the bug in server.py
+  [1] Add tests for auth module
+  [2] Deploy to staging...
+
+Load these messages? [Y/n/d] (Y=load, n=discard, d=show full):
+```
+
+- `Y` (default) → Load and auto-send when ready
+- `n` → Permanently discard all messages
+- `d` → Show full messages before deciding
+
+### Important Notes
+
+**SIGKILL (kill -9) behavior:**
+- Bypasses all cleanup functions (no `atexit` hooks run)
+- Files persist until next dead session cleanup
+- Use `cq-cleanup` to manually clean up
+
+**Monitor shutdown:**
+- Sends `shutdown` socket message to server
+- Triggers `ClaudeQServer.cleanup()`
+- Falls back to `SIGTERM` if socket fails
+
+**Data loss warning:**
+- `cq-cleanup` deletes `.queue` files even with pending messages
+- Always check queue first: `cq <tag>` → `!list`
 
 ## Client Commands
 

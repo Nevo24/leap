@@ -258,19 +258,21 @@ configure-shell:
 		CODE_PATH=$$(which code 2>/dev/null); \
 		NPM_PATH=$$(which npm 2>/dev/null); \
 		if [ -n "$$CODE_PATH" ]; then \
-			EXT_INSTALLED=$$($$CODE_PATH --list-extensions 2>/dev/null | grep -q "claudeq.claudeq-terminal-selector" && echo "yes" || echo "no"); \
-			if [ "$$EXT_INSTALLED" = "no" ]; then \
+			REPO_VERSION=$$(python3 -c "import json; print(json.load(open('$(REPO_PATH)/src/claudeq/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
+			INSTALLED_VERSION=$$($$CODE_PATH --list-extensions --show-versions 2>/dev/null | grep "claudeq.claudeq-terminal-selector@" | sed 's/.*@//' || echo "0.0.0"); \
+			if [ "$$REPO_VERSION" != "$$INSTALLED_VERSION" ]; then \
 				if [ -n "$$NPM_PATH" ]; then \
 					cd "$(REPO_PATH)/src/claudeq/vscode-extension" && \
 					npx --yes @vscode/vsce package --out claudeq-terminal-selector.vsix >/dev/null 2>&1 && \
 					$$CODE_PATH --install-extension claudeq-terminal-selector.vsix --force >/dev/null 2>&1 && \
-					echo "$(GREEN)  ✓ ClaudeQ extension installed$(NC)" || \
+					rm -f claudeq-terminal-selector.vsix && \
+					echo "$(GREEN)  ✓ ClaudeQ extension installed (v$$REPO_VERSION)$(NC)" || \
 					echo "$(YELLOW)  ⚠ Could not install extension$(NC)"; \
 				else \
 					echo "$(YELLOW)  ⚠ npm not found, skipping extension install$(NC)"; \
 				fi; \
 			else \
-				echo "  ✓ ClaudeQ extension already installed"; \
+				echo "  ✓ ClaudeQ extension up to date (v$$INSTALLED_VERSION)"; \
 			fi; \
 		else \
 			echo "$(YELLOW)  ⚠ code command not found, skipping extension install$(NC)"; \

@@ -198,3 +198,9 @@ class QueueManager:
         """Check if queue is empty."""
         with self._lock:
             return len(self.queue) == 0
+
+    def clear(self) -> None:
+        """Clear all messages from the queue."""
+        with self._lock:
+            self.queue.clear()
+            self.save()

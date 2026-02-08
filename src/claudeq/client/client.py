@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Optional
 
-from claudeq.utils.constants import QUEUE_DIR, SOCKET_DIR, SETTINGS_FILE, ensure_storage_dirs
+from claudeq.utils.constants import QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SETTINGS_FILE, ensure_storage_dirs
 from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.client.socket_client import SocketClient
 from claudeq.client.image_handler import (
@@ -44,6 +44,7 @@ class ClaudeQClient:
         self.running = True
         self.pending_image_path: Optional[str] = None
         self.monitor_thread: Optional[threading.Thread] = None
+        self.temp_image_files: list[str] = []  # Track temp files for cleanup
 
         # Ensure storage directories exist
         ensure_storage_dirs()
@@ -51,7 +52,7 @@ class ClaudeQClient:
         # Initialize paths
         self.socket_path = SOCKET_DIR / f"{tag}.sock"
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
-        self.history_file = QUEUE_DIR / f"{tag}.history"
+        self.history_file = HISTORY_DIR / f"{tag}.history"
         self.lock_file = SOCKET_DIR / f"{tag}.client.lock"
 
         # Load settings from file (persistent across all clients)
@@ -72,6 +73,7 @@ class ClaudeQClient:
         atexit.register(self._cleanup_lock)
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGHUP, self._signal_handler)  # Terminal close (Cmd+W)
 
     def _acquire_lock(self) -> None:
         """Acquire exclusive client lock to prevent multiple clients."""
@@ -80,6 +82,7 @@ class ClaudeQClient:
             fcntl.flock(self.lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.lock_fd.write(str(os.getpid()))
             self.lock_fd.flush()
+            os.fsync(self.lock_fd.fileno())
         except BlockingIOError:
             pid_info = ""
             try:
@@ -100,14 +103,38 @@ class ClaudeQClient:
 
     def _cleanup_lock(self) -> None:
         """Release and remove client lock file."""
-        try:
-            if hasattr(self, 'lock_fd') and self.lock_fd:
+        # Try to unlock and close file descriptor
+        if hasattr(self, 'lock_fd') and self.lock_fd:
+            try:
                 fcntl.flock(self.lock_fd.fileno(), fcntl.LOCK_UN)
+            except (OSError, ValueError):
+                pass  # Unlock might fail if already closed
+            try:
                 self.lock_fd.close()
+            except (OSError, ValueError):
+                pass  # Close might fail if already closed
+
+        # Always try to delete lock file, even if unlock/close failed
+        try:
             if self.lock_file.exists():
                 self.lock_file.unlink()
         except OSError:
-            pass
+            pass  # File might be locked by another process
+
+        # Clean up temp image files
+        self._cleanup_temp_images()
+
+    def _cleanup_temp_images(self) -> None:
+        """Clean up temporary image files."""
+        if not hasattr(self, 'temp_image_files'):
+            return
+
+        for image_path in self.temp_image_files:
+            try:
+                if os.path.exists(image_path):
+                    os.unlink(image_path)
+            except OSError:
+                pass
 
     def _load_settings(self) -> dict:
         """
@@ -275,6 +302,9 @@ class ClaudeQClient:
             image_path = save_clipboard_image()
             if image_path:
                 self.pending_image_path = image_path
+                # Track temp file for cleanup if it's in /tmp
+                if image_path.startswith('/tmp/'):
+                    self.temp_image_files.append(image_path)
                 if msg:
                     if is_direct:
                         self._send_direct(msg)

@@ -14,6 +14,49 @@ from pathlib import Path
 from typing import Optional
 
 
+def open_terminal_with_command(
+    command: str,
+    preferred_ide: Optional[str] = None,
+    project_path: Optional[str] = None,
+) -> bool:
+    """
+    Open a new terminal tab and run a command in it.
+
+    Opens exclusively in the preferred IDE/terminal when known.
+    Falls back to Terminal.app then iTerm2 only when preferred_ide is unknown.
+
+    Args:
+        command: Command to execute in the new terminal.
+        preferred_ide: IDE or terminal app to open in (from session metadata).
+        project_path: Project path for IDE navigation.
+
+    Returns:
+        True if a new terminal was opened successfully.
+    """
+    if preferred_ide:
+        # Try the specific IDE first. If it fails, fall through to generic
+        # fallback so that a terminal always opens somewhere.
+        jetbrains_ides = ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
+                          'RubyMine', 'CLion', 'DataGrip', 'JetBrains']
+        if any(ide in preferred_ide for ide in jetbrains_ides):
+            if _open_jetbrains_terminal(preferred_ide, project_path, command):
+                return True
+        elif 'VS Code' in preferred_ide:
+            if _open_vscode_terminal(project_path, command):
+                return True
+        elif preferred_ide == 'iTerm2':
+            if _open_iterm2_terminal(command):
+                return True
+        elif preferred_ide == 'Terminal.app':
+            if _open_terminal_app_terminal(command):
+                return True
+
+    # Preferred IDE failed or unknown — try Terminal.app then iTerm2
+    if _open_terminal_app_terminal(command):
+        return True
+    return _open_iterm2_terminal(command)
+
+
 def close_terminal_with_title(
     title_pattern: str,
     preferred_ide: Optional[str] = None,
@@ -494,6 +537,189 @@ def _close_iterm2(title_pattern: str) -> bool:
             text=True
         )
         return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _open_jetbrains_terminal(
+    ide: str,
+    project_path: Optional[str],
+    command: str
+) -> bool:
+    """Open a new terminal tab in JetBrains IDE and run a command."""
+    ide_cmd_map = {
+        'PyCharm': 'pycharm',
+        'IntelliJ IDEA': 'idea',
+        'GoLand': 'goland',
+        'WebStorm': 'webstorm',
+        'PhpStorm': 'phpstorm',
+    }
+
+    ide_cmd = ide_cmd_map.get(ide)
+    if not ide_cmd:
+        return False
+
+    project_match = ""
+    if project_path:
+        project_match = f'''
+    for (var i = 0; i < allProjects.length; i++) {{
+        var project = allProjects[i]
+        if (project.getBasePath() != null && project.getBasePath().equals("{project_path}")) {{
+            targetProject = project
+            break
+        }}
+    }}'''
+
+    groovy_script = f'''import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.project.ProjectManager
+import org.jetbrains.plugins.terminal.TerminalToolWindowManager
+
+IDE.application.invokeLater {{
+    var targetProject = null
+    var allProjects = ProjectManager.getInstance().getOpenProjects()
+    {project_match}
+    if (targetProject == null && allProjects.length > 0) {{
+        targetProject = allProjects[0]
+    }}
+    if (targetProject != null) {{
+        var terminalManager = TerminalToolWindowManager.getInstance(targetProject)
+        var widget = terminalManager.createLocalShellWidget(targetProject.getBasePath(), "cq")
+        // Short delay to let the shell initialize, then run the command
+        new Thread({{
+            Thread.sleep(500)
+            IDE.application.invokeLater {{
+                widget.executeCommand("{command}")
+            }}
+        }} as Runnable).start()
+    }}
+}}
+'''
+
+    try:
+        env = os.environ.copy()
+        jetbrains_paths = []
+        for pattern in ['IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
+                        'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
+                        'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app']:
+            for app in glob.glob(f'/Applications/{pattern}'):
+                jetbrains_paths.append(f'{app}/Contents/MacOS')
+        if jetbrains_paths:
+            env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+
+        if project_path:
+            subprocess.run(
+                [ide_cmd, project_path],
+                capture_output=True,
+                env=env,
+                timeout=5
+            )
+            time.sleep(0.3)
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
+            tmp.write(groovy_script)
+            tmp_script_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                [ide_cmd, 'ideScript', tmp_script_path],
+                capture_output=True,
+                timeout=10,
+                env=env
+            )
+            return result.returncode == 0
+        finally:
+            try:
+                os.unlink(tmp_script_path)
+            except OSError:
+                pass
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _open_terminal_app_terminal(command: str) -> bool:
+    """Open a new Terminal.app tab and run a command."""
+    script = f'''
+    tell application "Terminal"
+        do script "{command}"
+        activate
+    end tell
+    return true
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _open_iterm2_terminal(command: str) -> bool:
+    """Open a new iTerm2 tab and run a command."""
+    script = f'''
+    tell application "iTerm"
+        tell current window
+            create tab with default profile
+            tell current session
+                write text "{command}"
+            end tell
+        end tell
+        activate
+    end tell
+    return true
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _open_vscode_terminal(project_path: Optional[str], command: str) -> bool:
+    """Open a new VS Code terminal tab and run a command."""
+    try:
+        env = os.environ.copy()
+        extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
+        current_path = env.get('PATH', '')
+        for p in extra_paths:
+            if p not in current_path and os.path.exists(p):
+                env['PATH'] = f"{p}:{current_path}"
+                current_path = env['PATH']
+
+        code_path = shutil.which('code', path=env.get('PATH'))
+        if not code_path:
+            return False
+
+        if project_path:
+            subprocess.run(
+                [code_path, project_path],
+                capture_output=True,
+                timeout=5,
+                env=env
+            )
+            time.sleep(0.3)
+
+        request_file = os.path.expanduser('~/.claudeq-terminal-request')
+        with open(request_file, 'w') as f:
+            f.write(f'open:{command}')
+        time.sleep(0.1)
+        return True
     except (subprocess.SubprocessError, OSError):
         pass
 

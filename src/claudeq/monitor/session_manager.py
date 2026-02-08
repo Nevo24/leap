@@ -4,6 +4,7 @@ Session management for ClaudeQ monitor.
 Discovers and tracks active ClaudeQ sessions.
 """
 
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,50 @@ def load_session_metadata(tag: str) -> Optional[dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             pass
     return None
+
+
+def _is_lock_held(lock_path: Path) -> bool:
+    """
+    Check if a lock file is held by a live process.
+
+    Uses a non-blocking flock probe to detect if another process holds the lock,
+    without needing the PID to be written in the file.
+
+    Args:
+        lock_path: Path to the lock file.
+
+    Returns:
+        True if the lock is held by another process.
+    """
+    try:
+        fd = open(lock_path, 'r')
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Got the lock — no one is holding it, stale file
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+            fd.close()
+            return False
+        except BlockingIOError:
+            fd.close()
+            return True
+    except OSError:
+        return False
+
+
+def is_client_lock_held(tag: str) -> bool:
+    """
+    Check if a client lock is held by a live process.
+
+    Args:
+        tag: Session tag name.
+
+    Returns:
+        True if the client lock file exists and is held by a live process.
+    """
+    client_lock = SOCKET_DIR / f"{tag}.client.lock"
+    if not client_lock.exists():
+        return False
+    return _is_lock_held(client_lock)
 
 
 def get_active_sessions() -> list[dict[str, Any]]:
@@ -94,6 +139,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
 
         # Client PID from lock file
         client_pid: Optional[int] = None
+        has_client = False
         client_lock = SOCKET_DIR / f"{tag}.client.lock"
         if client_lock.exists():
             try:
@@ -101,6 +147,10 @@ def get_active_sessions() -> list[dict[str, Any]]:
                     pid_str = f.read().strip()
                     if pid_str:
                         client_pid = int(pid_str)
+                        has_client = True
+                    else:
+                        # Empty lock file — probe if held by a live process
+                        has_client = _is_lock_held(client_lock)
             except (OSError, ValueError):
                 pass
 
@@ -114,6 +164,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'ide': ide,
             'server_pid': server_pid,
             'client_pid': client_pid,
+            'has_client': has_client,
         })
 
     return sorted(sessions, key=lambda x: x['tag'])

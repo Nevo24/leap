@@ -393,6 +393,9 @@ class MonitorWindow(QMainWindow):
             if not self.sessions:
                 self.table.setRowCount(1)
                 self._set_cell_text(0, 0, 'No active sessions')
+                for col in range(1, self.table.columnCount()):
+                    self.table.removeCellWidget(0, col)
+                    self._set_cell_text(0, col, '')
                 return
 
             self.table.setRowCount(new_count)
@@ -428,8 +431,11 @@ class MonitorWindow(QMainWindow):
                     )
                     self.table.setCellWidget(row, self.COL_MR, track_btn)
 
-                # Server button + close button
                 server_pid = session.get('server_pid')
+                client_pid = session.get('client_pid')
+                has_client = session.get('has_client', False)
+
+                # Server button + close button
                 server_container = QWidget()
                 server_layout = QHBoxLayout(server_container)
                 server_layout.setContentsMargins(0, 0, 0, 0)
@@ -441,21 +447,23 @@ class MonitorWindow(QMainWindow):
                 )
                 server_layout.addWidget(server_btn)
 
-                server_x = QPushButton('X')
-                server_x.setFixedSize(24, server_btn.sizeHint().height())
-                server_x.setStyleSheet(
-                    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                )
-                server_x.setToolTip(f'Close server {tag}')
-                server_x.clicked.connect(
-                    lambda checked, t=tag, pid=server_pid: self._close_server(t, pid)
-                )
-                server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
+                if server_pid is not None:
+                    server_x = QPushButton('X')
+                    server_x.setFixedSize(24, server_btn.sizeHint().height())
+                    server_x.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    server_x.setToolTip(f'Close server {tag}')
+                    server_x.clicked.connect(
+                        lambda checked, t=tag, spid=server_pid, cpid=client_pid,
+                               hc=has_client:
+                            self._close_server(t, spid, cpid, hc)
+                    )
+                    server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
                 self.table.setCellWidget(row, self.COL_SERVER, server_container)
 
                 # Client button + close button
-                client_pid = session.get('client_pid')
                 client_container = QWidget()
                 client_layout = QHBoxLayout(client_container)
                 client_layout.setContentsMargins(0, 0, 0, 0)
@@ -467,7 +475,7 @@ class MonitorWindow(QMainWindow):
                 )
                 client_layout.addWidget(client_btn)
 
-                if client_pid is not None:
+                if has_client:
                     client_x = QPushButton('X')
                     client_x.setFixedSize(24, client_btn.sizeHint().height())
                     client_x.setStyleSheet(
@@ -549,7 +557,10 @@ class MonitorWindow(QMainWindow):
         self._update_table()
         QMessageBox.warning(self, 'Error', message)
 
-    def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
+    def _close_server(
+        self, tag: str, server_pid: Optional[int], client_pid: Optional[int],
+        has_client: bool = False
+    ) -> None:
         """Prompt for confirmation and close a server session."""
         reply = QMessageBox.question(
             self,
@@ -560,7 +571,29 @@ class MonitorWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # Kill the process
+        metadata = load_session_metadata(tag)
+        preferred_ide = metadata.get('ide') if metadata else None
+        project_path = metadata.get('project_path') if metadata else None
+
+        # Ask about closing the client if one is connected
+        if has_client:
+            close_client = QMessageBox.question(
+                self,
+                'Close Client',
+                f"Close the client for '{tag}' as well?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if close_client == QMessageBox.Yes:
+                if client_pid:
+                    try:
+                        os.kill(client_pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                close_terminal_with_title(
+                    f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
+                )
+
+        # Kill the server
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(socket_path, {'type': 'shutdown'}, timeout=3.0)
         if not (response and response.get('status') == 'ok'):
@@ -570,10 +603,6 @@ class MonitorWindow(QMainWindow):
                 except OSError:
                     pass
 
-        # Close the terminal tab
-        metadata = load_session_metadata(tag)
-        preferred_ide = metadata.get('ide') if metadata else None
-        project_path = metadata.get('project_path') if metadata else None
         close_terminal_with_title(
             f"cq-server {tag}", preferred_ide, project_path, f"cq-server {tag}"
         )
