@@ -235,8 +235,6 @@ class MonitorWindow(QMainWindow):
     COL_SERVER = 6
     COL_CLIENT = 7
 
-    DEFAULT_COLUMN_WIDTHS = [100, 160, 160, 100, 110, 60, 130, 130]
-
     def __init__(self) -> None:
         """Initialize the monitor window."""
         super().__init__()
@@ -247,6 +245,7 @@ class MonitorWindow(QMainWindow):
         self._gitlab_worker: Optional[GitLabPollerWorker] = None
         self._polling_in_progress = False
         self._shutting_down = False
+        self._tracked_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
 
         # Setup auto-refresh timer before init_ui
@@ -296,14 +295,14 @@ class MonitorWindow(QMainWindow):
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
 
-        # Restore saved column widths or use sensible defaults
+        # Restore saved column widths or distribute equally
+        col_count = self.table.columnCount()
         saved_widths = self._prefs.get('column_widths')
-        if saved_widths and len(saved_widths) == 8:
+        if saved_widths and len(saved_widths) == col_count:
             for col, width in enumerate(saved_widths):
                 self.table.setColumnWidth(col, width)
         else:
-            for col, width in enumerate(self.DEFAULT_COLUMN_WIDTHS):
-                self.table.setColumnWidth(col, width)
+            self._apply_equal_column_widths()
 
         self.table.setSelectionMode(QTableWidget.NoSelection)
 
@@ -356,11 +355,22 @@ class MonitorWindow(QMainWindow):
         y = (screen.height() - 600) // 2 + screen.y()
         self.move(x, y)
 
+    def _apply_equal_column_widths(self) -> None:
+        """Distribute column widths equally across all columns."""
+        col_count = self.table.columnCount()
+        if col_count <= 0:
+            return
+        win_width = self.geometry().width() or 1150
+        # Subtract row-header width (~30px) and vertical scrollbar (~20px)
+        available = win_width - 50
+        col_width = available // col_count
+        for col in range(col_count):
+            self.table.setColumnWidth(col, col_width)
+
     def _reset_window_size(self) -> None:
         """Reset window geometry and column widths to defaults."""
         self._center_on_screen()
-        for col, width in enumerate(self.DEFAULT_COLUMN_WIDTHS):
-            self.table.setColumnWidth(col, width)
+        self._apply_equal_column_widths()
 
     def _init_gitlab_provider(self) -> None:
         """Load GitLab config and create provider if configured."""
@@ -379,11 +389,8 @@ class MonitorWindow(QMainWindow):
                 filter_bots=not self._prefs.get('include_bots', False),
             )
             self._update_gitlab_button()
-            # Start polling
-            interval = config.get('poll_interval', GITLAB_POLL_INTERVAL)
-            self._gitlab_timer.start(interval * 1000)
-            # Do an immediate first poll
-            self._start_gitlab_poll()
+            # Don't start polling — tracking is opt-in per session.
+            # The poll timer starts when the user clicks "Track MR".
         except Exception:
             logger.debug("Failed to init GitLab provider", exc_info=True)
             self._gitlab_provider = None
@@ -403,24 +410,29 @@ class MonitorWindow(QMainWindow):
         from claudeq.monitor.gitlab_setup_dialog import GitLabSetupDialog
         dialog = GitLabSetupDialog(self)
         if dialog.exec_():
-            # Re-initialize provider after successful save
+            # Re-initialize provider after successful save — reset tracking
             self._gitlab_timer.stop()
             self._gitlab_provider = None
             self._mr_statuses.clear()
+            self._tracked_tags.clear()
             self._init_gitlab_provider()
 
     def _start_gitlab_poll(self) -> None:
-        """Start a background GitLab poll for all sessions."""
+        """Start a background GitLab poll for tracked sessions only."""
         if self._shutting_down:
             return
         if not self._gitlab_provider or self._polling_in_progress:
             return
-        if not self.sessions:
+        if not self._tracked_tags:
+            return
+
+        tracked_sessions = [s for s in self.sessions if s['tag'] in self._tracked_tags]
+        if not tracked_sessions:
             return
 
         self._polling_in_progress = True
         worker = GitLabPollerWorker(self)
-        worker.configure(self._gitlab_provider, self.sessions)
+        worker.configure(self._gitlab_provider, tracked_sessions)
         worker.results_ready.connect(self._on_gitlab_results)
         worker.cq_commands_ready.connect(self._on_cq_commands)
         worker.finished.connect(self._on_gitlab_worker_finished)
@@ -581,11 +593,19 @@ class MonitorWindow(QMainWindow):
                 self._set_cell_text(row, self.COL_STATUS, status)
                 self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-                # MR — fresh PulsingLabel every refresh (never cache across cycles)
-                mr_widget = PulsingLabel()
-                self._mr_widgets[tag] = mr_widget
-                self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
-                self.table.setCellWidget(row, self.COL_MR, mr_widget)
+                # MR — "Track MR" button for untracked, PulsingLabel for tracked
+                if tag in self._tracked_tags:
+                    mr_widget = PulsingLabel()
+                    self._mr_widgets[tag] = mr_widget
+                    self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
+                    self.table.setCellWidget(row, self.COL_MR, mr_widget)
+                else:
+                    track_btn = QPushButton('Track MR')
+                    track_btn.setStyleSheet('font-size: 11px;')
+                    track_btn.clicked.connect(
+                        lambda checked, t=tag: self._start_tracking(t)
+                    )
+                    self.table.setCellWidget(row, self.COL_MR, track_btn)
 
                 # Server button + close button
                 server_pid = session.get('server_pid')
@@ -642,6 +662,57 @@ class MonitorWindow(QMainWindow):
                 self.table.setCellWidget(row, self.COL_CLIENT, client_container)
         finally:
             self.table.setUpdatesEnabled(True)
+
+    def _start_tracking(self, tag: str) -> None:
+        """Start MR tracking for a session after a one-shot check."""
+        if not self._gitlab_provider:
+            QMessageBox.information(
+                self, 'GitLab Not Connected',
+                'Connect to GitLab first using the button at the bottom.'
+            )
+            return
+
+        # Find the session data for this tag
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session:
+            return
+
+        project_path = session.get('project_path')
+        if not project_path:
+            QMessageBox.information(self, 'No MR Found', 'No project path for this session.')
+            return
+
+        remote_info = get_git_remote_info(project_path)
+        if not remote_info:
+            QMessageBox.information(self, 'No MR Found', 'Could not determine Git remote info.')
+            return
+
+        # One-shot check — may briefly block the UI
+        try:
+            status = self._gitlab_provider.get_mr_status(
+                remote_info.project_path, remote_info.branch
+            )
+        except Exception:
+            QMessageBox.warning(self, 'Error', 'Failed to query GitLab.')
+            return
+
+        if status.state == MRState.NO_MR:
+            QMessageBox.information(
+                self, 'No MR Found',
+                f'No open merge request found for branch:\n{remote_info.branch}'
+            )
+            return
+
+        # MR found — start tracking
+        self._tracked_tags.add(tag)
+        self._mr_statuses[tag] = status
+        self._update_table()
+
+        # Ensure the poll timer is running for ongoing updates
+        if not self._gitlab_timer.isActive():
+            config = load_gitlab_config()
+            interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
+            self._gitlab_timer.start(interval * 1000)
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
         """Prompt for confirmation and close a server session."""
@@ -772,10 +843,11 @@ class MonitorWindow(QMainWindow):
         include = state == Qt.Checked
         self._prefs['include_bots'] = include
         save_monitor_prefs(self._prefs)
-        # Update filter and re-poll (keep stale statuses visible until fresh ones arrive)
+        # Update filter and re-poll tracked sessions
         if self._gitlab_provider:
             self._gitlab_provider._filter_bots = not include
-            self._start_gitlab_poll()
+            if self._tracked_tags:
+                self._start_gitlab_poll()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event - save prefs then force-exit the process.
