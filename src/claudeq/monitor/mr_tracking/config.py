@@ -6,6 +6,7 @@ from typing import Any, Optional
 from claudeq.utils.constants import STORAGE_DIR
 
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
+GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 
 # Default monitor preferences
@@ -34,6 +35,29 @@ def save_gitlab_config(config: dict[str, Any]) -> None:
     """Save GitLab configuration to storage."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     with open(GITLAB_CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+
+
+def load_github_config() -> Optional[dict[str, Any]]:
+    """Load GitHub configuration from storage.
+
+    Returns:
+        Config dict with github_url, token, username, poll_interval,
+        or None if not configured.
+    """
+    if not GITHUB_CONFIG_FILE.exists():
+        return None
+    try:
+        with open(GITHUB_CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_github_config(config: dict[str, Any]) -> None:
+    """Save GitHub configuration to storage."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(GITHUB_CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
 

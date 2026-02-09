@@ -3,7 +3,15 @@
 import re
 import subprocess
 from dataclasses import dataclass
-from typing import Optional
+from enum import Enum
+from typing import Any, Optional
+
+
+class SCMType(Enum):
+    """Type of source code management platform."""
+    GITLAB = "gitlab"
+    GITHUB = "github"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -13,6 +21,36 @@ class GitRemoteInfo:
     remote_url: str
     project_path: str
     host_url: str
+    scm_type: SCMType = SCMType.UNKNOWN
+
+
+def detect_scm_type(host_url: str, gitlab_config: Optional[dict[str, Any]] = None) -> SCMType:
+    """Detect SCM platform type from a git remote host URL.
+
+    Args:
+        host_url: The host URL (e.g., 'https://github.com').
+        gitlab_config: Optional GitLab config dict with 'gitlab_url' key.
+
+    Returns:
+        SCMType indicating the platform.
+    """
+    if not host_url:
+        return SCMType.UNKNOWN
+
+    host_lower = host_url.lower().rstrip('/')
+    if 'github.com' in host_lower:
+        return SCMType.GITHUB
+
+    if gitlab_config:
+        gitlab_url = gitlab_config.get('gitlab_url', '').lower().rstrip('/')
+        if gitlab_url and gitlab_url in host_lower:
+            return SCMType.GITLAB
+
+    # Default heuristic: if host contains 'gitlab', assume GitLab
+    if 'gitlab' in host_lower:
+        return SCMType.GITLAB
+
+    return SCMType.UNKNOWN
 
 
 def get_git_remote_info(cwd: str) -> Optional[GitRemoteInfo]:
@@ -59,11 +97,14 @@ def get_git_remote_info(cwd: str) -> Optional[GitRemoteInfo]:
         if not project_path or not host_url:
             return None
 
+        scm_type = detect_scm_type(host_url)
+
         return GitRemoteInfo(
             branch=branch,
             remote_url=remote_url,
             project_path=project_path,
             host_url=host_url,
+            scm_type=scm_type,
         )
 
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):

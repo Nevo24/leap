@@ -1,4 +1,4 @@
-"""Data model and message formatting for /cq commands."""
+"""Data model and message formatting for /cq commands from SCM MR/PR discussion threads."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Optional
 
 @dataclass
 class CqCommand:
-    """A /cq command detected in a GitLab MR discussion thread."""
+    """A /cq command detected in an SCM MR/PR discussion thread."""
     project_path: str
     mr_iid: int
     mr_title: str

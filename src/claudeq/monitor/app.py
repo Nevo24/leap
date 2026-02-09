@@ -21,16 +21,19 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
 
-from claudeq.utils.constants import GITLAB_POLL_INTERVAL, SOCKET_DIR
+from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.session_manager import (
     get_active_sessions,
     load_session_metadata,
 )
 from claudeq.monitor.navigation import close_terminal_with_title
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus
-from claudeq.monitor.mr_tracking.config import load_gitlab_config, load_monitor_prefs, save_monitor_prefs
-from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
+from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.config import (
+    load_gitlab_config, load_github_config,
+    load_monitor_prefs, save_monitor_prefs,
+)
+from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, detect_scm_type
 from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.dock_badge import DockBadge
 from claudeq.monitor.scm_polling import SCMOneShotWorker, SCMPollerWorker
@@ -59,7 +62,7 @@ class MonitorWindow(QMainWindow):
         self._mr_statuses: dict[str, MRStatus] = {}
         self._mr_widgets: dict[str, PulsingLabel] = {}
         self._mr_approval_widgets: dict[str, IndicatorLabel] = {}
-        self._scm_provider = None
+        self._scm_providers: dict[str, SCMProvider] = {}  # SCMType.value -> provider
         self._scm_worker: Optional[SCMPollerWorker] = None
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
         self._scm_polling = False
@@ -80,7 +83,7 @@ class MonitorWindow(QMainWindow):
 
         self._init_ui()
         self._refresh_data()
-        self._init_scm_provider()
+        self._init_scm_providers()
 
         # Always start auto-refresh
         self.timer.start(1000)
@@ -148,10 +151,14 @@ class MonitorWindow(QMainWindow):
 
         bottom_layout.addStretch()
 
-        # GitLab connect button
+        # SCM connect buttons
         self.gitlab_btn = QPushButton('Connect GitLab')
         self.gitlab_btn.clicked.connect(self._open_gitlab_setup)
         bottom_layout.addWidget(self.gitlab_btn)
+
+        self.github_btn = QPushButton('Connect GitHub')
+        self.github_btn.clicked.connect(self._open_github_setup)
+        bottom_layout.addWidget(self.github_btn)
 
         close_btn = QPushButton('Close')
         close_btn.clicked.connect(self.close)
@@ -190,56 +197,142 @@ class MonitorWindow(QMainWindow):
         self._center_on_screen()
         self._apply_equal_column_widths()
 
-    def _init_scm_provider(self) -> None:
-        """Load SCM config and create provider if configured."""
-        config = load_gitlab_config()
-        if not config or 'private_token' not in config or 'username' not in config:
-            self._scm_provider = None
-            self._update_scm_button()
-            return
+    def _init_scm_providers(self) -> None:
+        """Load SCM configs and create providers for each configured platform."""
+        filter_bots = not self._prefs.get('include_bots', False)
 
-        try:
-            from claudeq.monitor.mr_tracking.gitlab_provider import GitLabProvider
-            self._scm_provider = GitLabProvider(
-                gitlab_url=config.get('gitlab_url', 'https://gitlab.com'),
-                private_token=config['private_token'],
-                username=config['username'],
-                filter_bots=not self._prefs.get('include_bots', False),
-            )
-            self._update_scm_button()
-            # Don't start polling — tracking is opt-in per session.
-            # The poll timer starts when the user clicks "Track MR".
-        except Exception:
-            logger.debug("Failed to init SCM provider", exc_info=True)
-            self._scm_provider = None
-            self._update_scm_button()
+        # GitLab
+        gitlab_config = load_gitlab_config()
+        if gitlab_config and 'private_token' in gitlab_config and 'username' in gitlab_config:
+            try:
+                from claudeq.monitor.mr_tracking.gitlab_provider import GitLabProvider
+                self._scm_providers[SCMType.GITLAB.value] = GitLabProvider(
+                    gitlab_url=gitlab_config.get('gitlab_url', 'https://gitlab.com'),
+                    private_token=gitlab_config['private_token'],
+                    username=gitlab_config['username'],
+                    filter_bots=filter_bots,
+                )
+            except Exception:
+                logger.debug("Failed to init GitLab provider", exc_info=True)
+                self._scm_providers.pop(SCMType.GITLAB.value, None)
+        else:
+            self._scm_providers.pop(SCMType.GITLAB.value, None)
 
-    def _update_scm_button(self) -> None:
-        """Update the SCM button text/style based on connection state."""
-        if self._scm_provider:
+        # GitHub
+        github_config = load_github_config()
+        if github_config and 'token' in github_config and 'username' in github_config:
+            try:
+                from claudeq.monitor.mr_tracking.github_provider import GitHubProvider
+                self._scm_providers[SCMType.GITHUB.value] = GitHubProvider(
+                    token=github_config['token'],
+                    username=github_config['username'],
+                    github_url=github_config.get('github_url') or None,
+                    filter_bots=filter_bots,
+                )
+            except Exception:
+                logger.debug("Failed to init GitHub provider", exc_info=True)
+                self._scm_providers.pop(SCMType.GITHUB.value, None)
+        else:
+            self._scm_providers.pop(SCMType.GITHUB.value, None)
+
+        self._update_scm_buttons()
+
+    def _update_scm_buttons(self) -> None:
+        """Update SCM button text/style based on connection state."""
+        if SCMType.GITLAB.value in self._scm_providers:
             self.gitlab_btn.setText('GitLab Connected')
             self.gitlab_btn.setStyleSheet('color: #00ff00;')
         else:
             self.gitlab_btn.setText('Connect GitLab')
             self.gitlab_btn.setStyleSheet('')
 
+        if SCMType.GITHUB.value in self._scm_providers:
+            self.github_btn.setText('GitHub Connected')
+            self.github_btn.setStyleSheet('color: #00ff00;')
+        else:
+            self.github_btn.setText('Connect GitHub')
+            self.github_btn.setStyleSheet('')
+
+    def _get_provider_for_session(self, session: dict[str, Any]) -> Optional[SCMProvider]:
+        """Get the appropriate SCM provider for a session based on its git remote.
+
+        Returns:
+            The matching SCMProvider, or None if no provider matches.
+        """
+        project_path = session.get('project_path')
+        if not project_path:
+            return None
+
+        remote_info = get_git_remote_info(project_path)
+        if not remote_info:
+            return None
+
+        # Use the SCM type detected from the remote URL
+        scm_type = remote_info.scm_type
+        if scm_type == SCMType.UNKNOWN:
+            # Try to refine using GitLab config
+            gitlab_config = load_gitlab_config()
+            scm_type = detect_scm_type(remote_info.host_url, gitlab_config)
+
+        return self._scm_providers.get(scm_type.value)
+
+    def _get_provider_for_project(self, project_path: str) -> Optional[SCMProvider]:
+        """Get the appropriate SCM provider for a project path by resolving its remote.
+
+        Returns:
+            The matching SCMProvider, or None if no provider matches.
+        """
+        remote_info = get_git_remote_info(project_path)
+        if not remote_info:
+            return None
+
+        scm_type = remote_info.scm_type
+        if scm_type == SCMType.UNKNOWN:
+            gitlab_config = load_gitlab_config()
+            scm_type = detect_scm_type(remote_info.host_url, gitlab_config)
+
+        return self._scm_providers.get(scm_type.value)
+
+    def _get_poll_interval(self) -> int:
+        """Get the minimum poll interval across all configured providers."""
+        intervals = []
+        gitlab_config = load_gitlab_config()
+        if gitlab_config:
+            intervals.append(gitlab_config.get('poll_interval', SCM_POLL_INTERVAL))
+        github_config = load_github_config()
+        if github_config:
+            intervals.append(github_config.get('poll_interval', SCM_POLL_INTERVAL))
+        return min(intervals) if intervals else SCM_POLL_INTERVAL
+
     def _open_gitlab_setup(self) -> None:
         """Open the GitLab setup dialog."""
         from claudeq.monitor.gitlab_setup_dialog import GitLabSetupDialog
         dialog = GitLabSetupDialog(self)
         if dialog.exec_():
-            # Re-initialize provider after successful save — reset tracking
+            # Re-initialize providers after successful save — reset tracking
             self._scm_poll_timer.stop()
-            self._scm_provider = None
+            self._scm_providers.pop(SCMType.GITLAB.value, None)
             self._mr_statuses.clear()
             self._tracked_tags.clear()
-            self._init_scm_provider()
+            self._init_scm_providers()
+
+    def _open_github_setup(self) -> None:
+        """Open the GitHub setup dialog."""
+        from claudeq.monitor.github_setup_dialog import GitHubSetupDialog
+        dialog = GitHubSetupDialog(self)
+        if dialog.exec_():
+            # Re-initialize providers after successful save — reset tracking
+            self._scm_poll_timer.stop()
+            self._scm_providers.pop(SCMType.GITHUB.value, None)
+            self._mr_statuses.clear()
+            self._tracked_tags.clear()
+            self._init_scm_providers()
 
     def _start_scm_poll(self) -> None:
         """Start a background SCM poll for tracked sessions only."""
         if self._shutting_down:
             return
-        if not self._scm_provider:
+        if not self._scm_providers:
             return
         if self._scm_polling:
             # Force-reset if polling has been stuck for over 60 seconds
@@ -264,7 +357,7 @@ class MonitorWindow(QMainWindow):
         self._scm_polling = True
         self._scm_poll_started_at = time.monotonic()
         worker = SCMPollerWorker(self)
-        worker.configure(self._scm_provider, tracked_sessions)
+        worker.configure(self._scm_providers, tracked_sessions)
         worker.results_ready.connect(self._on_scm_results)
         worker.cq_commands_ready.connect(self._on_cq_commands)
         worker.finished.connect(self._on_scm_worker_finished)
@@ -300,7 +393,7 @@ class MonitorWindow(QMainWindow):
         if self._shutting_down:
             return
         try:
-            if not self.isVisible() or not self._scm_provider:
+            if not self.isVisible() or not self._scm_providers:
                 return
 
             # Pause polling while handling commands (dialogs may block)
@@ -310,6 +403,11 @@ class MonitorWindow(QMainWindow):
             from claudeq.monitor.cq_sender import send_to_cq_session
 
             for cmd in commands:
+                provider = self._get_provider_for_project(cmd.project_path)
+                if not provider:
+                    logger.debug("No provider for /cq command project %s", cmd.project_path)
+                    continue
+
                 tag, no_match = self._match_session_for_cq(cmd)
                 if tag:
                     message = format_cq_message(cmd)
@@ -319,12 +417,12 @@ class MonitorWindow(QMainWindow):
                     else:
                         logger.error("Failed to send /cq message to session '%s'", tag)
                     # Always acknowledge to prevent re-processing on next poll
-                    self._scm_provider.acknowledge_cq_command(
+                    provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
                 elif no_match:
-                    # Truly no sessions found — report on GitLab
-                    self._scm_provider.report_no_session(
+                    # Truly no sessions found — report on SCM
+                    provider.report_no_session(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
                     logger.info("No session match for /cq from MR !%s (%s)",
@@ -332,22 +430,18 @@ class MonitorWindow(QMainWindow):
                 # else: user cancelled dialog — do nothing, will retry next poll
 
             # Resume polling
-            config = load_gitlab_config()
-            interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
-            self._scm_poll_timer.start(interval * 1000)
+            self._scm_poll_timer.start(self._get_poll_interval() * 1000)
         except Exception:
             logger.exception("Error handling /cq commands")
             # Ensure polling resumes even if there's an error
             try:
-                config = load_gitlab_config()
-                interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
-                self._scm_poll_timer.start(interval * 1000)
+                self._scm_poll_timer.start(self._get_poll_interval() * 1000)
             except Exception:
                 logger.exception("Failed to restart SCM polling timer")
 
     def _send_all_threads_to_cq(self, tag: str) -> None:
         """Send all unresponded MR threads to the CQ session."""
-        if not self._scm_provider:
+        if not self._scm_providers:
             return
 
         session = next((s for s in self.sessions if s['tag'] == tag), None)
@@ -362,13 +456,17 @@ class MonitorWindow(QMainWindow):
         if not remote_info:
             return
 
+        provider = self._get_provider_for_session(session)
+        if not provider:
+            return
+
         # Set wait cursor while processing
         sent_count = 0
         matched_tag = None
         no_session_match = False
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            commands = self._scm_provider.collect_unresponded_threads(
+            commands = provider.collect_unresponded_threads(
                 remote_info.project_path, remote_info.branch
             )
 
@@ -387,7 +485,7 @@ class MonitorWindow(QMainWindow):
                 message = format_cq_message(cmd)
                 sent = send_to_cq_session(matched_tag, message)
                 if sent:
-                    self._scm_provider.acknowledge_cq_command(
+                    provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
                     sent_count += 1
@@ -612,16 +710,24 @@ class MonitorWindow(QMainWindow):
 
     def _start_tracking(self, tag: str) -> None:
         """Start MR tracking for a session via a background one-shot check."""
-        if not self._scm_provider:
-            QMessageBox.information(
-                self, 'GitLab Not Connected',
-                'Connect to GitLab first using the button at the bottom.'
-            )
-            return
-
         # Find the session data for this tag
         session = next((s for s in self.sessions if s['tag'] == tag), None)
         if not session:
+            return
+
+        provider = self._get_provider_for_session(session)
+        if not provider:
+            if not self._scm_providers:
+                QMessageBox.information(
+                    self, 'No SCM Connected',
+                    'Connect to GitLab or GitHub first using the buttons at the bottom.'
+                )
+            else:
+                QMessageBox.information(
+                    self, 'No Provider Match',
+                    'No configured SCM provider matches this project\'s git remote.\n'
+                    'Connect the appropriate provider (GitLab/GitHub) first.'
+                )
             return
 
         project_path = session.get('project_path')
@@ -640,7 +746,7 @@ class MonitorWindow(QMainWindow):
 
         # Run the API call in a background thread
         worker = SCMOneShotWorker(self)
-        worker.configure(self._scm_provider, tag, remote_info.project_path, remote_info.branch)
+        worker.configure(provider, tag, remote_info.project_path, remote_info.branch)
         worker.result_ready.connect(self._on_tracking_result)
         worker.error.connect(self._on_tracking_error)
         worker.finished.connect(worker.deleteLater)
@@ -682,9 +788,7 @@ class MonitorWindow(QMainWindow):
         self._update_dock_badge()
 
         if not self._scm_poll_timer.isActive():
-            config = load_gitlab_config()
-            interval = config.get('poll_interval', GITLAB_POLL_INTERVAL) if config else GITLAB_POLL_INTERVAL
-            self._scm_poll_timer.start(interval * 1000)
+            self._scm_poll_timer.start(self._get_poll_interval() * 1000)
 
     def _on_tracking_error(self, tag: str, message: str) -> None:
         """Handle an error from a one-shot MR check."""
@@ -803,10 +907,10 @@ class MonitorWindow(QMainWindow):
         if approval_widget:
             approval_widget.setVisible(False)
 
-        if not status or not self._scm_provider:
+        if not status or not self._scm_providers:
             widget.setText('N/A')
             widget.setStyleSheet('color: grey;')
-            widget.setToolTip('GitLab not configured')
+            widget.setToolTip('No SCM provider configured')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
             widget.set_indicator_help(None)
@@ -825,7 +929,7 @@ class MonitorWindow(QMainWindow):
         if status.state == MRState.NOT_CONFIGURED:
             widget.setText('N/A')
             widget.setStyleSheet('color: grey;')
-            widget.setToolTip('GitLab not configured')
+            widget.setToolTip('No SCM provider configured')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
             widget.set_indicator_help(None)
@@ -894,10 +998,10 @@ class MonitorWindow(QMainWindow):
         self._prefs['include_bots'] = include
         save_monitor_prefs(self._prefs)
         # Update filter and re-poll tracked sessions
-        if self._scm_provider:
-            self._scm_provider._filter_bots = not include
-            if self._tracked_tags:
-                self._start_scm_poll()
+        for provider in self._scm_providers.values():
+            provider._filter_bots = not include
+        if self._scm_providers and self._tracked_tags:
+            self._start_scm_poll()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event - save prefs then force-exit the process.
