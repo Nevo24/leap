@@ -352,6 +352,97 @@ class GitLabProvider(SCMProvider):
                          mr_iid, discussion_id, exc_info=True)
             return False
 
+    def collect_unresponded_threads(self, project_path: str, branch: str) -> list[CqCommand]:
+        """Collect all unresponded discussion threads from an MR as CqCommand objects."""
+        project = self._get_project(project_path)
+        if not project:
+            return []
+
+        try:
+            mrs = project.mergerequests.list(
+                state='opened',
+                source_branch=branch,
+                get_all=False,
+            )
+        except Exception:
+            logger.debug("Failed to list MRs for collect_unresponded: %s branch %s",
+                         project_path, branch)
+            return []
+
+        if not mrs:
+            return []
+
+        mr = mrs[0]
+        try:
+            mr_full = project.mergerequests.get(mr.iid)
+            discussions = mr_full.discussions.list(get_all=True)
+        except Exception:
+            logger.debug("Failed to fetch discussions for MR !%s", mr.iid)
+            return []
+
+        commands = []
+        for discussion in discussions:
+            if not self._is_unresponded_thread(discussion, project, mr.iid):
+                continue
+
+            cmd = self._build_cq_command_from_discussion(
+                project, project_path, mr, discussion, branch
+            )
+            if cmd:
+                commands.append(cmd)
+
+        return commands
+
+    def _build_cq_command_from_discussion(
+        self, project, project_path: str, mr, discussion, branch: str
+    ) -> Optional[CqCommand]:
+        """Build a CqCommand from an unresponded discussion thread."""
+        notes = discussion.attributes.get('notes', [])
+        if not notes:
+            return None
+
+        # Extract thread notes (excluding system notes)
+        thread_notes = []
+        for note in notes:
+            if note.get('system', False):
+                continue
+            thread_notes.append({
+                'author': self._note_author(note),
+                'body': note.get('body', ''),
+                'created_at': note.get('created_at', ''),
+            })
+
+        # Extract code context from the first note's position
+        file_path = None
+        old_line = None
+        new_line = None
+        code_snippet = None
+
+        first_note = notes[0]
+        position = first_note.get('position')
+        if position:
+            file_path = position.get('new_path') or position.get('old_path')
+            new_line = position.get('new_line')
+            old_line = position.get('old_line')
+
+            if file_path:
+                code_snippet = self._fetch_code_snippet(
+                    project, file_path, branch, new_line or old_line
+                )
+
+        return CqCommand(
+            project_path=project_path,
+            mr_iid=mr.iid,
+            mr_title=mr.title,
+            mr_url=mr.web_url,
+            discussion_id=discussion.id,
+            thread_notes=thread_notes,
+            file_path=file_path,
+            old_line=old_line,
+            new_line=new_line,
+            code_snippet=code_snippet,
+        )
+
     def report_no_session(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
         """Post error reply when no matching CQ session is found."""
         project = self._get_project(project_path)

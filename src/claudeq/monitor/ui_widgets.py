@@ -5,8 +5,27 @@ import webbrowser
 from typing import Optional
 
 from PyQt5.QtWidgets import QAction, QLabel, QMenu, QWidget
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QPoint, QTimer, Qt
 from PyQt5.QtGui import QCursor, QMouseEvent
+
+
+class IndicatorPopup(QLabel):
+    """Floating popup that explains MR indicator icons."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent, Qt.ToolTip)
+        self.setWordWrap(True)
+        self.setStyleSheet(
+            'QLabel {'
+            '  background-color: #2b2b2b;'
+            '  color: #e0e0e0;'
+            '  border: 1px solid #555;'
+            '  border-radius: 4px;'
+            '  padding: 6px 8px;'
+            '  font-size: 12px;'
+            '}'
+        )
+        self.setMaximumWidth(260)
 
 
 class PulsingLabel(QLabel):
@@ -18,6 +37,9 @@ class PulsingLabel(QLabel):
         self._mr_url: Optional[str] = None
         self._phase: float = 0.0
         self._on_send_to_cq: Optional[callable] = None
+        self._has_unresponded: bool = False
+        self._indicator_help: Optional[str] = None
+        self._popup: Optional[IndicatorPopup] = None
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(50)
@@ -47,6 +69,33 @@ class PulsingLabel(QLabel):
         """Set the callback for 'Send all threads to CQ' context menu action."""
         self._on_send_to_cq = callback
 
+    def set_has_unresponded(self, has_unresponded: bool) -> None:
+        """Set whether there are unresponded threads (controls menu item enabled state)."""
+        self._has_unresponded = has_unresponded
+
+    def set_indicator_help(self, text: Optional[str]) -> None:
+        """Set the help text shown in the hover popup."""
+        self._indicator_help = text
+
+    def enterEvent(self, event) -> None:
+        if self._indicator_help:
+            self._popup = IndicatorPopup()
+            self._popup.setText(self._indicator_help)
+            self._popup.adjustSize()
+            # Position above the widget
+            global_pos = self.mapToGlobal(QPoint(0, 0))
+            popup_x = global_pos.x()
+            popup_y = global_pos.y() - self._popup.height() - 4
+            self._popup.move(popup_x, popup_y)
+            self._popup.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        if self._popup:
+            self._popup.close()
+            self._popup = None
+        super().leaveEvent(event)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._mr_url and event.button() == Qt.LeftButton:
             webbrowser.open(self._mr_url)
@@ -72,6 +121,7 @@ class PulsingLabel(QLabel):
 
         send_action = QAction('Send all threads to CQ', menu)
         send_action.triggered.connect(lambda: send_to_cq() if send_to_cq else None)
+        send_action.setEnabled(bool(self._has_unresponded and send_to_cq))
         menu.addAction(send_action)
 
         menu.exec_(self.mapToGlobal(pos))

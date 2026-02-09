@@ -324,6 +324,72 @@ class MonitorWindow(QMainWindow):
             except Exception:
                 logger.exception("Failed to restart SCM polling timer")
 
+    def _send_all_threads_to_cq(self, tag: str) -> None:
+        """Send all unresponded MR threads to the CQ session."""
+        if not self._scm_provider:
+            return
+
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session:
+            return
+
+        project_path = session.get('project_path')
+        if not project_path:
+            return
+
+        remote_info = get_git_remote_info(project_path)
+        if not remote_info:
+            return
+
+        # Set wait cursor while processing
+        sent_count = 0
+        matched_tag = None
+        no_session_match = False
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            commands = self._scm_provider.collect_unresponded_threads(
+                remote_info.project_path, remote_info.branch
+            )
+
+            if not commands:
+                return
+
+            matched_tag, no_match = self._match_session_for_cq(commands[0])
+            if not matched_tag:
+                no_session_match = no_match
+                return
+
+            from claudeq.monitor.mr_tracking.cq_command import format_cq_message
+            from claudeq.monitor.cq_sender import send_to_cq_session
+
+            for cmd in commands:
+                message = format_cq_message(cmd)
+                sent = send_to_cq_session(matched_tag, message)
+                if sent:
+                    self._scm_provider.acknowledge_cq_command(
+                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                    )
+                    sent_count += 1
+                else:
+                    logger.error("Failed to send thread to session '%s'", matched_tag)
+        except Exception:
+            logger.exception("Error sending all threads to CQ")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if sent_count > 0:
+            QMessageBox.information(
+                self, 'Threads Sent',
+                f"Sent {sent_count} thread(s) to session '{matched_tag}'."
+            )
+            # Trigger a refresh to update MR status
+            self._start_scm_poll()
+        elif no_session_match:
+            QMessageBox.warning(
+                self, 'No Session',
+                'No matching CQ session found for this project.'
+            )
+
     def _match_session_for_cq(self, cmd: Any) -> tuple[Optional[str], bool]:
         """Match a /cq command to a CQ session by project path.
 
@@ -426,7 +492,14 @@ class MonitorWindow(QMainWindow):
 
                     mr_widget = PulsingLabel()
                     self._mr_widgets[tag] = mr_widget
-                    self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
+                    status = self._mr_statuses.get(tag)
+                    self._apply_mr_status(mr_widget, status)
+                    mr_widget.set_has_unresponded(
+                        status is not None and status.state == MRState.UNRESPONDED
+                    )
+                    mr_widget.set_send_to_cq_callback(
+                        lambda t=tag: self._send_all_threads_to_cq(t)
+                    )
                     mr_layout.addWidget(mr_widget)
 
                     mr_x = QPushButton('X')
@@ -679,7 +752,11 @@ class MonitorWindow(QMainWindow):
                 self._mr_widgets.pop(tag, None)
                 continue
             try:
-                self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
+                status = self._mr_statuses.get(tag)
+                self._apply_mr_status(mr_widget, status)
+                mr_widget.set_has_unresponded(
+                    status is not None and status.state == MRState.UNRESPONDED
+                )
             except RuntimeError:
                 # Widget was deleted, remove from cache
                 self._mr_widgets.pop(tag, None)
@@ -692,6 +769,7 @@ class MonitorWindow(QMainWindow):
             widget.setToolTip('GitLab not configured')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
+            widget.set_indicator_help(None)
             return
 
         if status.state == MRState.NOT_CONFIGURED:
@@ -700,6 +778,7 @@ class MonitorWindow(QMainWindow):
             widget.setToolTip('GitLab not configured')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
+            widget.set_indicator_help(None)
 
         elif status.state == MRState.NO_MR:
             widget.setText('No MR')
@@ -707,6 +786,7 @@ class MonitorWindow(QMainWindow):
             widget.setToolTip('No open MR for this branch')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
+            widget.set_indicator_help(None)
 
         elif status.state == MRState.ALL_RESPONDED:
             approved_prefix = '👍 ' if status.approved else ''
@@ -716,6 +796,11 @@ class MonitorWindow(QMainWindow):
             widget.setToolTip(f'MR !{status.mr_iid}: {status.mr_title}\nAll threads responded.{approval_line}')
             widget.set_pulsing(False)
             widget.set_mr_url(status.mr_url)
+            help_lines = []
+            if status.approved:
+                help_lines.append('\U0001f44d  Someone approved this MR')
+            help_lines.append('\u2713  All review threads have been responded to')
+            widget.set_indicator_help('\n'.join(help_lines))
 
         elif status.state == MRState.UNRESPONDED:
             approved_prefix = '👍 ' if status.approved else ''
@@ -731,6 +816,14 @@ class MonitorWindow(QMainWindow):
             if url and status.first_unresponded_note_id:
                 url = f'{url}#note_{status.first_unresponded_note_id}'
             widget.set_mr_url(url)
+            help_lines = []
+            if status.approved:
+                help_lines.append('\U0001f44d  Someone approved this MR')
+            help_lines.append(
+                f'\U0001f4ac {status.unresponded_count}  '
+                f'Unresponded review thread(s) waiting for your reply'
+            )
+            widget.set_indicator_help('\n'.join(help_lines))
 
     def _update_dock_badge(self) -> None:
         """Update the dock badge with number of MRs changed since last window focus."""

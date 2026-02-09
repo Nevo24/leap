@@ -80,3 +80,15 @@ class SCMProvider(ABC):
         Returns:
             True on success.
         """
+
+    @abstractmethod
+    def collect_unresponded_threads(self, project_path: str, branch: str) -> list:
+        """Collect all unresponded discussion threads from an MR as CqCommand objects.
+
+        Args:
+            project_path: The project path (e.g., 'user/repo').
+            branch: The source branch name.
+
+        Returns:
+            List of CqCommand instances for each unresponded thread.
+        """
