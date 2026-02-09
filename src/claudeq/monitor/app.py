@@ -627,7 +627,7 @@ class MonitorWindow(QMainWindow):
                     mr_layout.addWidget(mr_widget)
 
                     mr_x = QPushButton('X')
-                    mr_x.setFixedSize(24, 24)
+                    mr_x.setFixedSize(24, mr_x.sizeHint().height())
                     mr_x.setStyleSheet(
                         'QPushButton { color: #999; font-size: 11px; padding: 0; }'
                         'QPushButton:hover { color: #ff4444; font-weight: bold; }'
