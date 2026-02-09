@@ -173,20 +173,20 @@ class ClaudeQServer:
         """
         Send a message to Claude CLI.
 
+        Uses atomic sendline() for regular messages (message + CR in one
+        locked write sequence) and event-driven send_image_message() for
+        @-prefixed image attachments.
+
         Args:
             message: Message to send.
         """
         self.last_sent_message = message
         self.last_send_time = time.time()
-        self.pty.send(message)
 
-        # Image attachments: '@' triggers Claude CLI's file-mention mode.
-        # First \r confirms the file selection, second \r submits the message.
         if message.startswith('@'):
-            time.sleep(0.5)
-            self.pty.send('\r')
-
-        self.pty.send('\r')
+            self.pty.send_image_message(message)
+        else:
+            self.pty.sendline(message)
 
     def _prompt_load_old_queue(self) -> None:
         """Prompt user to load or discard old queued messages."""
@@ -341,9 +341,6 @@ class ClaudeQServer:
                 # Re-queue on failure
                 self.queue.requeue(message)
 
-            # Let Claude start processing
-            time.sleep(1)
-
     def _title_keeper_loop(self) -> None:
         """Background thread to maintain terminal title."""
         while self.running:
@@ -375,6 +372,10 @@ class ClaudeQServer:
         # Strip OSC title-change sequences so Claude CLI cannot override
         # the "cq-server <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
+
+        # Signal PTY handler that output was received (used by
+        # send_image_message to replace fixed sleeps with event waits).
+        self.pty.notify_output_received()
 
         with self._notification_lock:
             if self.pending_notifications and data.endswith(b'\n'):
