@@ -4,7 +4,7 @@ import math
 import webbrowser
 from typing import Optional
 
-from PyQt5.QtWidgets import QLabel, QWidget
+from PyQt5.QtWidgets import QAction, QLabel, QMenu, QWidget
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QCursor, QMouseEvent
 
@@ -17,12 +17,15 @@ class PulsingLabel(QLabel):
         self._pulsing: bool = False
         self._mr_url: Optional[str] = None
         self._phase: float = 0.0
+        self._on_send_to_cq: Optional[callable] = None
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(50)
         self._pulse_timer.timeout.connect(self._animate)
 
         self.setAlignment(Qt.AlignCenter)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
     def set_pulsing(self, pulsing: bool) -> None:
         self._pulsing = pulsing
@@ -40,11 +43,43 @@ class PulsingLabel(QLabel):
         else:
             self.setCursor(QCursor(Qt.ArrowCursor))
 
+    def set_send_to_cq_callback(self, callback: Optional[callable]) -> None:
+        """Set the callback for 'Send all threads to CQ' context menu action."""
+        self._on_send_to_cq = callback
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._mr_url and event.button() == Qt.LeftButton:
             webbrowser.open(self._mr_url)
         else:
             super().mousePressEvent(event)
+
+    def _show_context_menu(self, pos) -> None:
+        """Show right-click context menu on the MR status label."""
+        url = self._mr_url
+        if not url:
+            return
+
+        # Capture callback ref before auto-refresh may destroy this widget
+        send_to_cq = self._on_send_to_cq
+
+        # Parent menu to the top-level window so it survives table refresh
+        top_level = self.window()
+        menu = QMenu(top_level)
+
+        go_action = QAction('Go to first thread', menu)
+        go_action.triggered.connect(lambda: webbrowser.open(url))
+        menu.addAction(go_action)
+
+        send_action = QAction('Send all threads to CQ', menu)
+        send_action.triggered.connect(lambda: send_to_cq() if send_to_cq else None)
+        menu.addAction(send_action)
+
+        menu.exec_(self.mapToGlobal(pos))
+
+    def _handle_send_to_cq(self) -> None:
+        """Handle 'Send all threads to CQ' action."""
+        if self._on_send_to_cq:
+            self._on_send_to_cq()
 
     def _animate(self) -> None:
         try:

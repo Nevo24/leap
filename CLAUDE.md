@@ -193,7 +193,7 @@ Load these messages? [Y/n/d] (Y=load, n=discard, d=show full):
 | `!e <index>` or `!edit <index>` | Edit queued message by index (0=first) |
 | `!l` or `!list` | Show queue |
 | `!c` or `!clear` | Clear queue |
-| `!status` | Server status |
+| `!s` or `!status` | Server status |
 | `!f` or `!force` | Force-send next queued message |
 | `!x` or `!quit` (`Ctrl+D`) | Exit client |
 

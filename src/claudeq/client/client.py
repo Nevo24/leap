@@ -440,7 +440,7 @@ class ClaudeQClient:
             ("\U0001F4CB", "!l or !list",                     "Show queue"),
             ("\U0001F4DD", "!e <index> or !edit <index>",     "Edit queued message by index"),
             ("\U0001F9F9", "!c or !clear",                    "Clear queue"),
-            ("\U0001F4CA", "!status",                         "Server status"),
+            ("\U0001F4CA", "!s or !status",                    "Server status"),
             ("\U0001F525", "!f or !force",                    "Force-send next queued message"),
             ("\U0001F44B", "!x or !quit (Ctrl+D)",            "Exit client"),
         ]
@@ -622,8 +622,8 @@ class ClaudeQClient:
             print("⚠ Queue is managed by server\n")
             return True
 
-        # !status
-        if line_lower == '!status':
+        # !s / !status
+        if line_lower in ['!s', '!status']:
             self._show_status()
             return True
 
@@ -662,6 +662,12 @@ class ClaudeQClient:
                 msg = line[:-12].strip()
 
             self._handle_imagepaste(msg)
+            return True
+
+        # Unknown ! command
+        if line_lower.startswith('!'):
+            print(f"Unknown command: {line.split()[0]}\n")
+            self._print_commands_help()
             return True
 
         # Regular message - queue it
