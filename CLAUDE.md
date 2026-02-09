@@ -263,6 +263,17 @@ Listens on Unix socket for client messages
 - **Client commands**: Each command handler is extracted into a private `_handle_*` method on `ClaudeQClient`. The `_process_command` dispatcher delegates to these handlers.
 - **Socket pattern**: `SocketClient._send_request()` is the single source of truth for client→server socket communication. `send_socket_request()` in `utils/socket_utils.py` is the lightweight variant for monitor/session_manager code that doesn't need rate-limited error reporting.
 
+## SCM Polling (GitLab MR Tracking)
+
+The monitor polls GitLab for MR status updates on tracked sessions. Key timeouts and safeguards:
+
+- **GitLab client timeout**: 15s per HTTP request (`gitlab.Gitlab(timeout=15)`)
+- **Poll cycle timeout**: 30s for all `ThreadPoolExecutor` futures via `as_completed(timeout=30)`
+- **Stuck-poll safeguard**: If `_scm_polling` has been `True` for over 60s, `_start_scm_poll` force-resets it so future polls can proceed
+- **Poll interval**: Configurable in `.storage/gitlab_config.json` → `poll_interval` (default: 30s from `GITLAB_POLL_INTERVAL`)
+
+Polling flow: `_scm_poll_timer` fires → `_start_scm_poll()` → `SCMPollerWorker` (QThread) → `get_mr_status()` per session via ThreadPoolExecutor → `results_ready` signal → `_on_scm_results()` updates `_mr_statuses` → `_update_mr_column()` refreshes widgets.
+
 ## IDE Setup
 
 ### JetBrains (PyCharm, IntelliJ, etc.)

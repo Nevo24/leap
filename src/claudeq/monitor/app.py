@@ -31,7 +31,7 @@ from claudeq.monitor.navigation import close_terminal_with_title
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import load_gitlab_config, load_monitor_prefs, save_monitor_prefs
 from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
-from claudeq.monitor.ui_widgets import PulsingLabel
+from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.dock_badge import DockBadge
 from claudeq.monitor.scm_polling import SCMOneShotWorker, SCMPollerWorker
 from claudeq.monitor.monitor_utils import find_icon, focus_session
@@ -58,6 +58,7 @@ class MonitorWindow(QMainWindow):
         self.sessions: list[dict] = []
         self._mr_statuses: dict[str, MRStatus] = {}
         self._mr_widgets: dict[str, PulsingLabel] = {}
+        self._mr_approval_widgets: dict[str, IndicatorLabel] = {}
         self._scm_provider = None
         self._scm_worker: Optional[SCMPollerWorker] = None
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
@@ -475,6 +476,7 @@ class MonitorWindow(QMainWindow):
                 except RuntimeError:
                     pass  # C++ object already deleted
             self._mr_widgets.clear()
+            self._mr_approval_widgets.clear()
 
             if not self.sessions:
                 self.table.setRowCount(1)
@@ -510,10 +512,14 @@ class MonitorWindow(QMainWindow):
                     mr_layout.setContentsMargins(0, 0, 0, 0)
                     mr_layout.setSpacing(2)
 
+                    approval_label = IndicatorLabel()
+                    self._mr_approval_widgets[tag] = approval_label
+                    mr_layout.addWidget(approval_label)
+
                     mr_widget = PulsingLabel()
                     self._mr_widgets[tag] = mr_widget
                     status = self._mr_statuses.get(tag)
-                    self._apply_mr_status(mr_widget, status)
+                    self._apply_mr_status(mr_widget, approval_label, status)
                     mr_widget.set_has_unresponded(
                         status is not None and status.state == MRState.UNRESPONDED
                     )
@@ -647,6 +653,7 @@ class MonitorWindow(QMainWindow):
         self._checking_tags.discard(tag)
         self._mr_statuses.pop(tag, None)
         self._mr_widgets.pop(tag, None)
+        self._mr_approval_widgets.pop(tag, None)
         self._dock_badge.discard_tag(tag)
 
         # Stop poll timer if no tags are being tracked
@@ -770,19 +777,32 @@ class MonitorWindow(QMainWindow):
             mr_widget = self._mr_widgets.get(tag)
             if not mr_widget or sip.isdeleted(mr_widget):
                 self._mr_widgets.pop(tag, None)
+                self._mr_approval_widgets.pop(tag, None)
                 continue
+            approval_label = self._mr_approval_widgets.get(tag)
+            if approval_label and sip.isdeleted(approval_label):
+                self._mr_approval_widgets.pop(tag, None)
+                approval_label = None
             try:
                 status = self._mr_statuses.get(tag)
-                self._apply_mr_status(mr_widget, status)
+                self._apply_mr_status(mr_widget, approval_label, status)
                 mr_widget.set_has_unresponded(
                     status is not None and status.state == MRState.UNRESPONDED
                 )
             except RuntimeError:
                 # Widget was deleted, remove from cache
                 self._mr_widgets.pop(tag, None)
+                self._mr_approval_widgets.pop(tag, None)
 
-    def _apply_mr_status(self, widget: PulsingLabel, status: Optional[MRStatus]) -> None:
-        """Apply MR status to a PulsingLabel widget."""
+    def _apply_mr_status(
+        self, widget: PulsingLabel, approval_widget: Optional[IndicatorLabel],
+        status: Optional[MRStatus]
+    ) -> None:
+        """Apply MR status to the status and approval indicator widgets."""
+        # Hide approval label by default
+        if approval_widget:
+            approval_widget.setVisible(False)
+
         if not status or not self._scm_provider:
             widget.setText('N/A')
             widget.setStyleSheet('color: grey;')
@@ -791,6 +811,12 @@ class MonitorWindow(QMainWindow):
             widget.set_mr_url(None)
             widget.set_indicator_help(None)
             return
+
+        # Show/hide approval indicator
+        if approval_widget and status.approved:
+            approval_widget.setText('\U0001f44d')
+            approval_widget.setVisible(True)
+            approval_widget.set_indicator_help('Someone approved this MR')
 
         if status.state == MRState.NOT_CONFIGURED:
             widget.setText('N/A')
@@ -809,22 +835,16 @@ class MonitorWindow(QMainWindow):
             widget.set_indicator_help(None)
 
         elif status.state == MRState.ALL_RESPONDED:
-            approved_prefix = '👍 ' if status.approved else ''
-            widget.setText(f'{approved_prefix}✓')
+            widget.setText('\u2713')
             widget.setStyleSheet('color: green; font-weight: bold;')
             approval_line = '\nApproved' if status.approved else ''
             widget.setToolTip(f'MR !{status.mr_iid}: {status.mr_title}\nAll threads responded.{approval_line}')
             widget.set_pulsing(False)
             widget.set_mr_url(status.mr_url)
-            help_lines = []
-            if status.approved:
-                help_lines.append('\U0001f44d  Someone approved this MR')
-            help_lines.append('\u2713  All review threads have been responded to')
-            widget.set_indicator_help('\n'.join(help_lines))
+            widget.set_indicator_help('All review threads have been responded to')
 
         elif status.state == MRState.UNRESPONDED:
-            approved_prefix = '👍 ' if status.approved else ''
-            widget.setText(f'{approved_prefix}💬 {status.unresponded_count}')
+            widget.setText(f'\U0001f4ac {status.unresponded_count}')
             approval_line = '\nApproved' if status.approved else ''
             widget.setToolTip(
                 f'MR !{status.mr_iid}: {status.mr_title}\n'
@@ -836,14 +856,10 @@ class MonitorWindow(QMainWindow):
             if url and status.first_unresponded_note_id:
                 url = f'{url}#note_{status.first_unresponded_note_id}'
             widget.set_mr_url(url)
-            help_lines = []
-            if status.approved:
-                help_lines.append('\U0001f44d  Someone approved this MR')
-            help_lines.append(
-                f'\U0001f4ac {status.unresponded_count}  '
-                f'Unresponded review thread(s) waiting for your reply'
+            widget.set_indicator_help(
+                f'{status.unresponded_count} unresponded review thread(s) '
+                f'waiting for your reply'
             )
-            widget.set_indicator_help('\n'.join(help_lines))
 
     def _update_dock_badge(self) -> None:
         """Update the dock badge with number of MRs changed since last window focus."""

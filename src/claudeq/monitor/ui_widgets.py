@@ -28,6 +28,35 @@ class IndicatorPopup(QLabel):
         self.setMaximumWidth(260)
 
 
+class IndicatorLabel(QLabel):
+    """A small label with its own hover popup for individual MR indicators."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._indicator_help: Optional[str] = None
+        self._popup: Optional[IndicatorPopup] = None
+
+    def set_indicator_help(self, text: Optional[str]) -> None:
+        """Set the help text shown in the hover popup."""
+        self._indicator_help = text
+
+    def enterEvent(self, event) -> None:
+        if self._indicator_help:
+            self._popup = IndicatorPopup()
+            self._popup.setText(self._indicator_help)
+            self._popup.adjustSize()
+            global_pos = self.mapToGlobal(QPoint(0, 0))
+            self._popup.move(global_pos.x(), global_pos.y() - self._popup.height() - 4)
+            self._popup.show()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        if self._popup:
+            self._popup.close()
+            self._popup = None
+        super().leaveEvent(event)
+
+
 class PulsingLabel(QLabel):
     """A label that can pulse its text color for attention."""
 
