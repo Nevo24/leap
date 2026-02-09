@@ -76,7 +76,6 @@ CLIENT COMMANDS (when connected as interactive client):
     !e <index>          Edit queued message by index
     !l                  Show queue
     !c                  Clear queue
-    !status             Server status
     !f                  Force-send next queued message
     !x                  Exit client
 

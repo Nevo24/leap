@@ -440,7 +440,6 @@ class ClaudeQClient:
             ("\U0001F4CB", "!l or !list",                     "Show queue"),
             ("\U0001F4DD", "!e <index> or !edit <index>",     "Edit queued message by index"),
             ("\U0001F9F9", "!c or !clear",                    "Clear queue"),
-            ("\U0001F4CA", "!s or !status",                    "Server status"),
             ("\U0001F525", "!f or !force",                    "Force-send next queued message"),
             ("\U0001F44B", "!x or !quit (Ctrl+D)",            "Exit client"),
         ]
@@ -620,11 +619,6 @@ class ClaudeQClient:
         # !c / !clear
         if line_lower in ['!c', '!clear']:
             print("⚠ Queue is managed by server\n")
-            return True
-
-        # !s / !status
-        if line_lower in ['!s', '!status']:
-            self._show_status()
             return True
 
         # !f / !force

@@ -142,7 +142,6 @@ All commands are **case-insensitive**.
 | 📋 `!l` or `!list` | Show queue |
 | 📝 `!e <index>` or `!edit <index>` | Edit queued message by index |
 | 🧹 `!c` or `!clear` | Clear queue |
-| 📊 `!status` | Server status |
 | 🔥 `!f` or `!force` | Force-send next queued message |
 | 👋 `!x` or `!quit` (`Ctrl+D`) | Exit client |
 
