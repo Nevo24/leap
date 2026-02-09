@@ -412,17 +412,36 @@ class MonitorWindow(QMainWindow):
                 self._set_cell_text(row, self.COL_STATUS, status)
                 self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-                # MR column: "Track MR" → "Checking..." → tracked PulsingLabel
+                # MR column: "Track MR" → "Checking..." → tracked PulsingLabel + X
                 if tag in self._checking_tags:
                     checking_label = PulsingLabel()
                     checking_label.setText('Checking...')
                     checking_label.setStyleSheet('color: grey; font-style: italic;')
                     self.table.setCellWidget(row, self.COL_MR, checking_label)
                 elif tag in self._tracked_tags:
+                    mr_container = QWidget()
+                    mr_layout = QHBoxLayout(mr_container)
+                    mr_layout.setContentsMargins(0, 0, 0, 0)
+                    mr_layout.setSpacing(2)
+
                     mr_widget = PulsingLabel()
                     self._mr_widgets[tag] = mr_widget
                     self._apply_mr_status(mr_widget, self._mr_statuses.get(tag))
-                    self.table.setCellWidget(row, self.COL_MR, mr_widget)
+                    mr_layout.addWidget(mr_widget)
+
+                    mr_x = QPushButton('X')
+                    mr_x.setFixedSize(24, 24)
+                    mr_x.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    mr_x.setToolTip(f'Stop tracking MR for {tag}')
+                    mr_x.clicked.connect(
+                        lambda checked, t=tag: self._stop_tracking(t)
+                    )
+                    mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
+
+                    self.table.setCellWidget(row, self.COL_MR, mr_container)
                 else:
                     track_btn = QPushButton('Track MR')
                     track_btn.setStyleSheet('font-size: 11px;')
@@ -528,6 +547,19 @@ class MonitorWindow(QMainWindow):
         worker.finished.connect(worker.deleteLater)
         self._scm_worker = worker
         worker.start()
+
+    def _stop_tracking(self, tag: str) -> None:
+        """Stop MR tracking for a session."""
+        self._tracked_tags.discard(tag)
+        self._checking_tags.discard(tag)
+        self._mr_statuses.pop(tag, None)
+        self._mr_widgets.pop(tag, None)
+
+        # Stop poll timer if no tags are being tracked
+        if not self._tracked_tags and self._scm_poll_timer.isActive():
+            self._scm_poll_timer.stop()
+
+        self._update_table()
 
     def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
         """Handle the result of a one-shot MR check."""
