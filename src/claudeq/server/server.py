@@ -331,12 +331,6 @@ class ClaudeQServer:
             try:
                 self._send_to_claude(message)
                 self.queue.track_sent(message)
-
-                with self._notification_lock:
-                    remaining = self.queue.size
-                    self.pending_notifications.append(
-                        f"🤖 Auto-sent from queue ({remaining} remaining)"
-                    )
             except Exception:
                 # Re-queue on failure
                 self.queue.requeue(message)
