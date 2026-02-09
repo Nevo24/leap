@@ -138,10 +138,6 @@ class MonitorWindow(QMainWindow):
         # Bottom controls
         bottom_layout = QHBoxLayout()
 
-        self.refresh_btn = QPushButton('Refresh')
-        self.refresh_btn.clicked.connect(self._refresh_data)
-        bottom_layout.addWidget(self.refresh_btn)
-
         self.bots_check = QCheckBox('Include git bots')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
