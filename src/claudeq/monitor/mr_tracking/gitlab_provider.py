@@ -75,9 +75,15 @@ class GitLabProvider(SCMProvider):
 
         # Check approval status
         approved = False
+        approved_by: list[str] = []
         try:
             approvals = project.mergerequests.get(mr_iid).approvals.get()
             approved = getattr(approvals, 'approved', False)
+            for entry in getattr(approvals, 'approved_by', []):
+                user = entry.get('user', {}) if isinstance(entry, dict) else getattr(entry, 'user', {})
+                name = user.get('name', '') if isinstance(user, dict) else getattr(user, 'name', '')
+                if name:
+                    approved_by.append(name)
         except Exception:
             logger.debug("Failed to fetch approval status for MR !%s", mr_iid)
 
@@ -90,7 +96,7 @@ class GitLabProvider(SCMProvider):
             return MRStatus(
                 state=MRState.ALL_RESPONDED,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
-                approved=approved,
+                approved=approved, approved_by=approved_by or None,
             )
 
         unresponded = 0
@@ -109,7 +115,7 @@ class GitLabProvider(SCMProvider):
                 unresponded_count=unresponded,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
                 first_unresponded_note_id=first_note_id,
-                approved=approved,
+                approved=approved, approved_by=approved_by or None,
             )
 
         return MRStatus(

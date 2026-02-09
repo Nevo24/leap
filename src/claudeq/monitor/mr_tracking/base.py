@@ -24,6 +24,7 @@ class MRStatus:
     mr_iid: Optional[int] = None
     first_unresponded_note_id: Optional[int] = None
     approved: bool = False
+    approved_by: Optional[list[str]] = None
 
 
 class SCMProvider(ABC):

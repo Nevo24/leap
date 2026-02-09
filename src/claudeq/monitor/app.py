@@ -816,7 +816,11 @@ class MonitorWindow(QMainWindow):
         if approval_widget and status.approved:
             approval_widget.setText('\U0001f44d')
             approval_widget.setVisible(True)
-            approval_widget.set_indicator_help('Someone approved this MR')
+            if status.approved_by:
+                names = ', '.join(status.approved_by)
+                approval_widget.set_indicator_help(f'Approved by {names}')
+            else:
+                approval_widget.set_indicator_help('MR approved')
 
         if status.state == MRState.NOT_CONFIGURED:
             widget.setText('N/A')
