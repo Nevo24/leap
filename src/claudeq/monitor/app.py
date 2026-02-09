@@ -58,6 +58,7 @@ class MonitorWindow(QMainWindow):
         self._mr_widgets: dict[str, PulsingLabel] = {}
         self._scm_provider = None
         self._scm_worker: Optional[SCMPollerWorker] = None
+        self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
         self._scm_polling = False
         self._shutting_down = False
         self._tracked_tags: set[str] = set()
@@ -545,7 +546,7 @@ class MonitorWindow(QMainWindow):
         worker.result_ready.connect(self._on_tracking_result)
         worker.error.connect(self._on_tracking_error)
         worker.finished.connect(worker.deleteLater)
-        self._scm_worker = worker
+        self._scm_oneshot_worker = worker
         worker.start()
 
     def _stop_tracking(self, tag: str) -> None:
@@ -706,17 +707,21 @@ class MonitorWindow(QMainWindow):
             widget.set_mr_url(None)
 
         elif status.state == MRState.ALL_RESPONDED:
-            widget.setText('✓')
+            approved_prefix = '👍 ' if status.approved else ''
+            widget.setText(f'{approved_prefix}✓')
             widget.setStyleSheet('color: green; font-weight: bold;')
-            widget.setToolTip(f'MR !{status.mr_iid}: {status.mr_title}\nAll threads responded.')
+            approval_line = '\nApproved' if status.approved else ''
+            widget.setToolTip(f'MR !{status.mr_iid}: {status.mr_title}\nAll threads responded.{approval_line}')
             widget.set_pulsing(False)
             widget.set_mr_url(status.mr_url)
 
         elif status.state == MRState.UNRESPONDED:
-            widget.setText(f'💬 {status.unresponded_count}')
+            approved_prefix = '👍 ' if status.approved else ''
+            widget.setText(f'{approved_prefix}💬 {status.unresponded_count}')
+            approval_line = '\nApproved' if status.approved else ''
             widget.setToolTip(
                 f'MR !{status.mr_iid}: {status.mr_title}\n'
-                f'{status.unresponded_count} unresponded thread(s).'
+                f'{status.unresponded_count} unresponded thread(s).{approval_line}'
             )
             widget.set_pulsing(True)
             # Jump directly to first unresolved comment thread

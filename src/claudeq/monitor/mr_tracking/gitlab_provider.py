@@ -72,6 +72,14 @@ class GitLabProvider(SCMProvider):
         mr_url = mr.web_url
         mr_title = mr.title
 
+        # Check approval status
+        approved = False
+        try:
+            approvals = project.mergerequests.get(mr_iid).approvals.get()
+            approved = getattr(approvals, 'approved', False)
+        except Exception:
+            logger.debug("Failed to fetch approval status for MR !%s", mr_iid)
+
         # Fetch discussions to count unresponded threads
         try:
             mr_full = project.mergerequests.get(mr_iid)
@@ -81,6 +89,7 @@ class GitLabProvider(SCMProvider):
             return MRStatus(
                 state=MRState.ALL_RESPONDED,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
+                approved=approved,
             )
 
         unresponded = 0
@@ -99,11 +108,13 @@ class GitLabProvider(SCMProvider):
                 unresponded_count=unresponded,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
                 first_unresponded_note_id=first_note_id,
+                approved=approved,
             )
 
         return MRStatus(
             state=MRState.ALL_RESPONDED,
             mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
+            approved=approved,
         )
 
     def _is_unresponded_thread(self, discussion, project, mr_iid: int) -> bool:
