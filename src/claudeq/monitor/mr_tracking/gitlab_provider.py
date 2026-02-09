@@ -17,7 +17,7 @@ CQ_BOT_PREFIX = "[ClaudeQ bot]"
 CQ_ACK_MESSAGE = f"{CQ_BOT_PREFIX} on it!"
 CQ_NO_SESSION_MESSAGE = f"{CQ_BOT_PREFIX} No matching ClaudeQ session found for this project."
 
-
+# test
 class GitLabProvider(SCMProvider):
     """GitLab provider with thread-level comment tracking."""
 
