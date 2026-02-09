@@ -13,8 +13,9 @@ from claudeq.monitor.mr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
 
-CQ_ACK_MESSAGE = "[bot msg] claudeQ is on it!"
-CQ_NO_SESSION_MESSAGE = "[bot msg] No matching ClaudeQ session found for this project."
+CQ_BOT_PREFIX = "[ClaudeQ bot]"
+CQ_ACK_MESSAGE = f"{CQ_BOT_PREFIX} on it!"
+CQ_NO_SESSION_MESSAGE = f"{CQ_BOT_PREFIX} No matching ClaudeQ session found for this project."
 
 
 class GitLabProvider(SCMProvider):
@@ -22,7 +23,7 @@ class GitLabProvider(SCMProvider):
 
     def __init__(self, gitlab_url: str, private_token: str, username: str,
                  filter_bots: bool = True) -> None:
-        self._gl = gitlab.Gitlab(gitlab_url, private_token=private_token)
+        self._gl = gitlab.Gitlab(gitlab_url, private_token=private_token, timeout=15)
         self._username = username
         self._filter_bots = filter_bots
         self._project_cache: dict[str, gitlab.v4.objects.Project] = {}
@@ -338,7 +339,7 @@ class GitLabProvider(SCMProvider):
             return None
 
     def acknowledge_cq_command(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
-        """Post 'claudeQ is on it!' reply to the discussion thread."""
+        """Post '[ClaudeQ bot] on it!' reply to the discussion thread."""
         project = self._get_project(project_path)
         if not project:
             return False

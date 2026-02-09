@@ -1,7 +1,7 @@
 """Background SCM polling worker for ClaudeQ Monitor."""
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import QWidget
@@ -10,6 +10,9 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from claudeq.utils.constants import GITLAB_MAX_CONCURRENT_POLLS
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
+
+# Maximum time to wait for all poll futures to complete
+_POLL_TIMEOUT_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -72,15 +75,19 @@ class SCMPollerWorker(QThread):
                 pool.submit(self._poll_session, session): session['tag']
                 for session in self._sessions
             }
-            for future in as_completed(futures):
-                tag = futures[future]
-                try:
-                    status, cq_commands = future.result()
-                    results[tag] = status
-                    all_cq_commands.extend(cq_commands)
-                except Exception:
-                    logger.debug("Error polling session %s", tag, exc_info=True)
-                    results[tag] = MRStatus(state=MRState.NO_MR)
+            try:
+                for future in as_completed(futures, timeout=_POLL_TIMEOUT_SECONDS):
+                    tag = futures[future]
+                    try:
+                        status, cq_commands = future.result()
+                        results[tag] = status
+                        all_cq_commands.extend(cq_commands)
+                    except Exception:
+                        logger.debug("Error polling session %s", tag, exc_info=True)
+                        results[tag] = MRStatus(state=MRState.NO_MR)
+            except TimeoutError:
+                logger.warning("SCM poll timed out after %ds, returning partial results",
+                               _POLL_TIMEOUT_SECONDS)
 
         self.results_ready.emit(results)
         if all_cq_commands:
@@ -90,12 +97,17 @@ class SCMPollerWorker(QThread):
         """Poll a single session for MR status and /cq commands."""
         project_path = session.get('project_path')
         if not project_path:
+            logger.debug("Poll skip: no project_path for tag %s", session.get('tag'))
             return MRStatus(state=MRState.NO_MR), []
 
         remote_info = get_git_remote_info(project_path)
         if not remote_info:
+            logger.debug("Poll skip: no remote info for tag %s (path=%s)",
+                         session.get('tag'), project_path)
             return MRStatus(state=MRState.NO_MR), []
 
+        logger.debug("Polling MR for tag %s: project=%s branch=%s",
+                      session.get('tag'), remote_info.project_path, remote_info.branch)
         try:
             status = self._provider.get_mr_status(
                 remote_info.project_path, remote_info.branch

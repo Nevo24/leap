@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from typing import Any, Optional
 
 from PyQt5 import sip
@@ -61,6 +62,7 @@ class MonitorWindow(QMainWindow):
         self._scm_worker: Optional[SCMPollerWorker] = None
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
         self._scm_polling = False
+        self._scm_poll_started_at: float = 0.0
         self._shutting_down = False
         self._dock_badge = DockBadge()
         self._tracked_tags: set[str] = set()
@@ -215,7 +217,7 @@ class MonitorWindow(QMainWindow):
         """Update the SCM button text/style based on connection state."""
         if self._scm_provider:
             self.gitlab_btn.setText('GitLab Connected')
-            self.gitlab_btn.setStyleSheet('color: green;')
+            self.gitlab_btn.setStyleSheet('color: #00ff00;')
         else:
             self.gitlab_btn.setText('Connect GitLab')
             self.gitlab_btn.setStyleSheet('')
@@ -236,16 +238,30 @@ class MonitorWindow(QMainWindow):
         """Start a background SCM poll for tracked sessions only."""
         if self._shutting_down:
             return
-        if not self._scm_provider or self._scm_polling:
+        if not self._scm_provider:
             return
+        if self._scm_polling:
+            # Force-reset if polling has been stuck for over 60 seconds
+            elapsed = time.monotonic() - self._scm_poll_started_at
+            if elapsed > 60:
+                logger.warning("SCM poll stuck for %.0fs, force-resetting", elapsed)
+                self._scm_polling = False
+                if self._scm_worker:
+                    self._scm_worker.deleteLater()
+                    self._scm_worker = None
+            else:
+                return
         if not self._tracked_tags:
             return
 
         tracked_sessions = [s for s in self.sessions if s['tag'] in self._tracked_tags]
         if not tracked_sessions:
+            logger.debug("SCM poll skipped: no tracked sessions found in active sessions")
             return
 
+        logger.debug("Starting SCM poll for tags: %s", [s['tag'] for s in tracked_sessions])
         self._scm_polling = True
+        self._scm_poll_started_at = time.monotonic()
         worker = SCMPollerWorker(self)
         worker.configure(self._scm_provider, tracked_sessions)
         worker.results_ready.connect(self._on_scm_results)
@@ -256,6 +272,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_scm_worker_finished(self) -> None:
         """Clean up after poller worker completes."""
+        logger.debug("SCM poll worker finished")
         self._scm_polling = False
         if self._scm_worker:
             self._scm_worker.deleteLater()
@@ -268,6 +285,9 @@ class MonitorWindow(QMainWindow):
         try:
             if not self.isVisible():
                 return
+            for tag, status in results.items():
+                logger.debug("SCM result: tag=%s state=%s unresponded=%s approved=%s",
+                             tag, status.state.value, status.unresponded_count, status.approved)
             self._mr_statuses.update(results)
             self._update_mr_column()
             self._update_dock_badge()
