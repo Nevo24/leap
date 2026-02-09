@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QInputDialog
 )
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
 
 from claudeq.utils.constants import GITLAB_POLL_INTERVAL, SOCKET_DIR
@@ -31,6 +31,7 @@ from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import load_gitlab_config, load_monitor_prefs, save_monitor_prefs
 from claudeq.monitor.mr_tracking.git_utils import get_git_remote_info
 from claudeq.monitor.ui_widgets import PulsingLabel
+from claudeq.monitor.dock_badge import DockBadge
 from claudeq.monitor.scm_polling import SCMOneShotWorker, SCMPollerWorker
 from claudeq.monitor.monitor_utils import find_icon, focus_session
 
@@ -61,6 +62,7 @@ class MonitorWindow(QMainWindow):
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
         self._scm_polling = False
         self._shutting_down = False
+        self._dock_badge = DockBadge()
         self._tracked_tags: set[str] = set()
         self._checking_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
@@ -272,6 +274,7 @@ class MonitorWindow(QMainWindow):
                 return
             self._mr_statuses.update(results)
             self._update_mr_column()
+            self._update_dock_badge()
         except Exception:
             logger.exception("Error handling SCM results")
 
@@ -555,12 +558,14 @@ class MonitorWindow(QMainWindow):
         self._checking_tags.discard(tag)
         self._mr_statuses.pop(tag, None)
         self._mr_widgets.pop(tag, None)
+        self._dock_badge.discard_tag(tag)
 
         # Stop poll timer if no tags are being tracked
         if not self._tracked_tags and self._scm_poll_timer.isActive():
             self._scm_poll_timer.stop()
 
         self._update_table()
+        self._update_dock_badge()
 
     def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
         """Handle the result of a one-shot MR check."""
@@ -578,6 +583,7 @@ class MonitorWindow(QMainWindow):
         self._tracked_tags.add(tag)
         self._mr_statuses[tag] = status
         self._update_table()
+        self._update_dock_badge()
 
         if not self._scm_poll_timer.isActive():
             config = load_gitlab_config()
@@ -730,6 +736,20 @@ class MonitorWindow(QMainWindow):
                 url = f'{url}#note_{status.first_unresponded_note_id}'
             widget.set_mr_url(url)
 
+    def _update_dock_badge(self) -> None:
+        """Update the dock badge with number of MRs changed since last window focus."""
+        self._dock_badge.update(self._mr_statuses, self.isActiveWindow())
+
+    def _clear_dock_badge(self) -> None:
+        """Clear the dock badge and snapshot current MR statuses as seen."""
+        self._dock_badge.clear(self._mr_statuses)
+
+    def changeEvent(self, event: QEvent) -> None:
+        """Reset dock badge when window becomes active."""
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._clear_dock_badge()
+
     def _auto_refresh(self) -> None:
         """Auto-refresh callback."""
         if self._shutting_down:
@@ -763,6 +783,7 @@ class MonitorWindow(QMainWindow):
         self._shutting_down = True
         self.timer.stop()
         self._scm_poll_timer.stop()
+        self._clear_dock_badge()
 
         # Save window geometry and column widths
         try:

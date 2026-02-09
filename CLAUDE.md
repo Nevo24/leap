@@ -51,6 +51,7 @@ src/
     │
     ├── monitor/                 # GUI Monitor (PyQt5)
     │   ├── app.py               # MonitorWindow
+    │   ├── dock_badge.py        # Dock icon badge overlay (notification counter)
     │   ├── session_manager.py   # Session discovery
     │   ├── cq_sender.py         # Socket sender for /cq commands
     │   ├── gitlab_setup_dialog.py # GitLab connection dialog
@@ -83,6 +84,7 @@ assets/
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI for session management |
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
+| `DockBadge` | `monitor/dock_badge.py` | Dock icon badge overlay (counts MR changes) |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 
 ## Runtime Data Files
