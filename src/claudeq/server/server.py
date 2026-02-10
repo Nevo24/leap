@@ -232,8 +232,6 @@ class ClaudeQServer:
         if response == 'n':
             # Discard queue
             self.queue.clear()
-            if self.queue_file.exists():
-                self.queue_file.unlink()
             print("✓ Discarded old messages\n")
         else:
             # Load queue (default)

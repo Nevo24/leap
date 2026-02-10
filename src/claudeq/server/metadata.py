@@ -5,11 +5,15 @@ Handles saving and loading session metadata including IDE, project path, and bra
 """
 
 import json
+import logging
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.ide_detection import detect_ide, get_git_branch
+
+logger = logging.getLogger(__name__)
 
 
 class SessionMetadata:
@@ -42,8 +46,21 @@ class SessionMetadata:
             'branch': branch_name
         }
 
-        with open(self.metadata_file, 'w') as f:
-            json.dump(self._data, f, indent=2)
+        try:
+            dir_path = self.metadata_file.parent
+            fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix='.tmp')
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    json.dump(self._data, f, indent=2)
+                os.replace(tmp_path, str(self.metadata_file))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            logger.warning("Failed to persist metadata to %s", self.metadata_file, exc_info=True)
 
     def load(self) -> dict[str, Any]:
         """
@@ -53,8 +70,12 @@ class SessionMetadata:
             Dictionary with session metadata.
         """
         if self.metadata_file.exists():
-            with open(self.metadata_file, 'r') as f:
-                self._data = json.load(f)
+            try:
+                with open(self.metadata_file, 'r') as f:
+                    self._data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                logger.warning("Corrupted metadata file %s, using defaults", self.metadata_file)
+                self._data = {}
         return self._data
 
     def cleanup(self) -> None:

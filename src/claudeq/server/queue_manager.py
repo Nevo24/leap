@@ -4,12 +4,17 @@ Queue management for ClaudeQ server.
 Handles message queue persistence and operations.
 """
 
+import logging
+import os
 import random
 import string
+import tempfile
 import threading
 from collections import deque
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class QueueManager:
@@ -61,10 +66,26 @@ class QueueManager:
                     self.queue.append({'id': msg_id, 'msg': message})
 
     def save(self) -> None:
-        """Save queue to file."""
-        with open(self.queue_file, 'w') as f:
-            for entry in self.queue:
-                f.write(f"{entry['id']}|{entry['msg']}\n")
+        """Save queue to file atomically (write to temp + rename)."""
+        try:
+            dir_path = self.queue_file.parent
+            fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix='.tmp')
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    for entry in self.queue:
+                        f.write(f"{entry['id']}|{entry['msg']}\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(self.queue_file))
+            except BaseException:
+                # Clean up temp file on any failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            logger.warning("Failed to persist queue to %s", self.queue_file, exc_info=True)
 
     def add(self, message: str) -> int:
         """

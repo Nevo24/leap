@@ -99,7 +99,7 @@ class SocketHandler:
             print(f"Error handling client: {e}", file=sys.stderr, flush=True)
 
         try:
-            conn.send(json.dumps(response).encode('utf-8'))
+            conn.sendall(json.dumps(response).encode('utf-8'))
         except BrokenPipeError:
             # Client disconnected - normal, suppress error
             pass

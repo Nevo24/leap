@@ -355,7 +355,7 @@ class ClaudeQClient:
             ready = response.get('ready', False)
 
             print("\n📊 Server status:")
-            print(f"  Ready: {'✓' if ready else '✗'}")
+            print(f"  {'✓ Idle, will accept next message' if ready else '✗ Busy, waiting for ClaudeCLI'}")
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
             if queue_contents:

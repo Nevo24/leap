@@ -333,7 +333,11 @@ class MonitorWindow(QMainWindow):
                 logger.warning("SCM poll stuck for %.0fs, force-resetting", elapsed)
                 self._scm_polling = False
                 if self._scm_worker:
-                    self._scm_worker.deleteLater()
+                    try:
+                        self._scm_worker.results_ready.disconnect()
+                        self._scm_worker.finished.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass  # Already disconnected or deleted
                     self._scm_worker = None
             else:
                 return
@@ -600,12 +604,18 @@ class MonitorWindow(QMainWindow):
 
                     self.table.setCellWidget(row, self.COL_MR, mr_container)
                 else:
-                    track_btn = QPushButton('Track MR')
-                    track_btn.setStyleSheet('font-size: 11px;')
-                    track_btn.clicked.connect(
-                        lambda checked, t=tag: self._start_tracking(t)
-                    )
-                    self.table.setCellWidget(row, self.COL_MR, track_btn)
+                    existing = self.table.cellWidget(row, self.COL_MR)
+                    if isinstance(existing, QPushButton) \
+                            and getattr(existing, '_cq_tag', None) == tag:
+                        pass  # Reuse — avoids destroying the button mid-click
+                    else:
+                        track_btn = QPushButton('Track MR')
+                        track_btn._cq_tag = tag
+                        track_btn.setStyleSheet('font-size: 11px;')
+                        track_btn.clicked.connect(
+                            lambda checked, t=tag: self._start_tracking(t)
+                        )
+                        self.table.setCellWidget(row, self.COL_MR, track_btn)
 
                 server_pid = session.get('server_pid')
                 client_pid = session.get('client_pid')

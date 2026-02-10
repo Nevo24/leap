@@ -51,10 +51,11 @@ class SocketClient:
         """
         try:
             client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client_socket.settimeout(5.0)
             client_socket.connect(str(self.socket_path))
 
-            client_socket.send(json.dumps(data).encode('utf-8'))
-            client_socket.settimeout(5.0)
+            client_socket.sendall(json.dumps(data).encode('utf-8'))
+            client_socket.shutdown(socket.SHUT_WR)
             chunks: list[bytes] = []
             while True:
                 chunk = client_socket.recv(65536)
