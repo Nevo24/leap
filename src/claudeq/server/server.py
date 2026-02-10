@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, MIN_BUSY_DURATION, POLL_INTERVAL, TITLE_RESET_INTERVAL,
-    ensure_storage_dirs, load_settings
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, MIN_BUSY_DURATION, OUTPUT_SETTLE_DURATION,
+    POLL_INTERVAL, TITLE_RESET_INTERVAL, ensure_storage_dirs, load_settings
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.server.pty_handler import PTYHandler
@@ -75,6 +75,8 @@ class ClaudeQServer:
         # State tracking
         self.last_sent_message: Optional[str] = None
         self.last_send_time: Optional[float] = None
+        self._last_output_time: float = 0.0
+        self._baseline_children: set[str] = set()
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -288,6 +290,13 @@ class ClaudeQServer:
         """
         Check if Claude is busy processing.
 
+        Uses three signals:
+        1. MIN_BUSY_DURATION — too soon after sending a message.
+        2. Output settle — PTY is still producing output (streaming response).
+        3. Child process baseline — new children beyond the baseline indicate
+           tool execution (e.g. bash).  Persistent children like caffeinate
+           or MCP servers are absorbed into the baseline when idle.
+
         Returns:
             True if Claude is busy, False otherwise.
         """
@@ -300,15 +309,32 @@ class ClaudeQServer:
             if time_since_send < MIN_BUSY_DURATION:
                 return True
 
-        # Check for child processes (tools being run)
+        # Check if PTY is still producing output (Claude streaming)
+        if self._last_output_time:
+            time_since_output = time.time() - self._last_output_time
+            if time_since_output < OUTPUT_SETTLE_DURATION:
+                return True
+
+        # Check for NEW child processes (tools being run)
         if self.pty.pid:
             try:
                 result = subprocess.run(
                     ['pgrep', '-P', str(self.pty.pid)],
                     capture_output=True
                 )
-                children = [c for c in result.stdout.decode().strip().split() if c]
-                return len(children) > 0
+                children = set(c for c in result.stdout.decode().strip().split() if c)
+                new_children = children - self._baseline_children
+                if new_children:
+                    # New children found.  If output has been silent for a
+                    # long time, these are almost certainly persistent
+                    # processes (caffeinate, MCP servers), not tools.
+                    silence = (time.time() - self._last_output_time) if self._last_output_time else float('inf')
+                    if silence <= 10.0:
+                        return True
+                    # Silent too long — absorb as persistent and fall through
+                # Update baseline to absorb any persistent processes
+                # spawned during the last processing cycle.
+                self._baseline_children = children
             except (subprocess.SubprocessError, OSError):
                 pass
 
@@ -364,6 +390,9 @@ class ClaudeQServer:
         # Strip OSC title-change sequences so Claude CLI cannot override
         # the "cq-server <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
+
+        # Track when PTY last produced output (used by _is_busy).
+        self._last_output_time = time.time()
 
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).

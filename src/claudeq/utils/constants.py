@@ -59,6 +59,7 @@ SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
 # Timing constants
 MIN_BUSY_DURATION: Final[float] = 3.0  # Minimum seconds to consider busy after sending
+OUTPUT_SETTLE_DURATION: Final[float] = 2.0  # Seconds of PTY silence before considering idle
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
 
