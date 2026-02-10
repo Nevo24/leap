@@ -33,6 +33,7 @@ def send_socket_request(
         client_socket.connect(str(socket_path))
 
         client_socket.sendall(json.dumps(data).encode('utf-8'))
+        client_socket.shutdown(socket.SHUT_WR)
         chunks: list[bytes] = []
         while True:
             chunk = client_socket.recv(65536)

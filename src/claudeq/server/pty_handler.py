@@ -143,17 +143,19 @@ class PTYHandler:
         """Send @-prefixed image message with file confirmation.
 
         Holds the send lock for the entire three-part sequence (text,
-        confirm file, submit) to prevent interleaved writes.  Waits
-        for CLI output to settle between each step.
+        confirm file, submit) to prevent interleaved writes.  Uses a
+        longer settle time than regular messages because the ``@path``
+        triggers file resolution in Claude CLI, which takes longer than
+        plain text echo and can overlap with paste-mode detection.
 
         Args:
             message: Image message starting with '@'.
         """
         with self._send_lock:
             self._write_all(message)
-            self._wait_for_output_settled()
+            self._wait_for_output_settled(settle_time=0.5)
             self._write_all('\r')  # Confirm file selection
-            self._wait_for_output_settled()
+            self._wait_for_output_settled(settle_time=0.3)
             self._write_all('\r')  # Submit message
 
     def notify_output_received(self) -> None:
