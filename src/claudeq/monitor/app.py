@@ -365,6 +365,15 @@ class MonitorWindow(QMainWindow):
             if not ok or not name.strip():
                 return
             name = name.strip()
+            existing = load_saved_contexts()
+            if name in existing:
+                reply = QMessageBox.question(
+                    dialog, 'Overwrite Context',
+                    f"A context named '{name}' already exists. Overwrite?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
             save_named_context(name, text_edit.toPlainText())
             refresh_combo()
             combo.setCurrentText(name)
