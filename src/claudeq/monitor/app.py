@@ -949,6 +949,7 @@ class MonitorWindow(QMainWindow):
         if approval_widget and status.approved:
             approval_widget.setText('\U0001f44d')
             approval_widget.setVisible(True)
+            approval_widget.set_click_url(status.mr_url)
             if status.approved_by:
                 names = ', '.join(status.approved_by)
                 approval_widget.set_indicator_help(f'Approved by {names}')

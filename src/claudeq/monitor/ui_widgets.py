@@ -35,10 +35,25 @@ class IndicatorLabel(QLabel):
         super().__init__(parent)
         self._indicator_help: Optional[str] = None
         self._popup: Optional[IndicatorPopup] = None
+        self._click_url: Optional[str] = None
 
     def set_indicator_help(self, text: Optional[str]) -> None:
         """Set the help text shown in the hover popup."""
         self._indicator_help = text
+
+    def set_click_url(self, url: Optional[str]) -> None:
+        """Set the URL to open when this indicator is clicked."""
+        self._click_url = url
+        if url:
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+        else:
+            self.setCursor(QCursor(Qt.ArrowCursor))
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self._click_url and event.button() == Qt.LeftButton:
+            webbrowser.open(self._click_url)
+        else:
+            super().mousePressEvent(event)
 
     def enterEvent(self, event) -> None:
         if self._indicator_help:
