@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import SOCKET_DIR
+from claudeq.utils.ide_detection import get_git_branch
 from claudeq.utils.socket_utils import send_socket_request
 
 
@@ -127,7 +128,10 @@ def get_active_sessions() -> list[dict[str, Any]]:
             project_path = metadata.get('project_path', '')
             if project_path:
                 project_name = os.path.basename(project_path)
-            branch_name = metadata.get('branch')
+            branch_name = (
+                get_git_branch(project_path) if project_path
+                else metadata.get('branch')
+            )
             ide = metadata.get('ide')
 
         # Server PID from metadata
