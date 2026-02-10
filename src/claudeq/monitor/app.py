@@ -36,7 +36,9 @@ from claudeq.monitor.mr_tracking.config import (
 from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, detect_scm_type
 from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.dock_badge import DockBadge
-from claudeq.monitor.scm_polling import SCMOneShotWorker, SCMPollerWorker
+from claudeq.monitor.scm_polling import (
+    CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker, SendThreadsWorker,
+)
 from claudeq.monitor.monitor_utils import find_icon, focus_session
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,8 @@ class MonitorWindow(QMainWindow):
         self._scm_providers: dict[str, SCMProvider] = {}  # SCMType.value -> provider
         self._scm_worker: Optional[SCMPollerWorker] = None
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
+        self._collect_threads_worker: Optional[CollectThreadsWorker] = None
+        self._send_threads_worker: Optional[SendThreadsWorker] = None
         self._scm_polling = False
         self._scm_poll_started_at: float = 0.0
         self._shutting_down = False
@@ -408,7 +412,7 @@ class MonitorWindow(QMainWindow):
                     logger.debug("No provider for /cq command project %s", cmd.project_path)
                     continue
 
-                tag, no_match = self._match_session_for_cq(cmd)
+                tag, no_match = self._match_session_for_cq(cmd.project_path)
                 if tag:
                     message = format_cq_message(cmd)
                     sent = send_to_cq_session(tag, message)
@@ -440,8 +444,21 @@ class MonitorWindow(QMainWindow):
                 logger.exception("Failed to restart SCM polling timer")
 
     def _send_all_threads_to_cq(self, tag: str) -> None:
-        """Send all unresponded MR threads to the CQ session."""
+        """Send all unresponded MR threads to the CQ session (non-blocking).
+
+        Phase 1 (CollectThreadsWorker): resolve provider, collect threads, match sessions.
+        Phase 2 (SendThreadsWorker): send each thread to CQ and acknowledge on SCM.
+        """
         if not self._scm_providers:
+            return
+
+        # Guard against concurrent runs
+        if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
+           (self._send_threads_worker and self._send_threads_worker.isRunning()):
+            QMessageBox.information(
+                self, 'In Progress',
+                'Already sending threads — please wait.'
+            )
             return
 
         session = next((s for s in self.sessions if s['tag'] == tag), None)
@@ -452,65 +469,78 @@ class MonitorWindow(QMainWindow):
         if not project_path:
             return
 
-        remote_info = get_git_remote_info(project_path)
-        if not remote_info:
-            return
-
-        provider = self._get_provider_for_session(session)
-        if not provider:
-            return
-
-        # Set wait cursor while processing
-        sent_count = 0
-        matched_tag = None
-        no_session_match = False
+        # Launch Phase 1 — everything runs in background
         QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            commands = provider.collect_unresponded_threads(
-                remote_info.project_path, remote_info.branch
-            )
+        self._collect_threads_worker = CollectThreadsWorker(self)
+        self._collect_threads_worker.configure(
+            project_path, self._scm_providers, self.sessions
+        )
+        self._collect_threads_worker.collected.connect(self._on_threads_collected)
+        self._collect_threads_worker.error.connect(self._on_send_threads_error)
+        self._collect_threads_worker.start()
 
-            if not commands:
-                return
+    def _on_threads_collected(self, commands: list, matching_tags: list) -> None:
+        """Handle Phase 1 completion: show dialog if needed, then launch Phase 2."""
+        provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
 
-            matched_tag, no_match = self._match_session_for_cq(commands[0])
-            if not matched_tag:
-                no_session_match = no_match
-                return
-
-            from claudeq.monitor.mr_tracking.cq_command import format_cq_message
-            from claudeq.monitor.cq_sender import send_to_cq_session
-
-            for cmd in commands:
-                message = format_cq_message(cmd)
-                sent = send_to_cq_session(matched_tag, message)
-                if sent:
-                    provider.acknowledge_cq_command(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                    )
-                    sent_count += 1
-                else:
-                    logger.error("Failed to send thread to session '%s'", matched_tag)
-        except Exception:
-            logger.exception("Error sending all threads to CQ")
-        finally:
+        if not commands or not provider:
             QApplication.restoreOverrideCursor()
+            QMessageBox.information(
+                self, 'No Threads',
+                'No unresponded threads found.'
+            )
+            return
 
+        if not matching_tags:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(
+                self, 'No Session',
+                'No matching CQ session found for this project.'
+            )
+            return
+
+        if len(matching_tags) == 1:
+            matched_tag = matching_tags[0]
+        else:
+            QApplication.restoreOverrideCursor()
+            matched_tag, ok = QInputDialog.getItem(
+                self, 'Select Session',
+                'Multiple sessions found.\nPick one:',
+                matching_tags, 0, False
+            )
+            if not ok:
+                return
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        # Launch Phase 2 — send + acknowledge in background
+        self._send_threads_worker = SendThreadsWorker(self)
+        self._send_threads_worker.configure(provider, commands, matched_tag)
+        self._send_threads_worker.finished.connect(self._on_send_threads_finished)
+        self._send_threads_worker.error.connect(self._on_send_threads_error)
+        self._send_threads_worker.start()
+
+    def _on_send_threads_finished(self, sent_count: int, matched_tag: str) -> None:
+        """Handle Phase 2 completion."""
+        QApplication.restoreOverrideCursor()
         if sent_count > 0:
             QMessageBox.information(
                 self, 'Threads Sent',
                 f"Sent {sent_count} thread(s) to session '{matched_tag}'."
             )
-            # Trigger a refresh to update MR status
             self._start_scm_poll()
-        elif no_session_match:
-            QMessageBox.warning(
-                self, 'No Session',
-                'No matching CQ session found for this project.'
+        else:
+            QMessageBox.information(
+                self, 'No Threads',
+                'No unresponded threads found.'
             )
 
-    def _match_session_for_cq(self, cmd: Any) -> tuple[Optional[str], bool]:
-        """Match a /cq command to a CQ session by project path.
+    def _on_send_threads_error(self, message: str) -> None:
+        """Handle error from either background worker."""
+        QApplication.restoreOverrideCursor()
+        QMessageBox.warning(self, 'Error', message)
+
+    def _match_session_for_cq(self, scm_project_path: str) -> tuple[Optional[str], bool]:
+        """Match an SCM project path to a CQ session.
 
         Returns (tag, no_match) where:
         - (tag, False) — matched a session
@@ -522,7 +552,7 @@ class MonitorWindow(QMainWindow):
             if not session.get('project_path'):
                 continue
             remote_info = get_git_remote_info(session['project_path'])
-            if remote_info and remote_info.project_path == cmd.project_path:
+            if remote_info and remote_info.project_path == scm_project_path:
                 matching.append(session)
 
         if len(matching) == 1:
@@ -531,8 +561,7 @@ class MonitorWindow(QMainWindow):
             tags = [s['tag'] for s in matching]
             tag, ok = QInputDialog.getItem(
                 self, 'Select Session',
-                f'Multiple sessions for {cmd.project_path}.\n'
-                f'MR !{cmd.mr_iid}: "{cmd.mr_title}"\n'
+                f'Multiple sessions for {scm_project_path}.\n'
                 f'Pick one:',
                 tags, 0, False
             )
