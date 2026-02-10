@@ -86,6 +86,10 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "$(PROMPT_PREFIX) Installing monitor dependencies..."
 	@poetry install --no-root --with monitor
 	@$(BUILD_MONITOR_APP)
+	@if [ ! -f "$(REPO_PATH)/.storage/cq_contexts.json" ]; then \
+		echo '{"default": "Please try to solve all the issues that are discussed in the following threads:"}' \
+			> "$(REPO_PATH)/.storage/cq_contexts.json"; \
+	fi
 	@echo "$(GREEN)✓ Monitor installed successfully!$(NC)"
 	@echo ""
 	@echo "Launch ClaudeQ Monitor from:"

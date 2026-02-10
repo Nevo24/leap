@@ -8,7 +8,7 @@ from claudeq.utils.constants import STORAGE_DIR
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
-CQ_CONTEXT_FILE = STORAGE_DIR / "cq_context.txt"
+CQ_CONTEXT_FILE = STORAGE_DIR / "cq_selected_ctx.txt"
 CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
 
 # Default monitor preferences

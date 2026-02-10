@@ -303,7 +303,11 @@ class MonitorWindow(QMainWindow):
         return min(intervals) if intervals else SCM_POLL_INTERVAL
 
     def _open_context_editor(self) -> None:
-        """Open a dialog to edit the CQ context text with named presets."""
+        """Open a dialog to edit the CQ context text with named presets.
+
+        Uses a file-editor metaphor: preset management (Save/Save As/Delete)
+        is independent from applying the active context (Apply & Close).
+        """
         dialog = QDialog(self)
         dialog.setWindowTitle('Edit CQ Context')
         dialog.resize(500, 400)
@@ -315,19 +319,20 @@ class MonitorWindow(QMainWindow):
         hint.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
         dlg_layout.addWidget(hint)
 
-        # Preset row: combo + Load + Save As + Delete
+        # Preset row: combo + New + Save + Save As... + Delete
         preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel('Saved:'))
 
         combo = QComboBox()
         combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         combo.setMinimumWidth(160)
         preset_layout.addWidget(combo, 1)
 
-        load_btn = QPushButton('Load')
+        new_btn = QPushButton('New')
+        save_btn = QPushButton('Save')
         save_as_btn = QPushButton('Save As...')
         delete_btn = QPushButton('Delete')
-        preset_layout.addWidget(load_btn)
+        preset_layout.addWidget(new_btn)
+        preset_layout.addWidget(save_btn)
         preset_layout.addWidget(save_as_btn)
         preset_layout.addWidget(delete_btn)
         dlg_layout.addLayout(preset_layout)
@@ -337,22 +342,40 @@ class MonitorWindow(QMainWindow):
         text_edit.setPlainText(load_cq_context())
         dlg_layout.addWidget(text_edit)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.rejected.connect(dialog.reject)
-        dlg_layout.addWidget(buttons)
+        # Bottom buttons: Apply & Close + Cancel
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        apply_btn = QPushButton('Apply && Close')
+        cancel_btn = QPushButton('Cancel')
+        btn_layout.addWidget(apply_btn)
+        btn_layout.addWidget(cancel_btn)
+        dlg_layout.addLayout(btn_layout)
 
-        # Track the current preset name (set by Load or Save As)
+        # Track the current preset name and whether it needs a first save
         current_name: list[str] = ['']
+        _refreshing: list[bool] = [False]
+        _unsaved: list[bool] = [False]  # True after New, before first Save
 
-        def refresh_combo() -> None:
+        def _update_button_states() -> None:
+            has_preset = bool(current_name[0])
+            save_btn.setEnabled(has_preset)
+            delete_btn.setEnabled(has_preset)
+
+        def refresh_combo(select_name: str = '') -> None:
+            _refreshing[0] = True
             combo.clear()
             for name in sorted(load_saved_contexts()):
                 combo.addItem(name)
-            has_items = combo.count() > 0
-            load_btn.setEnabled(has_items)
-            delete_btn.setEnabled(has_items)
+            if select_name:
+                idx = combo.findText(select_name)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            _refreshing[0] = False
+            _update_button_states()
 
-        def on_load() -> None:
+        def on_combo_changed(index: int) -> None:
+            if _refreshing[0]:
+                return
             name = combo.currentText()
             if not name:
                 return
@@ -360,8 +383,11 @@ class MonitorWindow(QMainWindow):
             text = contexts.get(name, '')
             text_edit.setPlainText(text)
             current_name[0] = name
+            _unsaved[0] = False
+            _update_button_states()
 
-        def on_save_as() -> None:
+        def _prompt_and_save() -> None:
+            """Prompt for a preset name and save. Used by Save As."""
             name, ok = QInputDialog.getText(
                 dialog, 'Save Context As', 'Name for this context:'
             )
@@ -379,35 +405,50 @@ class MonitorWindow(QMainWindow):
                     return
             save_named_context(name, text_edit.toPlainText())
             current_name[0] = name
-            refresh_combo()
-            combo.setCurrentText(name)
+            _unsaved[0] = False
+            refresh_combo(name)
+
+        def on_new() -> None:
+            name, ok = QInputDialog.getText(
+                dialog, 'New Preset', 'Name for the new preset:'
+            )
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+            existing = load_saved_contexts()
+            if name in existing:
+                reply = QMessageBox.question(
+                    dialog, 'Name Exists',
+                    f"A preset named '{name}' already exists. Overwrite with empty?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+            save_named_context(name, '')
+            current_name[0] = name
+            _unsaved[0] = True
+            text_edit.clear()
+            refresh_combo(name)
 
         def on_save() -> None:
-            text = text_edit.toPlainText()
-            # If no preset name set yet, prompt for one
             if not current_name[0]:
-                name, ok = QInputDialog.getText(
-                    dialog, 'Save Context As', 'Name for this context:'
+                return
+            if not _unsaved[0]:
+                reply = QMessageBox.question(
+                    dialog, 'Overwrite Preset',
+                    f"Overwrite preset '{current_name[0]}'?",
+                    QMessageBox.Yes | QMessageBox.No,
                 )
-                if not ok or not name.strip():
+                if reply != QMessageBox.Yes:
                     return
-                name = name.strip()
-                existing = load_saved_contexts()
-                if name in existing:
-                    reply = QMessageBox.question(
-                        dialog, 'Overwrite Context',
-                        f"A context named '{name}' already exists. Overwrite?",
-                        QMessageBox.Yes | QMessageBox.No,
-                    )
-                    if reply != QMessageBox.Yes:
-                        return
-                current_name[0] = name
-            save_named_context(current_name[0], text)
-            save_cq_context(text)
-            dialog.accept()
+            save_named_context(current_name[0], text_edit.toPlainText())
+            _unsaved[0] = False
+
+        def on_save_as() -> None:
+            _prompt_and_save()
 
         def on_delete() -> None:
-            name = combo.currentText()
+            name = current_name[0]
             if not name:
                 return
             reply = QMessageBox.question(
@@ -417,14 +458,21 @@ class MonitorWindow(QMainWindow):
             )
             if reply == QMessageBox.Yes:
                 delete_named_context(name)
-                if current_name[0] == name:
-                    current_name[0] = ''
+                current_name[0] = ''
+                _unsaved[0] = False
                 refresh_combo()
 
-        buttons.accepted.connect(on_save)
-        load_btn.clicked.connect(on_load)
+        def on_apply() -> None:
+            save_cq_context(text_edit.toPlainText())
+            dialog.accept()
+
+        combo.currentIndexChanged.connect(on_combo_changed)
+        new_btn.clicked.connect(on_new)
+        save_btn.clicked.connect(on_save)
         save_as_btn.clicked.connect(on_save_as)
         delete_btn.clicked.connect(on_delete)
+        apply_btn.clicked.connect(on_apply)
+        cancel_btn.clicked.connect(dialog.reject)
 
         refresh_combo()
 
