@@ -24,10 +24,8 @@ from PyQt5.QtGui import QIcon, QCloseEvent
 from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.session_manager import (
-    get_active_sessions,
-    load_session_metadata,
+    get_active_sessions, is_client_lock_held, load_session_metadata, session_exists,
 )
-from claudeq.monitor.navigation import close_terminal_with_title
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
     load_gitlab_config, load_github_config,
@@ -37,9 +35,13 @@ from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, 
 from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.dock_badge import DockBadge
 from claudeq.monitor.scm_polling import (
-    CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker, SendThreadsWorker,
+    BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
+    SendThreadsWorker, SessionRefreshWorker,
 )
-from claudeq.monitor.monitor_utils import find_icon, focus_session
+from claudeq.monitor.monitor_utils import find_icon, _remove_client_lock
+from claudeq.monitor.navigation import (
+    close_terminal_with_title, find_terminal_with_title, open_terminal_with_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,7 @@ class MonitorWindow(QMainWindow):
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
         self._collect_threads_worker: Optional[CollectThreadsWorker] = None
         self._send_threads_worker: Optional[SendThreadsWorker] = None
+        self._refresh_worker: Optional[SessionRefreshWorker] = None
         self._scm_polling = False
         self._scm_poll_started_at: float = 0.0
         self._shutting_down = False
@@ -86,7 +89,9 @@ class MonitorWindow(QMainWindow):
         self._scm_poll_timer.timeout.connect(self._start_scm_poll)
 
         self._init_ui()
-        self._refresh_data()
+        # Synchronous initial load — UI needs sessions before first paint
+        self.sessions = get_active_sessions()
+        self._update_table()
         self._init_scm_providers()
 
         # Always start auto-refresh
@@ -280,23 +285,6 @@ class MonitorWindow(QMainWindow):
 
         return self._scm_providers.get(scm_type.value)
 
-    def _get_provider_for_project(self, project_path: str) -> Optional[SCMProvider]:
-        """Get the appropriate SCM provider for a project path by resolving its remote.
-
-        Returns:
-            The matching SCMProvider, or None if no provider matches.
-        """
-        remote_info = get_git_remote_info(project_path)
-        if not remote_info:
-            return None
-
-        scm_type = remote_info.scm_type
-        if scm_type == SCMType.UNKNOWN:
-            gitlab_config = load_gitlab_config()
-            scm_type = detect_scm_type(remote_info.host_url, gitlab_config)
-
-        return self._scm_providers.get(scm_type.value)
-
     def _get_poll_interval(self) -> int:
         """Get the minimum poll interval across all configured providers."""
         intervals = []
@@ -363,7 +351,6 @@ class MonitorWindow(QMainWindow):
         worker = SCMPollerWorker(self)
         worker.configure(self._scm_providers, tracked_sessions)
         worker.results_ready.connect(self._on_scm_results)
-        worker.cq_commands_ready.connect(self._on_cq_commands)
         worker.finished.connect(self._on_scm_worker_finished)
         self._scm_worker = worker
         worker.start()
@@ -391,57 +378,6 @@ class MonitorWindow(QMainWindow):
             self._update_dock_badge()
         except Exception:
             logger.exception("Error handling SCM results")
-
-    def _on_cq_commands(self, commands: list[Any]) -> None:
-        """Handle /cq commands detected during SCM polling."""
-        if self._shutting_down:
-            return
-        try:
-            if not self.isVisible() or not self._scm_providers:
-                return
-
-            # Pause polling while handling commands (dialogs may block)
-            self._scm_poll_timer.stop()
-
-            from claudeq.monitor.mr_tracking.cq_command import format_cq_message
-            from claudeq.monitor.cq_sender import send_to_cq_session
-
-            for cmd in commands:
-                provider = self._get_provider_for_project(cmd.project_path)
-                if not provider:
-                    logger.debug("No provider for /cq command project %s", cmd.project_path)
-                    continue
-
-                tag, no_match = self._match_session_for_cq(cmd.project_path)
-                if tag:
-                    message = format_cq_message(cmd)
-                    sent = send_to_cq_session(tag, message)
-                    if sent:
-                        logger.info("/cq from MR !%s sent to session '%s'", cmd.mr_iid, tag)
-                    else:
-                        logger.error("Failed to send /cq message to session '%s'", tag)
-                    # Always acknowledge to prevent re-processing on next poll
-                    provider.acknowledge_cq_command(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                    )
-                elif no_match:
-                    # Truly no sessions found — report on SCM
-                    provider.report_no_session(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                    )
-                    logger.info("No session match for /cq from MR !%s (%s)",
-                                cmd.mr_iid, cmd.project_path)
-                # else: user cancelled dialog — do nothing, will retry next poll
-
-            # Resume polling
-            self._scm_poll_timer.start(self._get_poll_interval() * 1000)
-        except Exception:
-            logger.exception("Error handling /cq commands")
-            # Ensure polling resumes even if there's an error
-            try:
-                self._scm_poll_timer.start(self._get_poll_interval() * 1000)
-            except Exception:
-                logger.exception("Failed to restart SCM polling timer")
 
     def _send_all_threads_to_cq(self, tag: str) -> None:
         """Send all unresponded MR threads to the CQ session (non-blocking).
@@ -539,39 +475,23 @@ class MonitorWindow(QMainWindow):
         QApplication.restoreOverrideCursor()
         QMessageBox.warning(self, 'Error', message)
 
-    def _match_session_for_cq(self, scm_project_path: str) -> tuple[Optional[str], bool]:
-        """Match an SCM project path to a CQ session.
-
-        Returns (tag, no_match) where:
-        - (tag, False) — matched a session
-        - (None, True) — no sessions match at all
-        - (None, False) — user cancelled the dialog
-        """
-        matching = []
-        for session in self.sessions:
-            if not session.get('project_path'):
-                continue
-            remote_info = get_git_remote_info(session['project_path'])
-            if remote_info and remote_info.project_path == scm_project_path:
-                matching.append(session)
-
-        if len(matching) == 1:
-            return matching[0]['tag'], False
-        elif len(matching) > 1:
-            tags = [s['tag'] for s in matching]
-            tag, ok = QInputDialog.getItem(
-                self, 'Select Session',
-                f'Multiple sessions for {scm_project_path}.\n'
-                f'Pick one:',
-                tags, 0, False
-            )
-            return (tag, False) if ok else (None, False)
-        else:
-            return None, True
-
     def _refresh_data(self) -> None:
-        """Refresh session data and update table."""
-        self.sessions = get_active_sessions()
+        """Refresh session data and update table (non-blocking).
+
+        Launches a SessionRefreshWorker to query sockets in the background.
+        Falls back to synchronous refresh on first call (before timer starts).
+        """
+        if self._refresh_worker and self._refresh_worker.isRunning():
+            return  # skip this cycle
+
+        self._refresh_worker = SessionRefreshWorker(self)
+        self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
+        self._refresh_worker.finished.connect(self._refresh_worker.deleteLater)
+        self._refresh_worker.start()
+
+    def _on_sessions_refreshed(self, sessions: list) -> None:
+        """Handle background session refresh result."""
+        self.sessions = sessions
         self._update_table()
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
@@ -688,7 +608,7 @@ class MonitorWindow(QMainWindow):
 
                 server_btn = QPushButton('Server')
                 server_btn.clicked.connect(
-                    lambda checked, t=tag: focus_session(t, 'server')
+                    lambda checked, t=tag: self._focus_session(t, 'server')
                 )
                 server_layout.addWidget(server_btn)
 
@@ -716,7 +636,7 @@ class MonitorWindow(QMainWindow):
 
                 client_btn = QPushButton('Client')
                 client_btn.clicked.connect(
-                    lambda checked, t=tag: focus_session(t, 'client')
+                    lambda checked, t=tag: self._focus_session(t, 'client')
                 )
                 client_layout.addWidget(client_btn)
 
@@ -829,7 +749,7 @@ class MonitorWindow(QMainWindow):
         self, tag: str, server_pid: Optional[int], client_pid: Optional[int],
         has_client: bool = False
     ) -> None:
-        """Prompt for confirmation and close a server session."""
+        """Prompt for confirmation and close a server session (non-blocking)."""
         reply = QMessageBox.question(
             self,
             'Close Server',
@@ -843,7 +763,7 @@ class MonitorWindow(QMainWindow):
         preferred_ide = metadata.get('ide') if metadata else None
         project_path = metadata.get('project_path') if metadata else None
 
-        # Ask about closing the client if one is connected
+        close_client_too = False
         if has_client:
             close_client = QMessageBox.question(
                 self,
@@ -851,7 +771,11 @@ class MonitorWindow(QMainWindow):
                 f"Close the client for '{tag}' as well?",
                 QMessageBox.Yes | QMessageBox.No
             )
-            if close_client == QMessageBox.Yes:
+            close_client_too = (close_client == QMessageBox.Yes)
+
+        # Run blocking I/O in background
+        def _do_close() -> None:
+            if close_client_too:
                 if client_pid:
                     try:
                         os.kill(client_pid, signal.SIGTERM)
@@ -860,23 +784,24 @@ class MonitorWindow(QMainWindow):
                 close_terminal_with_title(
                     f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
                 )
+            socket_path = SOCKET_DIR / f"{tag}.sock"
+            response = send_socket_request(socket_path, {'type': 'shutdown'}, timeout=3.0)
+            if not (response and response.get('status') == 'ok'):
+                if server_pid:
+                    try:
+                        os.kill(server_pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+            close_terminal_with_title(
+                f"cq-server {tag}", preferred_ide, project_path, f"cq-server {tag}"
+            )
 
-        # Kill the server
-        socket_path = SOCKET_DIR / f"{tag}.sock"
-        response = send_socket_request(socket_path, {'type': 'shutdown'}, timeout=3.0)
-        if not (response and response.get('status') == 'ok'):
-            if server_pid:
-                try:
-                    os.kill(server_pid, signal.SIGTERM)
-                except OSError:
-                    pass
-
-        close_terminal_with_title(
-            f"cq-server {tag}", preferred_ide, project_path, f"cq-server {tag}"
-        )
+        worker = BackgroundCallWorker(_do_close, self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _close_client(self, tag: str, client_pid: Optional[int]) -> None:
-        """Prompt for confirmation and close a client session."""
+        """Prompt for confirmation and close a client session (non-blocking)."""
         reply = QMessageBox.question(
             self,
             'Close Client',
@@ -892,13 +817,114 @@ class MonitorWindow(QMainWindow):
             except OSError:
                 pass
 
-        # Close the terminal tab
         metadata = load_session_metadata(tag)
         preferred_ide = metadata.get('ide') if metadata else None
         project_path = metadata.get('project_path') if metadata else None
-        close_terminal_with_title(
-            f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
+
+        worker = BackgroundCallWorker(
+            lambda: close_terminal_with_title(
+                f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
+            ),
+            self,
         )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _focus_session(self, tag: str, session_type: str = 'server') -> None:
+        """Focus or open the terminal for a session (non-blocking).
+
+        Runs navigation subprocess calls in a background thread to avoid
+        blocking the UI.
+        """
+        metadata = load_session_metadata(tag)
+        preferred_ide = metadata.get('ide') if metadata else None
+        project_path = metadata.get('project_path') if metadata else None
+        title_pattern = f"cq-{session_type} {tag}"
+
+        if not session_exists(tag, session_type):
+            reply = QMessageBox.question(
+                self,
+                f'{session_type.capitalize()} Not Found',
+                f'{session_type.capitalize()} not found for: {tag}\n\n'
+                f'Open a new {session_type}?',
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                worker = BackgroundCallWorker(
+                    lambda: open_terminal_with_command(
+                        f'cq {tag}',
+                        preferred_ide=preferred_ide,
+                        project_path=project_path,
+                    ),
+                    self,
+                )
+                worker.finished.connect(worker.deleteLater)
+                worker.start()
+            return
+
+        # Use a result-capturing wrapper to get find_terminal_with_title's return value
+        _tag = tag
+        _session_type = session_type
+        _preferred_ide = preferred_ide
+        _project_path = project_path
+        _title_pattern = title_pattern
+        result_holder: list[Optional[bool]] = [None]
+
+        def _do_find() -> None:
+            result_holder[0] = find_terminal_with_title(
+                _title_pattern, _preferred_ide, _project_path, _title_pattern
+            )
+
+        def _on_done() -> None:
+            if result_holder[0]:
+                return  # Successfully focused
+
+            # Terminal not found — show dialog on main thread
+            if _session_type == 'client' and is_client_lock_held(_tag):
+                reply = QMessageBox.question(
+                    self,
+                    'Client Not Found',
+                    f'A client is connected to \'{_tag}\' but its terminal '
+                    f'could not be found.\n\n'
+                    f'Replace it with a new client?',
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    _remove_client_lock(_tag)
+                    w = BackgroundCallWorker(
+                        lambda: open_terminal_with_command(
+                            f'cq {_tag}',
+                            preferred_ide=_preferred_ide,
+                            project_path=_project_path,
+                        ),
+                        self,
+                    )
+                    w.finished.connect(w.deleteLater)
+                    w.start()
+            else:
+                reply = QMessageBox.question(
+                    self,
+                    'Navigation Failed',
+                    f'Could not find terminal tab for {_session_type}: {_tag}\n\n'
+                    f'Open a new {_session_type}?',
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply == QMessageBox.Yes:
+                    w = BackgroundCallWorker(
+                        lambda: open_terminal_with_command(
+                            f'cq {_tag}',
+                            preferred_ide=_preferred_ide,
+                            project_path=_project_path,
+                        ),
+                        self,
+                    )
+                    w.finished.connect(w.deleteLater)
+                    w.start()
+
+        find_worker = BackgroundCallWorker(_do_find, self)
+        find_worker.finished.connect(_on_done)
+        find_worker.finished.connect(find_worker.deleteLater)
+        find_worker.start()
 
     def _update_mr_column(self) -> None:
         """Update just the MR column widgets without rebuilding the whole table."""

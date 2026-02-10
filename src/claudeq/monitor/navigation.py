@@ -299,7 +299,8 @@ def _navigate_terminal_app(title_pattern: str) -> bool:
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         return result.returncode == 0 and 'true' in result.stdout
     except (subprocess.SubprocessError, OSError):
@@ -333,7 +334,8 @@ def _navigate_iterm2(title_pattern: str) -> bool:
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         return result.returncode == 0 and 'true' in result.stdout
     except (subprocess.SubprocessError, OSError):
@@ -503,7 +505,8 @@ def _close_terminal_app(title_pattern: str) -> bool:
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         return result.returncode == 0 and 'true' in result.stdout
     except (subprocess.SubprocessError, OSError):
@@ -534,7 +537,8 @@ def _close_iterm2(title_pattern: str) -> bool:
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         return result.returncode == 0 and 'true' in result.stdout
     except (subprocess.SubprocessError, OSError):
@@ -654,7 +658,8 @@ def _open_terminal_app_terminal(command: str) -> bool:
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
@@ -682,7 +687,8 @@ def _open_iterm2_terminal(command: str) -> bool:
         result = subprocess.run(
             ['osascript', '-e', script],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=10
         )
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError):

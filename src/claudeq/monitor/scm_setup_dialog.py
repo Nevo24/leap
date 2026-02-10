@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
 )
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL
+from claudeq.monitor.scm_polling import TestConnectionWorker
 
 
 class SCMSetupDialog(QDialog):
@@ -32,6 +33,7 @@ class SCMSetupDialog(QDialog):
         self.setWindowTitle(self._window_title())
         self.setMinimumWidth(450)
         self._verified_username: Optional[str] = None
+        self._test_worker: Optional[TestConnectionWorker] = None
         self._init_ui()
         self._load_existing()
 
@@ -156,10 +158,17 @@ class SCMSetupDialog(QDialog):
 
         self.status_label.setText('Testing...')
         self.status_label.setStyleSheet('color: grey;')
-        from PyQt5.QtWidgets import QApplication
-        QApplication.processEvents()
+        self.test_btn.setEnabled(False)
 
-        success, result = self._do_test_connection(url, token)
+        self._test_worker = TestConnectionWorker(self)
+        self._test_worker.configure(self._do_test_connection, url, token)
+        self._test_worker.result_ready.connect(self._on_test_result)
+        self._test_worker.finished.connect(self._test_worker.deleteLater)
+        self._test_worker.start()
+
+    def _on_test_result(self, success: bool, result: str) -> None:
+        """Handle background connection test result."""
+        self.test_btn.setEnabled(True)
         if success:
             self._verified_username = result
             self.status_label.setText(f'Connected as: {result}')
