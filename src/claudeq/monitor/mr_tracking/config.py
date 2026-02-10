@@ -86,24 +86,39 @@ def save_monitor_prefs(prefs: dict[str, Any]) -> None:
         json.dump(prefs, f, indent=2)
 
 
-def load_cq_context() -> str:
-    """Load the user-defined CQ context text from storage.
+def load_selected_context_name() -> str:
+    """Load the name of the currently selected context preset.
 
     Returns:
-        The context string, or empty string if not set.
+        The preset name, or empty string if none selected.
     """
     if not CQ_CONTEXT_FILE.exists():
         return ''
     try:
-        return CQ_CONTEXT_FILE.read_text(encoding='utf-8')
+        return CQ_CONTEXT_FILE.read_text(encoding='utf-8').strip()
     except OSError:
         return ''
 
 
-def save_cq_context(text: str) -> None:
-    """Save the user-defined CQ context text to storage."""
+def save_selected_context_name(name: str) -> None:
+    """Save the name of the currently selected context preset."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    CQ_CONTEXT_FILE.write_text(text, encoding='utf-8')
+    CQ_CONTEXT_FILE.write_text(name, encoding='utf-8')
+
+
+def load_cq_context() -> str:
+    """Load the text of the currently selected context preset.
+
+    Resolves the selected preset name to its text from cq_contexts.json.
+
+    Returns:
+        The context string, or empty string if no preset selected or not found.
+    """
+    name = load_selected_context_name()
+    if not name:
+        return ''
+    contexts = load_saved_contexts()
+    return contexts.get(name, '')
 
 
 def load_saved_contexts() -> dict[str, str]:

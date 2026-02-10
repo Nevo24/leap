@@ -28,9 +28,10 @@ from claudeq.monitor.session_manager import (
 )
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    delete_named_context, load_cq_context, load_gitlab_config,
+    delete_named_context, load_gitlab_config,
     load_github_config, load_monitor_prefs, load_saved_contexts,
-    save_cq_context, save_monitor_prefs, save_named_context,
+    load_selected_context_name, save_monitor_prefs, save_named_context,
+    save_selected_context_name,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, detect_scm_type
 from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
@@ -339,8 +340,14 @@ class MonitorWindow(QMainWindow):
 
         text_edit = QTextEdit()
         text_edit.setPlaceholderText('Enter context here (e.g. project conventions, review instructions)...')
-        text_edit.setPlainText(load_cq_context())
         dlg_layout.addWidget(text_edit)
+
+        # Load the currently selected preset (if any)
+        selected_name = load_selected_context_name()
+        if selected_name:
+            contexts = load_saved_contexts()
+            if selected_name in contexts:
+                text_edit.setPlainText(contexts[selected_name])
 
         # Bottom buttons: Apply & Close + Cancel
         btn_layout = QHBoxLayout()
@@ -352,7 +359,7 @@ class MonitorWindow(QMainWindow):
         dlg_layout.addLayout(btn_layout)
 
         # Track the current preset name and whether it needs a first save
-        current_name: list[str] = ['']
+        current_name: list[str] = [selected_name]
         _refreshing: list[bool] = [False]
         _unsaved: list[bool] = [False]  # True after New, before first Save
 
@@ -463,7 +470,7 @@ class MonitorWindow(QMainWindow):
                 refresh_combo()
 
         def on_apply() -> None:
-            save_cq_context(text_edit.toPlainText())
+            save_selected_context_name(current_name[0])
             dialog.accept()
 
         combo.currentIndexChanged.connect(on_combo_changed)
@@ -474,7 +481,7 @@ class MonitorWindow(QMainWindow):
         apply_btn.clicked.connect(on_apply)
         cancel_btn.clicked.connect(dialog.reject)
 
-        refresh_combo()
+        refresh_combo(selected_name)
 
         dialog.exec_()
 
