@@ -486,8 +486,14 @@ class MonitorWindow(QMainWindow):
 
         self._refresh_worker = SessionRefreshWorker(self)
         self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
-        self._refresh_worker.finished.connect(self._refresh_worker.deleteLater)
+        self._refresh_worker.finished.connect(self._on_refresh_worker_finished)
         self._refresh_worker.start()
+
+    def _on_refresh_worker_finished(self) -> None:
+        """Clean up the refresh worker reference after it completes."""
+        if self._refresh_worker:
+            self._refresh_worker.deleteLater()
+            self._refresh_worker = None
 
     def _on_sessions_refreshed(self, sessions: list) -> None:
         """Handle background session refresh result."""
