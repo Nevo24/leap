@@ -13,9 +13,9 @@ from typing import Any, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QApplication, QDialog, QDialogButtonBox, QMainWindow, QWidget,
+    QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
+    QPushButton, QCheckBox, QHeaderView, QMessageBox, QTextEdit,
     QInputDialog
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
@@ -28,8 +28,8 @@ from claudeq.monitor.session_manager import (
 )
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    load_gitlab_config, load_github_config,
-    load_monitor_prefs, save_monitor_prefs,
+    load_cq_context, load_gitlab_config, load_github_config,
+    load_monitor_prefs, save_cq_context, save_monitor_prefs,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, detect_scm_type
 from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
@@ -143,6 +143,10 @@ class MonitorWindow(QMainWindow):
 
         # Top controls
         top_layout = QHBoxLayout()
+        context_btn = QPushButton('Context')
+        context_btn.setToolTip('Edit context text attached to CQ messages')
+        context_btn.clicked.connect(self._open_context_editor)
+        top_layout.addWidget(context_btn)
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Size')
         reset_cols_btn.clicked.connect(self._reset_window_size)
@@ -296,6 +300,32 @@ class MonitorWindow(QMainWindow):
         if github_config:
             intervals.append(github_config.get('poll_interval', SCM_POLL_INTERVAL))
         return min(intervals) if intervals else SCM_POLL_INTERVAL
+
+    def _open_context_editor(self) -> None:
+        """Open a dialog to edit the CQ context text."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Edit CQ Context')
+        dialog.resize(500, 350)
+
+        dlg_layout = QVBoxLayout(dialog)
+
+        hint = QLabel('This text will be attached to every message sent from the monitor to CQ.')
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
+        dlg_layout.addWidget(hint)
+
+        text_edit = QTextEdit()
+        text_edit.setPlaceholderText('Enter context here (e.g. project conventions, review instructions)...')
+        text_edit.setPlainText(load_cq_context())
+        dlg_layout.addWidget(text_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dialog.exec_() == QDialog.Accepted:
+            save_cq_context(text_edit.toPlainText())
 
     def _open_gitlab_setup(self) -> None:
         """Open the GitLab setup dialog."""

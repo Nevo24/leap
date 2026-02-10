@@ -8,6 +8,7 @@ from claudeq.utils.constants import STORAGE_DIR
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
+CQ_CONTEXT_FILE = STORAGE_DIR / "cq_context.txt"
 
 # Default monitor preferences
 _DEFAULT_PREFS = {
@@ -82,3 +83,23 @@ def save_monitor_prefs(prefs: dict[str, Any]) -> None:
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     with open(MONITOR_PREFS_FILE, 'w') as f:
         json.dump(prefs, f, indent=2)
+
+
+def load_cq_context() -> str:
+    """Load the user-defined CQ context text from storage.
+
+    Returns:
+        The context string, or empty string if not set.
+    """
+    if not CQ_CONTEXT_FILE.exists():
+        return ''
+    try:
+        return CQ_CONTEXT_FILE.read_text(encoding='utf-8')
+    except OSError:
+        return ''
+
+
+def save_cq_context(text: str) -> None:
+    """Save the user-defined CQ context text to storage."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    CQ_CONTEXT_FILE.write_text(text, encoding='utf-8')
