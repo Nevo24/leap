@@ -338,9 +338,11 @@ class MonitorWindow(QMainWindow):
         dlg_layout.addWidget(text_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         dlg_layout.addWidget(buttons)
+
+        # Track the current preset name (set by Load or Save As)
+        current_name: list[str] = ['']
 
         def refresh_combo() -> None:
             combo.clear()
@@ -357,6 +359,7 @@ class MonitorWindow(QMainWindow):
             contexts = load_saved_contexts()
             text = contexts.get(name, '')
             text_edit.setPlainText(text)
+            current_name[0] = name
 
         def on_save_as() -> None:
             name, ok = QInputDialog.getText(
@@ -375,8 +378,33 @@ class MonitorWindow(QMainWindow):
                 if reply != QMessageBox.Yes:
                     return
             save_named_context(name, text_edit.toPlainText())
+            current_name[0] = name
             refresh_combo()
             combo.setCurrentText(name)
+
+        def on_save() -> None:
+            text = text_edit.toPlainText()
+            # If no preset name set yet, prompt for one
+            if not current_name[0]:
+                name, ok = QInputDialog.getText(
+                    dialog, 'Save Context As', 'Name for this context:'
+                )
+                if not ok or not name.strip():
+                    return
+                name = name.strip()
+                existing = load_saved_contexts()
+                if name in existing:
+                    reply = QMessageBox.question(
+                        dialog, 'Overwrite Context',
+                        f"A context named '{name}' already exists. Overwrite?",
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if reply != QMessageBox.Yes:
+                        return
+                current_name[0] = name
+            save_named_context(current_name[0], text)
+            save_cq_context(text)
+            dialog.accept()
 
         def on_delete() -> None:
             name = combo.currentText()
@@ -389,16 +417,18 @@ class MonitorWindow(QMainWindow):
             )
             if reply == QMessageBox.Yes:
                 delete_named_context(name)
+                if current_name[0] == name:
+                    current_name[0] = ''
                 refresh_combo()
 
+        buttons.accepted.connect(on_save)
         load_btn.clicked.connect(on_load)
         save_as_btn.clicked.connect(on_save_as)
         delete_btn.clicked.connect(on_delete)
 
         refresh_combo()
 
-        if dialog.exec_() == QDialog.Accepted:
-            save_cq_context(text_edit.toPlainText())
+        dialog.exec_()
 
     def _open_gitlab_setup(self) -> None:
         """Open the GitLab setup dialog."""
