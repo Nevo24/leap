@@ -9,6 +9,7 @@ GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 CQ_CONTEXT_FILE = STORAGE_DIR / "cq_context.txt"
+CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
 
 # Default monitor preferences
 _DEFAULT_PREFS = {
@@ -103,3 +104,42 @@ def save_cq_context(text: str) -> None:
     """Save the user-defined CQ context text to storage."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     CQ_CONTEXT_FILE.write_text(text, encoding='utf-8')
+
+
+def load_saved_contexts() -> dict[str, str]:
+    """Load all named context presets from storage.
+
+    Returns:
+        Dict mapping context name to text.
+    """
+    if not CQ_CONTEXTS_FILE.exists():
+        return {}
+    try:
+        with open(CQ_CONTEXTS_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _write_saved_contexts(contexts: dict[str, str]) -> None:
+    """Write all named context presets to storage."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CQ_CONTEXTS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(contexts, f, indent=2, ensure_ascii=False)
+
+
+def save_named_context(name: str, text: str) -> None:
+    """Save a context preset under the given name."""
+    contexts = load_saved_contexts()
+    contexts[name] = text
+    _write_saved_contexts(contexts)
+
+
+def delete_named_context(name: str) -> None:
+    """Delete a saved context preset by name."""
+    contexts = load_saved_contexts()
+    contexts.pop(name, None)
+    _write_saved_contexts(contexts)

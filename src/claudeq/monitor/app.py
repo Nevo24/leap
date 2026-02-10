@@ -13,10 +13,10 @@ from typing import Any, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem,
-    QPushButton, QCheckBox, QHeaderView, QMessageBox, QTextEdit,
-    QInputDialog
+    QApplication, QComboBox, QDialog, QDialogButtonBox, QMainWindow,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
+    QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QTextEdit, QInputDialog
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
@@ -28,8 +28,9 @@ from claudeq.monitor.session_manager import (
 )
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    load_cq_context, load_gitlab_config, load_github_config,
-    load_monitor_prefs, save_cq_context, save_monitor_prefs,
+    delete_named_context, load_cq_context, load_gitlab_config,
+    load_github_config, load_monitor_prefs, load_saved_contexts,
+    save_cq_context, save_monitor_prefs, save_named_context,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, detect_scm_type
 from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
@@ -302,10 +303,10 @@ class MonitorWindow(QMainWindow):
         return min(intervals) if intervals else SCM_POLL_INTERVAL
 
     def _open_context_editor(self) -> None:
-        """Open a dialog to edit the CQ context text."""
+        """Open a dialog to edit the CQ context text with named presets."""
         dialog = QDialog(self)
         dialog.setWindowTitle('Edit CQ Context')
-        dialog.resize(500, 350)
+        dialog.resize(500, 400)
 
         dlg_layout = QVBoxLayout(dialog)
 
@@ -313,6 +314,23 @@ class MonitorWindow(QMainWindow):
         hint.setWordWrap(True)
         hint.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
         dlg_layout.addWidget(hint)
+
+        # Preset row: combo + Load + Save As + Delete
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel('Saved:'))
+
+        combo = QComboBox()
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        combo.setMinimumWidth(160)
+        preset_layout.addWidget(combo, 1)
+
+        load_btn = QPushButton('Load')
+        save_as_btn = QPushButton('Save As...')
+        delete_btn = QPushButton('Delete')
+        preset_layout.addWidget(load_btn)
+        preset_layout.addWidget(save_as_btn)
+        preset_layout.addWidget(delete_btn)
+        dlg_layout.addLayout(preset_layout)
 
         text_edit = QTextEdit()
         text_edit.setPlaceholderText('Enter context here (e.g. project conventions, review instructions)...')
@@ -323,6 +341,52 @@ class MonitorWindow(QMainWindow):
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         dlg_layout.addWidget(buttons)
+
+        def refresh_combo() -> None:
+            combo.clear()
+            for name in sorted(load_saved_contexts()):
+                combo.addItem(name)
+            has_items = combo.count() > 0
+            load_btn.setEnabled(has_items)
+            delete_btn.setEnabled(has_items)
+
+        def on_load() -> None:
+            name = combo.currentText()
+            if not name:
+                return
+            contexts = load_saved_contexts()
+            text = contexts.get(name, '')
+            text_edit.setPlainText(text)
+
+        def on_save_as() -> None:
+            name, ok = QInputDialog.getText(
+                dialog, 'Save Context As', 'Name for this context:'
+            )
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+            save_named_context(name, text_edit.toPlainText())
+            refresh_combo()
+            combo.setCurrentText(name)
+
+        def on_delete() -> None:
+            name = combo.currentText()
+            if not name:
+                return
+            reply = QMessageBox.question(
+                dialog, 'Delete Context',
+                f"Delete saved context '{name}'?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                delete_named_context(name)
+                refresh_combo()
+
+        load_btn.clicked.connect(on_load)
+        save_as_btn.clicked.connect(on_save_as)
+        delete_btn.clicked.connect(on_delete)
+
+        refresh_combo()
 
         if dialog.exec_() == QDialog.Accepted:
             save_cq_context(text_edit.toPlainText())
