@@ -500,11 +500,16 @@ class MonitorWindow(QMainWindow):
         self.sessions = sessions
         self._update_table()
 
+    _CENTER_COLS = frozenset({4, 5})  # COL_STATUS, COL_QUEUE
+
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         """Set cell text only if it changed, to avoid flicker."""
         item = self.table.item(row, col)
         if item is None:
-            self.table.setItem(row, col, QTableWidgetItem(text))
+            item = QTableWidgetItem(text)
+            if col in self._CENTER_COLS:
+                item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, col, item)
         elif item.text() != text:
             item.setText(text)
 
