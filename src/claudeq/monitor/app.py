@@ -36,7 +36,7 @@ from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.dock_badge import DockBadge
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
-    SendThreadsWorker, SessionRefreshWorker,
+    SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
 )
 from claudeq.monitor.monitor_utils import find_icon, _remove_client_lock
 from claudeq.monitor.navigation import (
@@ -71,6 +71,7 @@ class MonitorWindow(QMainWindow):
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None
         self._collect_threads_worker: Optional[CollectThreadsWorker] = None
         self._send_threads_worker: Optional[SendThreadsWorker] = None
+        self._send_combined_worker: Optional[SendThreadsCombinedWorker] = None
         self._refresh_worker: Optional[SessionRefreshWorker] = None
         self._scm_polling = False
         self._scm_poll_started_at: float = 0.0
@@ -394,7 +395,8 @@ class MonitorWindow(QMainWindow):
 
         # Guard against concurrent runs
         if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
-           (self._send_threads_worker and self._send_threads_worker.isRunning()):
+           (self._send_threads_worker and self._send_threads_worker.isRunning()) or \
+           (self._send_combined_worker and self._send_combined_worker.isRunning()):
             QMessageBox.information(
                 self, 'In Progress',
                 'Already sending threads — please wait.'
@@ -478,6 +480,97 @@ class MonitorWindow(QMainWindow):
         """Handle error from either background worker."""
         QApplication.restoreOverrideCursor()
         QMessageBox.warning(self, 'Error', message)
+
+    def _send_all_threads_combined_to_cq(self, tag: str) -> None:
+        """Send all unresponded MR threads as one concatenated message (non-blocking).
+
+        Reuses Phase 1 (CollectThreadsWorker) then sends a single combined message.
+        """
+        if not self._scm_providers:
+            return
+
+        # Guard against concurrent runs
+        if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
+           (self._send_threads_worker and self._send_threads_worker.isRunning()) or \
+           (self._send_combined_worker and self._send_combined_worker.isRunning()):
+            QMessageBox.information(
+                self, 'In Progress',
+                'Already sending threads — please wait.'
+            )
+            return
+
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session:
+            return
+
+        project_path = session.get('project_path')
+        if not project_path:
+            return
+
+        # Launch Phase 1 — collection runs in background
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self._collect_threads_worker = CollectThreadsWorker(self)
+        self._collect_threads_worker.configure(
+            project_path, self._scm_providers, self.sessions
+        )
+        self._collect_threads_worker.collected.connect(self._on_threads_collected_combined)
+        self._collect_threads_worker.error.connect(self._on_send_threads_error)
+        self._collect_threads_worker.start()
+
+    def _on_threads_collected_combined(self, commands: list, matching_tags: list) -> None:
+        """Handle Phase 1 completion for combined send."""
+        provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
+
+        if not commands or not provider:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.information(
+                self, 'No Threads',
+                'No unresponded threads found.'
+            )
+            return
+
+        if not matching_tags:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(
+                self, 'No Session',
+                'No matching CQ session found for this project.'
+            )
+            return
+
+        if len(matching_tags) == 1:
+            matched_tag = matching_tags[0]
+        else:
+            QApplication.restoreOverrideCursor()
+            matched_tag, ok = QInputDialog.getItem(
+                self, 'Select Session',
+                'Multiple sessions found.\nPick one:',
+                matching_tags, 0, False
+            )
+            if not ok:
+                return
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        # Launch Phase 2 — send combined message
+        self._send_combined_worker = SendThreadsCombinedWorker(self)
+        self._send_combined_worker.configure(provider, commands, matched_tag)
+        self._send_combined_worker.finished.connect(self._on_send_combined_finished)
+        self._send_combined_worker.error.connect(self._on_send_threads_error)
+        self._send_combined_worker.start()
+
+    def _on_send_combined_finished(self, thread_count: int, matched_tag: str) -> None:
+        """Handle combined send completion."""
+        QApplication.restoreOverrideCursor()
+        if thread_count > 0:
+            QMessageBox.information(
+                self, 'Threads Sent',
+                f"Sent {thread_count} thread(s) as one message to session '{matched_tag}'."
+            )
+            self._start_scm_poll()
+        else:
+            QMessageBox.information(
+                self, 'No Threads',
+                'No unresponded threads found.'
+            )
 
     def _refresh_data(self) -> None:
         """Refresh session data and update table (non-blocking).
@@ -587,6 +680,9 @@ class MonitorWindow(QMainWindow):
                     )
                     mr_widget.set_send_to_cq_callback(
                         lambda t=tag: self._send_all_threads_to_cq(t)
+                    )
+                    mr_widget.set_send_combined_to_cq_callback(
+                        lambda t=tag: self._send_all_threads_combined_to_cq(t)
                     )
                     mr_layout.addWidget(mr_widget)
 

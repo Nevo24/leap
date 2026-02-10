@@ -273,6 +273,15 @@ The monitor polls GitLab for MR status updates on tracked sessions. Key timeouts
 
 Polling flow: `_scm_poll_timer` fires → `_start_scm_poll()` → `SCMPollerWorker` (QThread) → `get_mr_status()` per session via ThreadPoolExecutor → `results_ready` signal → `_on_scm_results()` updates `_mr_statuses` → `_update_mr_column()` refreshes widgets.
 
+### Sending Threads to CQ
+
+Right-clicking the MR status label (`PulsingLabel` in `ui_widgets.py`) shows a context menu with two send modes:
+
+- **"Send each thread to CQ (one per queue message)"** — queues each unresponded thread as a separate message via `SendThreadsWorker`
+- **"Send all threads to CQ (combined into one message)"** — concatenates all threads (separated by `---`) into a single queue message via `SendThreadsCombinedWorker`
+
+Both modes share Phase 1 (`CollectThreadsWorker`): resolve provider → collect unresponded threads → match CQ sessions. Phase 2 differs: `SendThreadsWorker` sends one-by-one, `SendThreadsCombinedWorker` sends a single concatenated message. Both acknowledge threads on the SCM side after successful send.
+
 ## IDE Setup
 
 ### JetBrains (PyCharm, IntelliJ, etc.)

@@ -81,6 +81,7 @@ class PulsingLabel(QLabel):
         self._mr_url: Optional[str] = None
         self._phase: float = 0.0
         self._on_send_to_cq: Optional[callable] = None
+        self._on_send_combined_to_cq: Optional[callable] = None
         self._has_unresponded: bool = False
         self._indicator_help: Optional[str] = None
         self._popup: Optional[IndicatorPopup] = None
@@ -112,6 +113,10 @@ class PulsingLabel(QLabel):
     def set_send_to_cq_callback(self, callback: Optional[callable]) -> None:
         """Set the callback for 'Send all threads to CQ' context menu action."""
         self._on_send_to_cq = callback
+
+    def set_send_combined_to_cq_callback(self, callback: Optional[callable]) -> None:
+        """Set the callback for 'Send all threads as one message' context menu action."""
+        self._on_send_combined_to_cq = callback
 
     def set_has_unresponded(self, has_unresponded: bool) -> None:
         """Set whether there are unresponded threads (controls menu item enabled state)."""
@@ -152,8 +157,10 @@ class PulsingLabel(QLabel):
         if not url:
             return
 
-        # Capture callback ref before auto-refresh may destroy this widget
+        # Capture callback refs before auto-refresh may destroy this widget
         send_to_cq = self._on_send_to_cq
+        send_combined = self._on_send_combined_to_cq
+        has_unresponded = self._has_unresponded
 
         # Parent menu to the top-level window so it survives table refresh
         top_level = self.window()
@@ -163,10 +170,15 @@ class PulsingLabel(QLabel):
         go_action.triggered.connect(lambda: webbrowser.open(url))
         menu.addAction(go_action)
 
-        send_action = QAction('Send all threads to CQ', menu)
+        send_action = QAction('Send each thread to CQ (one per queue message)', menu)
         send_action.triggered.connect(lambda: send_to_cq() if send_to_cq else None)
-        send_action.setEnabled(bool(self._has_unresponded and send_to_cq))
+        send_action.setEnabled(bool(has_unresponded and send_to_cq))
         menu.addAction(send_action)
+
+        combined_action = QAction('Send all threads to CQ (combined into one message)', menu)
+        combined_action.triggered.connect(lambda: send_combined() if send_combined else None)
+        combined_action.setEnabled(bool(has_unresponded and send_combined))
+        menu.addAction(combined_action)
 
         menu.exec_(self.mapToGlobal(pos))
 
