@@ -202,12 +202,12 @@ class PulsingLabel(QLabel):
 
         cq_each_action = QAction("Send each '/cq' thread to CQ (one per queue message)", menu)
         cq_each_action.triggered.connect(lambda: send_cq_threads() if send_cq_threads else None)
-        cq_each_action.setEnabled(bool(not auto_fetch_cq and send_cq_threads))
+        cq_each_action.setEnabled(bool(not auto_fetch_cq and has_unresponded and send_cq_threads))
         menu.addAction(cq_each_action)
 
         cq_combined_action = QAction("Send all '/cq' threads to CQ (combined into one message)", menu)
         cq_combined_action.triggered.connect(lambda: send_cq_combined() if send_cq_combined else None)
-        cq_combined_action.setEnabled(bool(not auto_fetch_cq and send_cq_combined))
+        cq_combined_action.setEnabled(bool(not auto_fetch_cq and has_unresponded and send_cq_combined))
         menu.addAction(cq_combined_action)
 
         menu.exec_(self.mapToGlobal(pos))
