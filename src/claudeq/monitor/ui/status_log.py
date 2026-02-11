@@ -43,7 +43,7 @@ class StatusLogDialog(QDialog):
     def __init__(self, status_log: StatusLog, parent: QWidget = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Status Log')
-        self.resize(500, 400)
+        self.resize(800, 400)
 
         layout = QVBoxLayout(self)
 

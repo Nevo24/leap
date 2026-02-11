@@ -78,31 +78,30 @@ class ServerLauncher:
 
     def _find_available_project_dir(
         self, repos_dir: Path, project_name: str,
-    ) -> tuple[Path, bool, bool]:
+    ) -> tuple[Path, bool, list[str]]:
         """Find a project directory not used by a running CQ server.
 
         Checks repo-name, repo-name_1, repo-name_2, ...
-        Returns (project_dir, needs_clone, base_was_in_use).
-        base_was_in_use is True when the base project dir exists but has an
-        active CQ server, so a suffixed dir was chosen instead.
+        Returns (project_dir, needs_clone, in_use_names).
+        in_use_names lists the directory names that were skipped because
+        they have an active CQ server.
         """
         active_paths = self._w._get_active_project_paths()
-        base_in_use = False
+        in_use: list[str] = []
 
         # Start with base name, then _1, _2, ...
         candidates = [project_name] + [f'{project_name}_{i}' for i in range(1, 100)]
-        for i, name in enumerate(candidates):
+        for name in candidates:
             candidate = repos_dir / name
             resolved = str(candidate.resolve())
             if not candidate.is_dir():
-                return candidate, True, base_in_use  # Doesn't exist — needs clone
+                return candidate, True, in_use  # Doesn't exist — needs clone
             if resolved not in active_paths:
-                return candidate, False, base_in_use  # Exists and no CQ server using it
-            if i == 0:
-                base_in_use = True
+                return candidate, False, in_use  # Exists and no CQ server using it
+            in_use.append(name)
         # Fallback (shouldn't happen with 100 candidates)
         fallback = repos_dir / f'{project_name}_{100}'
-        return fallback, True, base_in_use
+        return fallback, True, in_use
 
     def _start_server_from_mr(self, tag: str, pinned: dict[str, Any]) -> None:
         """Start server for an MR-pinned row: find/clone project, checkout branch."""
@@ -115,16 +114,17 @@ class ServerLauncher:
         rd = Path(repos_dir).expanduser()
         rd.mkdir(parents=True, exist_ok=True)
 
-        project_dir, needs_clone, base_in_use = self._find_available_project_dir(
+        project_dir, needs_clone, in_use_names = self._find_available_project_dir(
             rd, project_name,
         )
 
         if needs_clone:
             clone_url = f"{host_url}/{remote_project}.git"
-            if base_in_use:
+            if in_use_names:
+                used = ', '.join(in_use_names)
                 self._w._show_status(
-                    f"Cloning {project_name}... "
-                    f"({project_name} in use by another server)",
+                    f"Cloning to {project_dir.name} "
+                    f"({used} in use by other servers)",
                 )
             else:
                 self._w._show_status(f"Cloning {project_name} to {project_dir.name}...")

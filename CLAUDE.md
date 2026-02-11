@@ -322,7 +322,7 @@ A `/cq` comment on a thread does **not** count as a user response for unresponde
 The dock icon badge tracks two types of changes while the monitor window is unfocused:
 
 - **MR changes**: State diff — badge shows how many MRs are in a different state vs last time the user looked (recomputed each poll)
-- **Session status**: Event counter — badge increments each time a session transitions from Running → Idle (accumulates until window is focused)
+- **Session status**: Event counter — badge increments each time a session transitions from Running → Idle, but only if the session was busy for at least 3 seconds (`MIN_BUSY_SECONDS`). Brief flickers are ignored. Accumulates until window is focused.
 
 Both counts sum into a single badge number. Focusing the monitor window resets all counts and snapshots current state.
 

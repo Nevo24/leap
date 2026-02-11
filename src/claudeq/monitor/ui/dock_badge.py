@@ -5,6 +5,7 @@ Badge count tracks the number of MRs and session statuses that changed since
 the user last focused the monitor window.
 """
 
+import time
 from typing import Any, Optional
 
 from PyQt5.QtCore import QRect, Qt
@@ -17,10 +18,14 @@ from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 class DockBadge:
     """Manages the dock icon badge overlay."""
 
+    # Only count Running→Idle if the session was busy for at least this long.
+    MIN_BUSY_SECONDS: float = 3.0
+
     def __init__(self) -> None:
         self._base_icon: Optional[QPixmap] = None
         self._seen_mr_statuses: dict[str, MRStatus] = {}
         self._seen_session_busy: dict[str, bool] = {}
+        self._busy_since: dict[str, float] = {}  # tag → monotonic timestamp
         self._mr_changed: int = 0
         self._session_changed: int = 0
 
@@ -64,11 +69,20 @@ class DockBadge:
             self._render_total()
             return
 
-        # Detect Running → Idle transitions and accumulate
+        now = time.monotonic()
+        # Track when sessions become busy; detect Running → Idle transitions
         for tag, busy in current.items():
             prev = self._seen_session_busy.get(tag)
-            if prev is True and not busy:
-                self._session_changed += 1
+            if busy and prev is not True:
+                # Just became busy — record the start time
+                self._busy_since[tag] = now
+            elif prev is True and not busy:
+                # Running → Idle — only count if busy long enough
+                started = self._busy_since.pop(tag, None)
+                if started is not None and (now - started) >= self.MIN_BUSY_SECONDS:
+                    self._session_changed += 1
+            elif not busy:
+                self._busy_since.pop(tag, None)
         # Always update so we detect the next transition
         self._seen_session_busy = dict(current)
         self._render_total()
