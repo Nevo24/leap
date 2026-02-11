@@ -351,7 +351,7 @@ Input validation loops: invalid tag or duplicate tag loops back to the input dia
 
 When clicking "Server" on an MR-pinned dead row:
 
-1. Looks in `repos_dir` (Settings, default `~/tmp/claudeq-repos`) for the project
+1. Looks in `repos_dir` (Settings, default `/tmp/claudeq-repos`) for the project
 2. Checks `repo-name`, `repo-name_1`, `repo-name_2`... — skips any dir with a running CQ server
 3. If no available dir exists → clones fresh with next numeric suffix
 4. If available dir found → fetches remote, checks if local is up-to-date
@@ -381,7 +381,7 @@ Implemented in `ClaudeQServer._validate_pinned_session()` (`server/server.py`), 
 Settings dialog (`monitor/settings_dialog.py`) accessible via the Settings button:
 
 - **Default terminal**: Terminal.app or iTerm2 — used when opening new CQ servers
-- **Repositories dir**: Where ClaudeQ clones repos for MR rows (default: `~/tmp/claudeq-repos`)
+- **Repositories dir**: Where ClaudeQ clones repos for MR rows (default: `/tmp/claudeq-repos`)
 - **Clean unused repos**: Deletes cloned repos that have no running CQ server (checks resolved paths against active sessions)
 
 Settings persisted in `.storage/monitor_prefs.json`.

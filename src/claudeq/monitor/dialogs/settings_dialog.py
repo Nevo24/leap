@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
 )
 
-DEFAULT_REPOS_DIR = '~/tmp/claudeq-repos'
+DEFAULT_REPOS_DIR = '/tmp/claudeq-repos'
 
 
 class SettingsDialog(QDialog):
