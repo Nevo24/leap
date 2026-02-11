@@ -220,7 +220,7 @@ class MonitorWindow(QMainWindow):
         # Status / log bar at the very bottom
         status_layout = QHBoxLayout()
 
-        full_log_btn = QPushButton('Full Log')
+        full_log_btn = QPushButton('Logs')
         full_log_btn.setToolTip('View full status message history')
         full_log_btn.clicked.connect(self._open_status_log)
         status_layout.addWidget(full_log_btn)
@@ -387,6 +387,7 @@ class MonitorWindow(QMainWindow):
             self._mr_statuses.clear()
             self._tracked_tags.clear()
             self._init_scm_providers()
+            self._show_status('GitLab connection updated')
 
     def _open_github_setup(self) -> None:
         """Open the GitHub setup dialog."""
@@ -398,6 +399,7 @@ class MonitorWindow(QMainWindow):
             self._mr_statuses.clear()
             self._tracked_tags.clear()
             self._init_scm_providers()
+            self._show_status('GitHub connection updated')
 
     def _start_scm_poll(self) -> None:
         """Start a background SCM poll for tracked sessions only."""
@@ -410,6 +412,7 @@ class MonitorWindow(QMainWindow):
             elapsed = time.monotonic() - self._scm_poll_started_at
             if elapsed > 60:
                 logger.warning("SCM poll stuck for %.0fs, force-resetting", elapsed)
+                self._show_status(f"SCM poll stuck for {elapsed:.0f}s — force-reset")
                 self._scm_polling = False
                 if self._scm_worker:
                     try:
@@ -548,6 +551,7 @@ class MonitorWindow(QMainWindow):
         """Handle Phase 2 completion."""
         QApplication.restoreOverrideCursor()
         if sent_count > 0:
+            self._show_status(f"Sent {sent_count} thread(s) to '{matched_tag}'")
             QMessageBox.information(
                 self, 'Threads Sent',
                 f"Sent {sent_count} thread(s) to session '{matched_tag}'."
@@ -563,6 +567,7 @@ class MonitorWindow(QMainWindow):
     def _on_send_threads_error(self, message: str) -> None:
         """Handle error from either background worker."""
         QApplication.restoreOverrideCursor()
+        self._show_status(f"Thread send error: {message}")
         QMessageBox.warning(self, 'Error', message)
 
     def _send_all_threads_combined_to_cq(self, tag: str) -> None:
@@ -647,6 +652,7 @@ class MonitorWindow(QMainWindow):
         """Handle combined send completion."""
         QApplication.restoreOverrideCursor()
         if thread_count > 0:
+            self._show_status(f"Sent {thread_count} thread(s) combined to '{matched_tag}'")
             QMessageBox.information(
                 self, 'Threads Sent',
                 f"Sent {thread_count} thread(s) as one message to session '{matched_tag}'."
@@ -1001,6 +1007,7 @@ class MonitorWindow(QMainWindow):
             scm_branch = remote_info.branch
 
         # Show "Checking..." while the API call runs in the background
+        self._show_status(f"Checking MR for '{tag}'...")
         self._checking_tags.add(tag)
         self._update_table()
 
@@ -1015,6 +1022,8 @@ class MonitorWindow(QMainWindow):
 
     def _stop_tracking(self, tag: str) -> None:
         """Stop MR tracking for a session."""
+        if tag in self._tracked_tags:
+            self._show_status(f"Stopped MR tracking for '{tag}'")
         self._tracked_tags.discard(tag)
         self._checking_tags.discard(tag)
         self._mr_statuses.pop(tag, None)
@@ -1042,6 +1051,7 @@ class MonitorWindow(QMainWindow):
             return
 
         # MR found — promote to tracked
+        self._show_status(f"MR found for '{tag}' — tracking started")
         self._tracked_tags.add(tag)
         self._mr_statuses[tag] = status
         self._update_table()
@@ -1054,6 +1064,7 @@ class MonitorWindow(QMainWindow):
         """Handle an error from a one-shot MR check."""
         self._checking_tags.discard(tag)
         self._update_table()
+        self._show_status(f"MR tracking error for '{tag}': {message}")
         QMessageBox.warning(self, 'Error', message)
 
     def _show_status(self, msg: str, timeout_ms: int = 5000) -> None:
@@ -1143,6 +1154,7 @@ class MonitorWindow(QMainWindow):
                 if session_type == 'server':
                     self._start_server(tag)
                 else:
+                    self._show_status(f"Opening new client for '{tag}'")
                     worker = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
                             f"cq '{tag}'",
@@ -1331,8 +1343,7 @@ class MonitorWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        if has_server or has_client:
-            self._show_status(f"Deleting '{tag}'...")
+        self._show_status(f"Deleted row '{tag}'")
         if has_server:
             self._close_server(tag, server_pid)
         if has_client:
@@ -1377,6 +1388,7 @@ class MonitorWindow(QMainWindow):
             self._prefs['default_terminal'] = dialog.selected_terminal()
             self._prefs['repos_dir'] = dialog.selected_repos_dir()
             save_monitor_prefs(self._prefs)
+            self._show_status('Settings saved')
 
     # ------------------------------------------------------------------
     #  Add row from MR/PR URL
@@ -1485,6 +1497,7 @@ class MonitorWindow(QMainWindow):
             'ide': '',
         }
         save_pinned_sessions(self._pinned_sessions)
+        self._show_status(f"Added row '{tag}' from MR: {details.source_branch}")
 
         # Refresh table to show the new row
         self.sessions = self._merge_sessions(
