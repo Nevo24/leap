@@ -22,10 +22,12 @@ class SettingsDialog(QDialog):
         current_terminal: Optional[str] = None,
         current_repos_dir: Optional[str] = None,
         active_paths_fn: Optional[Callable[[], set[str]]] = None,
+        log_fn: Optional[Callable[[str], None]] = None,
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
         self._active_paths_fn = active_paths_fn
+        self._log_fn = log_fn
         self.setWindowTitle('Settings')
         self.resize(800, 180)
 
@@ -105,10 +107,12 @@ class SettingsDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
+        deleted: list[str] = []
         errors: list[str] = []
         for d in unused:
             try:
                 shutil.rmtree(d)
+                deleted.append(d.name)
             except Exception as e:
                 errors.append(f"{d.name}: {e}")
 
@@ -117,11 +121,15 @@ class SettingsDialog(QDialog):
                 self, 'Cleanup Errors',
                 f"Some repos could not be deleted:\n\n" + '\n'.join(errors),
             )
+            if self._log_fn:
+                self._log_fn(f"Repo cleanup: {len(deleted)} deleted, {len(errors)} failed")
         else:
             QMessageBox.information(
                 self, 'Cleanup Complete',
-                f"Deleted {len(unused)} unused repo(s).",
+                f"Deleted {len(deleted)} unused repo(s).",
             )
+            if self._log_fn:
+                self._log_fn(f"Repo cleanup: deleted {len(deleted)} unused repo(s): {', '.join(deleted)}")
 
     def selected_terminal(self) -> str:
         """Return the selected default terminal."""

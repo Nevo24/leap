@@ -1378,6 +1378,7 @@ class MonitorWindow(QMainWindow):
             current_terminal=self._prefs.get('default_terminal', 'Terminal.app'),
             current_repos_dir=self._prefs.get('repos_dir', DEFAULT_REPOS_DIR),
             active_paths_fn=self._get_active_project_paths,
+            log_fn=self._show_status,
             parent=self,
         )
         if dialog.exec_():
