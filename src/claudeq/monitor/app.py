@@ -225,12 +225,9 @@ class MonitorWindow(QMainWindow):
         full_log_btn.clicked.connect(self._open_status_log)
         status_layout.addWidget(full_log_btn)
 
-        self._log_labels: list[QLabel] = []
-        for _ in range(3):
-            lbl = QLabel('')
-            lbl.setStyleSheet('color: gray; font-size: 11px;')
-            status_layout.addWidget(lbl)
-            self._log_labels.append(lbl)
+        self._log_label = QLabel('')
+        self._log_label.setStyleSheet('color: gray; font-size: 11px;')
+        status_layout.addWidget(self._log_label)
 
         status_layout.addStretch()
         layout.addLayout(status_layout)
@@ -1073,15 +1070,14 @@ class MonitorWindow(QMainWindow):
         self._refresh_log_labels()
 
     def _refresh_log_labels(self) -> None:
-        """Update the 3 inline log labels with the most recent entries."""
+        """Update the inline log label with the most recent entry."""
         entries = self._status_log.entries()
-        recent = entries[-3:] if len(entries) >= 3 else entries
-        for i, lbl in enumerate(self._log_labels):
-            if i < len(recent):
-                ts = time.strftime('%H:%M:%S', time.localtime(recent[i].timestamp))
-                lbl.setText(f'[{ts}] {recent[i].message}')
-            else:
-                lbl.setText('')
+        if entries:
+            e = entries[-1]
+            ts = time.strftime('%H:%M:%S', time.localtime(e.timestamp))
+            self._log_label.setText(f'[{ts}] {e.message}')
+        else:
+            self._log_label.setText('')
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
         """Close a server session (non-blocking, no confirmation)."""
