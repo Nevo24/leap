@@ -468,6 +468,15 @@ class MonitorWindow(QMainWindow):
                 current_name[0] = ''
                 _unsaved[0] = False
                 refresh_combo()
+                # Auto-load the first remaining preset
+                fallback = combo.currentText()
+                if fallback:
+                    contexts = load_saved_contexts()
+                    text_edit.setPlainText(contexts.get(fallback, ''))
+                    current_name[0] = fallback
+                else:
+                    text_edit.clear()
+                _update_button_states()
 
         def on_apply() -> None:
             save_selected_context_name(current_name[0])
