@@ -94,6 +94,29 @@ def is_client_lock_held(tag: str) -> bool:
     return _is_lock_held(client_lock)
 
 
+def read_client_pid(tag: str) -> Optional[int]:
+    """
+    Read the client PID from its lock file.
+
+    Args:
+        tag: Session tag name.
+
+    Returns:
+        Client PID if readable, or None.
+    """
+    client_lock = SOCKET_DIR / f"{tag}.client.lock"
+    if not client_lock.exists():
+        return None
+    try:
+        with open(client_lock, 'r') as f:
+            pid_str = f.read().strip()
+            if pid_str:
+                return int(pid_str)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def get_active_sessions() -> list[dict[str, Any]]:
     """
     Get list of active ClaudeQ sessions.

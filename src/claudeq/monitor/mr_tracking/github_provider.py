@@ -7,7 +7,7 @@ from typing import Optional
 
 from github import Github, GithubException
 
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,21 @@ class GitHubProvider(SCMProvider):
             return repo
         except Exception:
             logger.debug("Failed to get repo: %s", project_path)
+            return None
+
+    def get_mr_details(self, project_path: str, mr_iid: int) -> Optional[MRDetails]:
+        repo = self._get_repo(project_path)
+        if not repo:
+            return None
+        try:
+            pr = repo.get_pull(mr_iid)
+            return MRDetails(
+                source_branch=pr.head.ref,
+                mr_title=pr.title,
+                mr_url=pr.html_url,
+            )
+        except Exception:
+            logger.debug("Failed to get PR #%s in %s", mr_iid, project_path)
             return None
 
     def get_mr_status(self, project_path: str, branch: str) -> MRStatus:

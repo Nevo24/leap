@@ -8,7 +8,7 @@ from typing import Optional
 
 import gitlab
 
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,21 @@ class GitLabProvider(SCMProvider):
             return project
         except Exception:
             logger.debug("Failed to get project: %s", project_path)
+            return None
+
+    def get_mr_details(self, project_path: str, mr_iid: int) -> Optional[MRDetails]:
+        project = self._get_project(project_path)
+        if not project:
+            return None
+        try:
+            mr = project.mergerequests.get(mr_iid)
+            return MRDetails(
+                source_branch=mr.source_branch,
+                mr_title=mr.title,
+                mr_url=mr.web_url,
+            )
+        except Exception:
+            logger.debug("Failed to get MR !%s in %s", mr_iid, project_path)
             return None
 
     def get_mr_status(self, project_path: str, branch: str) -> MRStatus:

@@ -120,31 +120,43 @@ class SCMPollerWorker(QThread):
         self, session: dict[str, Any]
     ) -> tuple[MRStatus, list[tuple[Any, SCMProvider]]]:
         """Poll a single session for MR status and /cq commands."""
-        project_path = session.get('project_path')
-        if not project_path:
-            logger.debug("Poll skip: no project_path for tag %s", session.get('tag'))
-            return MRStatus(state=MRState.NO_MR), []
+        # Resolve SCM project path, branch, and provider.
+        # MR-pinned rows have remote_project_path/scm_type stored directly;
+        # active sessions resolve from the local git remote.
+        remote_project = session.get('remote_project_path')
+        scm_type_str = session.get('scm_type')
+        branch = session.get('branch')
 
-        remote_info = get_git_remote_info(project_path)
-        if not remote_info:
-            logger.debug("Poll skip: no remote info for tag %s (path=%s)",
-                         session.get('tag'), project_path)
-            return MRStatus(state=MRState.NO_MR), []
+        if remote_project and scm_type_str and branch and branch != 'N/A':
+            # Use pinned MR data directly
+            scm_project_path = remote_project
+            scm_branch = branch
+            provider = self._providers.get(scm_type_str)
+        else:
+            # Resolve from local git remote
+            project_path = session.get('project_path')
+            if not project_path:
+                logger.debug("Poll skip: no project_path for tag %s", session.get('tag'))
+                return MRStatus(state=MRState.NO_MR), []
 
-        # Select the right provider based on SCM type
-        provider = self._providers.get(remote_info.scm_type.value)
+            remote_info = get_git_remote_info(project_path)
+            if not remote_info:
+                logger.debug("Poll skip: no remote info for tag %s (path=%s)",
+                             session.get('tag'), project_path)
+                return MRStatus(state=MRState.NO_MR), []
+
+            scm_project_path = remote_info.project_path
+            scm_branch = remote_info.branch
+            provider = self._providers.get(remote_info.scm_type.value)
+
         if not provider:
-            logger.debug("Poll skip: no provider for scm_type %s (tag %s)",
-                         remote_info.scm_type.value, session.get('tag'))
+            logger.debug("Poll skip: no provider for tag %s", session.get('tag'))
             return MRStatus(state=MRState.NO_MR), []
 
-        logger.debug("Polling MR for tag %s: project=%s branch=%s scm=%s",
-                      session.get('tag'), remote_info.project_path, remote_info.branch,
-                      remote_info.scm_type.value)
+        logger.debug("Polling MR for tag %s: project=%s branch=%s",
+                      session.get('tag'), scm_project_path, scm_branch)
         try:
-            status = provider.get_mr_status(
-                remote_info.project_path, remote_info.branch
-            )
+            status = provider.get_mr_status(scm_project_path, scm_branch)
         except Exception:
             logger.debug("Error polling MR for tag %s", session['tag'], exc_info=True)
             status = MRStatus(state=MRState.NO_MR)
@@ -153,7 +165,7 @@ class SCMPollerWorker(QThread):
         if self._auto_fetch_cq:
             try:
                 raw_commands = provider.scan_cq_commands(
-                    remote_info.project_path, remote_info.branch
+                    scm_project_path, scm_branch
                 )
                 cq_commands = [(cmd, provider) for cmd in raw_commands]
             except Exception:
@@ -168,6 +180,12 @@ class SCMPollerWorker(QThread):
                 # Match sessions by SCM project path
                 matching_tags: list[str] = []
                 for session in self._sessions:
+                    # Check pinned remote_project_path first
+                    rpp = session.get('remote_project_path')
+                    if rpp and rpp == cmd.project_path:
+                        matching_tags.append(session['tag'])
+                        continue
+                    # Fall back to resolving from local git remote
                     sp = session.get('project_path')
                     if not sp:
                         continue

@@ -6,6 +6,7 @@ used across the application.
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Final
 
@@ -153,3 +154,11 @@ def save_settings(settings: dict) -> None:
             json.dump(settings, f, indent=2)
     except OSError:
         pass
+
+
+_TAG_PATTERN: Final = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*$')
+
+
+def is_valid_tag(tag: str) -> bool:
+    """Check if a tag contains only letters, numbers, hyphens, and underscores."""
+    return bool(_TAG_PATTERN.match(tag))

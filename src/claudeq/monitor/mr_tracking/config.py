@@ -8,6 +8,7 @@ from claudeq.utils.constants import STORAGE_DIR
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
+PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
 CQ_CONTEXT_FILE = STORAGE_DIR / "cq_selected_ctx"
 CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
 
@@ -159,3 +160,29 @@ def delete_named_context(name: str) -> None:
     contexts = load_saved_contexts()
     contexts.pop(name, None)
     _write_saved_contexts(contexts)
+
+
+def load_pinned_sessions() -> dict[str, dict[str, Any]]:
+    """Load pinned sessions from storage.
+
+    Returns:
+        Dict mapping tag to session info dict with keys:
+        tag, project_path, ide, branch.
+    """
+    if not PINNED_SESSIONS_FILE.exists():
+        return {}
+    try:
+        with open(PINNED_SESSIONS_FILE, 'r') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def save_pinned_sessions(sessions: dict[str, dict[str, Any]]) -> None:
+    """Save pinned sessions to storage."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(PINNED_SESSIONS_FILE, 'w') as f:
+        json.dump(sessions, f, indent=2)

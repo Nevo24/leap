@@ -646,9 +646,10 @@ IDE.application.invokeLater {{
 
 def _open_terminal_app_terminal(command: str) -> bool:
     """Open a new Terminal.app tab and run a command."""
+    escaped = command.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
     tell application "Terminal"
-        do script "{command}"
+        do script "{escaped}"
         activate
     end tell
     return true
@@ -670,12 +671,13 @@ def _open_terminal_app_terminal(command: str) -> bool:
 
 def _open_iterm2_terminal(command: str) -> bool:
     """Open a new iTerm2 tab and run a command."""
+    escaped = command.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
     tell application "iTerm"
         tell current window
             create tab with default profile
             tell current session
-                write text "{command}"
+                write text "{escaped}"
             end tell
         end tell
         activate

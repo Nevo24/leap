@@ -24,6 +24,54 @@ class GitRemoteInfo:
     scm_type: SCMType = SCMType.UNKNOWN
 
 
+@dataclass
+class ParsedMRUrl:
+    """Parsed MR/PR URL information."""
+    scm_type: SCMType
+    host_url: str
+    project_path: str
+    mr_iid: int
+
+
+def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Optional[ParsedMRUrl]:
+    """Parse a GitLab MR or GitHub PR URL.
+
+    Supported formats:
+        GitLab: https://gitlab.com/group/project/-/merge_requests/42
+        GitHub: https://github.com/owner/repo/pull/42
+
+    Args:
+        url: The MR/PR URL.
+        gitlab_config: Optional GitLab config dict for custom host detection.
+
+    Returns:
+        ParsedMRUrl or None if the URL cannot be parsed.
+    """
+    # GitLab: https://<host>/<project_path>/-/merge_requests/<iid>
+    m = re.match(r'https?://([^/]+)/(.+?)/-/merge_requests/(\d+)', url)
+    if m:
+        host_url = f"https://{m.group(1)}"
+        return ParsedMRUrl(
+            scm_type=detect_scm_type(host_url, gitlab_config),
+            host_url=host_url,
+            project_path=m.group(2),
+            mr_iid=int(m.group(3)),
+        )
+
+    # GitHub: https://<host>/<owner>/<repo>/pull/<number>
+    m = re.match(r'https?://([^/]+)/([^/]+/[^/]+)/pull/(\d+)', url)
+    if m:
+        host_url = f"https://{m.group(1)}"
+        return ParsedMRUrl(
+            scm_type=detect_scm_type(host_url, gitlab_config),
+            host_url=host_url,
+            project_path=m.group(2),
+            mr_iid=int(m.group(3)),
+        )
+
+    return None
+
+
 def detect_scm_type(host_url: str, gitlab_config: Optional[dict[str, Any]] = None) -> SCMType:
     """Detect SCM platform type from a git remote host URL.
 

@@ -15,6 +15,14 @@ class MRState(Enum):
 
 
 @dataclass
+class MRDetails:
+    """Basic details of a merge/pull request."""
+    source_branch: str
+    mr_title: str
+    mr_url: str
+
+
+@dataclass
 class MRStatus:
     """Status of a merge/pull request for a session."""
     state: MRState
@@ -41,6 +49,18 @@ class SCMProvider(ABC):
     @abstractmethod
     def get_username(self) -> Optional[str]:
         """Get the authenticated username."""
+
+    @abstractmethod
+    def get_mr_details(self, project_path: str, mr_iid: int) -> Optional[MRDetails]:
+        """Get basic MR details by IID.
+
+        Args:
+            project_path: The project path (e.g., 'user/repo').
+            mr_iid: The MR/PR number.
+
+        Returns:
+            MRDetails or None if not found.
+        """
 
     @abstractmethod
     def get_mr_status(self, project_path: str, branch: str) -> MRStatus:
