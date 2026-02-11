@@ -1,11 +1,11 @@
 """Dock icon badge overlay for macOS.
 
 Paints a red notification badge with a count onto the application's dock icon.
-Badge count tracks the number of MRs that changed since the user last focused
-the monitor window.
+Badge count tracks the number of MRs and session statuses that changed since
+the user last focused the monitor window.
 """
 
-from typing import Optional
+from typing import Any, Optional
 
 from PyQt5.QtCore import QRect, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
@@ -18,50 +18,77 @@ class DockBadge:
     """Manages the dock icon badge overlay."""
 
     def __init__(self) -> None:
-        self._count: int = 0
         self._base_icon: Optional[QPixmap] = None
-        self._seen_statuses: dict[str, MRStatus] = {}
+        self._seen_mr_statuses: dict[str, MRStatus] = {}
+        self._seen_session_busy: dict[str, bool] = {}
+        self._mr_changed: int = 0
+        self._session_changed: int = 0
 
     def update(self, mr_statuses: dict[str, MRStatus], window_active: bool) -> None:
-        """Recompute and render the badge based on current MR statuses.
+        """Recompute MR change count and render the badge.
 
         Args:
             mr_statuses: Current MR statuses by tag.
             window_active: Whether the monitor window is currently focused.
         """
-        # If user is looking at the monitor, just update the snapshot — no badge
         if window_active:
-            self._seen_statuses = dict(mr_statuses)
-            if self._count > 0:
-                self._count = 0
-                self._render('')
+            self._seen_mr_statuses = dict(mr_statuses)
+            self._mr_changed = 0
+            self._render_total()
             return
 
         changed = 0
         for tag, status in mr_statuses.items():
-            seen = self._seen_statuses.get(tag)
+            seen = self._seen_mr_statuses.get(tag)
             if seen is None:
-                # New MR we haven't seen at all — counts as a change
                 if status.state not in (MRState.NOT_CONFIGURED, MRState.NO_MR):
                     changed += 1
             elif (status.state != seen.state
                   or status.unresponded_count != seen.unresponded_count
                   or status.approved != seen.approved):
                 changed += 1
-        if changed == self._count:
+        self._mr_changed = changed
+        self._render_total()
+
+    def update_sessions(self, sessions: list[dict[str, Any]], window_active: bool) -> None:
+        """Track session status changes (Running → Idle).
+
+        Args:
+            sessions: List of session dicts with 'tag' and 'claude_busy' keys.
+            window_active: Whether the monitor window is currently focused.
+        """
+        current = {s['tag']: s.get('claude_busy', False) for s in sessions}
+        if window_active:
+            self._seen_session_busy = dict(current)
+            self._session_changed = 0
+            self._render_total()
             return
-        self._count = changed
-        self._render(str(changed) if changed > 0 else '')
+
+        # Detect Running → Idle transitions and accumulate
+        for tag, busy in current.items():
+            prev = self._seen_session_busy.get(tag)
+            if prev is True and not busy:
+                self._session_changed += 1
+        # Always update so we detect the next transition
+        self._seen_session_busy = dict(current)
+        self._render_total()
 
     def clear(self, mr_statuses: dict[str, MRStatus]) -> None:
-        """Clear the badge and snapshot current MR statuses as seen."""
-        self._count = 0
-        self._seen_statuses = dict(mr_statuses)
-        self._render('')
+        """Clear the badge and snapshot current statuses as seen."""
+        self._mr_changed = 0
+        self._session_changed = 0
+        self._seen_mr_statuses = dict(mr_statuses)
+        self._render_total()
 
     def discard_tag(self, tag: str) -> None:
-        """Remove a tag from the seen snapshot."""
-        self._seen_statuses.pop(tag, None)
+        """Remove a tag from the seen snapshots."""
+        self._seen_mr_statuses.pop(tag, None)
+        self._seen_session_busy.pop(tag, None)
+
+    def _render_total(self) -> None:
+        """Render the combined badge count."""
+        total = self._mr_changed + self._session_changed
+        self._render(str(total) if total > 0 else '')
 
     def _render(self, label: str) -> None:
         """Paint the badge onto the dock icon."""

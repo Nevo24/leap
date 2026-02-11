@@ -866,6 +866,7 @@ class MonitorWindow(QMainWindow):
         """Handle background session refresh result."""
         self.sessions = sessions
         self._update_table()
+        self._dock_badge.update_sessions(sessions, self.isActiveWindow())
 
     _CENTER_COLS = frozenset({4, 5})  # COL_STATUS, COL_QUEUE
 
