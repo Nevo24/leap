@@ -1,0 +1,132 @@
+"""Settings dialog for ClaudeQ Monitor."""
+
+import shutil
+from pathlib import Path
+from typing import Callable, Optional
+
+from PyQt5.QtWidgets import (
+    QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
+)
+
+DEFAULT_REPOS_DIR = '~/tmp/claudeq-repos'
+
+
+class SettingsDialog(QDialog):
+    """Dialog for configuring monitor preferences."""
+
+    _TERMINAL_CHOICES = ['Terminal.app', 'iTerm2']
+
+    def __init__(
+        self,
+        current_terminal: Optional[str] = None,
+        current_repos_dir: Optional[str] = None,
+        active_paths_fn: Optional[Callable[[], set[str]]] = None,
+        parent: Optional[object] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._active_paths_fn = active_paths_fn
+        self.setWindowTitle('Settings')
+        self.resize(800, 180)
+
+        layout = QVBoxLayout(self)
+
+        grid = QGridLayout()
+
+        # Default terminal
+        grid.addWidget(QLabel('Default terminal:'), 0, 0)
+        self._terminal_combo = QComboBox()
+        self._terminal_combo.addItems(self._TERMINAL_CHOICES)
+        if current_terminal and current_terminal in self._TERMINAL_CHOICES:
+            self._terminal_combo.setCurrentText(current_terminal)
+        grid.addWidget(self._terminal_combo, 0, 1)
+
+        # Repositories directory
+        grid.addWidget(QLabel('Clone to dir:'), 1, 0)
+        self._repos_dir_edit = QLineEdit()
+        self._repos_dir_edit.setPlaceholderText(DEFAULT_REPOS_DIR)
+        if current_repos_dir:
+            self._repos_dir_edit.setText(current_repos_dir)
+        grid.addWidget(self._repos_dir_edit, 1, 1)
+        browse_btn = QPushButton('Browse...')
+        browse_btn.clicked.connect(self._browse_repos_dir)
+        grid.addWidget(browse_btn, 1, 2)
+        cleanup_btn = QPushButton('Clean')
+        cleanup_btn.setToolTip('Delete cloned repos that have no running CQ server')
+        cleanup_btn.clicked.connect(self._cleanup_repos)
+        grid.addWidget(cleanup_btn, 1, 3)
+
+        layout.addLayout(grid)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _browse_repos_dir(self) -> None:
+        """Open a directory picker for repositories dir."""
+        path = QFileDialog.getExistingDirectory(self, 'Select Repositories Directory')
+        if path:
+            self._repos_dir_edit.setText(path)
+
+    def _cleanup_repos(self) -> None:
+        """Delete all repos in the repos dir that are not used by a running CQ server."""
+        repos_dir_str = self._repos_dir_edit.text().strip() or DEFAULT_REPOS_DIR
+        repos_dir = Path(repos_dir_str).expanduser()
+        if not repos_dir.is_dir():
+            QMessageBox.information(self, 'Nothing to Clean', f"'{repos_dir}' does not exist.")
+            return
+
+        active_paths: set[str] = set()
+        if self._active_paths_fn:
+            active_paths = self._active_paths_fn()
+
+        # Find subdirectories that are git repos
+        unused: list[Path] = []
+        for child in sorted(repos_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            if not (child / '.git').exists():
+                continue
+            resolved = str(child.resolve())
+            if resolved not in active_paths:
+                unused.append(child)
+
+        if not unused:
+            QMessageBox.information(self, 'Nothing to Clean', 'No unused repos found.')
+            return
+
+        names = '\n'.join(f'  - {d.name}' for d in unused)
+        reply = QMessageBox.question(
+            self, 'Clean Unused Repos',
+            f"Delete {len(unused)} unused repo(s)?\n\n{names}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        errors: list[str] = []
+        for d in unused:
+            try:
+                shutil.rmtree(d)
+            except Exception as e:
+                errors.append(f"{d.name}: {e}")
+
+        if errors:
+            QMessageBox.warning(
+                self, 'Cleanup Errors',
+                f"Some repos could not be deleted:\n\n" + '\n'.join(errors),
+            )
+        else:
+            QMessageBox.information(
+                self, 'Cleanup Complete',
+                f"Deleted {len(unused)} unused repo(s).",
+            )
+
+    def selected_terminal(self) -> str:
+        """Return the selected default terminal."""
+        return self._terminal_combo.currentText()
+
+    def selected_repos_dir(self) -> str:
+        """Return the repositories directory path."""
+        return self._repos_dir_edit.text().strip()

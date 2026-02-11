@@ -9,33 +9,35 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QMainWindow,
+    QApplication, QMainWindow,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
-    QTextEdit, QInputDialog
+    QInputDialog,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
 
-from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR
+from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR, is_valid_tag
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.session_manager import (
-    get_active_sessions, is_client_lock_held, load_session_metadata, session_exists,
+    get_active_sessions, is_client_lock_held, load_session_metadata,
+    read_client_pid, session_exists,
 )
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    delete_named_context, load_gitlab_config,
-    load_github_config, load_monitor_prefs, load_saved_contexts,
-    load_selected_context_name, save_monitor_prefs, save_named_context,
-    save_selected_context_name,
+    load_gitlab_config, load_github_config, load_monitor_prefs,
+    load_pinned_sessions, save_monitor_prefs, save_pinned_sessions,
 )
-from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, detect_scm_type
-from claudeq.monitor.ui_widgets import IndicatorLabel, PulsingLabel
-from claudeq.monitor.dock_badge import DockBadge
+from claudeq.monitor.mr_tracking.git_utils import (
+    SCMType, detect_scm_type, get_git_remote_info, parse_mr_url,
+)
+from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
+from claudeq.monitor.ui.dock_badge import DockBadge
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
     SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
@@ -44,6 +46,12 @@ from claudeq.monitor.monitor_utils import find_icon, _remove_client_lock
 from claudeq.monitor.navigation import (
     close_terminal_with_title, find_terminal_with_title, open_terminal_with_command,
 )
+from claudeq.monitor.dialogs.scm_context_dialog import ContextEditorDialog
+from claudeq.monitor.server_launcher import ServerLauncher
+from claudeq.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR, SettingsDialog
+from claudeq.monitor.ui.status_log import StatusLog, StatusLogDialog
+from claudeq.monitor.dialogs.gitlab_setup_dialog import GitLabSetupDialog
+from claudeq.monitor.dialogs.github_setup_dialog import GitHubSetupDialog
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +68,7 @@ class MonitorWindow(QMainWindow):
     COL_QUEUE = 5
     COL_SERVER = 6
     COL_CLIENT = 7
+    COL_DELETE = 8
 
     def __init__(self) -> None:
         """Initialize the monitor window."""
@@ -83,6 +92,10 @@ class MonitorWindow(QMainWindow):
         self._tracked_tags: set[str] = set()
         self._checking_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
+        self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
+        self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
+        self._status_log = StatusLog()
+        self._server_launcher = ServerLauncher(self)
 
         # Setup auto-refresh timer before init_ui
         self.timer = QTimer()
@@ -94,7 +107,7 @@ class MonitorWindow(QMainWindow):
 
         self._init_ui()
         # Synchronous initial load — UI needs sessions before first paint
-        self.sessions = get_active_sessions()
+        self.sessions = self._merge_sessions(get_active_sessions())
         self._update_table()
         self._init_scm_providers()
 
@@ -123,9 +136,9 @@ class MonitorWindow(QMainWindow):
 
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels([
-            'Tag', 'Project', 'Branch', 'MR', 'Status', 'Queue', 'Server', 'Client'
+            'Tag', 'Project', 'Branch', 'MR', 'Status', 'Queue', 'Server', 'Client', 'Delete'
         ])
 
         # Enable interactive column resizing
@@ -133,11 +146,18 @@ class MonitorWindow(QMainWindow):
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
 
+        # Delete column: narrow fixed width
+        self.table.setColumnWidth(self.COL_DELETE, 30)
+        header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
+
         # Restore saved column widths or distribute equally
+        # Migrate old 8-col prefs to 9-col by ignoring stale widths
         col_count = self.table.columnCount()
         saved_widths = self._prefs.get('column_widths')
         if saved_widths and len(saved_widths) == col_count:
             for col, width in enumerate(saved_widths):
+                if col == self.COL_DELETE:
+                    continue  # keep fixed
                 self.table.setColumnWidth(col, width)
         else:
             self._apply_equal_column_widths()
@@ -146,10 +166,23 @@ class MonitorWindow(QMainWindow):
 
         # Top controls
         top_layout = QHBoxLayout()
+
+        settings_btn = QPushButton('\u2699 Settings')
+        settings_btn.setToolTip('Monitor settings')
+        settings_btn.clicked.connect(self._open_settings)
+        top_layout.addWidget(settings_btn)
+
         context_btn = QPushButton('Context')
         context_btn.setToolTip('Edit context text attached to CQ messages')
         context_btn.clicked.connect(self._open_context_editor)
         top_layout.addWidget(context_btn)
+
+        add_btn = QPushButton('+')
+        add_btn.setFixedWidth(30)
+        add_btn.setToolTip('Add session from MR/PR URL')
+        add_btn.clicked.connect(self._add_row)
+        top_layout.addWidget(add_btn)
+
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Size')
         reset_cols_btn.clicked.connect(self._reset_window_size)
@@ -187,6 +220,17 @@ class MonitorWindow(QMainWindow):
         bottom_layout.addWidget(close_btn)
 
         layout.addLayout(bottom_layout)
+
+        # Status bar: permanent "Log" button
+        log_btn = QPushButton('Log')
+        log_btn.setToolTip('View status message history')
+        log_btn.clicked.connect(self._open_status_log)
+        self.statusBar().addPermanentWidget(log_btn)
+
+    def _open_status_log(self) -> None:
+        """Open the status log dialog."""
+        dialog = StatusLogDialog(self._status_log, self)
+        dialog.exec_()
 
     def _set_window_icon(self) -> None:
         """Set the window icon."""
@@ -278,9 +322,20 @@ class MonitorWindow(QMainWindow):
     def _get_provider_for_session(self, session: dict[str, Any]) -> Optional[SCMProvider]:
         """Get the appropriate SCM provider for a session based on its git remote.
 
+        For MR-pinned rows (added via '+'), uses the stored scm_type directly.
+        For active sessions, resolves from the local git remote.
+
         Returns:
             The matching SCMProvider, or None if no provider matches.
         """
+        # First try: use stored SCM type (MR-pinned rows)
+        scm_type_str = session.get('scm_type')
+        if scm_type_str:
+            provider = self._scm_providers.get(scm_type_str)
+            if provider:
+                return provider
+
+        # Second try: resolve from local git remote
         project_path = session.get('project_path')
         if not project_path:
             return None
@@ -310,213 +365,12 @@ class MonitorWindow(QMainWindow):
         return min(intervals) if intervals else SCM_POLL_INTERVAL
 
     def _open_context_editor(self) -> None:
-        """Open a dialog to edit the CQ context text with named presets.
-
-        Uses a file-editor metaphor: preset management (Save/Save As/Delete)
-        is independent from applying the active context (Apply & Close).
-        """
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Edit CQ Context')
-        dialog.resize(500, 400)
-
-        dlg_layout = QVBoxLayout(dialog)
-
-        hint = QLabel('This text will be attached to every message sent from the monitor to CQ.')
-        hint.setWordWrap(True)
-        hint.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
-        dlg_layout.addWidget(hint)
-
-        # Preset row: combo + New + Save + Save As... + Delete
-        preset_layout = QHBoxLayout()
-
-        combo = QComboBox()
-        combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        combo.setMinimumWidth(160)
-        preset_layout.addWidget(combo, 1)
-
-        new_btn = QPushButton('New')
-        save_btn = QPushButton('Save')
-        save_as_btn = QPushButton('Save As...')
-        delete_btn = QPushButton('Delete')
-        preset_layout.addWidget(new_btn)
-        preset_layout.addWidget(save_btn)
-        preset_layout.addWidget(save_as_btn)
-        preset_layout.addWidget(delete_btn)
-        dlg_layout.addLayout(preset_layout)
-
-        text_edit = QTextEdit()
-        text_edit.setPlaceholderText('Enter context here (e.g. project conventions, review instructions)...')
-        dlg_layout.addWidget(text_edit)
-
-        # Load the currently selected preset (if any)
-        selected_name = load_selected_context_name()
-        if selected_name:
-            contexts = load_saved_contexts()
-            if selected_name in contexts:
-                text_edit.setPlainText(contexts[selected_name])
-
-        # Bottom buttons: Apply & Close + Cancel
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        apply_btn = QPushButton('Apply && Close')
-        cancel_btn = QPushButton('Cancel')
-        btn_layout.addWidget(apply_btn)
-        btn_layout.addWidget(cancel_btn)
-        dlg_layout.addLayout(btn_layout)
-
-        # Track the current preset name and whether it needs a first save
-        current_name: list[str] = [selected_name]
-        _refreshing: list[bool] = [False]
-        _unsaved: list[bool] = [False]  # True after New, before first Save
-
-        def _update_button_states() -> None:
-            has_preset = bool(current_name[0])
-            save_btn.setEnabled(has_preset)
-            delete_btn.setEnabled(has_preset)
-
-        def refresh_combo(select_name: str = '') -> None:
-            _refreshing[0] = True
-            combo.clear()
-            for name in sorted(load_saved_contexts()):
-                combo.addItem(name)
-            if select_name:
-                idx = combo.findText(select_name)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-            _refreshing[0] = False
-            _update_button_states()
-
-        def on_combo_changed(index: int) -> None:
-            if _refreshing[0]:
-                return
-            name = combo.currentText()
-            if not name:
-                return
-            contexts = load_saved_contexts()
-            text = contexts.get(name, '')
-            text_edit.setPlainText(text)
-            current_name[0] = name
-            _unsaved[0] = False
-            _update_button_states()
-
-        def _prompt_and_save() -> None:
-            """Prompt for a preset name and save. Used by Save As."""
-            name, ok = QInputDialog.getText(
-                dialog, 'Save Context As', 'Name for this context:'
-            )
-            if not ok or not name.strip():
-                return
-            name = name.strip()
-            existing = load_saved_contexts()
-            if name in existing:
-                reply = QMessageBox.question(
-                    dialog, 'Overwrite Context',
-                    f"A context named '{name}' already exists. Overwrite?",
-                    QMessageBox.Yes | QMessageBox.No,
-                )
-                if reply != QMessageBox.Yes:
-                    return
-            save_named_context(name, text_edit.toPlainText())
-            current_name[0] = name
-            _unsaved[0] = False
-            refresh_combo(name)
-
-        def on_new() -> None:
-            name, ok = QInputDialog.getText(
-                dialog, 'New Preset', 'Name for the new preset:'
-            )
-            if not ok or not name.strip():
-                return
-            name = name.strip()
-            existing = load_saved_contexts()
-            if name in existing:
-                reply = QMessageBox.question(
-                    dialog, 'Name Exists',
-                    f"A preset named '{name}' already exists. Overwrite with empty?",
-                    QMessageBox.Yes | QMessageBox.No,
-                )
-                if reply != QMessageBox.Yes:
-                    return
-            save_named_context(name, '')
-            current_name[0] = name
-            _unsaved[0] = True
-            text_edit.clear()
-            refresh_combo(name)
-
-        def on_save() -> None:
-            if not current_name[0]:
-                return
-            if not _unsaved[0]:
-                reply = QMessageBox.question(
-                    dialog, 'Overwrite Preset',
-                    f"Overwrite preset '{current_name[0]}'?",
-                    QMessageBox.Yes | QMessageBox.No,
-                )
-                if reply != QMessageBox.Yes:
-                    return
-            save_named_context(current_name[0], text_edit.toPlainText())
-            _unsaved[0] = False
-
-        def on_save_as() -> None:
-            _prompt_and_save()
-
-        def on_delete() -> None:
-            name = current_name[0]
-            if not name:
-                return
-            reply = QMessageBox.question(
-                dialog, 'Delete Context',
-                f"Delete saved context '{name}'?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply == QMessageBox.Yes:
-                delete_named_context(name)
-                current_name[0] = ''
-                _unsaved[0] = False
-                refresh_combo()
-                # Auto-load the first remaining preset
-                fallback = combo.currentText()
-                if fallback:
-                    contexts = load_saved_contexts()
-                    text_edit.setPlainText(contexts.get(fallback, ''))
-                    current_name[0] = fallback
-                else:
-                    text_edit.clear()
-                _update_button_states()
-
-        def on_apply() -> None:
-            # Check if text differs from the saved version
-            name = current_name[0]
-            if name:
-                saved_text = load_saved_contexts().get(name, '')
-                if text_edit.toPlainText() != saved_text:
-                    reply = QMessageBox.question(
-                        dialog, 'Unsaved Changes',
-                        f"Save changes to '{name}' before closing?",
-                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                    )
-                    if reply == QMessageBox.Cancel:
-                        return
-                    if reply == QMessageBox.Yes:
-                        save_named_context(name, text_edit.toPlainText())
-            save_selected_context_name(name)
-            dialog.accept()
-
-        combo.currentIndexChanged.connect(on_combo_changed)
-        new_btn.clicked.connect(on_new)
-        save_btn.clicked.connect(on_save)
-        save_as_btn.clicked.connect(on_save_as)
-        delete_btn.clicked.connect(on_delete)
-        apply_btn.clicked.connect(on_apply)
-        cancel_btn.clicked.connect(dialog.reject)
-
-        refresh_combo(selected_name)
-
+        """Open a dialog to edit the CQ context text with named presets."""
+        dialog = ContextEditorDialog(self)
         dialog.exec_()
 
     def _open_gitlab_setup(self) -> None:
         """Open the GitLab setup dialog."""
-        from claudeq.monitor.gitlab_setup_dialog import GitLabSetupDialog
         dialog = GitLabSetupDialog(self)
         if dialog.exec_():
             # Re-initialize providers after successful save — reset tracking
@@ -528,7 +382,6 @@ class MonitorWindow(QMainWindow):
 
     def _open_github_setup(self) -> None:
         """Open the GitHub setup dialog."""
-        from claudeq.monitor.github_setup_dialog import GitHubSetupDialog
         dialog = GitHubSetupDialog(self)
         if dialog.exec_():
             # Re-initialize providers after successful save — reset tracking
@@ -864,7 +717,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_sessions_refreshed(self, sessions: list) -> None:
         """Handle background session refresh result."""
-        self.sessions = sessions
+        self.sessions = self._merge_sessions(sessions)
         self._update_table()
         self._dock_badge.update_sessions(sessions, self.isActiveWindow())
 
@@ -916,15 +769,24 @@ class MonitorWindow(QMainWindow):
 
             for row, session in enumerate(self.sessions):
                 tag = session['tag']
+                server_pid = session.get('server_pid')
+                is_dead = server_pid is None
 
                 # Text cells — only update if value changed
                 self._set_cell_text(row, self.COL_TAG, tag)
-                self._set_cell_text(row, self.COL_PROJECT, session['project'])
-                self._set_cell_text(row, self.COL_BRANCH, session['branch'])
 
-                status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
-                self._set_cell_text(row, self.COL_STATUS, status)
-                self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
+                if is_dead:
+                    # MR-pinned rows show project/branch from MR data
+                    self._set_cell_text(row, self.COL_PROJECT, session['project'])
+                    self._set_cell_text(row, self.COL_BRANCH, session['branch'])
+                    self._set_cell_text(row, self.COL_STATUS, 'N/A')
+                    self._set_cell_text(row, self.COL_QUEUE, 'N/A')
+                else:
+                    self._set_cell_text(row, self.COL_PROJECT, session['project'])
+                    self._set_cell_text(row, self.COL_BRANCH, session['branch'])
+                    status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
+                    self._set_cell_text(row, self.COL_STATUS, status)
+                    self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
                 # MR column: "Track MR" → "Checking..." → tracked PulsingLabel + X
                 if tag in self._checking_tags:
@@ -944,10 +806,10 @@ class MonitorWindow(QMainWindow):
 
                     mr_widget = PulsingLabel()
                     self._mr_widgets[tag] = mr_widget
-                    status = self._mr_statuses.get(tag)
-                    self._apply_mr_status(mr_widget, approval_label, status)
+                    mr_status = self._mr_statuses.get(tag)
+                    self._apply_mr_status(mr_widget, approval_label, mr_status)
                     mr_widget.set_has_unresponded(
-                        status is not None and status.state == MRState.UNRESPONDED
+                        mr_status is not None and mr_status.state == MRState.UNRESPONDED
                     )
                     mr_widget.set_send_to_cq_callback(
                         lambda t=tag: self._send_all_threads_to_cq(t)
@@ -993,7 +855,6 @@ class MonitorWindow(QMainWindow):
                         )
                         self.table.setCellWidget(row, self.COL_MR, track_btn)
 
-                server_pid = session.get('server_pid')
                 client_pid = session.get('client_pid')
                 has_client = session.get('has_client', False)
 
@@ -1003,13 +864,20 @@ class MonitorWindow(QMainWindow):
                 server_layout.setContentsMargins(0, 0, 0, 0)
                 server_layout.setSpacing(2)
 
-                server_btn = QPushButton('Server')
-                server_btn.clicked.connect(
-                    lambda checked, t=tag: self._focus_session(t, 'server')
-                )
+                if is_dead:
+                    server_btn = QPushButton('Server')
+                    server_btn.setToolTip(f'Start server for {tag}')
+                    server_btn.clicked.connect(
+                        lambda checked, t=tag: self._start_server(t)
+                    )
+                else:
+                    server_btn = QPushButton('Server')
+                    server_btn.clicked.connect(
+                        lambda checked, t=tag: self._focus_session(t, 'server')
+                    )
                 server_layout.addWidget(server_btn)
 
-                if server_pid is not None:
+                if not is_dead:
                     server_x = QPushButton('X')
                     server_x.setFixedSize(24, server_btn.sizeHint().height())
                     server_x.setStyleSheet(
@@ -1018,9 +886,8 @@ class MonitorWindow(QMainWindow):
                     )
                     server_x.setToolTip(f'Close server {tag}')
                     server_x.clicked.connect(
-                        lambda checked, t=tag, spid=server_pid, cpid=client_pid,
-                               hc=has_client:
-                            self._close_server(t, spid, cpid, hc)
+                        lambda checked, t=tag, spid=server_pid:
+                            self._close_server(t, spid)
                     )
                     server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
                 self.table.setCellWidget(row, self.COL_SERVER, server_container)
@@ -1032,9 +899,12 @@ class MonitorWindow(QMainWindow):
                 client_layout.setSpacing(2)
 
                 client_btn = QPushButton('Client')
-                client_btn.clicked.connect(
-                    lambda checked, t=tag: self._focus_session(t, 'client')
-                )
+                if is_dead and not has_client:
+                    client_btn.setEnabled(False)
+                else:
+                    client_btn.clicked.connect(
+                        lambda checked, t=tag: self._focus_session(t, 'client')
+                    )
                 client_layout.addWidget(client_btn)
 
                 if has_client:
@@ -1051,6 +921,24 @@ class MonitorWindow(QMainWindow):
                     client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
 
                 self.table.setCellWidget(row, self.COL_CLIENT, client_container)
+
+                # Delete button (centered in cell)
+                del_container = QWidget()
+                del_layout = QHBoxLayout(del_container)
+                del_layout.setContentsMargins(0, 0, 0, 0)
+                del_layout.setSpacing(0)
+                del_btn = QPushButton('X')
+                del_btn.setFixedSize(24, 24)
+                del_btn.setStyleSheet(
+                    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                )
+                del_btn.setToolTip(f'Remove row for {tag}')
+                del_btn.clicked.connect(
+                    lambda checked, t=tag: self._delete_row(t)
+                )
+                del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
+                self.table.setCellWidget(row, self.COL_DELETE, del_container)
         finally:
             self.table.setUpdatesEnabled(True)
 
@@ -1076,15 +964,33 @@ class MonitorWindow(QMainWindow):
                 )
             return
 
-        project_path = session.get('project_path')
-        if not project_path:
-            QMessageBox.information(self, 'No MR Found', 'No project path for this session.')
-            return
+        # Resolve project path and branch for the SCM query.
+        # MR-pinned rows have remote_project_path/branch stored directly;
+        # active sessions resolve from the local git remote.
+        remote_project = session.get('remote_project_path')
+        branch = session.get('branch')
 
-        remote_info = get_git_remote_info(project_path)
-        if not remote_info:
-            QMessageBox.information(self, 'No MR Found', 'Could not determine Git remote info.')
-            return
+        if remote_project and branch and branch != 'N/A':
+            # Use pinned MR data directly (no local repo needed)
+            scm_project_path = remote_project
+            scm_branch = branch
+        else:
+            # Resolve from local git repo
+            project_path = session.get('project_path')
+            if not project_path:
+                QMessageBox.information(
+                    self, 'No MR Found', 'No project path for this session.'
+                )
+                return
+
+            remote_info = get_git_remote_info(project_path)
+            if not remote_info:
+                QMessageBox.information(
+                    self, 'No MR Found', 'Could not determine Git remote info.'
+                )
+                return
+            scm_project_path = remote_info.project_path
+            scm_branch = remote_info.branch
 
         # Show "Checking..." while the API call runs in the background
         self._checking_tags.add(tag)
@@ -1092,7 +998,7 @@ class MonitorWindow(QMainWindow):
 
         # Run the API call in a background thread
         worker = SCMOneShotWorker(self)
-        worker.configure(provider, tag, remote_info.project_path, remote_info.branch)
+        worker.configure(provider, tag, scm_project_path, scm_branch)
         worker.result_ready.connect(self._on_tracking_result)
         worker.error.connect(self._on_tracking_error)
         worker.finished.connect(worker.deleteLater)
@@ -1142,45 +1048,18 @@ class MonitorWindow(QMainWindow):
         self._update_table()
         QMessageBox.warning(self, 'Error', message)
 
-    def _close_server(
-        self, tag: str, server_pid: Optional[int], client_pid: Optional[int],
-        has_client: bool = False
-    ) -> None:
-        """Prompt for confirmation and close a server session (non-blocking)."""
-        reply = QMessageBox.question(
-            self,
-            'Close Server',
-            f"Close server '{tag}'?\n\nThis will terminate the Claude CLI session.",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
-            return
+    def _show_status(self, msg: str, timeout_ms: int = 5000) -> None:
+        """Show a transient message in the status bar and log it."""
+        self._status_log.append(msg)
+        self.statusBar().showMessage(msg, timeout_ms)
 
+    def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
+        """Close a server session (non-blocking, no confirmation)."""
         metadata = load_session_metadata(tag)
         preferred_ide = metadata.get('ide') if metadata else None
         project_path = metadata.get('project_path') if metadata else None
 
-        close_client_too = False
-        if has_client:
-            close_client = QMessageBox.question(
-                self,
-                'Close Client',
-                f"Close the client for '{tag}' as well?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            close_client_too = (close_client == QMessageBox.Yes)
-
-        # Run blocking I/O in background
         def _do_close() -> None:
-            if close_client_too:
-                if client_pid:
-                    try:
-                        os.kill(client_pid, signal.SIGTERM)
-                    except OSError:
-                        pass
-                close_terminal_with_title(
-                    f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
-                )
             socket_path = SOCKET_DIR / f"{tag}.sock"
             response = send_socket_request(socket_path, {'type': 'shutdown'}, timeout=3.0)
             if not (response and response.get('status') == 'ok'):
@@ -1193,21 +1072,14 @@ class MonitorWindow(QMainWindow):
                 f"cq-server {tag}", preferred_ide, project_path, f"cq-server {tag}"
             )
 
+        self._show_status(f"Closing server '{tag}'...")
         worker = BackgroundCallWorker(_do_close, self)
+        worker.finished.connect(lambda: self._show_status(f"Server '{tag}' closed"))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def _close_client(self, tag: str, client_pid: Optional[int]) -> None:
-        """Prompt for confirmation and close a client session (non-blocking)."""
-        reply = QMessageBox.question(
-            self,
-            'Close Client',
-            f"Close client '{tag}'?",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if reply != QMessageBox.Yes:
-            return
-
+        """Close a client session (non-blocking, no confirmation)."""
         if client_pid:
             try:
                 os.kill(client_pid, signal.SIGTERM)
@@ -1218,12 +1090,14 @@ class MonitorWindow(QMainWindow):
         preferred_ide = metadata.get('ide') if metadata else None
         project_path = metadata.get('project_path') if metadata else None
 
+        self._show_status(f"Closing client '{tag}'...")
         worker = BackgroundCallWorker(
             lambda: close_terminal_with_title(
                 f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
             ),
             self,
         )
+        worker.finished.connect(lambda: self._show_status(f"Client '{tag}' closed"))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
@@ -1247,16 +1121,19 @@ class MonitorWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No
             )
             if reply == QMessageBox.Yes:
-                worker = BackgroundCallWorker(
-                    lambda: open_terminal_with_command(
-                        f'cq {tag}',
-                        preferred_ide=preferred_ide,
-                        project_path=project_path,
-                    ),
-                    self,
-                )
-                worker.finished.connect(worker.deleteLater)
-                worker.start()
+                if session_type == 'server':
+                    self._start_server(tag)
+                else:
+                    worker = BackgroundCallWorker(
+                        lambda: open_terminal_with_command(
+                            f"cq '{tag}'",
+                            preferred_ide=preferred_ide,
+                            project_path=project_path,
+                        ),
+                        self,
+                    )
+                    worker.finished.connect(worker.deleteLater)
+                    worker.start()
             return
 
         # Use a result-capturing wrapper to get find_terminal_with_title's return value
@@ -1290,7 +1167,7 @@ class MonitorWindow(QMainWindow):
                     _remove_client_lock(_tag)
                     w = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f'cq {_tag}',
+                            f"cq '{_tag}'",
                             preferred_ide=_preferred_ide,
                             project_path=_project_path,
                         ),
@@ -1309,7 +1186,7 @@ class MonitorWindow(QMainWindow):
                 if reply == QMessageBox.Yes:
                     w = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f'cq {_tag}',
+                            f"cq '{_tag}'",
                             preferred_ide=_preferred_ide,
                             project_path=_project_path,
                         ),
@@ -1322,6 +1199,279 @@ class MonitorWindow(QMainWindow):
         find_worker.finished.connect(_on_done)
         find_worker.finished.connect(find_worker.deleteLater)
         find_worker.start()
+
+    def _merge_sessions(self, active_sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Merge active sessions with pinned sessions.
+
+        Auto-pins every discovered active session. For pinned tags without a
+        running server, creates a "dead" row dict with server_pid=None.
+
+        Args:
+            active_sessions: Sessions returned by get_active_sessions().
+
+        Returns:
+            Merged session list sorted by tag.
+        """
+        active_by_tag = {s['tag']: s for s in active_sessions}
+        changed = False
+
+        # Auto-pin all active sessions (skip explicitly deleted ones).
+        # Merge with existing pin data to preserve MR-pinned fields
+        # (remote_project_path, host_url, scm_type, etc.).
+        for s in active_sessions:
+            tag = s['tag']
+            if tag in self._deleted_tags:
+                continue
+            existing = self._pinned_sessions.get(tag, {})
+            pin_data = {**existing,
+                'tag': tag,
+                'project_path': s.get('project_path') or '',
+                'ide': s.get('ide') or '',
+                'branch': s.get('branch') or '',
+            }
+            if self._pinned_sessions.get(tag) != pin_data:
+                self._pinned_sessions[tag] = pin_data
+                changed = True
+
+        if changed:
+            save_pinned_sessions(self._pinned_sessions)
+
+        # Prune deleted tags that are no longer active (server fully gone)
+        self._deleted_tags -= self._deleted_tags - set(active_by_tag.keys())
+
+        # Build merged list
+        merged: list[dict[str, Any]] = []
+        for tag, pin in self._pinned_sessions.items():
+            if tag in active_by_tag:
+                session = active_by_tag[tag]
+                # Enrich active sessions with pinned SCM data (MR-pinned rows)
+                for key in ('remote_project_path', 'host_url', 'scm_type'):
+                    if pin.get(key) and not session.get(key):
+                        session[key] = pin[key]
+                merged.append(session)
+            else:
+                # Dead row — check for orphaned client
+                has_client = is_client_lock_held(tag)
+                client_pid = read_client_pid(tag) if has_client else None
+                # For MR-pinned rows, derive project name from remote path
+                if pin.get('remote_project_path'):
+                    project_name = pin['remote_project_path'].rsplit('/', 1)[-1]
+                else:
+                    project_name = pin.get('project_path', '').rsplit('/', 1)[-1] or 'N/A'
+                merged.append({
+                    'tag': tag,
+                    'claude_busy': False,
+                    'queue_size': 0,
+                    'project': project_name,
+                    'branch': pin.get('branch') or 'N/A',
+                    'project_path': pin.get('project_path') or None,
+                    'ide': pin.get('ide') or None,
+                    'server_pid': None,
+                    'client_pid': client_pid,
+                    'has_client': has_client,
+                    # Pass through pinned SCM data for MR-pinned rows
+                    'remote_project_path': pin.get('remote_project_path'),
+                    'host_url': pin.get('host_url'),
+                    'scm_type': pin.get('scm_type'),
+                })
+
+        # Include any active sessions not yet pinned (shouldn't happen, but safe)
+        pinned_tags = set(self._pinned_sessions.keys())
+        for s in active_sessions:
+            if s['tag'] not in pinned_tags:
+                merged.append(s)
+
+        return sorted(merged, key=lambda x: x['tag'])
+
+    def _delete_row(self, tag: str) -> None:
+        """Delete a row, always prompting for confirmation."""
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session:
+            return
+
+        server_pid = session.get('server_pid')
+        has_client = session.get('has_client', False)
+        client_pid = session.get('client_pid')
+        has_server = server_pid is not None
+
+        parts = []
+        if has_server:
+            parts.append('server')
+        if has_client:
+            parts.append('client')
+
+        if parts:
+            what = ' and '.join(parts)
+            msg = f"This will also close the running {what}.\n\nAre you sure?"
+        else:
+            msg = "Are you sure you want to delete this row?"
+
+        reply = QMessageBox.question(
+            self, 'Delete Row', msg, QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        if has_server or has_client:
+            self._show_status(f"Deleting '{tag}'...")
+        if has_server:
+            self._close_server(tag, server_pid)
+        if has_client:
+            self._close_client(tag, client_pid)
+
+        self._deleted_tags.add(tag)
+        self._remove_pinned_session(tag)
+
+    def _remove_pinned_session(self, tag: str) -> None:
+        """Remove a pinned session and clean up all tracking state."""
+        self._pinned_sessions.pop(tag, None)
+        save_pinned_sessions(self._pinned_sessions)
+
+        # Clean up MR tracking
+        self._stop_tracking(tag)
+
+        # Remove from sessions list and refresh table
+        self.sessions = [s for s in self.sessions if s['tag'] != tag]
+        self._update_table()
+
+    def _start_server(self, tag: str) -> None:
+        """Start a new server for a pinned (dead) row."""
+        self._server_launcher.start_server(tag)
+
+    def _get_active_project_paths(self) -> set[str]:
+        """Return the set of project_path values for all running CQ servers."""
+        paths: set[str] = set()
+        for s in self.sessions:
+            if s.get('server_pid') is not None and s.get('project_path'):
+                paths.add(str(Path(s['project_path']).resolve()))
+        return paths
+
+    def _open_settings(self) -> None:
+        """Open the settings dialog."""
+        dialog = SettingsDialog(
+            current_terminal=self._prefs.get('default_terminal', 'Terminal.app'),
+            current_repos_dir=self._prefs.get('repos_dir', DEFAULT_REPOS_DIR),
+            active_paths_fn=self._get_active_project_paths,
+            parent=self,
+        )
+        if dialog.exec_():
+            self._prefs['default_terminal'] = dialog.selected_terminal()
+            self._prefs['repos_dir'] = dialog.selected_repos_dir()
+            save_monitor_prefs(self._prefs)
+
+    # ------------------------------------------------------------------
+    #  Add row from MR/PR URL
+    # ------------------------------------------------------------------
+
+    def _add_row(self) -> None:
+        """Add a monitored row from an MR/PR URL (no git operations)."""
+        if not self._scm_providers:
+            QMessageBox.information(
+                self, 'No SCM Connected',
+                'Connect to GitLab or GitHub first using the buttons at the bottom.',
+            )
+            return
+
+        prev_url = ''
+        while True:
+            dlg = QInputDialog(self)
+            dlg.setWindowTitle('Add from MR')
+            dlg.setLabelText('MR / PR URL:')
+            dlg.setTextValue(prev_url)
+            dlg.resize(800, dlg.sizeHint().height())
+            ok = dlg.exec_() == QInputDialog.Accepted
+            url = dlg.textValue()
+            if not ok or not url.strip():
+                return
+            prev_url = url.strip()
+
+            gitlab_config = load_gitlab_config()
+            parsed = parse_mr_url(prev_url, gitlab_config)
+            if not parsed:
+                QMessageBox.warning(self, 'Invalid URL', 'Could not parse the MR/PR URL.')
+                continue
+
+            provider = self._scm_providers.get(parsed.scm_type.value)
+            if not provider:
+                QMessageBox.warning(
+                    self, 'No Provider',
+                    f'No connected provider for {parsed.scm_type.value}.',
+                )
+                continue
+            break
+
+        # Fetch MR details in the background
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        result_holder: list[Optional[Any]] = [None]
+
+        def _fetch() -> None:
+            result_holder[0] = provider.get_mr_details(parsed.project_path, parsed.mr_iid)
+
+        worker = BackgroundCallWorker(_fetch, self)
+        worker.finished.connect(lambda: self._on_add_row_details(
+            parsed, result_holder,
+        ))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_add_row_details(self, parsed: Any, result_holder: list) -> None:
+        """Handle MR details fetched — ask for tag and pin the row."""
+        QApplication.restoreOverrideCursor()
+        details = result_holder[0]
+        if not details:
+            QMessageBox.warning(self, 'MR Not Found', 'Could not fetch MR/PR details.')
+            return
+
+        prev_tag = ''
+        while True:
+            dlg = QInputDialog(self)
+            dlg.setWindowTitle('Session Tag')
+            dlg.setLabelText(
+                f"MR: {details.mr_title}\nBranch: {details.source_branch}\n\n"
+                f"Tag for this CQ session:"
+            )
+            dlg.setTextValue(prev_tag)
+            ok = dlg.exec_() == QInputDialog.Accepted
+            tag = dlg.textValue()
+            if not ok or not tag.strip():
+                return
+            tag = tag.strip()
+            prev_tag = tag
+
+            if not is_valid_tag(tag):
+                QMessageBox.warning(
+                    self, 'Invalid Tag',
+                    'Tag must contain only letters, numbers, hyphens, and underscores.',
+                )
+                continue
+
+            if tag in self._pinned_sessions:
+                QMessageBox.information(
+                    self, 'Already Added',
+                    f"A row with tag '{tag}' already exists.",
+                )
+                continue
+            break
+
+        # Pin the session with remote info (no MR tracking yet — user starts it manually)
+        self._pinned_sessions[tag] = {
+            'tag': tag,
+            'remote_project_path': parsed.project_path,
+            'host_url': parsed.host_url,
+            'branch': details.source_branch,
+            'mr_title': details.mr_title,
+            'mr_url': details.mr_url,
+            'scm_type': parsed.scm_type.value,
+            'project_path': '',
+            'ide': '',
+        }
+        save_pinned_sessions(self._pinned_sessions)
+
+        # Refresh table to show the new row
+        self.sessions = self._merge_sessions(
+            [s for s in self.sessions if s.get('server_pid') is not None]
+        )
+        self._update_table()
 
     def _update_mr_column(self) -> None:
         """Update just the MR column widgets without rebuilding the whole table."""
@@ -1525,7 +1675,6 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal_handler)
 
     # Allow Python to handle signals during Qt event loop
-    from PyQt5.QtCore import QTimer
     timer = QTimer()
     timer.start(500)
     timer.timeout.connect(lambda: None)

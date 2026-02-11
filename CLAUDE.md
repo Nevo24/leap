@@ -31,7 +31,7 @@ src/
     ├── main.py                  # Package entry point
     │
     ├── utils/                   # Shared utilities
-    │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors
+    │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors, is_valid_tag()
     │   ├── terminal.py          # Terminal title, banner
     │   ├── ide_detection.py     # IDE detection, git branch
     │   └── socket_utils.py     # Shared Unix socket send/recv helper
@@ -51,17 +51,31 @@ src/
     │
     ├── monitor/                 # GUI Monitor (PyQt5)
     │   ├── app.py               # MonitorWindow
-    │   ├── dock_badge.py        # Dock icon badge overlay (notification counter)
-    │   ├── session_manager.py   # Session discovery
+    │   ├── server_launcher.py   # MR server clone/checkout/start flow
+    │   ├── session_manager.py   # Session discovery + read_client_pid()
+    │   ├── scm_polling.py       # SCM poller + background workers
     │   ├── cq_sender.py         # Socket sender for /cq commands
-    │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   ├── navigation.py        # IDE terminal navigation
+    │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
+    │   │
+    │   ├── dialogs/             # Dialog windows
+    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, cleanup)
+    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog
+    │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
+    │   │   ├── github_setup_dialog.py # GitHub connection dialog
+    │   │   └── scm_context_dialog.py  # Context editor dialog (named presets)
+    │   │
+    │   ├── ui/                  # UI components
+    │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
+    │   │   ├── dock_badge.py    # Dock icon badge overlay (notification counter)
+    │   │   └── status_log.py    # Status log history (in-memory + dialog)
+    │   │
     │   ├── mr_tracking/         # MR tracking subsystem
-    │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus
-    │   │   ├── config.py        # GitLab/monitor preferences persistence
+    │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus, MRDetails
+    │   │   ├── config.py        # GitLab/monitor prefs + pinned sessions persistence
     │   │   ├── gitlab_provider.py # GitLab API implementation
     │   │   ├── github_provider.py # GitHub API implementation
-    │   │   ├── git_utils.py     # Git remote URL parsing
+    │   │   ├── git_utils.py     # Git remote URL parsing + MR URL parsing
     │   │   └── cq_command.py    # /cq command data model + formatting
     │   └── resources/
     │       └── activate_terminal.groovy  # JetBrains script
@@ -84,10 +98,16 @@ assets/
 | `ClaudeQClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI for session management |
+| `ContextEditorDialog` | `monitor/dialogs/scm_context_dialog.py` | Context preset editor dialog |
+| `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/checkout/start flow |
+| `StatusLog` | `monitor/ui/status_log.py` | In-memory status message log + viewer dialog |
+| `SettingsDialog` | `monitor/dialogs/settings_dialog.py` | Settings: terminal, repos dir, cleanup unused repos |
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
 | `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking |
-| `DockBadge` | `monitor/dock_badge.py` | Dock icon badge overlay (MR + session status changes) |
+| `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay (MR + session status changes) |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
+| `is_valid_tag()` | `utils/constants.py` | Shared tag validation (alphanumeric + hyphens + underscores) |
+| `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
 
 ## Runtime Data Files
 
@@ -101,6 +121,8 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Socket | `.storage/sockets/<tag>.sock` |
 | Metadata | `.storage/sockets/<tag>.meta` |
 | Client lock | `.storage/sockets/<tag>.client.lock` |
+| Pinned sessions | `.storage/pinned_sessions.json` |
+| Monitor prefs | `.storage/monitor_prefs.json` |
 
 ## File Cleanup & Lifecycle
 
@@ -303,6 +325,53 @@ The dock icon badge tracks two types of changes while the monitor window is unfo
 - **Session status**: Event counter — badge increments each time a session transitions from Running → Idle (accumulates until window is focused)
 
 Both counts sum into a single badge number. Focusing the monitor window resets all counts and snapshots current state.
+
+### Persistent Rows & Pinned Sessions
+
+Monitor rows persist across server/client lifecycle and monitor restarts via `pinned_sessions.json`. Key behaviors:
+
+- **Auto-pinning**: Every active session is automatically pinned on discovery
+- **Dead rows**: When a server dies, the row stays with N/A for Status/Queue but shows Project/Branch info
+- **Delete column**: Each row has a delete (X) button that always prompts for confirmation. If processes are running, warns they will be closed
+- **`_deleted_tags` set**: Prevents auto-refresh from re-pinning rows that were just deleted
+
+### Add Row from MR/PR URL
+
+The "+" button adds a monitored row from a GitLab/GitHub MR URL:
+
+1. User pastes MR/PR URL → `parse_mr_url()` extracts SCM type, project path, MR number
+2. Fetches MR details via `get_mr_details()` (branch name, title)
+3. Asks user for a CQ session tag (validated by `is_valid_tag()`)
+4. Pins the row with remote MR info — no git operations, no auto MR tracking
+5. User can click "Track MR" to start MR tracking, or "Server" to start a CQ server
+
+Input validation loops: invalid tag or duplicate tag loops back to the input dialog instead of stopping the flow.
+
+### Server Start from MR Row
+
+When clicking "Server" on an MR-pinned dead row:
+
+1. Looks in `repos_dir` (Settings, default `~/tmp/claudeq-repos`) for the project
+2. Checks `repo-name`, `repo-name_1`, `repo-name_2`... — skips any dir with a running CQ server
+3. If no available dir exists → clones fresh with next numeric suffix
+4. If available dir found → fetches remote, checks if local is up-to-date
+5. If branch deleted on remote → opens CQ in project dir anyway
+6. If behind and clean → checks out + pulls. If behind and dirty → warns and stops
+7. Opens `cq '<tag>'` in the default terminal at the project directory
+
+### Tag Validation
+
+Tags must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` (letters, numbers, hyphens, underscores). Validated by `is_valid_tag()` in `utils/constants.py` — shared between the shell launcher and the monitor GUI.
+
+### Monitor Settings
+
+Settings dialog (`monitor/settings_dialog.py`) accessible via the Settings button:
+
+- **Default terminal**: Terminal.app or iTerm2 — used when opening new CQ servers
+- **Repositories dir**: Where ClaudeQ clones repos for MR rows (default: `~/tmp/claudeq-repos`)
+- **Clean unused repos**: Deletes cloned repos that have no running CQ server (checks resolved paths against active sessions)
+
+Settings persisted in `.storage/monitor_prefs.json`.
 
 ## IDE Setup
 

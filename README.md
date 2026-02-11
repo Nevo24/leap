@@ -176,12 +176,14 @@ After running `make install-monitor`, launch from:
 - Dock: Pin the app for quick access
 
 The monitor shows:
-- All active ClaudeQ sessions
-- Queue size for each session
+- **Persistent rows** — sessions stay visible across server/client restarts and monitor relaunches
+- All active and pinned ClaudeQ sessions with queue size
 - Click buttons to jump to correct IDE → Project → Terminal
+- **Add from MR URL** — "+" button to add a row from a GitLab/GitHub MR URL, then start a CQ server from it
 - MR/PR tracking with unresponded thread detection (GitLab & GitHub)
 - `/cq` command support — comment `/cq` on an MR thread to auto-send it to a CQ session
 - Dock badge notifications when sessions finish processing or MR status changes
+- **Settings** — configure default terminal (Terminal.app/iTerm2), repos directory, and clean up unused repos
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2
 

@@ -5,7 +5,7 @@ from typing import Any, Optional
 from PyQt5.QtWidgets import QWidget
 
 from claudeq.monitor.mr_tracking.config import load_gitlab_config, save_gitlab_config
-from claudeq.monitor.scm_setup_dialog import SCMSetupDialog
+from claudeq.monitor.dialogs.scm_setup_dialog import SCMSetupDialog
 
 
 class GitLabSetupDialog(SCMSetupDialog):
