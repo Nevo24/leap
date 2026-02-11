@@ -49,6 +49,3 @@ src/claudeq/vscode-extension/*.vsix
 
 # Storage directory (user data: settings, queues, history, sockets)
 .storage/
-
-# Claude Code settings
-.claude/
