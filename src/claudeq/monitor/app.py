@@ -74,6 +74,7 @@ class MonitorWindow(QMainWindow):
         self._collect_threads_worker: Optional[CollectThreadsWorker] = None
         self._send_threads_worker: Optional[SendThreadsWorker] = None
         self._send_combined_worker: Optional[SendThreadsCombinedWorker] = None
+        self._cq_only_collect: bool = False
         self._refresh_worker: Optional[SessionRefreshWorker] = None
         self._scm_polling = False
         self._scm_poll_started_at: float = 0.0
@@ -164,6 +165,11 @@ class MonitorWindow(QMainWindow):
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
         bottom_layout.addWidget(self.bots_check)
+
+        self.auto_cq_check = QCheckBox("Auto '/cq' fetch")
+        self.auto_cq_check.setChecked(self._prefs.get('auto_fetch_cq', True))
+        self.auto_cq_check.stateChanged.connect(self._toggle_auto_fetch_cq)
+        bottom_layout.addWidget(self.auto_cq_check)
 
         bottom_layout.addStretch()
 
@@ -479,7 +485,21 @@ class MonitorWindow(QMainWindow):
                 _update_button_states()
 
         def on_apply() -> None:
-            save_selected_context_name(current_name[0])
+            # Check if text differs from the saved version
+            name = current_name[0]
+            if name:
+                saved_text = load_saved_contexts().get(name, '')
+                if text_edit.toPlainText() != saved_text:
+                    reply = QMessageBox.question(
+                        dialog, 'Unsaved Changes',
+                        f"Save changes to '{name}' before closing?",
+                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                    )
+                    if reply == QMessageBox.Cancel:
+                        return
+                    if reply == QMessageBox.Yes:
+                        save_named_context(name, text_edit.toPlainText())
+            save_selected_context_name(name)
             dialog.accept()
 
         combo.currentIndexChanged.connect(on_combo_changed)
@@ -551,7 +571,10 @@ class MonitorWindow(QMainWindow):
         self._scm_polling = True
         self._scm_poll_started_at = time.monotonic()
         worker = SCMPollerWorker(self)
-        worker.configure(self._scm_providers, tracked_sessions)
+        worker.configure(
+            self._scm_providers, tracked_sessions,
+            auto_fetch_cq=self._prefs.get('auto_fetch_cq', True),
+        )
         worker.results_ready.connect(self._on_scm_results)
         worker.finished.connect(self._on_scm_worker_finished)
         self._scm_worker = worker
@@ -609,6 +632,7 @@ class MonitorWindow(QMainWindow):
             return
 
         # Launch Phase 1 — everything runs in background
+        self._cq_only_collect = False
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
@@ -626,7 +650,8 @@ class MonitorWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             QMessageBox.information(
                 self, 'No Threads',
-                'No unresponded threads found.'
+                "No threads with '/cq' comment found." if self._cq_only_collect
+                else 'No unresponded threads found.'
             )
             return
 
@@ -670,7 +695,8 @@ class MonitorWindow(QMainWindow):
         else:
             QMessageBox.information(
                 self, 'No Threads',
-                'No unresponded threads found.'
+                "No threads with '/cq' comment found." if self._cq_only_collect
+                else 'No unresponded threads found.'
             )
 
     def _on_send_threads_error(self, message: str) -> None:
@@ -705,6 +731,7 @@ class MonitorWindow(QMainWindow):
             return
 
         # Launch Phase 1 — collection runs in background
+        self._cq_only_collect = False
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
@@ -722,7 +749,8 @@ class MonitorWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             QMessageBox.information(
                 self, 'No Threads',
-                'No unresponded threads found.'
+                "No threads with '/cq' comment found." if self._cq_only_collect
+                else 'No unresponded threads found.'
             )
             return
 
@@ -766,8 +794,53 @@ class MonitorWindow(QMainWindow):
         else:
             QMessageBox.information(
                 self, 'No Threads',
-                'No unresponded threads found.'
+                "No threads with '/cq' comment found." if self._cq_only_collect
+                else 'No unresponded threads found.'
             )
+
+    def _send_cq_threads_to_cq(self, tag: str) -> None:
+        """Send only /cq-marked threads to CQ (one per queue message)."""
+        self._send_cq_threads_common(tag, combined=False)
+
+    def _send_cq_threads_combined_to_cq(self, tag: str) -> None:
+        """Send only /cq-marked threads to CQ (combined into one message)."""
+        self._send_cq_threads_common(tag, combined=True)
+
+    def _send_cq_threads_common(self, tag: str, combined: bool) -> None:
+        """Shared launcher for /cq-only thread sending."""
+        if not self._scm_providers:
+            return
+
+        # Guard against concurrent runs
+        if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
+           (self._send_threads_worker and self._send_threads_worker.isRunning()) or \
+           (self._send_combined_worker and self._send_combined_worker.isRunning()):
+            QMessageBox.information(
+                self, 'In Progress',
+                'Already sending threads — please wait.'
+            )
+            return
+
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session:
+            return
+
+        project_path = session.get('project_path')
+        if not project_path:
+            return
+
+        self._cq_only_collect = True
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self._collect_threads_worker = CollectThreadsWorker(self)
+        self._collect_threads_worker.configure(
+            project_path, self._scm_providers, self.sessions, cq_only=True
+        )
+        if combined:
+            self._collect_threads_worker.collected.connect(self._on_threads_collected_combined)
+        else:
+            self._collect_threads_worker.collected.connect(self._on_threads_collected)
+        self._collect_threads_worker.error.connect(self._on_send_threads_error)
+        self._collect_threads_worker.start()
 
     def _refresh_data(self) -> None:
         """Refresh session data and update table (non-blocking).
@@ -880,6 +953,15 @@ class MonitorWindow(QMainWindow):
                     )
                     mr_widget.set_send_combined_to_cq_callback(
                         lambda t=tag: self._send_all_threads_combined_to_cq(t)
+                    )
+                    mr_widget.set_send_cq_threads_callback(
+                        lambda t=tag: self._send_cq_threads_to_cq(t)
+                    )
+                    mr_widget.set_send_cq_threads_combined_callback(
+                        lambda t=tag: self._send_cq_threads_combined_to_cq(t)
+                    )
+                    mr_widget.set_auto_fetch_cq(
+                        self._prefs.get('auto_fetch_cq', True)
                     )
                     mr_layout.addWidget(mr_widget)
 
@@ -1372,6 +1454,11 @@ class MonitorWindow(QMainWindow):
             provider._filter_bots = not include
         if self._scm_providers and self._tracked_tags:
             self._start_scm_poll()
+
+    def _toggle_auto_fetch_cq(self, state: int) -> None:
+        """Toggle auto /cq command fetching and persist."""
+        self._prefs['auto_fetch_cq'] = state == Qt.Checked
+        save_monitor_prefs(self._prefs)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event - save prefs then force-exit the process.

@@ -82,7 +82,10 @@ class PulsingLabel(QLabel):
         self._phase: float = 0.0
         self._on_send_to_cq: Optional[callable] = None
         self._on_send_combined_to_cq: Optional[callable] = None
+        self._on_send_cq_threads: Optional[callable] = None
+        self._on_send_cq_threads_combined: Optional[callable] = None
         self._has_unresponded: bool = False
+        self._auto_fetch_cq: bool = True
         self._indicator_help: Optional[str] = None
         self._popup: Optional[IndicatorPopup] = None
 
@@ -118,9 +121,21 @@ class PulsingLabel(QLabel):
         """Set the callback for 'Send all threads as one message' context menu action."""
         self._on_send_combined_to_cq = callback
 
+    def set_send_cq_threads_callback(self, callback: Optional[callable]) -> None:
+        """Set the callback for 'Send /cq threads (each)' context menu action."""
+        self._on_send_cq_threads = callback
+
+    def set_send_cq_threads_combined_callback(self, callback: Optional[callable]) -> None:
+        """Set the callback for 'Send /cq threads (combined)' context menu action."""
+        self._on_send_cq_threads_combined = callback
+
     def set_has_unresponded(self, has_unresponded: bool) -> None:
         """Set whether there are unresponded threads (controls menu item enabled state)."""
         self._has_unresponded = has_unresponded
+
+    def set_auto_fetch_cq(self, auto_fetch_cq: bool) -> None:
+        """Set whether auto /cq fetch is enabled (disables manual /cq menu items)."""
+        self._auto_fetch_cq = auto_fetch_cq
 
     def set_indicator_help(self, text: Optional[str]) -> None:
         """Set the help text shown in the hover popup."""
@@ -160,7 +175,10 @@ class PulsingLabel(QLabel):
         # Capture callback refs before auto-refresh may destroy this widget
         send_to_cq = self._on_send_to_cq
         send_combined = self._on_send_combined_to_cq
+        send_cq_threads = self._on_send_cq_threads
+        send_cq_combined = self._on_send_cq_threads_combined
         has_unresponded = self._has_unresponded
+        auto_fetch_cq = self._auto_fetch_cq
 
         # Parent menu to the top-level window so it survives table refresh
         top_level = self.window()
@@ -179,6 +197,18 @@ class PulsingLabel(QLabel):
         combined_action.triggered.connect(lambda: send_combined() if send_combined else None)
         combined_action.setEnabled(bool(has_unresponded and send_combined))
         menu.addAction(combined_action)
+
+        menu.addSeparator()
+
+        cq_each_action = QAction("Send each '/cq' thread to CQ (one per queue message)", menu)
+        cq_each_action.triggered.connect(lambda: send_cq_threads() if send_cq_threads else None)
+        cq_each_action.setEnabled(bool(not auto_fetch_cq and send_cq_threads))
+        menu.addAction(cq_each_action)
+
+        cq_combined_action = QAction("Send all '/cq' threads to CQ (combined into one message)", menu)
+        cq_combined_action.triggered.connect(lambda: send_cq_combined() if send_cq_combined else None)
+        cq_combined_action.setEnabled(bool(not auto_fetch_cq and send_cq_combined))
+        menu.addAction(cq_combined_action)
 
         menu.exec_(self.mapToGlobal(pos))
 

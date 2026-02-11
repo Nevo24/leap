@@ -197,8 +197,10 @@ class GitHubProvider(SCMProvider):
                 last_other_idx = i
 
         # Check if user replied after the last other person's comment
+        # (/cq commands don't count as a real reply)
         for comment in human_comments[last_other_idx + 1:]:
-            if comment.user and comment.user.login == self._username:
+            if comment.user and comment.user.login == self._username \
+                    and (comment.body or '').strip() != '/cq':
                 return False
 
         return True

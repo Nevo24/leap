@@ -166,8 +166,9 @@ class GitLabProvider(SCMProvider):
                 last_other_idx = i
 
         # Check if user replied after the last other person's note
+        # (/cq commands don't count as a real reply)
         for note in human_notes[last_other_idx + 1:]:
-            if self._note_author(note) == self._username:
+            if self._note_author(note) == self._username and note.get('body', '').strip() != '/cq':
                 return False
 
         # Check if user reacted with an emoji on the last note by someone else

@@ -14,6 +14,7 @@ CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
 # Default monitor preferences
 _DEFAULT_PREFS = {
     'include_bots': False,
+    'auto_fetch_cq': True,
 }
 
 

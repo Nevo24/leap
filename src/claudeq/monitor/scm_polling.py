@@ -64,16 +64,24 @@ class SCMPollerWorker(QThread):
         super().__init__(parent)
         self._providers: dict[str, SCMProvider] = {}
         self._sessions: list[dict[str, Any]] = []
+        self._auto_fetch_cq: bool = True
 
-    def configure(self, providers: dict[str, SCMProvider], sessions: list[dict[str, Any]]) -> None:
+    def configure(
+        self,
+        providers: dict[str, SCMProvider],
+        sessions: list[dict[str, Any]],
+        auto_fetch_cq: bool = True,
+    ) -> None:
         """Configure the poller with available providers and sessions to poll.
 
         Args:
             providers: Dict mapping SCMType value ("gitlab", "github") to provider instance.
             sessions: List of session dicts to poll.
+            auto_fetch_cq: Whether to scan and handle /cq commands.
         """
         self._providers = dict(providers)
         self._sessions = list(sessions)
+        self._auto_fetch_cq = auto_fetch_cq
 
     def run(self) -> None:
         if not self._providers:
@@ -142,13 +150,14 @@ class SCMPollerWorker(QThread):
             status = MRStatus(state=MRState.NO_MR)
 
         cq_commands: list[tuple[Any, SCMProvider]] = []
-        try:
-            raw_commands = provider.scan_cq_commands(
-                remote_info.project_path, remote_info.branch
-            )
-            cq_commands = [(cmd, provider) for cmd in raw_commands]
-        except Exception:
-            logger.debug("Error scanning /cq for tag %s", session['tag'], exc_info=True)
+        if self._auto_fetch_cq:
+            try:
+                raw_commands = provider.scan_cq_commands(
+                    remote_info.project_path, remote_info.branch
+                )
+                cq_commands = [(cmd, provider) for cmd in raw_commands]
+            except Exception:
+                logger.debug("Error scanning /cq for tag %s", session['tag'], exc_info=True)
 
         return status, cq_commands
 
@@ -208,6 +217,7 @@ class CollectThreadsWorker(QThread):
         project_path: str,
         scm_providers: dict[str, SCMProvider],
         sessions: list[dict[str, Any]],
+        cq_only: bool = False,
     ) -> None:
         """Configure the worker.
 
@@ -215,10 +225,12 @@ class CollectThreadsWorker(QThread):
             project_path: Filesystem path to the project.
             scm_providers: Dict mapping SCMType value to provider instance.
             sessions: List of session dicts (need 'project_path' and 'tag' keys).
+            cq_only: If True, collect only threads with unacknowledged /cq commands.
         """
         self._project_path = project_path
         self._scm_providers = dict(scm_providers)
         self._sessions = list(sessions)
+        self._cq_only = cq_only
 
     def run(self) -> None:
         try:
@@ -238,10 +250,15 @@ class CollectThreadsWorker(QThread):
                 self.collected.emit([], [])
                 return
 
-            # Collect unresponded threads (heavy HTTP calls)
-            commands = self.provider.collect_unresponded_threads(
-                remote_info.project_path, remote_info.branch
-            )
+            # Collect threads (heavy HTTP calls)
+            if self._cq_only:
+                commands = self.provider.scan_cq_commands(
+                    remote_info.project_path, remote_info.branch
+                )
+            else:
+                commands = self.provider.collect_unresponded_threads(
+                    remote_info.project_path, remote_info.branch
+                )
 
             # Find matching sessions by project path (subprocess per session)
             matching_tags: list[str] = []
