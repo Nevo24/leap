@@ -215,17 +215,25 @@ class MonitorWindow(QMainWindow):
         self.github_btn.clicked.connect(self._open_github_setup)
         bottom_layout.addWidget(self.github_btn)
 
-        close_btn = QPushButton('Close')
-        close_btn.clicked.connect(self.close)
-        bottom_layout.addWidget(close_btn)
-
         layout.addLayout(bottom_layout)
 
-        # Status bar: permanent "Log" button
-        log_btn = QPushButton('Log')
-        log_btn.setToolTip('View status message history')
-        log_btn.clicked.connect(self._open_status_log)
-        self.statusBar().addPermanentWidget(log_btn)
+        # Status / log bar at the very bottom
+        status_layout = QHBoxLayout()
+
+        full_log_btn = QPushButton('Full Log')
+        full_log_btn.setToolTip('View full status message history')
+        full_log_btn.clicked.connect(self._open_status_log)
+        status_layout.addWidget(full_log_btn)
+
+        self._log_labels: list[QLabel] = []
+        for _ in range(3):
+            lbl = QLabel('')
+            lbl.setStyleSheet('color: gray; font-size: 11px;')
+            status_layout.addWidget(lbl)
+            self._log_labels.append(lbl)
+
+        status_layout.addStretch()
+        layout.addLayout(status_layout)
 
     def _open_status_log(self) -> None:
         """Open the status log dialog."""
@@ -1049,9 +1057,20 @@ class MonitorWindow(QMainWindow):
         QMessageBox.warning(self, 'Error', message)
 
     def _show_status(self, msg: str, timeout_ms: int = 5000) -> None:
-        """Show a transient message in the status bar and log it."""
+        """Log a status message and update the inline log labels."""
         self._status_log.append(msg)
-        self.statusBar().showMessage(msg, timeout_ms)
+        self._refresh_log_labels()
+
+    def _refresh_log_labels(self) -> None:
+        """Update the 3 inline log labels with the most recent entries."""
+        entries = self._status_log.entries()
+        recent = entries[-3:] if len(entries) >= 3 else entries
+        for i, lbl in enumerate(self._log_labels):
+            if i < len(recent):
+                ts = time.strftime('%H:%M:%S', time.localtime(recent[i].timestamp))
+                lbl.setText(f'[{ts}] {recent[i].message}')
+            else:
+                lbl.setText('')
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
         """Close a server session (non-blocking, no confirmation)."""
