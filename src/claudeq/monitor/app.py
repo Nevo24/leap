@@ -1398,7 +1398,7 @@ class MonitorWindow(QMainWindow):
         elif status.state == MRState.ALL_RESPONDED:
             widget.setText('\u2713')
             widget.setStyleSheet('color: green; font-weight: bold;')
-            approval_line = '\nApproved' if status.approved else ''
+            approval_line = self._format_approval_line(status)
             widget.setToolTip(f'MR !{status.mr_iid}: {status.mr_title}\nAll threads responded.{approval_line}')
             widget.set_pulsing(False)
             widget.set_mr_url(status.mr_url)
@@ -1406,7 +1406,7 @@ class MonitorWindow(QMainWindow):
 
         elif status.state == MRState.UNRESPONDED:
             widget.setText(f'\U0001f4ac {status.unresponded_count}')
-            approval_line = '\nApproved' if status.approved else ''
+            approval_line = self._format_approval_line(status)
             widget.setToolTip(
                 f'MR !{status.mr_iid}: {status.mr_title}\n'
                 f'{status.unresponded_count} unresponded thread(s).{approval_line}'
@@ -1421,6 +1421,16 @@ class MonitorWindow(QMainWindow):
                 f'{status.unresponded_count} unresponded review thread(s) '
                 f'waiting for your reply'
             )
+
+    @staticmethod
+    def _format_approval_line(status: MRStatus) -> str:
+        """Format an approval line for tooltips, including approver names."""
+        if not status.approved:
+            return ''
+        if status.approved_by:
+            names = ', '.join(status.approved_by)
+            return f'\nApproved by {names}'
+        return '\nApproved'
 
     def _update_dock_badge(self) -> None:
         """Update the dock badge with number of MRs changed since last window focus."""

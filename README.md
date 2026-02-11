@@ -179,6 +179,9 @@ The monitor shows:
 - All active ClaudeQ sessions
 - Queue size for each session
 - Click buttons to jump to correct IDE → Project → Terminal
+- MR/PR tracking with unresponded thread detection (GitLab & GitHub)
+- `/cq` command support — comment `/cq` on an MR thread to auto-send it to a CQ session
+- Dock badge notifications when sessions finish processing or MR status changes
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2
 

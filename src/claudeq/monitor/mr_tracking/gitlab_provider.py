@@ -77,15 +77,29 @@ class GitLabProvider(SCMProvider):
         approved = False
         approved_by: list[str] = []
         try:
-            approvals = project.mergerequests.get(mr_iid).approvals.get()
+            mr_full = project.mergerequests.get(mr_iid)
+            approvals = mr_full.approvals.get()
             approved = getattr(approvals, 'approved', False)
             for entry in getattr(approvals, 'approved_by', []):
-                user = entry.get('user', {}) if isinstance(entry, dict) else getattr(entry, 'user', {})
-                name = user.get('name', '') if isinstance(user, dict) else getattr(user, 'name', '')
+                name = self._extract_user_name(entry)
                 if name:
                     approved_by.append(name)
+            # Fallback: check approval_state for approver names
+            if approved and not approved_by:
+                try:
+                    state = mr_full.approval_state.get()
+                    for rule in getattr(state, 'rules', []):
+                        rule_data = rule if isinstance(rule, dict) else vars(rule)
+                        for user in rule_data.get('approved_by', []):
+                            name = self._extract_user_name(user)
+                            if name and name not in approved_by:
+                                approved_by.append(name)
+                except Exception:
+                    pass
+            logger.debug("Approvals for MR !%s: approved=%s approved_by=%s",
+                         mr_iid, approved, approved_by)
         except Exception:
-            logger.debug("Failed to fetch approval status for MR !%s", mr_iid)
+            logger.debug("Failed to fetch approval status for MR !%s", mr_iid, exc_info=True)
 
         # Fetch discussions to count unresponded threads
         try:
@@ -213,6 +227,22 @@ class GitLabProvider(SCMProvider):
 
         self._bot_cache[user_id] = is_bot
         return is_bot
+
+    @staticmethod
+    def _extract_user_name(entry: object) -> str:
+        """Extract a display name from a GitLab user or approval entry.
+
+        Handles both dict and RESTObject formats, with nested 'user' key or direct.
+        """
+        # Unwrap nested 'user' key if present
+        if isinstance(entry, dict):
+            user = entry.get('user', entry)
+        else:
+            user = getattr(entry, 'user', entry)
+        # Extract name or username
+        if isinstance(user, dict):
+            return user.get('name', '') or user.get('username', '')
+        return getattr(user, 'name', '') or getattr(user, 'username', '')
 
     @staticmethod
     def _note_author(note) -> str:

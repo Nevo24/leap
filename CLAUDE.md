@@ -60,6 +60,7 @@ src/
     │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus
     │   │   ├── config.py        # GitLab/monitor preferences persistence
     │   │   ├── gitlab_provider.py # GitLab API implementation
+    │   │   ├── github_provider.py # GitHub API implementation
     │   │   ├── git_utils.py     # Git remote URL parsing
     │   │   └── cq_command.py    # /cq command data model + formatting
     │   └── resources/
@@ -84,7 +85,8 @@ assets/
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI for session management |
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
-| `DockBadge` | `monitor/dock_badge.py` | Dock icon badge overlay (counts MR changes) |
+| `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking |
+| `DockBadge` | `monitor/dock_badge.py` | Dock icon badge overlay (MR + session status changes) |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 
 ## Runtime Data Files
@@ -275,12 +277,32 @@ Polling flow: `_scm_poll_timer` fires → `_start_scm_poll()` → `SCMPollerWork
 
 ### Sending Threads to CQ
 
-Right-clicking the MR status label (`PulsingLabel` in `ui_widgets.py`) shows a context menu with two send modes:
+Right-clicking the MR status label (`PulsingLabel` in `ui_widgets.py`) shows a context menu with send modes:
 
 - **"Send each thread to CQ (one per queue message)"** — queues each unresponded thread as a separate message via `SendThreadsWorker`
 - **"Send all threads to CQ (combined into one message)"** — concatenates all threads (separated by `---`) into a single queue message via `SendThreadsCombinedWorker`
+- **"Send each '/cq' thread to CQ"** — same as above but filtered to only threads with an unacknowledged `/cq` comment
+- **"Send all '/cq' threads to CQ (combined)"** — same but combined into one message
 
-Both modes share Phase 1 (`CollectThreadsWorker`): resolve provider → collect unresponded threads → match CQ sessions. Phase 2 differs: `SendThreadsWorker` sends one-by-one, `SendThreadsCombinedWorker` sends a single concatenated message. Both acknowledge threads on the SCM side after successful send.
+Both regular modes share Phase 1 (`CollectThreadsWorker`): resolve provider → collect unresponded threads → match CQ sessions. The `/cq` variants use `CollectThreadsWorker` with `cq_only=True`, which calls `scan_cq_commands()` instead of `collect_unresponded_threads()`. Phase 2 differs: `SendThreadsWorker` sends one-by-one, `SendThreadsCombinedWorker` sends a single concatenated message. All modes acknowledge threads on the SCM side after successful send.
+
+### /cq Auto-Fetch
+
+The "Auto '/cq' fetch" checkbox (bottom bar, next to "Include git bots") controls whether the background poller automatically scans for `/cq` commands in MR threads:
+
+- **ON (default)**: `SCMPollerWorker` calls `scan_cq_commands()` each poll cycle, sends matching threads to CQ, and acknowledges them. The manual `/cq` menu items are greyed out.
+- **OFF**: Poller skips `/cq` scanning. User can manually fetch via the right-click menu items.
+
+A `/cq` comment on a thread does **not** count as a user response for unresponded thread detection — only the bot acknowledgment reply (`[ClaudeQ bot] on it!`) marks a thread as handled. Setting persisted in `.storage/monitor_prefs.json` as `auto_fetch_cq`.
+
+### Dock Badge
+
+The dock icon badge tracks two types of changes while the monitor window is unfocused:
+
+- **MR changes**: State diff — badge shows how many MRs are in a different state vs last time the user looked (recomputed each poll)
+- **Session status**: Event counter — badge increments each time a session transitions from Running → Idle (accumulates until window is focused)
+
+Both counts sum into a single badge number. Focusing the monitor window resets all counts and snapshots current state.
 
 ## IDE Setup
 
@@ -328,3 +350,11 @@ make update-deps       # Update Python dependencies only
 make uninstall         # Full cleanup
 make clean             # Remove build artifacts
 ```
+
+## Commit & Push Checklist
+
+When the user asks to commit and push, **before committing**:
+
+1. **Review CLAUDE.md** — Check that it reflects the current codebase. Update any outdated sections (project structure, key classes, features, conventions). Keep it detailed — this is the developer reference.
+2. **Review README.md** — Check that it reflects user-facing changes (new features, commands, UI changes). Keep it **concise** — users see this on GitLab. Don't bloat it with implementation details.
+3. Only update these files if something actually changed that affects them. Don't touch them for minor internal refactors.
