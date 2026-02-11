@@ -363,6 +363,19 @@ When clicking "Server" on an MR-pinned dead row:
 
 Tags must match `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` (letters, numbers, hyphens, underscores). Validated by `is_valid_tag()` in `utils/constants.py` — shared between the shell launcher and the monitor GUI.
 
+### Server Startup Validation (MR-Pinned Sessions)
+
+When a CQ server starts (`cq <tag>`), it checks `.storage/pinned_sessions.json` for MR-pinned rows matching the tag. A row is MR-pinned if it has a `remote_project_path` field. Auto-pinned rows (no `remote_project_path`) skip validation entirely.
+
+Validation checks (in order):
+1. **Repo match**: Parses `git remote.origin.url` and compares project path with pinned `remote_project_path`
+2. **Branch match**: Compares `git branch --show-current` with pinned `branch` (skipped if branch is empty or `N/A`)
+3. **Commits synced**: Runs `git fetch origin <branch>` then `git merge-base --is-ancestor` to verify local is not behind remote
+
+If any check fails, the server prints a red error and exits. Network failures during fetch are tolerated (don't block startup).
+
+Implemented in `ClaudeQServer._validate_pinned_session()` (`server/server.py`), called early in `__init__` before socket/PTY setup.
+
 ### Monitor Settings
 
 Settings dialog (`monitor/settings_dialog.py`) accessible via the Settings button:

@@ -5,6 +5,7 @@ Orchestrates PTY handling, socket server, and queue management.
 """
 
 import atexit
+import json
 import re
 import shutil
 import signal
@@ -16,7 +17,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, MIN_BUSY_DURATION, OUTPUT_SETTLE_DURATION,
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
+    MIN_BUSY_DURATION, OUTPUT_SETTLE_DURATION,
     POLL_INTERVAL, TITLE_RESET_INTERVAL, ensure_storage_dirs, load_settings
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
@@ -54,6 +56,9 @@ class ClaudeQServer:
 
         # Ensure storage directories exist
         ensure_storage_dirs()
+
+        # Validate against monitor pinned sessions (MR-pinned rows)
+        self._validate_pinned_session()
 
         # Initialize paths
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
@@ -285,6 +290,107 @@ class ClaudeQServer:
         except Exception:
             # Don't fail startup if cleanup fails
             pass
+
+    def _validate_pinned_session(self) -> None:
+        """Validate current repo/branch against monitor pinned session data.
+
+        If this tag corresponds to an MR-pinned row (has remote_project_path),
+        verify that we're in the right repo, on the right branch, and not
+        behind the remote. Exits with error if validation fails.
+        """
+        pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        if not pinned_file.exists():
+            return
+
+        try:
+            with open(pinned_file, 'r') as f:
+                pinned_sessions = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return
+
+        entry = pinned_sessions.get(self.tag)
+        if not entry:
+            return
+
+        pinned_project = entry.get('remote_project_path')
+        if not pinned_project:
+            return  # Auto-pinned row, no validation needed
+
+        pinned_branch = entry.get('branch', '')
+
+        # --- Repo match ---
+        try:
+            result = subprocess.run(
+                ['git', 'config', '--get', 'remote.origin.url'],
+                capture_output=True, text=True, timeout=5
+            )
+            remote_url = result.stdout.strip()
+        except (subprocess.TimeoutExpired, OSError):
+            remote_url = ''
+
+        local_project = None
+        if remote_url:
+            # SSH: git@host:user/project.git
+            m = re.match(r'git@[^:]+:(.+?)(?:\.git)?$', remote_url)
+            if m:
+                local_project = m.group(1)
+            else:
+                # HTTPS: https://host/user/project.git
+                m = re.match(r'https?://[^/]+/(.+?)(?:\.git)?$', remote_url)
+                if m:
+                    local_project = m.group(1)
+
+        if not local_project or local_project != pinned_project:
+            local_desc = f"'{local_project}'" if local_project else 'not a matching git repo'
+            print(
+                f"\033[91mError: Tag '{self.tag}' is monitored for repo "
+                f"'{pinned_project}', but current directory is {local_desc}.\033[0m"
+            )
+            sys.exit(1)
+
+        # --- Branch match ---
+        if pinned_branch and pinned_branch != 'N/A':
+            try:
+                result = subprocess.run(
+                    ['git', 'branch', '--show-current'],
+                    capture_output=True, text=True, timeout=5
+                )
+                local_branch = result.stdout.strip()
+            except (subprocess.TimeoutExpired, OSError):
+                local_branch = ''
+
+            if local_branch != pinned_branch:
+                print(
+                    f"\033[91mError: Tag '{self.tag}' is monitored for branch "
+                    f"'{pinned_branch}', but current branch is "
+                    f"'{local_branch or '(unknown)'}'.\033[0m"
+                )
+                sys.exit(1)
+
+            # --- Commits synced ---
+            try:
+                subprocess.run(
+                    ['git', 'fetch', 'origin', pinned_branch],
+                    capture_output=True, timeout=15
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass  # Network issues shouldn't block startup
+
+            try:
+                result = subprocess.run(
+                    ['git', 'merge-base', '--is-ancestor',
+                     f'origin/{pinned_branch}', 'HEAD'],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode != 0:
+                    print(
+                        f"\033[91mError: Tag '{self.tag}': local branch "
+                        f"'{pinned_branch}' is behind the monitored remote. "
+                        f"Pull or rebase first.\033[0m"
+                    )
+                    sys.exit(1)
+            except (subprocess.TimeoutExpired, OSError):
+                pass  # Can't verify — allow startup
 
     def _is_busy(self) -> bool:
         """
