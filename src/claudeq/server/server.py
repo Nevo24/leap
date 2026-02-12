@@ -415,10 +415,13 @@ class ClaudeQServer:
             if time_since_send < MIN_BUSY_DURATION:
                 return True
 
-        # Check if PTY is still producing output (Claude streaming)
-        if self._last_output_time:
+        # Check if PTY is still producing output (Claude streaming).
+        # Only counts as busy if we sent a message recently — idle prompt
+        # redraws and escape sequences should not trigger busy state.
+        if self._last_output_time and self.last_send_time:
             time_since_output = time.time() - self._last_output_time
-            if time_since_output < OUTPUT_SETTLE_DURATION:
+            time_since_send = time.time() - self.last_send_time
+            if time_since_output < OUTPUT_SETTLE_DURATION and time_since_send < 300:
                 return True
 
         # Check for NEW child processes (tools being run)
