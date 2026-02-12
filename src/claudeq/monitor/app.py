@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
-    QInputDialog,
+    QInputDialog, QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
@@ -228,6 +228,14 @@ class MonitorWindow(QMainWindow):
         self._log_label = QLabel('')
         self._log_label.setStyleSheet('color: gray; font-size: 11px;')
         status_layout.addWidget(self._log_label)
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 0)  # indeterminate
+        self._progress_bar.setFixedHeight(12)
+        self._progress_bar.setMaximumWidth(120)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setVisible(False)
+        status_layout.addWidget(self._progress_bar)
 
         status_layout.addStretch()
 
@@ -500,6 +508,7 @@ class MonitorWindow(QMainWindow):
 
         # Launch Phase 1 — everything runs in background
         self._cq_only_collect = False
+        self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
@@ -514,6 +523,7 @@ class MonitorWindow(QMainWindow):
         provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
 
         if not commands or not provider:
+            self._set_busy(False)
             QApplication.restoreOverrideCursor()
             QMessageBox.information(
                 self, 'No Threads',
@@ -523,6 +533,7 @@ class MonitorWindow(QMainWindow):
             return
 
         if not matching_tags:
+            self._set_busy(False)
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(
                 self, 'No Session',
@@ -533,6 +544,7 @@ class MonitorWindow(QMainWindow):
         if len(matching_tags) == 1:
             matched_tag = matching_tags[0]
         else:
+            self._set_busy(False)
             QApplication.restoreOverrideCursor()
             matched_tag, ok = QInputDialog.getItem(
                 self, 'Select Session',
@@ -541,7 +553,8 @@ class MonitorWindow(QMainWindow):
             )
             if not ok:
                 return
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._set_busy(True)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
 
         # Launch Phase 2 — send + acknowledge in background
         self._send_threads_worker = SendThreadsWorker(self)
@@ -552,6 +565,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_send_threads_finished(self, sent_count: int, matched_tag: str) -> None:
         """Handle Phase 2 completion."""
+        self._set_busy(False)
         QApplication.restoreOverrideCursor()
         if sent_count > 0:
             self._show_status(f"Sent {sent_count} thread(s) to '{matched_tag}'")
@@ -569,6 +583,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_send_threads_error(self, message: str) -> None:
         """Handle error from either background worker."""
+        self._set_busy(False)
         QApplication.restoreOverrideCursor()
         self._show_status(f"Thread send error: {message}")
         QMessageBox.warning(self, 'Error', message)
@@ -601,6 +616,7 @@ class MonitorWindow(QMainWindow):
 
         # Launch Phase 1 — collection runs in background
         self._cq_only_collect = False
+        self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
@@ -615,6 +631,7 @@ class MonitorWindow(QMainWindow):
         provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
 
         if not commands or not provider:
+            self._set_busy(False)
             QApplication.restoreOverrideCursor()
             QMessageBox.information(
                 self, 'No Threads',
@@ -624,6 +641,7 @@ class MonitorWindow(QMainWindow):
             return
 
         if not matching_tags:
+            self._set_busy(False)
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(
                 self, 'No Session',
@@ -634,6 +652,7 @@ class MonitorWindow(QMainWindow):
         if len(matching_tags) == 1:
             matched_tag = matching_tags[0]
         else:
+            self._set_busy(False)
             QApplication.restoreOverrideCursor()
             matched_tag, ok = QInputDialog.getItem(
                 self, 'Select Session',
@@ -642,7 +661,8 @@ class MonitorWindow(QMainWindow):
             )
             if not ok:
                 return
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._set_busy(True)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
 
         # Launch Phase 2 — send combined message
         self._send_combined_worker = SendThreadsCombinedWorker(self)
@@ -653,6 +673,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_send_combined_finished(self, thread_count: int, matched_tag: str) -> None:
         """Handle combined send completion."""
+        self._set_busy(False)
         QApplication.restoreOverrideCursor()
         if thread_count > 0:
             self._show_status(f"Sent {thread_count} thread(s) combined to '{matched_tag}'")
@@ -700,6 +721,7 @@ class MonitorWindow(QMainWindow):
             return
 
         self._cq_only_collect = True
+        self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
@@ -1015,6 +1037,7 @@ class MonitorWindow(QMainWindow):
         # Show "Checking..." while the API call runs in the background
         self._show_status(f"Checking MR for '{tag}'...")
         self._checking_tags.add(tag)
+        self._set_busy(True)
         self._update_table()
 
         # Run the API call in a background thread
@@ -1046,6 +1069,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
         """Handle the result of a one-shot MR check."""
+        self._set_busy(False)
         self._checking_tags.discard(tag)
 
         if status.state == MRState.NO_MR:
@@ -1068,6 +1092,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_tracking_error(self, tag: str, message: str) -> None:
         """Handle an error from a one-shot MR check."""
+        self._set_busy(False)
         self._checking_tags.discard(tag)
         self._update_table()
         self._show_status(f"MR tracking error for '{tag}': {message}")
@@ -1087,6 +1112,10 @@ class MonitorWindow(QMainWindow):
             self._log_label.setText(f'[{ts}] {e.message}')
         else:
             self._log_label.setText('')
+
+    def _set_busy(self, busy: bool) -> None:
+        """Show or hide the indeterminate progress bar."""
+        self._progress_bar.setVisible(busy)
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
         """Close a server session (non-blocking, no confirmation)."""
@@ -1108,7 +1137,9 @@ class MonitorWindow(QMainWindow):
             )
 
         self._show_status(f"Closing server '{tag}'...")
+        self._set_busy(True)
         worker = BackgroundCallWorker(_do_close, self)
+        worker.finished.connect(lambda: self._set_busy(False))
         worker.finished.connect(lambda: self._show_status(f"Server '{tag}' closed"))
         worker.finished.connect(worker.deleteLater)
         worker.start()
@@ -1126,12 +1157,14 @@ class MonitorWindow(QMainWindow):
         project_path = metadata.get('project_path') if metadata else None
 
         self._show_status(f"Closing client '{tag}'...")
+        self._set_busy(True)
         worker = BackgroundCallWorker(
             lambda: close_terminal_with_title(
                 f"cq-client {tag}", preferred_ide, project_path, f"cq-client {tag}"
             ),
             self,
         )
+        worker.finished.connect(lambda: self._set_busy(False))
         worker.finished.connect(lambda: self._show_status(f"Client '{tag}' closed"))
         worker.finished.connect(worker.deleteLater)
         worker.start()
@@ -1438,6 +1471,7 @@ class MonitorWindow(QMainWindow):
             break
 
         # Fetch MR details in the background
+        self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         result_holder: list[Optional[Any]] = [None]
 
@@ -1453,6 +1487,7 @@ class MonitorWindow(QMainWindow):
 
     def _on_add_row_details(self, parsed: Any, result_holder: list) -> None:
         """Handle MR details fetched — ask for tag and pin the row."""
+        self._set_busy(False)
         QApplication.restoreOverrideCursor()
         details = result_holder[0]
         if not details:
