@@ -187,12 +187,6 @@ class MonitorWindow(QMainWindow):
         reset_cols_btn = QPushButton('Reset Window Size')
         reset_cols_btn.clicked.connect(self._reset_window_size)
         top_layout.addWidget(reset_cols_btn)
-
-        close_btn = QPushButton('Close')
-        close_btn.setToolTip('Close the monitor')
-        close_btn.clicked.connect(self._confirm_close)
-        top_layout.addWidget(close_btn)
-
         layout.addLayout(top_layout)
 
         layout.addWidget(self.table)
@@ -220,6 +214,11 @@ class MonitorWindow(QMainWindow):
         self.github_btn = QPushButton('Connect GitHub')
         self.github_btn.clicked.connect(self._open_github_setup)
         bottom_layout.addWidget(self.github_btn)
+
+        close_btn = QPushButton('Close')
+        close_btn.setToolTip('Close the monitor')
+        close_btn.clicked.connect(self._confirm_close)
+        bottom_layout.addWidget(close_btn)
 
         layout.addLayout(bottom_layout)
 
