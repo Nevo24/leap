@@ -331,7 +331,7 @@ Both counts sum into a single badge number. Focusing the monitor window resets a
 Monitor rows persist across server/client lifecycle and monitor restarts via `pinned_sessions.json`. Key behaviors:
 
 - **Auto-pinning**: Every active session is automatically pinned on discovery
-- **Dead rows**: When a server dies, the row stays with N/A for Status/Queue but shows Project/Branch info
+- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue but preserves Project/Branch info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers the git sync flow (fetch, branch checkout)
 - **Delete column**: Each row has a delete (X) button that always prompts for confirmation. If processes are running, warns they will be closed
 - **`_deleted_tags` set**: Prevents auto-refresh from re-pinning rows that were just deleted
 
@@ -347,17 +347,32 @@ The "+" button adds a monitored row from a GitLab/GitHub MR URL:
 
 Input validation loops: invalid tag or duplicate tag loops back to the input dialog instead of stopping the flow.
 
+### Branch Column
+
+The Branch column shows "what this row is about":
+- **MR-pinned rows**: Always shows the MR's source branch (from pinned data), both when alive and dead
+- **Auto-pinned rows**: Shows the live local branch (resolved via `get_git_branch()` each refresh)
+
+Auto-pinning updates the branch for auto-pinned rows each refresh, but preserves the MR branch for MR-pinned rows (so mismatch detection works).
+
+### Branch Mismatch Warning
+
+When a running CQ server's local branch differs from the MR's expected branch, the Server button shows `⚠ Server` in orange with a tooltip: "Branch mismatch: expected 'feature-x', got 'master'". This can happen when the user switches branches from another terminal. Only applies to MR-pinned rows.
+
 ### Server Start from MR Row
 
 When clicking "Server" on an MR-pinned dead row:
 
-1. Looks in `repos_dir` (Settings, default `/tmp/claudeq-repos`) for the project
-2. Checks `repo-name`, `repo-name_1`, `repo-name_2`... — skips any dir with a running CQ server
-3. If no available dir exists → clones fresh with next numeric suffix
-4. If available dir found → fetches remote, checks if local is up-to-date
-5. If branch deleted on remote → opens CQ in project dir anyway
-6. If behind and clean → checks out + pulls. If behind and dirty → warns and stops
-7. Opens `cq '<tag>'` in the default terminal at the project directory
+1. If saved `project_path` is in use by another CQ server → clears it, finds a free directory
+2. Looks in `repos_dir` (Settings, default `/tmp/claudeq-repos`) for the project
+3. Checks `repo-name`, `repo-name_1`, `repo-name_2`... — skips any dir with a running CQ server
+4. If no available dir exists → clones fresh with next numeric suffix
+5. If available dir found → fetches remote, checks if local is up-to-date
+6. If branch deleted on remote → opens CQ in project dir anyway
+7. If behind and clean → checks out + pulls. If behind and dirty → warns and stops
+8. Opens `cq '<tag>'` in the default terminal at the project directory
+
+Even when the `project_path` is already known from a previous start, the git sync check (fetch + branch checkout) still runs to ensure the branch is correct.
 
 ### Tag Validation
 

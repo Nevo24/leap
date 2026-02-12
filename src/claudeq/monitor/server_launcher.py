@@ -43,12 +43,28 @@ class ServerLauncher:
         """
         pinned = self._w._pinned_sessions.get(tag, {})
 
-        # MR-pinned row that hasn't been set up locally yet — needs git setup
-        if pinned.get('remote_project_path') and not pinned.get('project_path'):
-            self._start_server_from_mr(tag, pinned)
+        if pinned.get('remote_project_path'):
+            project_path = pinned.get('project_path')
+            if not project_path:
+                # MR-pinned row, first time — needs clone + git setup
+                self._start_server_from_mr(tag, pinned)
+            else:
+                # Check if another CQ server is already using this directory
+                resolved = str(Path(project_path).resolve())
+                active_paths = self._w._get_active_project_paths()
+                if resolved in active_paths:
+                    # Path in use — clear it so _start_server_from_mr finds a free dir
+                    pinned['project_path'] = ''
+                    self._start_server_from_mr(tag, pinned)
+                else:
+                    # Local path free — check branch is correct
+                    project_dir = Path(project_path)
+                    branch = pinned.get('branch', '')
+                    self._w._show_status(f"Checking '{project_dir.name}' is up to date...")
+                    self._server_check_git(tag, pinned, project_dir, branch)
             return
 
-        # Auto-pinned row or MR-pinned with known local path — open directly
+        # Auto-pinned row — open directly
         preferred_ide: Optional[str] = None
         project_path: Optional[str] = None
 

@@ -180,6 +180,7 @@ The monitor shows:
 - All active and pinned ClaudeQ sessions with queue size
 - Click buttons to jump to correct IDE → Project → Terminal
 - **Add from MR URL** — "+" button to add a row from a GitLab/GitHub MR URL, then start a CQ server from it
+- **Branch mismatch warning** — Server button shows ⚠ when local branch drifts from the MR's expected branch
 - MR/PR tracking with unresponded thread detection (GitLab & GitHub)
 - `/cq` command support — comment `/cq` on an MR thread to auto-send it to a CQ session
 - Dock badge notifications when sessions finish processing or MR status changes

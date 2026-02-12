@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow,
+    QApplication, QMainWindow, QProxyStyle, QStyle, QStyleHintReturn,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QInputDialog, QProgressBar,
@@ -54,6 +54,20 @@ from claudeq.monitor.dialogs.gitlab_setup_dialog import GitLabSetupDialog
 from claudeq.monitor.dialogs.github_setup_dialog import GitHubSetupDialog
 
 logger = logging.getLogger(__name__)
+
+
+class _PersistentTooltipStyle(QProxyStyle):
+    """Keep tooltips visible until the mouse leaves the widget."""
+
+    def styleHint(
+        self, hint: QStyle.StyleHint, option=None,
+        widget=None, returnData=None,
+    ) -> int:
+        if hint == QStyle.SH_ToolTip_WakeUpDelay:
+            return 0  # Show immediately
+        if hint == QStyle.SH_ToolTip_FallAsleepDelay:
+            return 0  # Don't auto-dismiss
+        return super().styleHint(hint, option, widget, returnData)
 
 
 class MonitorWindow(QMainWindow):
@@ -815,15 +829,22 @@ class MonitorWindow(QMainWindow):
                 # Text cells — only update if value changed
                 self._set_cell_text(row, self.COL_TAG, tag)
 
+                # For MR-pinned rows, show the MR's branch (stable);
+                # for auto-pinned rows, show the live branch.
+                pinned_data = self._pinned_sessions.get(tag, {})
+                if pinned_data.get('remote_project_path'):
+                    display_branch = pinned_data.get('branch') or session['branch']
+                else:
+                    display_branch = session['branch']
+
                 if is_dead:
-                    # MR-pinned rows show project/branch from MR data
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
-                    self._set_cell_text(row, self.COL_BRANCH, session['branch'])
+                    self._set_cell_text(row, self.COL_BRANCH, display_branch)
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
                 else:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
-                    self._set_cell_text(row, self.COL_BRANCH, session['branch'])
+                    self._set_cell_text(row, self.COL_BRANCH, display_branch)
                     status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
                     self._set_cell_text(row, self.COL_STATUS, status)
                     self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
@@ -912,8 +933,25 @@ class MonitorWindow(QMainWindow):
                         lambda checked, t=tag: self._start_server(t)
                     )
                 else:
-                    server_btn = QPushButton('Server')
-                    server_btn.setStyleSheet('color: #00ff00;')
+                    # Check branch mismatch for MR-pinned rows
+                    pinned_branch = pinned_data.get('branch', '')
+                    branch_mismatch = (
+                        pinned_data.get('remote_project_path')
+                        and pinned_branch
+                        and pinned_branch != 'N/A'
+                        and session.get('branch')
+                        and session['branch'] != pinned_branch
+                    )
+                    if branch_mismatch:
+                        server_btn = QPushButton('\u26a0 Server')
+                        server_btn.setStyleSheet('color: #ffa500;')
+                        server_btn.setToolTip(
+                            f"Branch mismatch: expected '{pinned_branch}', "
+                            f"got '{session['branch']}'"
+                        )
+                    else:
+                        server_btn = QPushButton('Server')
+                        server_btn.setStyleSheet('color: #00ff00;')
                     server_btn.clicked.connect(
                         lambda checked, t=tag: self._focus_session(t, 'server')
                     )
@@ -1298,11 +1336,18 @@ class MonitorWindow(QMainWindow):
             if tag in self._deleted_tags:
                 continue
             existing = self._pinned_sessions.get(tag, {})
+            # For MR-pinned rows, preserve the MR branch as source of truth
+            # so we can detect when the local branch drifts.
+            is_mr_pinned = bool(existing.get('remote_project_path'))
             pin_data = {**existing,
                 'tag': tag,
                 'project_path': s.get('project_path') or '',
                 'ide': s.get('ide') or '',
-                'branch': s.get('branch') or '',
+                'branch': (
+                    existing.get('branch', '')
+                    if is_mr_pinned
+                    else s.get('branch') or ''
+                ),
             }
             if self._pinned_sessions.get(tag) != pin_data:
                 self._pinned_sessions[tag] = pin_data
@@ -1747,6 +1792,7 @@ def main() -> None:
     """Main entry point for ClaudeQ Monitor."""
     app = QApplication(sys.argv)
     app.setApplicationName('ClaudeQ Monitor')
+    app.setStyle(_PersistentTooltipStyle(app.style()))
 
     # Set app icon for Dock
     icon_path = find_icon()
