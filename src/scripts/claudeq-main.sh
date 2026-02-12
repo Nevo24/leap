@@ -62,7 +62,7 @@ EXAMPLES:
     # Terminal 2 (connect as client and queue messages)
     cq my-feature
     You: How do I fix this bug?
-    You: !ip Explain this screenshot
+    You: [Image #1] Explain this screenshot    # Ctrl+V to paste image
 
     # Send message directly
     cq my-feature "What is this error?"
@@ -70,9 +70,8 @@ EXAMPLES:
 CLIENT COMMANDS (when connected as interactive client):
     !h or !help         Show help
     <message>           Queue message (auto-sends when ready)
-    !ip <msg>           Queue with clipboard image
+    Ctrl+V              Paste clipboard image as [Image #N]
     !d <msg>            Send directly (bypass queue)
-    !d !ip <msg>        Send directly with image
     !e <index>          Edit queued message by index
     !l                  Show queue
     !c                  Clear queue

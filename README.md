@@ -113,20 +113,15 @@ Messages auto-send to Claude when ready. Watch responses in Terminal 1!
 ### With Images
 
 ```bash
-# Copy image to clipboard, then:
-You: !ip What's wrong with this UI?        # Queue with image
-You: !d !ip Explain this error now         # Send directly with image
-
-# Or attach first:
-You: !ip                                   # Attach image from clipboard
-You: What's wrong with this UI?            # Type message
+# Copy image to clipboard, then press Ctrl+V:
+You: [Image #1] What's wrong with this UI?     # Image auto-detected from clipboard
+You: [Image #1] [Image #2] Compare these        # Multiple images in one message
 ```
 
 ### Direct Send (Bypass Queue)
 
 ```bash
 You: !d Urgent! Need answer now           # Send immediately
-You: !d !ip Fix this error                # Send with image immediately
 ```
 
 ## Client Commands
@@ -137,7 +132,6 @@ All commands are **case-insensitive**.
 |---------|-------------|
 | 📖 `!h` or `!help` | Show help |
 | 💬 `message` | Queue message (auto-sends) |
-| 📷 `!ip <msg>` or `!imagepaste <msg>` | Queue with clipboard image |
 | 📤 `!d <msg>` or `!direct <msg>` | Send directly (bypass queue) |
 | 📋 `!l` or `!list` | Show queue |
 | 📝 `!e <index>` or `!edit <index>` | Edit queued message by index |
@@ -145,9 +139,10 @@ All commands are **case-insensitive**.
 | 🔥 `!f` or `!force` | Force-send next queued message |
 | 👋 `!x` or `!quit` (`Ctrl+D`) | Exit client |
 
-**Additional commands:**
+**Additional:**
 | Command | Description |
 |---------|-------------|
+| 🖼 `Ctrl+V` | Paste clipboard image as `[Image #N]` |
 | 🔔 `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
 
 ### 💡 IDE Configuration
@@ -225,9 +220,8 @@ You: Find all TODO comments
 
 🤖 Server auto-sent 1 message(s) - 0 remaining in queue
 
-You: !ip What's wrong with this screenshot?
-🖼️ Image attached!
-📝 Queued with image: What's wrong with this screenshot? (1 total)
+You: [Image #1] What's wrong with this screenshot?
+📝 Queued with image (1 total)
 ```
 
 ## Troubleshooting

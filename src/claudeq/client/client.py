@@ -6,6 +6,7 @@ Interactive client for sending messages to a ClaudeQ server.
 
 import atexit
 import fcntl
+import hashlib
 import os
 import signal
 import sys
@@ -22,7 +23,6 @@ from claudeq.client.socket_client import SocketClient
 from claudeq.client.image_handler import (
     check_clipboard_has_image,
     save_clipboard_image,
-    is_image_file
 )
 from claudeq.client.input_handler import InputHandler
 
@@ -47,6 +47,8 @@ class ClaudeQClient:
         self.pending_image_path: Optional[str] = None
         self.monitor_thread: Optional[threading.Thread] = None
         self.temp_image_files: list[str] = []  # Track temp files for cleanup
+        self._image_counter = 0
+        self._image_placeholders: dict[str, str] = {}  # "[Image #N]" → path
 
         # Ensure storage directories exist
         ensure_storage_dirs()
@@ -69,7 +71,10 @@ class ClaudeQClient:
 
         # Initialize components
         self.socket = SocketClient(self.socket_path, error_callback=self._should_print_socket_error)
-        self.input_handler = InputHandler(self.history_file, self._get_prompt)
+        self.input_handler = InputHandler(
+            self.history_file, self._get_prompt,
+            on_paste_image=self._paste_clipboard_image,
+        )
 
         # Register cleanup
         atexit.register(self._cleanup_lock)
@@ -149,6 +154,54 @@ class ClaudeQClient:
         self._cleanup_lock()
         sys.exit(0)
 
+    def _paste_clipboard_image(self) -> Optional[str]:
+        """Check clipboard for an image, save it, and return display text.
+
+        Returns:
+            Placeholder text like ``[Image #1] `` to insert into the input
+            buffer, or None if clipboard has no image.
+        """
+        if not check_clipboard_has_image():
+            return None
+        image_path = save_clipboard_image()
+        if not image_path:
+            return None
+
+        # Check if this image is identical to one we already saved
+        try:
+            new_hash = hashlib.md5(open(image_path, 'rb').read()).hexdigest()
+            for placeholder, existing_path in self._image_placeholders.items():
+                try:
+                    existing_hash = hashlib.md5(open(existing_path, 'rb').read()).hexdigest()
+                    if new_hash == existing_hash:
+                        # Same image — discard duplicate temp file, reuse placeholder
+                        os.unlink(image_path)
+                        return f'{placeholder} '
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+        if image_path.startswith('/tmp/'):
+            self.temp_image_files.append(image_path)
+        self._image_counter += 1
+        placeholder = f'[Image #{self._image_counter}]'
+        self._image_placeholders[placeholder] = image_path
+        return f'{placeholder} '
+
+    def _resolve_image_placeholders(self, message: str) -> str:
+        """Replace ``[Image #N]`` placeholders with ``@path`` references.
+
+        Resets the counter and placeholder map so the next prompt starts
+        from ``[Image #1]`` again.
+        """
+        for placeholder, path in self._image_placeholders.items():
+            if placeholder in message:
+                message = message.replace(placeholder, f'@{path}')
+        self._image_counter = 0
+        self._image_placeholders.clear()
+        return message
+
     def _get_prompt(self) -> str:
         """Generate current prompt text based on state."""
         if self.pending_image_path:
@@ -226,25 +279,6 @@ class ClaudeQClient:
             return entry[1:entry.index('>')]
         return None
 
-    def _process_image_in_line(self, line: str) -> str:
-        """
-        Check if line contains an image file path and extract it.
-
-        Args:
-            line: User input line.
-
-        Returns:
-            Line with image path removed.
-        """
-        words = line.split()
-        for word in words:
-            if is_image_file(word):
-                self.pending_image_path = word
-                line = line.replace(word, '').strip()
-                print(f"📎 Image attached: {os.path.basename(word)}")
-                break
-        return line
-
     def _build_message_with_image(self, message: str) -> str:
         """
         Build message with pending image attachment.
@@ -264,41 +298,9 @@ class ClaudeQClient:
             return full_message
         return message
 
-    def _handle_imagepaste(self, msg: Optional[str], is_direct: bool = False) -> bool:
-        """
-        Handle !ip or !imagepaste command.
-
-        Args:
-            msg: Optional message to send with image.
-            is_direct: Whether to send directly.
-
-        Returns:
-            True if image was handled.
-        """
-        if check_clipboard_has_image():
-            image_path = save_clipboard_image()
-            if image_path:
-                self.pending_image_path = image_path
-                # Track temp file for cleanup if it's in /tmp
-                if image_path.startswith('/tmp/'):
-                    self.temp_image_files.append(image_path)
-                if msg:
-                    if is_direct:
-                        self._send_direct(msg)
-                    else:
-                        self._queue_add(msg)
-                else:
-                    print("🖼️  Image attached! Type message and press Enter "
-                          "(or just Enter to queue image alone)")
-                return True
-            else:
-                print("✗ Failed to save image from clipboard\n")
-        else:
-            print("✗ No image in clipboard\n")
-        return False
-
     def _queue_add(self, message: str) -> None:
         """Add message to queue with any pending image."""
+        message = self._resolve_image_placeholders(message)
         full_message = self._build_message_with_image(message)
         has_image = full_message != message
 
@@ -314,6 +316,7 @@ class ClaudeQClient:
 
     def _send_direct(self, message: str) -> None:
         """Send message directly to Claude."""
+        message = self._resolve_image_placeholders(message)
         full_message = self._build_message_with_image(message)
 
         response = self.socket.send_direct(full_message)
@@ -412,7 +415,6 @@ class ClaudeQClient:
         commands = [
             ("\U0001F4D6", "!h or !help",                     "Show this help"),
             ("\U0001F4AC", "Type message",                    "Queue message (auto-sends)"),
-            ("\U0001F4F7", "!ip <msg> or !imagepaste <msg>",  "Queue with clipboard image"),
             ("\U0001F4E4", "!d <msg> or !direct <msg>",       "Send directly (bypass queue)"),
             ("\U0001F4CB", "!l or !list",                     "Show queue"),
             ("\U0001F4DD", "!e <index> or !edit <index>",     "Edit queued message by index"),
@@ -423,6 +425,8 @@ class ClaudeQClient:
 
         for emoji, cmd, desc in commands:
             print(f"  {emoji}  {cmd.ljust(CMD_WIDTH)} \u2192 {desc}")
+        print()
+        print("  \U0001F5BC  Ctrl+V pastes clipboard image as [Image #N]")
         print()
         print("  \U0001F916 Auto-queue: Server handles auto-sending")
         print()
@@ -443,38 +447,22 @@ class ClaudeQClient:
 
     def _handle_direct_command(self, line: str) -> None:
         """
-        Handle !d / !direct command with optional image attachment.
+        Handle !d / !direct command.
 
         Args:
             line: Full input line starting with !d or !direct.
         """
         line_lower = line.lower()
 
-        if line_lower.startswith('!d!ip'):
-            rest = line[2:].strip()
-        elif line_lower.startswith('!d '):
+        if line_lower.startswith('!d '):
             rest = line[3:].strip()
         else:
             rest = line[8:].strip()  # !direct
 
-        rest_lower = rest.lower()
-
-        if rest_lower.startswith('!ip') or rest_lower.startswith('!imagepaste'):
-            if rest_lower.startswith('!ip '):
-                msg = rest[4:].strip()
-            elif rest_lower.startswith('!ip'):
-                msg = rest[3:].strip()
-            elif rest_lower.startswith('!imagepaste '):
-                msg = rest[12:].strip()
-            else:
-                msg = rest[11:].strip()
-
-            self._handle_imagepaste(msg if msg else "", is_direct=True)
+        if rest:
+            self._send_direct(rest)
         else:
-            if rest:
-                self._send_direct(rest)
-            else:
-                print("✗ No message provided\n")
+            print("✗ No message provided\n")
 
     def _handle_auto_sent_toggle(self, line_lower: str) -> None:
         """
@@ -524,26 +512,6 @@ class ClaudeQClient:
         except ValueError:
             print("✗ Invalid index - must be a number\n")
 
-    def _handle_imagepaste_command(self, line: str) -> None:
-        """
-        Handle !ip / !imagepaste command parsing.
-
-        Args:
-            line: Full input line starting with !ip or !imagepaste.
-        """
-        line_lower = line.lower()
-
-        if line_lower.startswith('!ip '):
-            msg = line[4:].strip()
-        elif line_lower.startswith('!imagepaste '):
-            msg = line[12:].strip()
-        elif line_lower in ['!ip', '!imagepaste']:
-            msg = None
-        else:
-            return
-
-        self._handle_imagepaste(msg)
-
     def _process_command(self, line: str) -> bool:
         """
         Process a command line.
@@ -570,21 +538,11 @@ class ClaudeQClient:
             self._print_commands_help()
             return True
 
-        # Check for image file in line
-        if not self.pending_image_path and not line_lower.startswith('!'):
-            line = self._process_image_in_line(line)
-
-        # !ip / !imagepaste
-        if line_lower.startswith('!ip') or line_lower.startswith('!imagepaste'):
-            self._handle_imagepaste_command(line)
-            return True
-
         # !d / !direct
         if line_lower in ['!d', '!direct']:
             print("Usage: !d <msg>  (e.g., !d fix the bug)\n")
             return True
-        if (line_lower.startswith('!d ') or line_lower.startswith('!d!ip')
-                or line_lower.startswith('!direct ')):
+        if line_lower.startswith('!d ') or line_lower.startswith('!direct '):
             self._handle_direct_command(line)
             return True
 
@@ -624,16 +582,6 @@ class ClaudeQClient:
         # !x / !quit / !exit
         if line_lower in ['!x', '!quit', '!exit']:
             return False
-
-        # Trailing !ip
-        if line_lower.endswith(' !ip') or line_lower.endswith(' !imagepaste'):
-            if line_lower.endswith(' !ip'):
-                msg = line[:-4].strip()
-            else:
-                msg = line[:-12].strip()
-
-            self._handle_imagepaste(msg)
-            return True
 
         # Unknown ! command
         if line_lower.startswith('!'):

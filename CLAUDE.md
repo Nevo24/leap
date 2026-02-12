@@ -153,7 +153,7 @@ ClaudeQ has multiple cleanup mechanisms. This table shows **exactly** which func
 | `.queue` | First message queued | Server exit (if empty), dead session cleanup, user discard | Until empty or discarded |
 | `.history` | First user input | History TTL cleanup on server startup | Deleted after `history_ttl_days` (default: 3) |
 | `.client.lock` | Client connects | Client exit, dead session cleanup | Temporary |
-| `/tmp/*.png` | `!ip` command | Client exit | Temporary |
+| `/tmp/*.png` | Ctrl+V image paste | Client exit | Temporary |
 
 ### Settings Configuration
 
@@ -212,7 +212,6 @@ Load these messages? [Y/n/d] (Y=load, n=discard, d=show full):
 |---------|--------|
 | `!h` or `!help` | Show help |
 | `<message>` | Queue message (auto-sends when ready) |
-| `!ip <msg>` or `!imagepaste <msg>` | Queue with clipboard image |
 | `!d <msg>` or `!direct <msg>` | Send directly (bypass queue) |
 | `!e <index>` or `!edit <index>` | Edit queued message by index (0=first) |
 | `!l` or `!list` | Show queue |
