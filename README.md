@@ -170,6 +170,8 @@ After running `make install-monitor`, launch from:
 - Applications folder: Double-click `ClaudeQ Monitor.app`
 - Dock: Pin the app for quick access
 
+![ClaudeQ Monitor](assets/claudeq-monitor.png)
+
 The monitor shows:
 - **Persistent rows** — sessions stay visible across server/client restarts and monitor relaunches
 - All active and pinned ClaudeQ sessions with queue size
