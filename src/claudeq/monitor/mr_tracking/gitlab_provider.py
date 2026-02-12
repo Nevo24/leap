@@ -99,7 +99,13 @@ class GitLabProvider(SCMProvider):
                 name = self._extract_user_name(entry)
                 if name:
                     approved_by.append(name)
-            # Fallback: check approval_state for approver names
+            # Fallback 1: check MR object's approved_by attribute
+            if approved and not approved_by:
+                for entry in getattr(mr_full, 'approved_by', []):
+                    name = self._extract_user_name(entry)
+                    if name and name not in approved_by:
+                        approved_by.append(name)
+            # Fallback 2: check approval_state for approver names
             if approved and not approved_by:
                 try:
                     state = mr_full.approval_state.get()
@@ -150,7 +156,7 @@ class GitLabProvider(SCMProvider):
         return MRStatus(
             state=MRState.ALL_RESPONDED,
             mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
-            approved=approved,
+            approved=approved, approved_by=approved_by or None,
         )
 
     def _is_unresponded_thread(self, discussion, project, mr_iid: int) -> bool:
