@@ -883,6 +883,7 @@ class MonitorWindow(QMainWindow):
                     )
                 else:
                     server_btn = QPushButton('Server')
+                    server_btn.setStyleSheet('color: #00ff00;')
                     server_btn.clicked.connect(
                         lambda checked, t=tag: self._focus_session(t, 'server')
                     )
@@ -913,6 +914,8 @@ class MonitorWindow(QMainWindow):
                 if is_dead and not has_client:
                     client_btn.setEnabled(False)
                 else:
+                    if has_client:
+                        client_btn.setStyleSheet('color: #00ff00;')
                     client_btn.clicked.connect(
                         lambda checked, t=tag: self._focus_session(t, 'client')
                     )
