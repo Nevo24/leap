@@ -215,11 +215,6 @@ class MonitorWindow(QMainWindow):
         self.github_btn.clicked.connect(self._open_github_setup)
         bottom_layout.addWidget(self.github_btn)
 
-        close_btn = QPushButton('Close')
-        close_btn.setToolTip('Close the monitor')
-        close_btn.clicked.connect(self._confirm_close)
-        bottom_layout.addWidget(close_btn)
-
         layout.addLayout(bottom_layout)
 
         # Status / log bar at the very bottom
@@ -235,6 +230,12 @@ class MonitorWindow(QMainWindow):
         status_layout.addWidget(self._log_label)
 
         status_layout.addStretch()
+
+        close_btn = QPushButton('Close')
+        close_btn.setToolTip('Close the monitor')
+        close_btn.clicked.connect(self._confirm_close)
+        status_layout.addWidget(close_btn)
+
         layout.addLayout(status_layout)
 
     def _open_status_log(self) -> None:
