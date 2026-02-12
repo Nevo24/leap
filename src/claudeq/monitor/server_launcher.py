@@ -224,13 +224,16 @@ class ServerLauncher:
     ) -> None:
         """Handle git check result for server start."""
         if state['fetch_err']:
-            # Branch gone (e.g. MR merged) — still open CQ in the project dir
-            QMessageBox.information(
+            reply = QMessageBox.question(
                 self._w, 'Branch Not Available',
-                f"Branch '{branch}' does not exist on the remote.\n\n"
-                f"Opening CQ in the project directory anyway.",
+                f"Branch '{branch}' was deleted on remote (MR merged?).\n\n"
+                f"CQ will start on the last local state of '{branch}' "
+                f"in {project_dir}.\n\n"
+                f"Open anyway?",
+                QMessageBox.Yes | QMessageBox.No,
             )
-            self._server_finish(tag, pinned, project_dir)
+            if reply == QMessageBox.Yes:
+                self._server_finish(tag, pinned, project_dir)
             return
 
         if state['up_to_date']:
@@ -263,10 +266,18 @@ class ServerLauncher:
                         check=True, capture_output=True, text=True,
                         cwd=cwd, timeout=10,
                     )
-                subprocess.run(
+                # Try fast-forward first; if diverged, hard-reset to remote
+                # (these are managed clones in repos_dir, not user workspaces)
+                r = subprocess.run(
                     ['git', 'pull', '--ff-only'],
                     capture_output=True, text=True, cwd=cwd, timeout=30,
                 )
+                if r.returncode != 0:
+                    subprocess.run(
+                        ['git', 'reset', '--hard', f'origin/{branch}'],
+                        check=True, capture_output=True, text=True,
+                        cwd=cwd, timeout=10,
+                    )
             except subprocess.CalledProcessError as e:
                 checkout_err[0] = e.stderr or str(e)
             except Exception as e:
