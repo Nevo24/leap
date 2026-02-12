@@ -187,6 +187,12 @@ class MonitorWindow(QMainWindow):
         reset_cols_btn = QPushButton('Reset Window Size')
         reset_cols_btn.clicked.connect(self._reset_window_size)
         top_layout.addWidget(reset_cols_btn)
+
+        close_btn = QPushButton('Close')
+        close_btn.setToolTip('Close the monitor')
+        close_btn.clicked.connect(self._confirm_close)
+        top_layout.addWidget(close_btn)
+
         layout.addLayout(top_layout)
 
         layout.addWidget(self.table)
@@ -1652,6 +1658,16 @@ class MonitorWindow(QMainWindow):
         """Toggle auto /cq command fetching and persist."""
         self._prefs['auto_fetch_cq'] = state == Qt.Checked
         save_monitor_prefs(self._prefs)
+
+    def _confirm_close(self) -> None:
+        """Ask for confirmation before closing the monitor."""
+        reply = QMessageBox.question(
+            self, 'Close Monitor',
+            'Are you sure you want to close the monitor?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.close()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event - save prefs then force-exit the process.
