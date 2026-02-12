@@ -6,7 +6,6 @@ Interactive client for sending messages to a ClaudeQ server.
 
 import atexit
 import fcntl
-import json
 import os
 import signal
 import sys
@@ -14,7 +13,10 @@ import threading
 import time
 from typing import Optional
 
-from claudeq.utils.constants import QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SETTINGS_FILE, ensure_storage_dirs
+from claudeq.utils.constants import (
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR,
+    ensure_storage_dirs, load_settings, save_settings,
+)
 from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.client.socket_client import SocketClient
 from claudeq.client.image_handler import (
@@ -56,7 +58,7 @@ class ClaudeQClient:
         self.lock_file = SOCKET_DIR / f"{tag}.client.lock"
 
         # Load settings from file (persistent across all clients)
-        self.show_auto_sent_notifications = self._load_settings().get('show_auto_sent_notifications', True)
+        self.show_auto_sent_notifications = load_settings().get('show_auto_sent_notifications', True)
 
         # Acquire exclusive lock
         self._acquire_lock()
@@ -83,6 +85,7 @@ class ClaudeQClient:
             self.lock_fd.write(str(os.getpid()))
             self.lock_fd.flush()
             os.fsync(self.lock_fd.fileno())
+            self._lock_ino = os.fstat(self.lock_fd.fileno()).st_ino
         except BlockingIOError:
             pid_info = ""
             try:
@@ -114,12 +117,16 @@ class ClaudeQClient:
             except (OSError, ValueError):
                 pass  # Close might fail if already closed
 
-        # Always try to delete lock file, even if unlock/close failed
+        # Only delete the lock file if it's still ours (same inode).
+        # Another client may have replaced it after the monitor removed ours.
         try:
             if self.lock_file.exists():
+                current_ino = self.lock_file.stat().st_ino
+                if hasattr(self, '_lock_ino') and current_ino != self._lock_ino:
+                    return  # File belongs to a different client
                 self.lock_file.unlink()
         except OSError:
-            pass  # File might be locked by another process
+            pass
 
         # Clean up temp image files
         self._cleanup_temp_images()
@@ -135,36 +142,6 @@ class ClaudeQClient:
                     os.unlink(image_path)
             except OSError:
                 pass
-
-    def _load_settings(self) -> dict:
-        """
-        Load settings from JSON file.
-
-        Returns:
-            Dictionary of settings, or empty dict if file doesn't exist.
-        """
-        try:
-            if SETTINGS_FILE.exists():
-                with open(SETTINGS_FILE, 'r') as f:
-                    return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass
-        return {}
-
-    def _save_settings(self, settings: dict) -> None:
-        """
-        Save settings to JSON file.
-
-        Args:
-            settings: Dictionary of settings to save.
-        """
-        try:
-            # Ensure directory exists
-            SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(SETTINGS_FILE, 'w') as f:
-                json.dump(settings, f, indent=2)
-        except OSError as e:
-            print(f"⚠️  Warning: Could not save settings: {e}")
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle termination signals."""
@@ -516,15 +493,15 @@ class ClaudeQClient:
         toggle = parts[1].strip()
         if toggle in ['on', 'true', '1', 'yes']:
             self.show_auto_sent_notifications = True
-            settings = self._load_settings()
+            settings = load_settings()
             settings['show_auto_sent_notifications'] = True
-            self._save_settings(settings)
+            save_settings(settings)
             print("✓ Auto-sent notifications enabled (saved globally)\n")
         elif toggle in ['off', 'false', '0', 'no']:
             self.show_auto_sent_notifications = False
-            settings = self._load_settings()
+            settings = load_settings()
             settings['show_auto_sent_notifications'] = False
-            self._save_settings(settings)
+            save_settings(settings)
             print("✓ Auto-sent notifications disabled (saved globally)\n")
         else:
             print("✗ Invalid option. Use: on/off\n")

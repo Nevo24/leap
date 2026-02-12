@@ -1,9 +1,11 @@
 """Configuration management for SCM integrations and monitor preferences."""
 
 import json
+import os
+import tempfile
 from typing import Any, Optional
 
-from claudeq.utils.constants import STORAGE_DIR
+from claudeq.utils.constants import STORAGE_DIR, atomic_json_write
 
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
@@ -37,9 +39,7 @@ def load_gitlab_config() -> Optional[dict[str, Any]]:
 
 def save_gitlab_config(config: dict[str, Any]) -> None:
     """Save GitLab configuration to storage."""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(GITLAB_CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+    atomic_json_write(GITLAB_CONFIG_FILE, config)
 
 
 def load_github_config() -> Optional[dict[str, Any]]:
@@ -60,9 +60,7 @@ def load_github_config() -> Optional[dict[str, Any]]:
 
 def save_github_config(config: dict[str, Any]) -> None:
     """Save GitHub configuration to storage."""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(GITHUB_CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+    atomic_json_write(GITHUB_CONFIG_FILE, config)
 
 
 def load_monitor_prefs() -> dict[str, Any]:
@@ -83,9 +81,7 @@ def load_monitor_prefs() -> dict[str, Any]:
 
 def save_monitor_prefs(prefs: dict[str, Any]) -> None:
     """Save monitor UI preferences to storage."""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(MONITOR_PREFS_FILE, 'w') as f:
-        json.dump(prefs, f, indent=2)
+    atomic_json_write(MONITOR_PREFS_FILE, prefs)
 
 
 def load_selected_context_name() -> str:
@@ -105,7 +101,19 @@ def load_selected_context_name() -> str:
 def save_selected_context_name(name: str) -> None:
     """Save the name of the currently selected context preset."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    CQ_CONTEXT_FILE.write_text(name, encoding='utf-8')
+    fd, tmp_path = tempfile.mkstemp(dir=str(STORAGE_DIR), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(name)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(CQ_CONTEXT_FILE))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def load_cq_context() -> str:
@@ -143,9 +151,7 @@ def load_saved_contexts() -> dict[str, str]:
 
 def _write_saved_contexts(contexts: dict[str, str]) -> None:
     """Write all named context presets to storage."""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CQ_CONTEXTS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(contexts, f, indent=2, ensure_ascii=False)
+    atomic_json_write(CQ_CONTEXTS_FILE, contexts, ensure_ascii=False)
 
 
 def save_named_context(name: str, text: str) -> None:
@@ -183,6 +189,4 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
 
 def save_pinned_sessions(sessions: dict[str, dict[str, Any]]) -> None:
     """Save pinned sessions to storage."""
-    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(PINNED_SESSIONS_FILE, 'w') as f:
-        json.dump(sessions, f, indent=2)
+    atomic_json_write(PINNED_SESSIONS_FILE, sessions)

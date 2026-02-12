@@ -46,7 +46,9 @@ class QueueManager:
 
     def load(self) -> None:
         """Load queue from file."""
-        if self.queue_file.exists():
+        if not self.queue_file.exists():
+            return
+        try:
             with open(self.queue_file, 'r') as f:
                 for line in f:
                     line = line.strip()
@@ -64,6 +66,8 @@ class QueueManager:
                         message = line
 
                     self.queue.append({'id': msg_id, 'msg': message})
+        except OSError:
+            logger.warning("Failed to load queue from %s", self.queue_file, exc_info=True)
 
     def save(self) -> None:
         """Save queue to file atomically (write to temp + rename)."""

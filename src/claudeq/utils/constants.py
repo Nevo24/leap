@@ -6,9 +6,11 @@ used across the application.
 """
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 
 def _find_project_root() -> Path:
@@ -109,6 +111,35 @@ def ensure_storage_dirs() -> None:
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def atomic_json_write(path: Path, data: Any, **json_kwargs: Any) -> None:
+    """Write JSON data atomically using temp file + os.replace.
+
+    Writes to a temporary file in the same directory, then atomically
+    renames it to the target path. This prevents corruption from
+    crashes or kills mid-write.
+
+    Args:
+        path: Target file path.
+        data: Data to serialize as JSON.
+        **json_kwargs: Extra keyword arguments passed to json.dump.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    json_kwargs.setdefault('indent', 2)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, **json_kwargs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def get_default_settings() -> dict:
     """
     Get default settings for ClaudeQ.
@@ -149,9 +180,7 @@ def save_settings(settings: dict) -> None:
         settings: Dictionary of settings to save.
     """
     try:
-        ensure_storage_dirs()
-        with open(SETTINGS_FILE, 'w') as f:
-            json.dump(settings, f, indent=2)
+        atomic_json_write(SETTINGS_FILE, settings)
     except OSError:
         pass
 

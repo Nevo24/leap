@@ -63,19 +63,23 @@ def _is_lock_held(lock_path: Path) -> bool:
     Returns:
         True if the lock is held by another process.
     """
+    fd = None
     try:
         fd = open(lock_path, 'r')
-        try:
-            fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            # Got the lock — no one is holding it, stale file
-            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
-            fd.close()
-            return False
-        except BlockingIOError:
-            fd.close()
-            return True
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Got the lock — no one is holding it, stale file
+        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        return False
+    except BlockingIOError:
+        return True
     except OSError:
         return False
+    finally:
+        if fd is not None:
+            try:
+                fd.close()
+            except OSError:
+                pass
 
 
 def is_client_lock_held(tag: str) -> bool:
