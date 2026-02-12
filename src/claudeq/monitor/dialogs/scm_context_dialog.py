@@ -178,6 +178,10 @@ class ContextEditorDialog(QDialog):
     def _on_save(self) -> None:
         if not self._current_name:
             return
+        current_text = self._text_edit.toPlainText()
+        saved_text = load_saved_contexts().get(self._current_name, '')
+        if current_text == saved_text:
+            return  # No changes — nothing to save
         if not self._unsaved:
             reply = QMessageBox.question(
                 self, 'Overwrite Preset',
@@ -186,7 +190,7 @@ class ContextEditorDialog(QDialog):
             )
             if reply != QMessageBox.Yes:
                 return
-        save_named_context(self._current_name, self._text_edit.toPlainText())
+        save_named_context(self._current_name, current_text)
         self._unsaved = False
 
     def _on_save_as(self) -> None:
