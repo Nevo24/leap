@@ -82,7 +82,7 @@ class ServerLauncher:
         self, tag: str, preferred_ide: Optional[str], project_path: Optional[str],
     ) -> None:
         """Open a CQ server in a terminal at the given project path."""
-        cmd = f"cd {project_path} && cq '{tag}'" if project_path else f"cq '{tag}'"
+        cmd = f"cd {project_path} && claudeq '{tag}'" if project_path else f"claudeq '{tag}'"
         worker = BackgroundCallWorker(
             lambda: open_terminal_with_command(
                 cmd, preferred_ide=preferred_ide, project_path=project_path,

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
 )
 
@@ -23,6 +23,7 @@ class SettingsDialog(QDialog):
         current_repos_dir: Optional[str] = None,
         active_paths_fn: Optional[Callable[[], set[str]]] = None,
         log_fn: Optional[Callable[[str], None]] = None,
+        show_tooltips: bool = True,
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
@@ -57,6 +58,11 @@ class SettingsDialog(QDialog):
         cleanup_btn.setToolTip('Delete cloned repos that have no running CQ server')
         cleanup_btn.clicked.connect(self._cleanup_repos)
         grid.addWidget(cleanup_btn, 1, 3)
+
+        # Show tooltips
+        self._tooltips_check = QCheckBox('Show hover explanations')
+        self._tooltips_check.setChecked(show_tooltips)
+        grid.addWidget(self._tooltips_check, 2, 0, 1, 2)
 
         layout.addLayout(grid)
 
@@ -138,3 +144,7 @@ class SettingsDialog(QDialog):
     def selected_repos_dir(self) -> str:
         """Return the repositories directory path."""
         return self._repos_dir_edit.text().strip()
+
+    def show_tooltips(self) -> bool:
+        """Return whether hover explanations are enabled."""
+        return self._tooltips_check.isChecked()

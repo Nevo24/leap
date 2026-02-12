@@ -14,12 +14,12 @@ from typing import Any, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QProxyStyle, QStyle, QStyleHintReturn,
+    QApplication, QMainWindow, QProxyStyle, QStyle,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QInputDialog, QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QTimer, Qt
+from PyQt5.QtCore import QEvent, QObject, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR, is_valid_tag
@@ -66,8 +66,35 @@ class _PersistentTooltipStyle(QProxyStyle):
         if hint == QStyle.SH_ToolTip_WakeUpDelay:
             return 0  # Show immediately
         if hint == QStyle.SH_ToolTip_FallAsleepDelay:
-            return 0  # Don't auto-dismiss
+            return 0  # No delay between consecutive tooltips
         return super().styleHint(hint, option, widget, returnData)
+
+
+class _TooltipApp(QApplication):
+    """QApplication subclass that controls tooltip behavior.
+
+    Overrides notify() to intercept ToolTip events on ALL widgets.
+    When tooltips_enabled=True: shows with max duration (no auto-dismiss).
+    When tooltips_enabled=False: suppresses all tooltips.
+    """
+
+    def __init__(self, argv: list) -> None:
+        super().__init__(argv)
+        self.tooltips_enabled: bool = True
+
+    def notify(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.ToolTip:
+            if not self.tooltips_enabled:
+                return True  # Suppress
+            widget = obj if isinstance(obj, QWidget) else None
+            if widget and widget.toolTip():
+                from PyQt5.QtWidgets import QToolTip as _QToolTip
+                _QToolTip.showText(
+                    event.globalPos(), widget.toolTip(), widget,
+                    widget.rect(), 2_147_483_647,
+                )
+                return True
+        return super().notify(obj, event)
 
 
 class MonitorWindow(QMainWindow):
@@ -155,6 +182,27 @@ class MonitorWindow(QMainWindow):
             'Tag', 'Project', 'Branch', 'MR', 'Status', 'Queue', 'Server', 'Client', 'Delete'
         ])
 
+        # Column header tooltips
+        _col_tooltips = {
+            self.COL_TAG: 'CQ session name',
+            self.COL_PROJECT: 'Project directory name',
+            self.COL_BRANCH: (
+                'The git branch this row was created to work on.\n'
+                '(+ button: the MR source branch.\n'
+                ' claudeq command: the branch the folder was on when it started.)'
+            ),
+            self.COL_MR: 'Merge/pull request tracking status',
+            self.COL_STATUS: 'Whether Claude is busy processing or idle',
+            self.COL_QUEUE: 'Number of messages waiting in the queue',
+            self.COL_SERVER: 'CQ server process (green = running)',
+            self.COL_CLIENT: 'CQ client process (green = connected)',
+            self.COL_DELETE: 'Remove this row',
+        }
+        for col, tip in _col_tooltips.items():
+            item = self.table.horizontalHeaderItem(col)
+            if item:
+                item.setToolTip(tip)
+
         # Enable interactive column resizing
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
@@ -199,6 +247,7 @@ class MonitorWindow(QMainWindow):
 
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Size')
+        reset_cols_btn.setToolTip('Reset window and column sizes to defaults')
         reset_cols_btn.clicked.connect(self._reset_window_size)
         top_layout.addWidget(reset_cols_btn)
         layout.addLayout(top_layout)
@@ -209,11 +258,15 @@ class MonitorWindow(QMainWindow):
         bottom_layout = QHBoxLayout()
 
         self.bots_check = QCheckBox('Include git bots')
+        self.bots_check.setToolTip('Count bot comments as responses in MR thread detection')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
         bottom_layout.addWidget(self.bots_check)
 
         self.auto_cq_check = QCheckBox("Auto '/cq' fetch")
+        self.auto_cq_check.setToolTip(
+            'Automatically send /cq-tagged MR threads to CQ sessions each poll cycle'
+        )
         self.auto_cq_check.setChecked(self._prefs.get('auto_fetch_cq', True))
         self.auto_cq_check.stateChanged.connect(self._toggle_auto_fetch_cq)
         bottom_layout.addWidget(self.auto_cq_check)
@@ -222,10 +275,12 @@ class MonitorWindow(QMainWindow):
 
         # SCM connect buttons
         self.gitlab_btn = QPushButton('Connect GitLab')
+        self.gitlab_btn.setToolTip('Configure GitLab connection for MR tracking')
         self.gitlab_btn.clicked.connect(self._open_gitlab_setup)
         bottom_layout.addWidget(self.gitlab_btn)
 
         self.github_btn = QPushButton('Connect GitHub')
+        self.github_btn.setToolTip('Configure GitHub connection for PR tracking')
         self.github_btn.clicked.connect(self._open_github_setup)
         bottom_layout.addWidget(self.github_btn)
 
@@ -341,14 +396,14 @@ class MonitorWindow(QMainWindow):
         """Update SCM button text/style based on connection state."""
         if SCMType.GITLAB.value in self._scm_providers:
             self.gitlab_btn.setText('GitLab Connected')
-            self.gitlab_btn.setStyleSheet('color: #00ff00;')
+            self.gitlab_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
         else:
             self.gitlab_btn.setText('Connect GitLab')
             self.gitlab_btn.setStyleSheet('')
 
         if SCMType.GITHUB.value in self._scm_providers:
             self.github_btn.setText('GitHub Connected')
-            self.github_btn.setStyleSheet('color: #00ff00;')
+            self.github_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
         else:
             self.github_btn.setText('Connect GitHub')
             self.github_btn.setStyleSheet('')
@@ -911,6 +966,7 @@ class MonitorWindow(QMainWindow):
                     else:
                         track_btn = QPushButton('Track MR')
                         track_btn._cq_tag = tag
+                        track_btn.setToolTip(f'Start tracking MR/PR for {tag}')
                         track_btn.setStyleSheet('font-size: 11px;')
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
@@ -944,14 +1000,15 @@ class MonitorWindow(QMainWindow):
                     )
                     if branch_mismatch:
                         server_btn = QPushButton('\u26a0 Server')
-                        server_btn.setStyleSheet('color: #ffa500;')
+                        server_btn.setStyleSheet('QPushButton { color: #ffa500; } QToolTip { color: #e0e0e0; }')
                         server_btn.setToolTip(
                             f"Branch mismatch: expected '{pinned_branch}', "
                             f"got '{session['branch']}'"
                         )
                     else:
                         server_btn = QPushButton('Server')
-                        server_btn.setStyleSheet('color: #00ff00;')
+                        server_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
+                        server_btn.setToolTip(f'Jump to server terminal for {tag}')
                     server_btn.clicked.connect(
                         lambda checked, t=tag: self._focus_session(t, 'server')
                     )
@@ -981,9 +1038,13 @@ class MonitorWindow(QMainWindow):
                 client_btn = QPushButton('Client')
                 if is_dead and not has_client:
                     client_btn.setEnabled(False)
+                    client_btn.setToolTip('No client connected')
                 else:
                     if has_client:
-                        client_btn.setStyleSheet('color: #00ff00;')
+                        client_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
+                        client_btn.setToolTip(f'Jump to client terminal for {tag}')
+                    else:
+                        client_btn.setToolTip(f'Open new client for {tag}')
                     client_btn.clicked.connect(
                         lambda checked, t=tag: self._focus_session(t, 'client')
                     )
@@ -1239,7 +1300,7 @@ class MonitorWindow(QMainWindow):
                     self._show_status(f"Opening new client for '{tag}'")
                     worker = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f"cq '{tag}'",
+                            f"claudeq '{tag}'",
                             preferred_ide=preferred_ide,
                             project_path=project_path,
                         ),
@@ -1280,7 +1341,7 @@ class MonitorWindow(QMainWindow):
                     _remove_client_lock(_tag)
                     w = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f"cq '{_tag}'",
+                            f"claudeq '{_tag}'",
                             preferred_ide=_preferred_ide,
                             project_path=_project_path,
                         ),
@@ -1299,7 +1360,7 @@ class MonitorWindow(QMainWindow):
                 if reply == QMessageBox.Yes:
                     w = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f"cq '{_tag}'",
+                            f"claudeq '{_tag}'",
                             preferred_ide=_preferred_ide,
                             project_path=_project_path,
                         ),
@@ -1472,13 +1533,21 @@ class MonitorWindow(QMainWindow):
             current_repos_dir=self._prefs.get('repos_dir', DEFAULT_REPOS_DIR),
             active_paths_fn=self._get_active_project_paths,
             log_fn=self._show_status,
+            show_tooltips=self._prefs.get('show_tooltips', True),
             parent=self,
         )
         if dialog.exec_():
             self._prefs['default_terminal'] = dialog.selected_terminal()
             self._prefs['repos_dir'] = dialog.selected_repos_dir()
+            self._prefs['show_tooltips'] = dialog.show_tooltips()
             save_monitor_prefs(self._prefs)
+            self._apply_tooltips_setting()
             self._show_status('Settings saved')
+
+    def _apply_tooltips_setting(self) -> None:
+        """Sync the tooltip app with the current preference."""
+        if hasattr(self, '_tooltip_app'):
+            self._tooltip_app.tooltips_enabled = self._prefs.get('show_tooltips', True)
 
     # ------------------------------------------------------------------
     #  Add row from MR/PR URL
@@ -1790,7 +1859,7 @@ class MonitorWindow(QMainWindow):
 
 def main() -> None:
     """Main entry point for ClaudeQ Monitor."""
-    app = QApplication(sys.argv)
+    app = _TooltipApp(sys.argv)
     app.setApplicationName('ClaudeQ Monitor')
     app.setStyle(_PersistentTooltipStyle(app.style()))
 
@@ -1800,6 +1869,8 @@ def main() -> None:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MonitorWindow()
+    window._tooltip_app = app
+    window._apply_tooltips_setting()
     window.show()
 
     # Handle Ctrl+C gracefully
