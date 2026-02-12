@@ -52,13 +52,17 @@ class ServerLauncher:
                 # Check if another CQ server is already using this directory
                 resolved = str(Path(project_path).resolve())
                 active_paths = self._w._get_active_project_paths()
+                project_dir = Path(project_path)
                 if resolved in active_paths:
                     # Path in use — clear it so _start_server_from_mr finds a free dir
                     pinned['project_path'] = ''
                     self._start_server_from_mr(tag, pinned)
+                elif not project_dir.is_dir():
+                    # Dir was deleted — clear path and re-clone
+                    pinned['project_path'] = ''
+                    self._start_server_from_mr(tag, pinned)
                 else:
                     # Local path free — check branch is correct
-                    project_dir = Path(project_path)
                     branch = pinned.get('branch', '')
                     self._w._show_status(f"Checking '{project_dir.name}' is up to date...")
                     self._server_check_git(tag, pinned, project_dir, branch)
@@ -224,16 +228,34 @@ class ServerLauncher:
     ) -> None:
         """Handle git check result for server start."""
         if state['fetch_err']:
-            reply = QMessageBox.question(
-                self._w, 'Branch Not Available',
-                f"Branch '{branch}' was deleted on remote (MR merged?).\n\n"
-                f"CQ will start on the last local state of '{branch}' "
-                f"in {project_dir}.\n\n"
-                f"Open anyway?",
-                QMessageBox.Yes | QMessageBox.No,
+            err = state['fetch_err'].lower()
+            branch_gone = (
+                "couldn't find remote ref" in err
+                or 'not found' in err
+                or 'no such remote ref' in err
             )
-            if reply == QMessageBox.Yes:
-                self._server_finish(tag, pinned, project_dir)
+            if branch_gone:
+                reply = QMessageBox.question(
+                    self._w, 'Branch Not Available',
+                    f"Branch '{branch}' was deleted on remote (MR merged?).\n\n"
+                    f"CQ will start on the last local state of '{branch}' "
+                    f"in {project_dir}.\n\n"
+                    f"Open anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    self._server_finish(tag, pinned, project_dir)
+            else:
+                # Network error or other fetch failure — let user retry
+                reply = QMessageBox.question(
+                    self._w, 'Fetch Failed',
+                    f"Could not fetch branch '{branch}' from remote:\n"
+                    f"{state['fetch_err']}\n\n"
+                    f"Start CQ without syncing?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    self._server_finish(tag, pinned, project_dir)
             return
 
         if state['up_to_date']:
