@@ -850,6 +850,7 @@ class MonitorWindow(QMainWindow):
                     mr_widget.set_has_unresponded(
                         mr_status is not None and mr_status.state == MRState.UNRESPONDED
                     )
+                    mr_widget.set_server_running(not is_dead)
                     mr_widget.set_send_to_cq_callback(
                         lambda t=tag: self._send_all_threads_to_cq(t)
                     )
