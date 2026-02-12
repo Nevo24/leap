@@ -57,6 +57,8 @@ class IndicatorLabel(QLabel):
 
     def enterEvent(self, event) -> None:
         if self._indicator_help:
+            if self._popup:
+                self._popup.close()
             self._popup = IndicatorPopup()
             self._popup.setText(self._indicator_help)
             self._popup.adjustSize()
@@ -148,6 +150,8 @@ class PulsingLabel(QLabel):
 
     def enterEvent(self, event) -> None:
         if self._indicator_help:
+            if self._popup:
+                self._popup.close()
             self._popup = IndicatorPopup()
             self._popup.setText(self._indicator_help)
             self._popup.adjustSize()
@@ -217,11 +221,6 @@ class PulsingLabel(QLabel):
         menu.addAction(cq_combined_action)
 
         menu.exec_(self.mapToGlobal(pos))
-
-    def _handle_send_to_cq(self) -> None:
-        """Handle 'Send all threads to CQ' action."""
-        if self._on_send_to_cq:
-            self._on_send_to_cq()
 
     def _animate(self) -> None:
         try:

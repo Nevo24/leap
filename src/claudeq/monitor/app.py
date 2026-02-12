@@ -235,6 +235,7 @@ class MonitorWindow(QMainWindow):
         self._progress_bar.setMaximumWidth(120)
         self._progress_bar.setTextVisible(False)
         self._progress_bar.setVisible(False)
+        self._busy_count: int = 0
         status_layout.addWidget(self._progress_bar)
 
         status_layout.addStretch()
@@ -554,7 +555,7 @@ class MonitorWindow(QMainWindow):
             if not ok:
                 return
             self._set_busy(True)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
 
         # Launch Phase 2 — send + acknowledge in background
         self._send_threads_worker = SendThreadsWorker(self)
@@ -662,7 +663,7 @@ class MonitorWindow(QMainWindow):
             if not ok:
                 return
             self._set_busy(True)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
 
         # Launch Phase 2 — send combined message
         self._send_combined_worker = SendThreadsCombinedWorker(self)
@@ -1115,8 +1116,12 @@ class MonitorWindow(QMainWindow):
             self._log_label.setText('')
 
     def _set_busy(self, busy: bool) -> None:
-        """Show or hide the indeterminate progress bar."""
-        self._progress_bar.setVisible(busy)
+        """Show or hide the indeterminate progress bar (ref-counted)."""
+        if busy:
+            self._busy_count += 1
+        else:
+            self._busy_count = max(0, self._busy_count - 1)
+        self._progress_bar.setVisible(self._busy_count > 0)
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
         """Close a server session (non-blocking, no confirmation)."""
