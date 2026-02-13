@@ -102,6 +102,10 @@ install-monitor: .env ensure-storage write-install-metadata
 run-monitor:
 	@PYTHONPATH=$(SRC_DIR) poetry run python -c "from claudeq.monitor.app import main; main()"
 
+.PHONY: run-cleanup-sessions
+run-cleanup-sessions:
+	@$(SCRIPTS_DIR)/claudeq-cleanup.sh
+
 .PHONY: clean
 clean:
 	@echo "$(PROMPT_PREFIX) Cleaning up..."
@@ -206,7 +210,6 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/claudeq-main.sh
 	@chmod +x $(SCRIPTS_DIR)/claudeq-server.py
 	@chmod +x $(SCRIPTS_DIR)/claudeq-client.py
-	@chmod +x $(SCRIPTS_DIR)/claudeq-cleanup.sh
 	@chmod +x $(SCRIPTS_DIR)/claudeq-monitor.py
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .configure-jetbrains

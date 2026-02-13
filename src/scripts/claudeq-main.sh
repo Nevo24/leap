@@ -80,7 +80,7 @@ CLIENT COMMANDS (when connected as interactive client):
 
 OTHER COMMANDS:
     cq-mo               Launch monitor GUI
-    cq-cleanup          Remove dead sessions
+    make run-cleanup-sessions   Remove dead sessions
 
 For more info: https://github.com/nevo24/claudeq
 EOF

@@ -104,12 +104,7 @@ claudeq() {
     "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh" "$@"
 }
 
-claudeq-cleanup() {
-    "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-cleanup.sh"
-}
-
 alias cq='claudeq'
-alias cqc='claudeq-cleanup'
 # ===== ClaudeQ Configuration END - DO NOT REMOVE (needed for uninstall) =====
 EOF
 
