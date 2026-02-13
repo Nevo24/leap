@@ -2,12 +2,14 @@
 
 import shutil
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
 )
+
+from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
 
 DEFAULT_REPOS_DIR = '/tmp/claudeq-repos'
 
@@ -24,13 +26,15 @@ class SettingsDialog(QDialog):
         active_paths_fn: Optional[Callable[[], set[str]]] = None,
         log_fn: Optional[Callable[[str], None]] = None,
         show_tooltips: bool = True,
+        notification_prefs: Optional[dict[str, dict[str, bool]]] = None,
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
         self._active_paths_fn = active_paths_fn
         self._log_fn = log_fn
+        self._notification_prefs: dict[str, dict[str, bool]] = notification_prefs or {}
         self.setWindowTitle('Settings')
-        self.resize(800, 180)
+        self.resize(800, 220)
 
         layout = QVBoxLayout(self)
 
@@ -63,6 +67,12 @@ class SettingsDialog(QDialog):
         self._tooltips_check = QCheckBox('Show hover explanations')
         self._tooltips_check.setChecked(show_tooltips)
         grid.addWidget(self._tooltips_check, 2, 0, 1, 2)
+
+        # Notifications
+        notif_btn = QPushButton('Notifications...')
+        notif_btn.setToolTip('Configure dock badge and banner notifications per event type')
+        notif_btn.clicked.connect(self._open_notifications)
+        grid.addWidget(notif_btn, 3, 0)
 
         layout.addLayout(grid)
 
@@ -136,6 +146,16 @@ class SettingsDialog(QDialog):
             )
             if self._log_fn:
                 self._log_fn(f"Repo cleanup: deleted {len(deleted)} unused repo(s): {', '.join(deleted)}")
+
+    def _open_notifications(self) -> None:
+        """Open the notifications configuration dialog."""
+        dialog = NotificationsDialog(self._notification_prefs, parent=self)
+        if dialog.exec_():
+            self._notification_prefs = dialog.selected_prefs()
+
+    def notification_prefs(self) -> dict[str, dict[str, bool]]:
+        """Return the current notification preferences."""
+        return self._notification_prefs
 
     def selected_terminal(self) -> str:
         """Return the selected default terminal."""

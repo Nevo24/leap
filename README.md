@@ -181,7 +181,8 @@ The monitor shows:
 - MR/PR tracking with unresponded thread detection (GitLab & GitHub)
 - `/cq` command support — comment `/cq` on an MR thread to auto-send it to a CQ session
 - Dock badge notifications when sessions finish processing or MR status changes
-- **Settings** — configure default terminal (Terminal.app/iTerm2), repos directory, and clean up unused repos
+- **macOS banner notifications** — opt-in banners for MR changes, approvals, and session completions (requires enabling in macOS System Settings > Notifications > ClaudeQ Monitor)
+- **Settings** — configure default terminal (Terminal.app/iTerm2), repos directory, notifications, and clean up unused repos
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2
 

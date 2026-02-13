@@ -20,6 +20,35 @@ _DEFAULT_PREFS = {
     'auto_fetch_cq': True,
 }
 
+# Default notification preferences per notification type.
+# Each type has independent 'dock' (badge count) and 'banner' (macOS banner) toggles.
+_DEFAULT_NOTIFICATIONS: dict[str, dict[str, bool]] = {
+    'mr_unresponded': {'dock': True, 'banner': False},
+    'mr_all_responded': {'dock': True, 'banner': False},
+    'mr_approved': {'dock': True, 'banner': False},
+    'session_completed': {'dock': True, 'banner': False},
+}
+
+
+def get_notification_prefs(prefs: dict[str, Any]) -> dict[str, dict[str, bool]]:
+    """Get notification preferences merged with defaults.
+
+    Args:
+        prefs: The full monitor prefs dict (may contain a 'notifications' key).
+
+    Returns:
+        Dict mapping notification type key to {'dock': bool, 'banner': bool}.
+    """
+    saved = prefs.get('notifications', {})
+    merged: dict[str, dict[str, bool]] = {}
+    for key, defaults in _DEFAULT_NOTIFICATIONS.items():
+        entry = saved.get(key, {})
+        merged[key] = {
+            'dock': entry.get('dock', defaults['dock']),
+            'banner': entry.get('banner', defaults['banner']),
+        }
+    return merged
+
 
 def load_gitlab_config() -> Optional[dict[str, Any]]:
     """Load GitLab configuration from storage.

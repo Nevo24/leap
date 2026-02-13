@@ -14,6 +14,7 @@ pexpect = "^4.8.0"
 prompt-toolkit = "^3.0.0"
 wcwidth = "^0.6.0"
 rich = "^14.3.2"
+pyobjc-framework-cocoa = "^12.1"
 
 [tool.poetry.group.monitor.dependencies]
 PyQt5 = "^5.15.0"

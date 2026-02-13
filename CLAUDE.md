@@ -60,6 +60,7 @@ src/
     │   │
     │   ├── dialogs/             # Dialog windows
     │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, cleanup)
+    │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
@@ -67,7 +68,7 @@ src/
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
-    │   │   ├── dock_badge.py    # Dock icon badge overlay (notification counter)
+    │   │   ├── dock_badge.py    # Dock icon badge overlay + notification event detection
     │   │   └── status_log.py    # Status log history (in-memory + dialog)
     │   │
     │   ├── mr_tracking/         # MR tracking subsystem
@@ -104,7 +105,11 @@ assets/
 | `SettingsDialog` | `monitor/dialogs/settings_dialog.py` | Settings: terminal, repos dir, cleanup unused repos |
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
 | `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking |
-| `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay (MR + session status changes) |
+| `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
+| `NotificationType` | `monitor/ui/dock_badge.py` | Enum of notification event types |
+| `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |
+| `NotificationsDialog` | `monitor/dialogs/notifications_dialog.py` | Per-type notification config (dock/banner toggles) |
+| `get_notification_prefs()` | `monitor/mr_tracking/config.py` | Merge saved notification prefs with defaults |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `is_valid_tag()` | `utils/constants.py` | Shared tag validation (alphanumeric + hyphens + underscores) |
 | `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
@@ -316,14 +321,27 @@ The "Auto '/cq' fetch" checkbox (bottom bar, next to "Include git bots") control
 
 A `/cq` comment on a thread does **not** count as a user response for unresponded thread detection — only the bot acknowledgment reply (`[ClaudeQ bot] on it!`) marks a thread as handled. Setting persisted in `.storage/monitor_prefs.json` as `auto_fetch_cq`.
 
-### Dock Badge
+### Dock Badge & Banner Notifications
 
-The dock icon badge tracks two types of changes while the monitor window is unfocused:
+The monitor has two notification channels, independently configurable per event type via **Settings > Notifications...**:
 
-- **MR changes**: State diff — badge shows how many MRs are in a different state vs last time the user looked (recomputed each poll)
-- **Session status**: Event counter — badge increments each time a session transitions from Running → Idle, but only if the session was busy for at least 3 seconds (`MIN_BUSY_SECONDS`). Brief flickers are ignored. Accumulates until window is focused.
+- **Dock badge**: Red badge overlay on the dock icon with a change count (default: on)
+- **macOS banners**: Native macOS banner notifications with descriptive text (default: off, opt-in)
 
-Both counts sum into a single badge number. Focusing the monitor window resets all counts and snapshots current state.
+**Notification types:**
+
+| Type | Dock badge | Banner text example |
+|------|-----------|-------------------|
+| `mr_unresponded` | MR state changed to unresponded or count increased | `"MR !42 'Fix auth' has 3 unresponded thread(s)"` |
+| `mr_all_responded` | MR went from unresponded to all responded | `"MR !42 'Fix auth' — all threads responded"` |
+| `mr_approved` | MR approved (False→True) | `"MR !42 'Fix auth' approved by John, Jane"` |
+| `session_completed` | Running→Idle (busy for at least 1.5s) | `"Claude finished processing"` |
+
+Dock badge counts sum into a single number. Focusing the monitor window resets all counts.
+
+**Banner implementation:** Uses `NSUserNotification` via PyObjC (`pyobjc-framework-Cocoa`). Requires macOS notification permissions: System Settings > Notifications > ClaudeQ Monitor (or "Python" when running from source). The `_identityImage` private API overrides the app icon in notifications when running from source.
+
+**Preferences:** Stored in `.storage/monitor_prefs.json` under the `notifications` key. `get_notification_prefs()` in `config.py` merges saved prefs with defaults.
 
 ### Persistent Rows & Pinned Sessions
 

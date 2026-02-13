@@ -30,14 +30,15 @@ from claudeq.monitor.session_manager import (
 )
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    load_gitlab_config, load_github_config, load_monitor_prefs,
-    load_pinned_sessions, save_monitor_prefs, save_pinned_sessions,
+    get_notification_prefs, load_gitlab_config, load_github_config,
+    load_monitor_prefs, load_pinned_sessions, save_monitor_prefs,
+    save_pinned_sessions,
 )
 from claudeq.monitor.mr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, parse_mr_url,
 )
 from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
-from claudeq.monitor.ui.dock_badge import DockBadge
+from claudeq.monitor.ui.dock_badge import DockBadge, NotificationEvent, NotificationType
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
     SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
@@ -828,7 +829,12 @@ class MonitorWindow(QMainWindow):
         """Handle background session refresh result."""
         self.sessions = self._merge_sessions(sessions)
         self._update_table()
-        self._dock_badge.update_sessions(sessions, self.isActiveWindow())
+        notif_prefs = get_notification_prefs(self._prefs)
+        dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
+        events = self._dock_badge.update_sessions(
+            sessions, self.isActiveWindow(), dock_enabled,
+        )
+        self._send_banner_notifications(events)
 
     _CENTER_COLS = frozenset({4, 5})  # COL_STATUS, COL_QUEUE
 
@@ -1534,12 +1540,14 @@ class MonitorWindow(QMainWindow):
             active_paths_fn=self._get_active_project_paths,
             log_fn=self._show_status,
             show_tooltips=self._prefs.get('show_tooltips', True),
+            notification_prefs=get_notification_prefs(self._prefs),
             parent=self,
         )
         if dialog.exec_():
             self._prefs['default_terminal'] = dialog.selected_terminal()
             self._prefs['repos_dir'] = dialog.selected_repos_dir()
             self._prefs['show_tooltips'] = dialog.show_tooltips()
+            self._prefs['notifications'] = dialog.notification_prefs()
             save_monitor_prefs(self._prefs)
             self._apply_tooltips_setting()
             self._show_status('Settings saved')
@@ -1777,11 +1785,74 @@ class MonitorWindow(QMainWindow):
 
     def _update_dock_badge(self) -> None:
         """Update the dock badge with number of MRs changed since last window focus."""
-        self._dock_badge.update(self._mr_statuses, self.isActiveWindow())
+        notif_prefs = get_notification_prefs(self._prefs)
+        dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
+        events = self._dock_badge.update(
+            self._mr_statuses, self.isActiveWindow(), dock_enabled,
+        )
+        self._send_banner_notifications(events)
 
     def _clear_dock_badge(self) -> None:
         """Clear the dock badge and snapshot current MR statuses as seen."""
         self._dock_badge.clear(self._mr_statuses)
+
+    def _send_banner_notifications(self, events: list[NotificationEvent]) -> None:
+        """Send macOS banner notifications for events where banner is enabled."""
+        if not events or self.isActiveWindow():
+            return
+        notif_prefs = get_notification_prefs(self._prefs)
+        for ev in events:
+            if not notif_prefs.get(ev.type.value, {}).get('banner', False):
+                continue
+            subtitle, body = self._format_banner_text(ev)
+            self._send_macos_notification(subtitle, body)
+
+    @staticmethod
+    def _format_banner_text(event: NotificationEvent) -> tuple[str, str]:
+        """Format subtitle and body for a macOS banner notification."""
+        tag = event.tag
+        mr_ref = ''
+        if event.mr_iid:
+            title = event.mr_title or ''
+            mr_ref = f"MR !{event.mr_iid}"
+            if title:
+                mr_ref += f" '{title}'"
+
+        if event.type == NotificationType.MR_UNRESPONDED:
+            return (tag, f"{mr_ref} has {event.unresponded_count} unresponded thread(s)")
+        elif event.type == NotificationType.MR_ALL_RESPONDED:
+            return (tag, f"{mr_ref} — all threads responded")
+        elif event.type == NotificationType.MR_APPROVED:
+            if event.approved_by:
+                names = ', '.join(event.approved_by)
+                return (tag, f"{mr_ref} approved by {names}")
+            return (tag, f"{mr_ref} approved")
+        elif event.type == NotificationType.SESSION_COMPLETED:
+            return (tag, 'Claude finished processing')
+        return (tag, '')
+
+    @staticmethod
+    def _send_macos_notification(subtitle: str, body: str) -> None:
+        """Send a macOS banner notification via native NSUserNotification."""
+        try:
+            from AppKit import NSImage
+            from Foundation import NSUserNotification, NSUserNotificationCenter
+            notif = NSUserNotification.alloc().init()
+            notif.setTitle_('ClaudeQ')
+            if subtitle:
+                notif.setSubtitle_(subtitle)
+            if body:
+                notif.setInformativeText_(body)
+            # Override the Python app icon with the ClaudeQ icon
+            icon_path = find_icon()
+            if icon_path:
+                image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+                if image:
+                    notif.setValue_forKey_(image, '_identityImage')
+                    notif.setValue_forKey_(False, '_identityImageHasBorder')
+            NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(notif)
+        except Exception:
+            pass  # PyObjC not available or notification failed
 
     def changeEvent(self, event: QEvent) -> None:
         """Reset dock badge when window becomes active."""
@@ -1863,10 +1934,17 @@ def main() -> None:
     app.setApplicationName('ClaudeQ Monitor')
     app.setStyle(_PersistentTooltipStyle(app.style()))
 
-    # Set app icon for Dock
+    # Set app icon for Dock and macOS notifications
     icon_path = find_icon()
     if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
+        try:
+            from AppKit import NSApplication, NSImage
+            ns_image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+            if ns_image:
+                NSApplication.sharedApplication().setApplicationIconImage_(ns_image)
+        except Exception:
+            pass
 
     window = MonitorWindow()
     window._tooltip_app = app
