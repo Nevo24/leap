@@ -1120,7 +1120,7 @@ class MonitorWindow(QMainWindow):
 
                 if not is_dead:
                     server_x = QPushButton('X')
-                    server_x.setFixedSize(24, 24)
+                    server_x.setFixedSize(24, server_x.sizeHint().height())
                     server_x.setStyleSheet(
                         'QPushButton { color: #999; font-size: 11px; padding: 0; }'
                         'QPushButton:hover { color: #ff4444; font-weight: bold; }'
@@ -1173,7 +1173,7 @@ class MonitorWindow(QMainWindow):
 
                 if has_client:
                     client_x = QPushButton('X')
-                    client_x.setFixedSize(24, 24)
+                    client_x.setFixedSize(24, client_x.sizeHint().height())
                     client_x.setStyleSheet(
                         'QPushButton { color: #999; font-size: 11px; padding: 0; }'
                         'QPushButton:hover { color: #ff4444; font-weight: bold; }'
