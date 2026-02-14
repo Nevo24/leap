@@ -348,7 +348,11 @@ Dock badge counts sum into a single number. Focusing the monitor window resets a
 Monitor rows persist across server/client lifecycle and monitor restarts via `pinned_sessions.json`. Key behaviors:
 
 - **Auto-pinning**: Every active session is automatically pinned on discovery
-- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue but preserves Project/Branch info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers force-align (fetch + hard reset to remote)
+- **Row survival rule**: A row must have a running server OR active MR tracking. Dead rows without MR tracking are auto-removed on the next refresh cycle
+- **Track MR enrichment**: When "Track MR" finds an MR on an auto-pinned row, the pinned session is enriched with `remote_project_path`, `host_url`, `scm_type`, `branch`, `mr_title`, `mr_url` — making the row survive server death
+- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue/Server Branch but preserves Project info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers force-align (fetch + hard reset to remote). Track MR button is disabled on dead rows
+- **Close server prompt**: If a session has no MR tracking, closing the server warns the user the row will be removed and offers to close the client too
+- **Stop MR tracking prompt**: If the server is dead, stopping MR tracking warns the user the row will be removed and offers to close the client too
 - **Delete button**: Each row has a delete (X) button in the leftmost column (replacing row indices). Always prompts for confirmation. If processes are running, warns they will be closed
 - **`_deleted_tags` set**: Prevents auto-refresh from re-pinning rows that were just deleted
 
@@ -366,7 +370,7 @@ Input validation loops: invalid tag or duplicate tag loops back to the input dia
 
 ### Column Layout
 
-Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Queue]** | **[Client]** | **[MR, MR Branch]**. The Server and MR groups have a light grey background tint. The X column contains the delete button (no row indices).
+Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Queue]** | **[Client]** | **[MR, MR Branch]**. Solid white vertical lines separate groups; semi-transparent white lines separate columns within a group. The X column contains the delete button (no row indices). Close (X) buttons for Server, Client, and MR appear on the left side of their respective cells.
 
 - **Server Branch**: Always shows the live git branch the server is running on. For dead rows, shows the last known branch.
 - **MR Branch**: Shows the MR's source branch when MR tracking is active. "N/A" otherwise.

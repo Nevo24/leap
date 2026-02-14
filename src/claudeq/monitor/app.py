@@ -14,13 +14,13 @@ from typing import Any, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QProxyStyle, QStyle,
+    QApplication, QMainWindow, QProxyStyle, QStyle, QStyledItemDelegate,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QInputDialog, QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QObject, QTimer, Qt
-from PyQt5.QtGui import QColor, QIcon, QCloseEvent
+from PyQt5.QtCore import QEvent, QModelIndex, QObject, QTimer, Qt
+from PyQt5.QtGui import QColor, QIcon, QCloseEvent, QPen
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR, is_valid_tag
 from claudeq.utils.socket_utils import send_socket_request
@@ -98,6 +98,50 @@ class _TooltipApp(QApplication):
         return super().notify(obj, event)
 
 
+# Column group boundaries for vertical separators.
+# Groups: [Tag, Project] | [Server, ServerBranch, Status, Queue] | [Client] | [MR, MRBranch]
+_GROUP_BOUNDARY_COLS = frozenset({0, 2, 6, 7})   # Solid white (between groups)
+_INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 8})    # Semi-transparent white (within groups)
+
+_BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
+_BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)
+
+
+class _SeparatorDelegate(QStyledItemDelegate):
+    """Delegate that draws vertical separator lines between column groups."""
+
+    def paint(self, painter: Any, option: Any, index: QModelIndex) -> None:
+        super().paint(painter, option, index)
+        col = index.column()
+        if col in _GROUP_BOUNDARY_COLS:
+            painter.save()
+            painter.setPen(_BORDER_SOLID)
+            x = option.rect.right()
+            painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
+            painter.restore()
+        elif col in _INTRA_GROUP_COLS:
+            painter.save()
+            painter.setPen(_BORDER_SUBTLE)
+            x = option.rect.right()
+            painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
+            painter.restore()
+
+
+class _SeparatorHeaderView(QHeaderView):
+    """Header view with vertical separators between column groups."""
+
+    def paintSection(self, painter: Any, rect: Any, logicalIndex: int) -> None:
+        painter.save()
+        super().paintSection(painter, rect, logicalIndex)
+        painter.restore()
+        if logicalIndex in _GROUP_BOUNDARY_COLS:
+            painter.setPen(_BORDER_SOLID)
+            painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
+        elif logicalIndex in _INTRA_GROUP_COLS:
+            painter.setPen(_BORDER_SUBTLE)
+            painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
+
+
 class MonitorWindow(QMainWindow):
     """Main window for ClaudeQ Monitor."""
 
@@ -112,10 +156,6 @@ class MonitorWindow(QMainWindow):
     COL_CLIENT = 7
     COL_MR = 8
     COL_MR_BRANCH = 9
-
-    # Column groups for background tinting
-    _SERVER_GROUP_COLS = frozenset({3, 4, 5, 6})   # Server, Server Branch, Status, Queue
-    _MR_GROUP_COLS = frozenset({8, 9})              # MR, MR Branch
 
     def __init__(self) -> None:
         """Initialize the monitor window."""
@@ -141,6 +181,7 @@ class MonitorWindow(QMainWindow):
         self._prefs = load_monitor_prefs()
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
+        self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._status_log = StatusLog()
         self._server_launcher = ServerLauncher(self)
 
@@ -184,6 +225,9 @@ class MonitorWindow(QMainWindow):
 
         # Table
         self.table = QTableWidget()
+        self.table.setHorizontalHeader(_SeparatorHeaderView(Qt.Horizontal, self.table))
+        self.table.setItemDelegate(_SeparatorDelegate(self.table))
+        self.table.setShowGrid(False)
         self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels([
             '', 'Tag', 'Project', 'Server', 'Server Branch', 'Status', 'Queue',
@@ -209,6 +253,7 @@ class MonitorWindow(QMainWindow):
 
         # Enable interactive column resizing
         header = self.table.horizontalHeader()
+        header.setStyleSheet('QHeaderView::section { border: none; padding: 4px; }')
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
 
@@ -485,6 +530,7 @@ class MonitorWindow(QMainWindow):
             self._scm_providers.pop(SCMType.GITLAB.value, None)
             self._mr_statuses.clear()
             self._tracked_tags.clear()
+            self._pending_tracking_context.clear()
             self._init_scm_providers()
             self._show_status('GitLab connection updated')
 
@@ -497,6 +543,7 @@ class MonitorWindow(QMainWindow):
             self._scm_providers.pop(SCMType.GITHUB.value, None)
             self._mr_statuses.clear()
             self._tracked_tags.clear()
+            self._pending_tracking_context.clear()
             self._init_scm_providers()
             self._show_status('GitHub connection updated')
 
@@ -854,28 +901,42 @@ class MonitorWindow(QMainWindow):
         self._send_banner_notifications(events)
 
     _CENTER_COLS = frozenset({5, 6})  # COL_STATUS, COL_QUEUE
-    _GROUP_BG = QColor(45, 45, 48)  # Light grey tint for server/MR groups
+
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
-        """Set a cell widget, applying group background tint if applicable."""
-        if col in self._SERVER_GROUP_COLS or col in self._MR_GROUP_COLS:
-            widget.setAutoFillBackground(True)
-            pal = widget.palette()
-            pal.setColor(widget.backgroundRole(), self._GROUP_BG)
-            widget.setPalette(pal)
-        self.table.setCellWidget(row, col, widget)
+        """Set a cell widget with column group separator styling.
+
+        Wraps the widget in a container with a right border when the column
+        sits at a group boundary or within a group.
+        """
+        if col in _GROUP_BOUNDARY_COLS or col in _INTRA_GROUP_COLS:
+            border = ('1px solid white' if col in _GROUP_BOUNDARY_COLS
+                      else '1px solid rgba(255, 255, 255, 50)')
+            wrapper = QWidget()
+            wrapper.setObjectName('_cqSep')
+            wrapper.setStyleSheet(f'#_cqSep {{ border-right: {border}; }}')
+            lay = QHBoxLayout(wrapper)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+            lay.addWidget(widget)
+            self.table.setCellWidget(row, col, wrapper)
+        else:
+            self.table.setCellWidget(row, col, widget)
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         """Set cell text only if it changed, to avoid flicker."""
         item = self.table.item(row, col)
+        center = col in self._CENTER_COLS or text == 'N/A'
         if item is None:
             item = QTableWidgetItem(text)
-            if col in self._CENTER_COLS:
+            if center:
                 item.setTextAlignment(Qt.AlignCenter)
-            if col in self._SERVER_GROUP_COLS or col in self._MR_GROUP_COLS:
-                item.setBackground(self._GROUP_BG)
             self.table.setItem(row, col, item)
-        elif item.text() != text:
-            item.setText(text)
+        else:
+            if item.text() != text:
+                item.setText(text)
+            alignment = Qt.AlignCenter if center else int(Qt.AlignLeft | Qt.AlignVCenter)
+            if item.textAlignment() != alignment:
+                item.setTextAlignment(alignment)
 
     def _update_table(self) -> None:
         """Update table with current sessions.
@@ -904,10 +965,8 @@ class MonitorWindow(QMainWindow):
                 self.table.setRowCount(1)
                 for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
-                    item = self.table.item(0, col)
-                    if item:
-                        item.setBackground(QColor(0, 0, 0, 0))
                     text = 'No active sessions' if col == self.COL_TAG else ''
+                    item = self.table.item(0, col)
                     if not item:
                         self.table.setItem(0, col, QTableWidgetItem(text))
                     elif item.text() != text:
@@ -937,7 +996,7 @@ class MonitorWindow(QMainWindow):
                     lambda checked, t=tag: self._delete_row(t)
                 )
                 del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
-                self.table.setCellWidget(row, self.COL_DELETE, del_container)
+                self._set_cell_widget(row, self.COL_DELETE, del_container)
 
                 # Text cells — only update if value changed
                 self._set_cell_text(row, self.COL_TAG, tag)
@@ -955,7 +1014,7 @@ class MonitorWindow(QMainWindow):
 
                 if is_dead:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
-                    self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
+                    self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
                 else:
@@ -983,6 +1042,18 @@ class MonitorWindow(QMainWindow):
                     mr_layout = QHBoxLayout(mr_container)
                     mr_layout.setContentsMargins(0, 0, 0, 0)
                     mr_layout.setSpacing(2)
+
+                    mr_x = QPushButton('X')
+                    mr_x.setFixedSize(24, mr_x.sizeHint().height())
+                    mr_x.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    mr_x.setToolTip(f'Stop tracking MR for {tag}')
+                    mr_x.clicked.connect(
+                        lambda checked, t=tag: self._stop_tracking(t)
+                    )
+                    mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
 
                     approval_label = IndicatorLabel()
                     self._mr_approval_widgets[tag] = approval_label
@@ -1014,18 +1085,6 @@ class MonitorWindow(QMainWindow):
                     )
                     mr_layout.addWidget(mr_widget)
 
-                    mr_x = QPushButton('X')
-                    mr_x.setFixedSize(24, mr_x.sizeHint().height())
-                    mr_x.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                    )
-                    mr_x.setToolTip(f'Stop tracking MR for {tag}')
-                    mr_x.clicked.connect(
-                        lambda checked, t=tag: self._stop_tracking(t)
-                    )
-                    mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
-
                     self._set_cell_widget(row, self.COL_MR, mr_container)
                     # MR Branch shows the MR source branch
                     self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
@@ -1044,7 +1103,11 @@ class MonitorWindow(QMainWindow):
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
                         )
-                        self._set_cell_widget(row, self.COL_MR, track_btn)
+                        if is_dead:
+                            track_btn.setEnabled(False)
+                            track_btn.setToolTip('Start a server first to discover MR from branch')
+                        # Direct setCellWidget — button spans MR+MR Branch, no border
+                        self.table.setCellWidget(row, self.COL_MR, track_btn)
 
                 client_pid = session.get('client_pid')
                 has_client = session.get('has_client', False)
@@ -1054,6 +1117,20 @@ class MonitorWindow(QMainWindow):
                 server_layout = QHBoxLayout(server_container)
                 server_layout.setContentsMargins(0, 0, 0, 0)
                 server_layout.setSpacing(2)
+
+                if not is_dead:
+                    server_x = QPushButton('X')
+                    server_x.setFixedSize(24, 24)
+                    server_x.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    server_x.setToolTip(f'Close server {tag}')
+                    server_x.clicked.connect(
+                        lambda checked, t=tag, spid=server_pid:
+                            self._close_server(t, spid)
+                    )
+                    server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
 
                 if is_dead:
                     server_btn = QPushButton('Server')
@@ -1086,20 +1163,6 @@ class MonitorWindow(QMainWindow):
                         lambda checked, t=tag: self._focus_session(t, 'server')
                     )
                 server_layout.addWidget(server_btn)
-
-                if not is_dead:
-                    server_x = QPushButton('X')
-                    server_x.setFixedSize(24, server_btn.sizeHint().height())
-                    server_x.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                    )
-                    server_x.setToolTip(f'Close server {tag}')
-                    server_x.clicked.connect(
-                        lambda checked, t=tag, spid=server_pid:
-                            self._close_server(t, spid)
-                    )
-                    server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
                 self._set_cell_widget(row, self.COL_SERVER, server_container)
 
                 # Client button + close button
@@ -1107,6 +1170,19 @@ class MonitorWindow(QMainWindow):
                 client_layout = QHBoxLayout(client_container)
                 client_layout.setContentsMargins(0, 0, 0, 0)
                 client_layout.setSpacing(2)
+
+                if has_client:
+                    client_x = QPushButton('X')
+                    client_x.setFixedSize(24, 24)
+                    client_x.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    client_x.setToolTip(f'Close client {tag}')
+                    client_x.clicked.connect(
+                        lambda checked, t=tag, pid=client_pid: self._close_client(t, pid)
+                    )
+                    client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
 
                 client_btn = QPushButton('Client')
                 if is_dead and not has_client:
@@ -1123,20 +1199,7 @@ class MonitorWindow(QMainWindow):
                     )
                 client_layout.addWidget(client_btn)
 
-                if has_client:
-                    client_x = QPushButton('X')
-                    client_x.setFixedSize(24, client_btn.sizeHint().height())
-                    client_x.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                    )
-                    client_x.setToolTip(f'Close client {tag}')
-                    client_x.clicked.connect(
-                        lambda checked, t=tag, pid=client_pid: self._close_client(t, pid)
-                    )
-                    client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
-
-                self.table.setCellWidget(row, self.COL_CLIENT, client_container)
+                self._set_cell_widget(row, self.COL_CLIENT, client_container)
         finally:
             self.table.setUpdatesEnabled(True)
 
@@ -1172,6 +1235,13 @@ class MonitorWindow(QMainWindow):
             # Use pinned MR data directly (no local repo needed)
             scm_project_path = remote_project
             scm_branch = branch
+            # Store context for enriching pinned session on result
+            self._pending_tracking_context[tag] = {
+                'remote_project_path': remote_project,
+                'host_url': session.get('host_url', ''),
+                'scm_type': session.get('scm_type', ''),
+                'branch': scm_branch,
+            }
         else:
             # Resolve from local git repo
             project_path = session.get('project_path')
@@ -1189,6 +1259,13 @@ class MonitorWindow(QMainWindow):
                 return
             scm_project_path = remote_info.project_path
             scm_branch = remote_info.branch
+            # Store context for enriching pinned session on result
+            self._pending_tracking_context[tag] = {
+                'remote_project_path': scm_project_path,
+                'host_url': remote_info.host_url,
+                'scm_type': remote_info.scm_type.value if hasattr(remote_info.scm_type, 'value') else str(remote_info.scm_type),
+                'branch': scm_branch,
+            }
 
         # Show "Checking..." while the API call runs in the background
         self._show_status(f"Checking MR for '{tag}'...")
@@ -1205,8 +1282,27 @@ class MonitorWindow(QMainWindow):
         self._scm_oneshot_worker = worker
         worker.start()
 
-    def _stop_tracking(self, tag: str) -> None:
-        """Stop MR tracking for a session."""
+    def _stop_tracking(self, tag: str, _skip_prompt: bool = False) -> None:
+        """Stop MR tracking for a session.
+
+        Args:
+            tag: Session tag.
+            _skip_prompt: If True, skip the confirmation prompt for dead rows
+                (used when called from _remove_pinned_session which has its own).
+        """
+        # If server is dead, warn that stopping tracking will remove the row
+        if not _skip_prompt:
+            session = next((s for s in self.sessions if s['tag'] == tag), None)
+            if session and session.get('server_pid') is None:
+                reply = QMessageBox.question(
+                    self, 'Stop MR Tracking',
+                    f"The server for '{tag}' is not running.\n"
+                    f"Stopping MR tracking will remove this row.\n\nContinue?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
         if tag in self._tracked_tags:
             self._show_status(f"Stopped MR tracking for '{tag}'")
         self._tracked_tags.discard(tag)
@@ -1214,7 +1310,28 @@ class MonitorWindow(QMainWindow):
         self._mr_statuses.pop(tag, None)
         self._mr_widgets.pop(tag, None)
         self._mr_approval_widgets.pop(tag, None)
+        self._pending_tracking_context.pop(tag, None)
         self._dock_badge.discard_tag(tag)
+
+        # If server is dead, remove the row entirely
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        is_dead = session and session.get('server_pid') is None
+        if is_dead and not _skip_prompt:
+            # Offer to close the client too
+            if session and session.get('has_client', False):
+                client_reply = QMessageBox.question(
+                    self, 'Close Client',
+                    f"A client is connected to '{tag}'.\n"
+                    f"Do you also want to close the client?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if client_reply == QMessageBox.Yes:
+                    self._close_client(tag, session.get('client_pid'))
+
+            self._pinned_sessions.pop(tag, None)
+            save_pinned_sessions(self._pinned_sessions)
+            self._deleted_tags.add(tag)
+            self.sessions = [s for s in self.sessions if s['tag'] != tag]
 
         # Stop poll timer if no tags are being tracked
         if not self._tracked_tags and self._scm_poll_timer.isActive():
@@ -1229,6 +1346,7 @@ class MonitorWindow(QMainWindow):
         self._checking_tags.discard(tag)
 
         if status.state == MRState.NO_MR:
+            self._pending_tracking_context.pop(tag, None)
             self._update_table()
             QMessageBox.information(
                 self, 'No MR Found',
@@ -1236,7 +1354,21 @@ class MonitorWindow(QMainWindow):
             )
             return
 
-        # MR found — promote to tracked
+        # MR found — promote to tracked and enrich pinned session
+        ctx = self._pending_tracking_context.pop(tag, None)
+        if ctx:
+            pin = self._pinned_sessions.get(tag, {})
+            pin.update({
+                'remote_project_path': ctx['remote_project_path'],
+                'host_url': ctx['host_url'],
+                'scm_type': ctx['scm_type'],
+                'branch': ctx['branch'],
+                'mr_title': status.mr_title or '',
+                'mr_url': status.mr_url or '',
+            })
+            self._pinned_sessions[tag] = pin
+            save_pinned_sessions(self._pinned_sessions)
+
         self._show_status(f"MR found for '{tag}' — tracking started")
         self._tracked_tags.add(tag)
         self._mr_statuses[tag] = status
@@ -1250,6 +1382,7 @@ class MonitorWindow(QMainWindow):
         """Handle an error from a one-shot MR check."""
         self._set_busy(False)
         self._checking_tags.discard(tag)
+        self._pending_tracking_context.pop(tag, None)
         self._update_table()
         self._show_status(f"MR tracking error for '{tag}': {message}")
         QMessageBox.warning(self, 'Error', message)
@@ -1278,7 +1411,44 @@ class MonitorWindow(QMainWindow):
         self._progress_bar.setVisible(self._busy_count > 0)
 
     def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
-        """Close a server session (non-blocking, no confirmation)."""
+        """Close a server session (non-blocking).
+
+        If the session has no MR tracking, warns that closing the server
+        will remove the row.
+        """
+        # Check if this row will survive without a server
+        pin = self._pinned_sessions.get(tag, {})
+        has_mr = (
+            pin.get('remote_project_path')
+            or tag in self._tracked_tags
+            or tag in self._checking_tags
+        )
+        if not has_mr:
+            reply = QMessageBox.question(
+                self, 'Close Server',
+                f"'{tag}' has no MR tracking.\n"
+                f"Closing the server will remove this row.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            # Pre-schedule removal — row will disappear on next refresh
+            self._pinned_sessions.pop(tag, None)
+            save_pinned_sessions(self._pinned_sessions)
+            self._deleted_tags.add(tag)
+
+            # Offer to close the client too
+            session = next((s for s in self.sessions if s['tag'] == tag), None)
+            if session and session.get('has_client', False):
+                client_reply = QMessageBox.question(
+                    self, 'Close Client',
+                    f"A client is connected to '{tag}'.\n"
+                    f"Do you also want to close the client?",
+                    QMessageBox.Yes | QMessageBox.No,
+                )
+                if client_reply == QMessageBox.Yes:
+                    self._close_client(tag, session.get('client_pid'))
+
         metadata = load_session_metadata(tag)
         preferred_ide = metadata.get('ide') if metadata else None
         project_path = metadata.get('project_path') if metadata else None
@@ -1475,7 +1645,8 @@ class MonitorWindow(QMainWindow):
         # Prune deleted tags that are no longer active (server fully gone)
         self._deleted_tags -= self._deleted_tags - set(active_by_tag.keys())
 
-        # Build merged list
+        # Build merged list — auto-remove dead rows without MR tracking
+        tags_to_remove: list[str] = []
         merged: list[dict[str, Any]] = []
         for tag, pin in self._pinned_sessions.items():
             if tag in active_by_tag:
@@ -1485,6 +1656,12 @@ class MonitorWindow(QMainWindow):
                     if pin.get(key) and not session.get(key):
                         session[key] = pin[key]
                 merged.append(session)
+            elif not (pin.get('remote_project_path')
+                      or tag in self._tracked_tags
+                      or tag in self._checking_tags):
+                # Dead row with no MR tracking — schedule for removal
+                tags_to_remove.append(tag)
+                continue
             else:
                 # Dead row — check for orphaned client
                 has_client = is_client_lock_held(tag)
@@ -1510,6 +1687,12 @@ class MonitorWindow(QMainWindow):
                     'host_url': pin.get('host_url'),
                     'scm_type': pin.get('scm_type'),
                 })
+
+        # Remove dead rows without MR tracking
+        if tags_to_remove:
+            for tag in tags_to_remove:
+                self._pinned_sessions.pop(tag, None)
+            save_pinned_sessions(self._pinned_sessions)
 
         # Include any active sessions not yet pinned (shouldn't happen, but safe)
         pinned_tags = set(self._pinned_sessions.keys())
@@ -1562,8 +1745,8 @@ class MonitorWindow(QMainWindow):
         self._pinned_sessions.pop(tag, None)
         save_pinned_sessions(self._pinned_sessions)
 
-        # Clean up MR tracking
-        self._stop_tracking(tag)
+        # Clean up MR tracking (skip prompt — _delete_row already prompted)
+        self._stop_tracking(tag, _skip_prompt=True)
 
         # Remove from sessions list and refresh table
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
