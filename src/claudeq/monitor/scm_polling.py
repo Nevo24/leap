@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from claudeq.utils.constants import SCM_MAX_CONCURRENT_POLLS
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider, UserNotification
 from claudeq.monitor.mr_tracking.cq_command import format_cq_message
 from claudeq.monitor.mr_tracking.config import load_gitlab_config
 from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
@@ -59,18 +59,22 @@ class SCMPollerWorker(QThread):
     """
 
     results_ready = pyqtSignal(dict)
+    notifications_ready = pyqtSignal(list)  # list[UserNotification]
+    notification_auth_error = pyqtSignal(str)  # scm_type with 403/auth failure
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._providers: dict[str, SCMProvider] = {}
         self._sessions: list[dict[str, Any]] = []
         self._auto_fetch_cq: bool = True
+        self._notif_scm_types: set[str] = set()
 
     def configure(
         self,
         providers: dict[str, SCMProvider],
         sessions: list[dict[str, Any]],
         auto_fetch_cq: bool = True,
+        notif_scm_types: Optional[set[str]] = None,
     ) -> None:
         """Configure the poller with available providers and sessions to poll.
 
@@ -78,10 +82,13 @@ class SCMPollerWorker(QThread):
             providers: Dict mapping SCMType value ("gitlab", "github") to provider instance.
             sessions: List of session dicts to poll.
             auto_fetch_cq: Whether to scan and handle /cq commands.
+            notif_scm_types: Set of SCM type strings to fetch notifications for.
+                Only providers in this set will be polled for notifications.
         """
         self._providers = dict(providers)
         self._sessions = list(sessions)
         self._auto_fetch_cq = auto_fetch_cq
+        self._notif_scm_types = notif_scm_types or set()
 
     def run(self) -> None:
         if not self._providers:
@@ -89,28 +96,55 @@ class SCMPollerWorker(QThread):
 
         results: dict[str, MRStatus] = {}
         all_cq_commands: list[tuple[Any, SCMProvider]] = []
+        all_notifications: list[UserNotification] = []
 
         # Poll sessions in parallel — each session's API calls are independent.
         with ThreadPoolExecutor(max_workers=SCM_MAX_CONCURRENT_POLLS) as pool:
-            futures = {
-                pool.submit(self._poll_session, session): session['tag']
+            # Submit session poll futures
+            session_futures = {
+                pool.submit(self._poll_session, session): ('session', session['tag'])
                 for session in self._sessions
             }
+
+            # Submit notification futures alongside session futures
+            notif_futures: dict = {}
+            if self._notif_scm_types:
+                for scm_type, provider in self._providers.items():
+                    if scm_type in self._notif_scm_types and provider.supports_notifications():
+                        notif_futures[pool.submit(provider.get_user_notifications)] = (
+                            'notif', scm_type
+                        )
+
+            all_futures = {**session_futures, **notif_futures}
             try:
-                for future in as_completed(futures, timeout=_POLL_TIMEOUT_SECONDS):
-                    tag = futures[future]
+                for future in as_completed(all_futures, timeout=_POLL_TIMEOUT_SECONDS):
+                    kind, key = all_futures[future]
                     try:
-                        status, cq_commands = future.result()
-                        results[tag] = status
-                        all_cq_commands.extend(cq_commands)
-                    except Exception:
-                        logger.debug("Error polling session %s", tag, exc_info=True)
-                        results[tag] = MRStatus(state=MRState.NO_MR)
+                        if kind == 'session':
+                            status, cq_commands = future.result()
+                            results[key] = status
+                            all_cq_commands.extend(cq_commands)
+                        elif kind == 'notif':
+                            notifs = future.result()
+                            all_notifications.extend(notifs)
+                    except Exception as exc:
+                        if kind == 'session':
+                            logger.debug("Error polling session %s", key, exc_info=True)
+                            results[key] = MRStatus(state=MRState.NO_MR)
+                        else:
+                            logger.debug("Error fetching notifications for %s", key,
+                                         exc_info=True)
+                            # Detect 403/auth errors (PyGithub .status, python-gitlab .response_code)
+                            status_code = getattr(exc, 'status', None) or getattr(exc, 'response_code', None)
+                            if status_code == 403:
+                                self.notification_auth_error.emit(key)
             except TimeoutError:
                 logger.warning("SCM poll timed out after %ds, returning partial results",
                                _POLL_TIMEOUT_SECONDS)
 
         self.results_ready.emit(results)
+        if self._notif_scm_types:
+            self.notifications_ready.emit(all_notifications)
 
         # Handle /cq commands in this background thread
         if all_cq_commands:

@@ -8,7 +8,7 @@ from typing import Optional
 
 import gitlab
 
-from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider, UserNotification
 from claudeq.monitor.mr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
@@ -516,3 +516,51 @@ class GitLabProvider(SCMProvider):
             logger.error("Failed to post no-session reply on MR !%s discussion %s",
                          mr_iid, discussion_id, exc_info=True)
             return False
+
+    def supports_notifications(self) -> bool:
+        return True
+
+    def get_user_notifications(self) -> list[UserNotification]:
+        """Fetch pending GitLab Todos as user notifications."""
+        try:
+            todos = self._gl.todos.list(state='pending', get_all=False, per_page=50)
+        except Exception as exc:
+            # Let 403 propagate so the poll worker can detect auth errors
+            status_code = getattr(exc, 'response_code', None)
+            if status_code == 403:
+                raise
+            logger.debug("Failed to fetch GitLab todos", exc_info=True)
+            return []
+
+        notifications: list[UserNotification] = []
+        for todo in todos:
+            reason = self._normalize_gitlab_action(getattr(todo, 'action_name', ''))
+            target = getattr(todo, 'target', {}) or {}
+            title = target.get('title', '') or getattr(todo, 'body', '')
+            target_url = getattr(todo, 'target_url', '')
+            project = getattr(todo, 'project', {}) or {}
+            author = getattr(todo, 'author', {}) or {}
+
+            notifications.append(UserNotification(
+                id=str(todo.id),
+                scm_type='gitlab',
+                reason=reason,
+                title=title,
+                target_url=target_url,
+                project_name=project.get('path_with_namespace', ''),
+                author=author.get('username', ''),
+                created_at=getattr(todo, 'created_at', ''),
+            ))
+        return notifications
+
+    @staticmethod
+    def _normalize_gitlab_action(action: str) -> str:
+        """Normalize a GitLab todo action_name to a standard reason."""
+        action = action.lower()
+        if action == 'review_requested':
+            return 'review_requested'
+        elif action == 'assigned':
+            return 'assigned'
+        elif action in ('mentioned', 'directly_addressed'):
+            return 'mentioned'
+        return 'other'

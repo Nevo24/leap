@@ -4,11 +4,12 @@ Stores transient status messages in-memory (session-only, not persisted)
 and provides a dialog to view them.
 """
 
+import html
 import time
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QDialogButtonBox, QWidget
+from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QWidget
 
 
 @dataclass
@@ -16,6 +17,7 @@ class StatusEntry:
     """A single status log entry."""
     timestamp: float
     message: str
+    url: Optional[str] = None
 
 
 class StatusLog:
@@ -24,9 +26,11 @@ class StatusLog:
     def __init__(self) -> None:
         self._entries: List[StatusEntry] = []
 
-    def append(self, message: str) -> None:
+    def append(self, message: str, url: Optional[str] = None) -> None:
         """Append a new status message."""
-        self._entries.append(StatusEntry(timestamp=time.time(), message=message))
+        self._entries.append(StatusEntry(
+            timestamp=time.time(), message=message, url=url,
+        ))
 
     def entries(self) -> List[StatusEntry]:
         """Return all log entries."""
@@ -47,16 +51,32 @@ class StatusLogDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        text_edit = QTextEdit()
-        text_edit.setReadOnly(True)
+        text_edit = QTextBrowser()
+        text_edit.setOpenExternalLinks(True)
 
         entries = status_log.entries()
         if entries:
-            lines = []
+            html_lines = []
             for entry in entries:
                 ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
-                lines.append(f'[{ts}] {entry.message}')
-            text_edit.setPlainText('\n'.join(lines))
+                msg = html.escape(entry.message)
+                # Color [Notification] prefix in cyan
+                if msg.startswith('[Notification]'):
+                    prefix = '<span style="color: cyan;">[Notification]</span>'
+                    msg = prefix + msg[len('[Notification]'):]
+                line = f'[{ts}] {msg}'
+                if entry.url:
+                    escaped_url = html.escape(entry.url)
+                    line += (
+                        f' <a href="{escaped_url}" '
+                        f'style="color: cyan;">(link)</a>'
+                    )
+                html_lines.append(line)
+            text_edit.setHtml(
+                '<pre style="white-space: pre-wrap;">'
+                + '<br>'.join(html_lines)
+                + '</pre>'
+            )
         else:
             text_edit.setPlainText('No status messages yet.')
 

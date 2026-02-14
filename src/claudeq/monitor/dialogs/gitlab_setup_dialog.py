@@ -38,6 +38,13 @@ class GitLabSetupDialog(SCMSetupDialog):
     def _config_token_key(self) -> str:
         return 'private_token'
 
+    def _notif_tooltip(self) -> str:
+        return (
+            'Poll GitLab Todos for review requests, assignments, and mentions.\n'
+            'Requires a personal access token with "read_api" or "api" scope.\n'
+            'Project access tokens cannot access the /todos endpoint.'
+        )
+
     def _do_test_connection(self, url: str, token: str) -> tuple[bool, str]:
         try:
             import gitlab

@@ -28,11 +28,12 @@ from claudeq.monitor.session_manager import (
     get_active_sessions, is_client_lock_held, load_session_metadata,
     read_client_pid, session_exists,
 )
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider, UserNotification
 from claudeq.monitor.mr_tracking.config import (
     get_notification_prefs, load_gitlab_config, load_github_config,
-    load_monitor_prefs, load_pinned_sessions, save_monitor_prefs,
-    save_pinned_sessions,
+    load_monitor_prefs, load_notification_seen, load_pinned_sessions,
+    save_github_config, save_gitlab_config, save_monitor_prefs,
+    save_notification_seen, save_pinned_sessions,
 )
 from claudeq.monitor.mr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, parse_mr_url,
@@ -186,6 +187,14 @@ class MonitorWindow(QMainWindow):
         self._status_log = StatusLog()
         self._server_launcher = ServerLauncher(self)
 
+        # User notification tracking state
+        raw_seen = load_notification_seen()
+        self._notification_seen: dict[str, set[str]] = {
+            k: set(v) for k, v in raw_seen.items()
+        }
+        # Track which SCM types have been seeded (first-run per type)
+        self._notification_seeded: set[str] = set(raw_seen.keys())
+
         # Setup auto-refresh timer before init_ui
         self.timer = QTimer()
         self.timer.timeout.connect(self._auto_refresh)
@@ -200,6 +209,7 @@ class MonitorWindow(QMainWindow):
         self._update_table()
         self._init_scm_providers()
         self._auto_track_mr_pinned()
+        self._maybe_start_notification_poll()
 
         # Always start auto-refresh
         self.timer.start(1000)
@@ -349,6 +359,7 @@ class MonitorWindow(QMainWindow):
 
         self._log_label = QLabel('')
         self._log_label.setStyleSheet('color: gray; font-size: 11px;')
+        self._log_label.setOpenExternalLinks(True)
         status_layout.addWidget(self._log_label)
 
         self._progress_bar = QProgressBar()
@@ -534,6 +545,8 @@ class MonitorWindow(QMainWindow):
             self._pending_tracking_context.clear()
             self._silent_tracking_tags.clear()
             self._init_scm_providers()
+            self._auto_track_mr_pinned()
+            self._maybe_start_notification_poll()
             self._show_status('GitLab connection updated')
 
     def _open_github_setup(self) -> None:
@@ -548,10 +561,12 @@ class MonitorWindow(QMainWindow):
             self._pending_tracking_context.clear()
             self._silent_tracking_tags.clear()
             self._init_scm_providers()
+            self._auto_track_mr_pinned()
+            self._maybe_start_notification_poll()
             self._show_status('GitHub connection updated')
 
     def _start_scm_poll(self) -> None:
-        """Start a background SCM poll for tracked sessions only."""
+        """Start a background SCM poll for tracked sessions and/or notifications."""
         if self._shutting_down:
             return
         if not self._scm_providers:
@@ -566,29 +581,38 @@ class MonitorWindow(QMainWindow):
                 if self._scm_worker:
                     try:
                         self._scm_worker.results_ready.disconnect()
+                        self._scm_worker.notifications_ready.disconnect()
                         self._scm_worker.finished.disconnect()
                     except (TypeError, RuntimeError):
                         pass  # Already disconnected or deleted
                     self._scm_worker = None
             else:
                 return
-        if not self._tracked_tags:
+
+        has_tracked = bool(self._tracked_tags)
+        notif_types = self._get_notif_scm_types()
+        if not has_tracked and not notif_types:
             return
 
         tracked_sessions = [s for s in self.sessions if s['tag'] in self._tracked_tags]
-        if not tracked_sessions:
-            logger.debug("SCM poll skipped: no tracked sessions found in active sessions")
-            return
+        if has_tracked and not tracked_sessions:
+            if not notif_types:
+                logger.debug("SCM poll skipped: no tracked sessions found in active sessions")
+                return
 
-        logger.debug("Starting SCM poll for tags: %s", [s['tag'] for s in tracked_sessions])
+        logger.debug("Starting SCM poll for tags: %s (notif=%s)",
+                      [s['tag'] for s in tracked_sessions], notif_types)
         self._scm_polling = True
         self._scm_poll_started_at = time.monotonic()
         worker = SCMPollerWorker(self)
         worker.configure(
             self._scm_providers, tracked_sessions,
             auto_fetch_cq=self._prefs.get('auto_fetch_cq', True),
+            notif_scm_types=notif_types,
         )
         worker.results_ready.connect(self._on_scm_results)
+        worker.notifications_ready.connect(self._on_notifications_received)
+        worker.notification_auth_error.connect(self._on_notification_auth_error)
         worker.finished.connect(self._on_scm_worker_finished)
         self._scm_worker = worker
         worker.start()
@@ -944,27 +968,31 @@ class MonitorWindow(QMainWindow):
     def _update_table(self) -> None:
         """Update table with current sessions.
 
-        Creates fresh cell widgets each refresh to avoid dangling C++ pointers.
-        When setRowCount() shrinks the table, Qt auto-deletes cell widgets in
-        removed rows. Caching widgets across refreshes risks SIGSEGV when a
-        stale Python reference to a destroyed C++ widget is reused.
+        Most cell widgets are recreated each refresh to avoid dangling C++
+        pointers (Qt auto-deletes cell widgets on setRowCount shrink).
+        MR status widgets (PulsingLabel, IndicatorLabel) are reused across
+        refreshes to preserve hover popups — they survive reparenting into
+        new containers via addWidget().  Stale MR widgets (for removed tags)
+        are cleaned up after the loop.
         """
         new_count = len(self.sessions)
 
         self.table.setUpdatesEnabled(False)
         try:
-            # Stop pulsing and release all cached widget references BEFORE
-            # modifying the table.  This ensures we never hold a Python
-            # reference to a widget that Qt is about to destroy.
-            for widget in self._mr_widgets.values():
-                try:
-                    widget.set_pulsing(False)
-                except RuntimeError:
-                    pass  # C++ object already deleted
-            self._mr_widgets.clear()
-            self._mr_approval_widgets.clear()
+            # Track which cached MR widgets are stale (tag no longer in table).
+            # Widgets for still-present tracked tags are reused to preserve
+            # hover popups across table rebuilds.
+            stale_mr_tags = set(self._mr_widgets.keys())
 
             if not self.sessions:
+                # All MR widgets are stale — stop pulsing and clear
+                for w in self._mr_widgets.values():
+                    try:
+                        w.set_pulsing(False)
+                    except RuntimeError:
+                        pass
+                self._mr_widgets.clear()
+                self._mr_approval_widgets.clear()
                 self.table.setRowCount(1)
                 for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
@@ -1041,6 +1069,27 @@ class MonitorWindow(QMainWindow):
                     if self.table.columnSpan(row, self.COL_MR) > 1:
                         self.table.setSpan(row, self.COL_MR, 1, 1)
 
+                    stale_mr_tags.discard(tag)
+
+                    # Reuse existing MR widgets to preserve hover popups
+                    mr_widget = self._mr_widgets.get(tag)
+                    if mr_widget and not sip.isdeleted(mr_widget):
+                        reused_mr = True
+                        mr_widget.set_preserve_popup(True)
+                    else:
+                        mr_widget = PulsingLabel()
+                        self._mr_widgets[tag] = mr_widget
+                        reused_mr = False
+
+                    approval_label = self._mr_approval_widgets.get(tag)
+                    if approval_label and not sip.isdeleted(approval_label):
+                        reused_approval = True
+                        approval_label.set_preserve_popup(True)
+                    else:
+                        approval_label = IndicatorLabel()
+                        self._mr_approval_widgets[tag] = approval_label
+                        reused_approval = False
+
                     mr_container = QWidget()
                     mr_layout = QHBoxLayout(mr_container)
                     mr_layout.setContentsMargins(0, 0, 0, 0)
@@ -1059,13 +1108,8 @@ class MonitorWindow(QMainWindow):
                     mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
 
                     mr_layout.addStretch()
-
-                    approval_label = IndicatorLabel()
-                    self._mr_approval_widgets[tag] = approval_label
                     mr_layout.addWidget(approval_label)
 
-                    mr_widget = PulsingLabel()
-                    self._mr_widgets[tag] = mr_widget
                     mr_status = self._mr_statuses.get(tag)
                     self._apply_mr_status(mr_widget, approval_label, mr_status)
                     mr_widget.set_has_unresponded(
@@ -1073,18 +1117,19 @@ class MonitorWindow(QMainWindow):
                         and mr_status.state == MRState.UNRESPONDED
                     )
                     mr_widget.set_server_running(not is_dead)
-                    mr_widget.set_send_to_cq_callback(
-                        lambda t=tag: self._send_all_threads_to_cq(t)
-                    )
-                    mr_widget.set_send_combined_to_cq_callback(
-                        lambda t=tag: self._send_all_threads_combined_to_cq(t)
-                    )
-                    mr_widget.set_send_cq_threads_callback(
-                        lambda t=tag: self._send_cq_threads_to_cq(t)
-                    )
-                    mr_widget.set_send_cq_threads_combined_callback(
-                        lambda t=tag: self._send_cq_threads_combined_to_cq(t)
-                    )
+                    if not reused_mr:
+                        mr_widget.set_send_to_cq_callback(
+                            lambda t=tag: self._send_all_threads_to_cq(t)
+                        )
+                        mr_widget.set_send_combined_to_cq_callback(
+                            lambda t=tag: self._send_all_threads_combined_to_cq(t)
+                        )
+                        mr_widget.set_send_cq_threads_callback(
+                            lambda t=tag: self._send_cq_threads_to_cq(t)
+                        )
+                        mr_widget.set_send_cq_threads_combined_callback(
+                            lambda t=tag: self._send_cq_threads_combined_to_cq(t)
+                        )
                     mr_widget.set_auto_fetch_cq(
                         self._prefs.get('auto_fetch_cq', True)
                     )
@@ -1095,6 +1140,13 @@ class MonitorWindow(QMainWindow):
                     self._set_cell_widget(row, self.COL_MR, mr_container)
                     # MR Branch shows the MR source branch
                     self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
+
+                    # Restore popup behavior after reparenting.
+                    # Popup stays at its original position (same table cell).
+                    if reused_mr:
+                        mr_widget.set_preserve_popup(False)
+                    if reused_approval:
+                        approval_label.set_preserve_popup(False)
                 else:
                     # Not tracked — span "Track MR" across both MR columns
                     self.table.setSpan(row, self.COL_MR, 1, 2)
@@ -1207,6 +1259,16 @@ class MonitorWindow(QMainWindow):
                 client_layout.addWidget(client_btn)
 
                 self._set_cell_widget(row, self.COL_CLIENT, client_container)
+
+            # Clean up stale MR widgets for tags no longer shown
+            for stale_tag in stale_mr_tags:
+                w = self._mr_widgets.pop(stale_tag, None)
+                if w:
+                    try:
+                        w.set_pulsing(False)
+                    except RuntimeError:
+                        pass
+                self._mr_approval_widgets.pop(stale_tag, None)
         finally:
             self.table.setUpdatesEnabled(True)
 
@@ -1354,8 +1416,10 @@ class MonitorWindow(QMainWindow):
             self._deleted_tags.add(tag)
             self.sessions = [s for s in self.sessions if s['tag'] != tag]
 
-        # Stop poll timer if no tags are being tracked
-        if not self._tracked_tags and self._scm_poll_timer.isActive():
+        # Stop poll timer if no tags are being tracked and no notifications enabled
+        if (not self._tracked_tags
+                and not self._get_notif_scm_types()
+                and self._scm_poll_timer.isActive()):
             self._scm_poll_timer.stop()
 
         self._update_table()
@@ -1435,9 +1499,10 @@ class MonitorWindow(QMainWindow):
         if not silent:
             QMessageBox.warning(self, 'Error', message)
 
-    def _show_status(self, msg: str, timeout_ms: int = 5000) -> None:
+    def _show_status(self, msg: str, timeout_ms: int = 5000,
+                     url: Optional[str] = None) -> None:
         """Log a status message and update the inline log labels."""
-        self._status_log.append(msg)
+        self._status_log.append(msg, url=url)
         self._refresh_log_labels()
 
     def _refresh_log_labels(self) -> None:
@@ -1446,7 +1511,13 @@ class MonitorWindow(QMainWindow):
         if entries:
             e = entries[-1]
             ts = time.strftime('%H:%M:%S', time.localtime(e.timestamp))
-            self._log_label.setText(f'[{ts}] {e.message}')
+            if e.url:
+                self._log_label.setText(
+                    f'[{ts}] {e.message} '
+                    f'<a href="{e.url}" style="color: cyan;">(link)</a>'
+                )
+            else:
+                self._log_label.setText(f'[{ts}] {e.message}')
         else:
             self._log_label.setText('')
 
@@ -2031,35 +2102,35 @@ class MonitorWindow(QMainWindow):
         if status.state == MRState.NOT_CONFIGURED:
             widget.setText('N/A')
             widget.setStyleSheet('color: grey;')
-            widget.setToolTip('No SCM provider configured')
+            widget.setToolTip('')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
-            widget.set_indicator_help(None)
+            widget.set_indicator_help('No SCM provider configured')
 
         elif status.state == MRState.NO_MR:
             widget.setText('No MR')
             widget.setStyleSheet('color: grey;')
-            widget.setToolTip('No open MR for this branch')
+            widget.setToolTip('')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
-            widget.set_indicator_help(None)
+            widget.set_indicator_help('No open MR for this branch')
 
         elif status.state == MRState.ALL_RESPONDED:
             widget.setText('\u2713')
             widget.setStyleSheet('color: green; font-weight: bold;')
             approval_line = self._format_approval_line(status)
-            widget.setToolTip(f'MR !{status.mr_iid}: {status.mr_title}\nAll threads responded.{approval_line}')
+            widget.setToolTip('')
             widget.set_pulsing(False)
             widget.set_mr_url(status.mr_url)
-            widget.set_indicator_help('All review threads have been responded to')
+            widget.set_indicator_help(
+                f'MR !{status.mr_iid}: {status.mr_title}\n'
+                f'All threads responded.{approval_line}'
+            )
 
         elif status.state == MRState.UNRESPONDED:
             widget.setText(f'\U0001f4ac {status.unresponded_count}')
             approval_line = self._format_approval_line(status)
-            widget.setToolTip(
-                f'MR !{status.mr_iid}: {status.mr_title}\n'
-                f'{status.unresponded_count} unresponded thread(s).{approval_line}'
-            )
+            widget.setToolTip('')
             widget.set_pulsing(True)
             # Jump directly to first unresolved comment thread
             url = status.mr_url
@@ -2067,8 +2138,8 @@ class MonitorWindow(QMainWindow):
                 url = f'{url}#note_{status.first_unresponded_note_id}'
             widget.set_mr_url(url)
             widget.set_indicator_help(
-                f'{status.unresponded_count} unresponded review thread(s) '
-                f'waiting for your reply'
+                f'MR !{status.mr_iid}: {status.mr_title}\n'
+                f'{status.unresponded_count} unresponded thread(s).{approval_line}'
             )
 
     @staticmethod
@@ -2127,7 +2198,200 @@ class MonitorWindow(QMainWindow):
             return (tag, f"{mr_ref} approved")
         elif event.type == NotificationType.SESSION_COMPLETED:
             return (tag, 'Claude finished processing')
+        elif event.type == NotificationType.REVIEW_REQUESTED:
+            title = event.notification_title or ''
+            project = event.project_name or ''
+            return ('Notification', f"Review requested: {title} ({project})")
+        elif event.type == NotificationType.ASSIGNED:
+            title = event.notification_title or ''
+            project = event.project_name or ''
+            return ('Notification', f"Assigned: {title} ({project})")
+        elif event.type == NotificationType.MENTIONED:
+            title = event.notification_title or ''
+            project = event.project_name or ''
+            return ('Notification', f"Mentioned: {title} ({project})")
         return (tag, '')
+
+    def _get_notif_scm_types(self) -> set[str]:
+        """Return the set of SCM types that have notification tracking enabled."""
+        result: set[str] = set()
+        gitlab_config = load_gitlab_config()
+        if (gitlab_config
+                and gitlab_config.get('enable_notifications')
+                and SCMType.GITLAB.value in self._scm_providers):
+            result.add(SCMType.GITLAB.value)
+        github_config = load_github_config()
+        if (github_config
+                and github_config.get('enable_notifications')
+                and SCMType.GITHUB.value in self._scm_providers):
+            result.add(SCMType.GITHUB.value)
+        return result
+
+    def _maybe_start_notification_poll(self) -> None:
+        """Start the SCM poll timer if notification tracking is enabled."""
+        if self._get_notif_scm_types() and not self._scm_poll_timer.isActive():
+            interval = self._get_poll_interval()
+            self._scm_poll_timer.start(interval * 1000)
+
+    def _on_notification_auth_error(self, scm_type: str) -> None:
+        """Handle a 403/auth error from the notification fetch.
+
+        Stops polling, shows a blocking popup, then disables notifications
+        for the failing provider and restarts polling.
+        """
+        provider_name = scm_type.title()  # "github" -> "Github"
+        if scm_type not in (SCMType.GITHUB.value, SCMType.GITLAB.value):
+            return
+
+        # Stop polling to prevent duplicate popups while the dialog is open
+        self._scm_poll_timer.stop()
+
+        if scm_type == SCMType.GITHUB.value:
+            scope_hint = (
+                'GitHub notifications require a classic personal access token '
+                'with the "notifications" scope.\n'
+                'Fine-grained tokens do NOT support this endpoint.'
+            )
+        else:
+            scope_hint = (
+                'GitLab Todos require a personal access token with '
+                '"read_api" or "api" scope.\n'
+                'Project access tokens cannot access the /todos endpoint.'
+            )
+
+        QMessageBox.warning(
+            self, 'Notifications Disabled',
+            f'Failed to fetch notifications from {provider_name} '
+            f'(403 Forbidden).\n\n'
+            f'{scope_hint}\n\n'
+            f'Notification tracking has been disabled for {provider_name}.\n'
+            f'To re-enable, update your token and re-check the option '
+            f'in the {provider_name} setup.'
+        )
+
+        # Disable notifications in the provider config after user clicks OK
+        if scm_type == SCMType.GITHUB.value:
+            config = load_github_config()
+            if config:
+                config['enable_notifications'] = False
+                save_github_config(config)
+        else:
+            config = load_gitlab_config()
+            if config:
+                config['enable_notifications'] = False
+                save_gitlab_config(config)
+
+        self._show_status(f"{provider_name} notifications disabled (403 Forbidden)")
+
+        # Restart polling (now without notifications for that provider)
+        if self._tracked_tags or self._get_notif_scm_types():
+            self._scm_poll_timer.start(self._get_poll_interval() * 1000)
+
+    def _on_notifications_received(self, notifications: list) -> None:
+        """Handle user notifications from the background poller."""
+        if self._shutting_down:
+            return
+        try:
+            self._process_user_notifications(notifications)
+        except Exception:
+            logger.exception("Error processing user notifications")
+
+    def _process_user_notifications(
+        self, notifications: list,
+    ) -> None:
+        """Deduplicate and fire events for new user notifications."""
+        # Group notifications by scm_type
+        by_type: dict[str, list] = {}
+        for n in notifications:
+            by_type.setdefault(n.scm_type, []).append(n)
+
+        all_events: list[NotificationEvent] = []
+
+        for scm_type, notifs in by_type.items():
+            current_ids = {n.id for n in notifs}
+
+            if scm_type not in self._notification_seeded:
+                # First time seeing this SCM type — seed without firing
+                self._notification_seen[scm_type] = current_ids
+                self._notification_seeded.add(scm_type)
+                continue
+
+            seen_ids = self._notification_seen.get(scm_type, set())
+            new_ids = current_ids - seen_ids
+            # Map new IDs to their notification objects
+            new_notifs = [n for n in notifs if n.id in new_ids]
+
+            for n in new_notifs:
+                if n.reason == 'other':
+                    continue
+                ev = self._notification_to_event(n)
+                if ev:
+                    all_events.append(ev)
+
+            # Update seen set (prunes disappeared IDs naturally)
+            self._notification_seen[scm_type] = current_ids
+
+        # Prune seen sets for SCM types that returned zero notifications
+        # (e.g., user marked all todos as done on the web)
+        for seeded_type in list(self._notification_seeded):
+            if seeded_type not in by_type:
+                self._notification_seen[seeded_type] = set()
+
+        # Persist seen IDs
+        serializable = {k: list(v) for k, v in self._notification_seen.items()}
+        save_notification_seen(serializable)
+
+        if not all_events:
+            return
+
+        # Log to status log
+        for ev in all_events:
+            self._log_notification_event(ev)
+
+        # Update dock badge
+        notif_prefs = get_notification_prefs(self._prefs)
+        dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
+        self._dock_badge.count_user_notification_events(
+            all_events, self.isActiveWindow(), dock_enabled,
+        )
+
+        # Send banner notifications
+        self._send_banner_notifications(all_events)
+
+    @staticmethod
+    def _notification_to_event(n: UserNotification) -> Optional[NotificationEvent]:
+        """Convert a UserNotification to a NotificationEvent."""
+        reason_map = {
+            'review_requested': NotificationType.REVIEW_REQUESTED,
+            'assigned': NotificationType.ASSIGNED,
+            'mentioned': NotificationType.MENTIONED,
+        }
+        ntype = reason_map.get(n.reason)
+        if not ntype:
+            return None
+        return NotificationEvent(
+            type=ntype,
+            tag='',  # Not tied to a specific CQ session
+            url=n.target_url,
+            notification_title=n.title,
+            project_name=n.project_name,
+        )
+
+    def _log_notification_event(self, ev: NotificationEvent) -> None:
+        """Log a notification event to the status log."""
+        title = ev.notification_title or ''
+        project = ev.project_name or ''
+        if ev.type == NotificationType.REVIEW_REQUESTED:
+            msg = f"[Notification] Review requested: {title}"
+        elif ev.type == NotificationType.ASSIGNED:
+            msg = f"[Notification] Assigned: {title}"
+        elif ev.type == NotificationType.MENTIONED:
+            msg = f"[Notification] Mentioned: {title}"
+        else:
+            msg = f"[Notification] {title}"
+        if project:
+            msg += f" ({project})"
+        self._show_status(msg, url=ev.url)
 
     @staticmethod
     def _send_macos_notification(subtitle: str, body: str) -> None:

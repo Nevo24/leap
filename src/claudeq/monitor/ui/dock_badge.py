@@ -23,6 +23,9 @@ class NotificationType(Enum):
     MR_ALL_RESPONDED = 'mr_all_responded'
     MR_APPROVED = 'mr_approved'
     SESSION_COMPLETED = 'session_completed'
+    REVIEW_REQUESTED = 'review_requested'
+    ASSIGNED = 'assigned'
+    MENTIONED = 'mentioned'
 
 
 @dataclass
@@ -34,6 +37,9 @@ class NotificationEvent:
     mr_title: Optional[str] = None
     unresponded_count: int = 0
     approved_by: Optional[list[str]] = None
+    url: Optional[str] = None
+    notification_title: Optional[str] = None
+    project_name: Optional[str] = None
 
 
 class DockBadge:
@@ -49,6 +55,7 @@ class DockBadge:
         self._busy_since: dict[str, float] = {}  # tag -> monotonic timestamp
         self._mr_changed: int = 0
         self._session_changed: int = 0
+        self._notification_changed: int = 0
 
     def update(
         self,
@@ -195,10 +202,36 @@ class DockBadge:
         self._render_total()
         return events
 
+    def count_user_notification_events(
+        self,
+        events: list[NotificationEvent],
+        window_active: bool,
+        dock_enabled: Optional[dict[str, bool]] = None,
+    ) -> None:
+        """Count user notification events toward the dock badge.
+
+        Args:
+            events: Notification events to count.
+            window_active: Whether the monitor window is focused.
+            dock_enabled: Map of NotificationType.value -> bool.
+        """
+        if window_active:
+            self._notification_changed = 0
+            self._render_total()
+            return
+
+        count = 0
+        for ev in events:
+            if dock_enabled is None or dock_enabled.get(ev.type.value, True):
+                count += 1
+        self._notification_changed += count
+        self._render_total()
+
     def clear(self, mr_statuses: dict[str, MRStatus]) -> None:
         """Clear the badge and snapshot current statuses as seen."""
         self._mr_changed = 0
         self._session_changed = 0
+        self._notification_changed = 0
         self._seen_mr_statuses = dict(mr_statuses)
         self._render_total()
 
@@ -209,7 +242,7 @@ class DockBadge:
 
     def _render_total(self) -> None:
         """Render the combined badge count."""
-        total = self._mr_changed + self._session_changed
+        total = self._mr_changed + self._session_changed + self._notification_changed
         self._render(str(total) if total > 0 else '')
 
     def _render(self, label: str) -> None:

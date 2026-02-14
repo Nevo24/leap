@@ -38,6 +38,13 @@ class GitHubSetupDialog(SCMSetupDialog):
     def _config_token_key(self) -> str:
         return 'token'
 
+    def _notif_tooltip(self) -> str:
+        return (
+            'Poll GitHub Notifications for review requests, assignments, and mentions.\n'
+            'Requires a classic personal access token with "notifications" scope.\n'
+            'Fine-grained tokens do NOT support this endpoint.'
+        )
+
     def _do_test_connection(self, url: str, token: str) -> tuple[bool, str]:
         try:
             from github import Github

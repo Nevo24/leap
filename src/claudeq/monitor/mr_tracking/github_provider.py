@@ -7,7 +7,7 @@ from typing import Optional
 
 from github import Github, GithubException
 
-from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider
+from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider, UserNotification
 from claudeq.monitor.mr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
@@ -363,6 +363,83 @@ class GitHubProvider(SCMProvider):
             logger.error("Failed to post no-session reply on PR #%s thread %s",
                          mr_iid, discussion_id, exc_info=True)
             return False
+
+    def supports_notifications(self) -> bool:
+        return True
+
+    def get_user_notifications(self) -> list[UserNotification]:
+        """Fetch pending GitHub notifications as user notifications."""
+        try:
+            raw = self._gh.get_user().get_notifications(all=False)
+            # Slice to at most 50
+            items = []
+            for i, n in enumerate(raw):
+                if i >= 50:
+                    break
+                items.append(n)
+        except Exception as exc:
+            # Let 403 propagate so the poll worker can detect auth errors
+            status_code = getattr(exc, 'status', None)
+            if status_code == 403:
+                raise
+            logger.debug("Failed to fetch GitHub notifications", exc_info=True)
+            return []
+
+        notifications: list[UserNotification] = []
+        for n in items:
+            reason = self._normalize_github_reason(n.reason or '')
+            subject = n.subject
+            title = (subject.title or '') if subject else ''
+            target_url = self._resolve_notification_url(n)
+            repo = n.repository
+
+            notifications.append(UserNotification(
+                id=str(n.id),
+                scm_type='github',
+                reason=reason,
+                title=title,
+                target_url=target_url,
+                project_name=repo.full_name if repo else '',
+                created_at=str(n.updated_at) if n.updated_at else '',
+            ))
+        return notifications
+
+    @staticmethod
+    def _normalize_github_reason(reason: str) -> str:
+        """Normalize a GitHub notification reason to a standard reason."""
+        reason = reason.lower()
+        if reason == 'review_requested':
+            return 'review_requested'
+        elif reason == 'assign':
+            return 'assigned'
+        elif reason in ('mention', 'team_mention'):
+            return 'mentioned'
+        return 'other'
+
+    @staticmethod
+    def _resolve_notification_url(notification) -> str:
+        """Convert a GitHub notification's API URL to an HTML URL."""
+        subject = notification.subject
+        if not subject:
+            return ''
+        api_url = subject.url or ''
+        if not api_url:
+            return ''
+        # Convert API URL to HTML URL:
+        # github.com:  https://api.github.com/repos/owner/repo/pulls/123
+        #           -> https://github.com/owner/repo/pull/123
+        # GHE:        https://ghe.example.com/api/v3/repos/owner/repo/pulls/123
+        #           -> https://ghe.example.com/owner/repo/pull/123
+        try:
+            # Handle github.com API URLs
+            url = api_url.replace('https://api.github.com/repos/', 'https://github.com/')
+            # Handle GitHub Enterprise API URLs (/api/v3/repos/)
+            if '/api/v3/repos/' in url:
+                url = url.replace('/api/v3/repos/', '/')
+            url = url.replace('/pulls/', '/pull/')
+            return url
+        except Exception:
+            return ''
 
     def collect_unresponded_threads(self, project_path: str, branch: str) -> list[CqCommand]:
         """Collect all unresponded review comment threads from a PR as CqCommand objects."""

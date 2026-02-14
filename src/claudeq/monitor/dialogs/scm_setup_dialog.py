@@ -4,7 +4,7 @@ from abc import abstractmethod
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QMessageBox, QSpinBox, QWidget,
 )
 
@@ -81,6 +81,10 @@ class SCMSetupDialog(QDialog):
     def _config_token_key(self) -> str:
         """Return the config dict key for the token field."""
 
+    def _notif_tooltip(self) -> str:
+        """Return tooltip text for the notification tracking checkbox."""
+        return 'Poll for personal notifications each cycle'
+
     def _init_ui(self) -> None:
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -110,6 +114,11 @@ class SCMSetupDialog(QDialog):
         poll_layout.addWidget(poll_note)
         poll_layout.addStretch()
         layout.addLayout(poll_layout)
+
+        # Notification tracking checkbox
+        self.notif_check = QCheckBox('Enable notification tracking')
+        self.notif_check.setToolTip(self._notif_tooltip())
+        layout.addWidget(self.notif_check)
 
         # Status label
         self.status_label = QLabel('')
@@ -142,6 +151,7 @@ class SCMSetupDialog(QDialog):
         self.url_input.setText(config.get(self._config_url_key(), ''))
         self.token_input.setText(config.get(self._config_token_key(), ''))
         self.poll_input.setValue(config.get('poll_interval', SCM_POLL_INTERVAL))
+        self.notif_check.setChecked(config.get('enable_notifications', False))
         if config.get('username'):
             self._verified_username = config['username']
             self.save_btn.setEnabled(True)
@@ -192,6 +202,7 @@ class SCMSetupDialog(QDialog):
             self._config_token_key(): token,
             'username': self._verified_username,
             'poll_interval': self.poll_input.value(),
+            'enable_notifications': self.notif_check.isChecked(),
         }
         self._save_config(config)
         self.accept()

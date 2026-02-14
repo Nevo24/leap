@@ -36,10 +36,26 @@ class IndicatorLabel(QLabel):
         self._indicator_help: Optional[str] = None
         self._popup: Optional[IndicatorPopup] = None
         self._click_url: Optional[str] = None
+        self._preserve_popup: bool = False
 
     def set_indicator_help(self, text: Optional[str]) -> None:
         """Set the help text shown in the hover popup."""
         self._indicator_help = text
+        # Live-update visible popup
+        if self._popup and self._popup.isVisible():
+            if text:
+                self._popup.setText(text)
+                self._popup.adjustSize()
+            else:
+                self._popup.close()
+                self._popup = None
+
+    def update_popup_position(self) -> None:
+        """Reposition visible popup after widget was reparented."""
+        if self._popup and self._popup.isVisible():
+            global_pos = self.mapToGlobal(QPoint(0, 0))
+            self._popup.move(global_pos.x(),
+                             global_pos.y() - self._popup.height() - 4)
 
     def set_click_url(self, url: Optional[str]) -> None:
         """Set the URL to open when this indicator is clicked."""
@@ -55,8 +71,12 @@ class IndicatorLabel(QLabel):
         else:
             super().mousePressEvent(event)
 
+    def set_preserve_popup(self, preserve: bool) -> None:
+        """Suppress enter/leave popup changes during widget reparenting."""
+        self._preserve_popup = preserve
+
     def enterEvent(self, event) -> None:
-        if self._indicator_help:
+        if self._indicator_help and not self._preserve_popup:
             if self._popup:
                 self._popup.close()
             self._popup = IndicatorPopup()
@@ -68,7 +88,7 @@ class IndicatorLabel(QLabel):
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if self._popup:
+        if self._popup and not self._preserve_popup:
             self._popup.close()
             self._popup = None
         super().leaveEvent(event)
@@ -91,6 +111,7 @@ class PulsingLabel(QLabel):
         self._auto_fetch_cq: bool = True
         self._indicator_help: Optional[str] = None
         self._popup: Optional[IndicatorPopup] = None
+        self._preserve_popup: bool = False
 
         self._pulse_timer = QTimer(self)
         self._pulse_timer.setInterval(50)
@@ -147,9 +168,28 @@ class PulsingLabel(QLabel):
     def set_indicator_help(self, text: Optional[str]) -> None:
         """Set the help text shown in the hover popup."""
         self._indicator_help = text
+        # Live-update visible popup
+        if self._popup and self._popup.isVisible():
+            if text:
+                self._popup.setText(text)
+                self._popup.adjustSize()
+            else:
+                self._popup.close()
+                self._popup = None
+
+    def update_popup_position(self) -> None:
+        """Reposition visible popup after widget was reparented."""
+        if self._popup and self._popup.isVisible():
+            global_pos = self.mapToGlobal(QPoint(0, 0))
+            self._popup.move(global_pos.x(),
+                             global_pos.y() - self._popup.height() - 4)
+
+    def set_preserve_popup(self, preserve: bool) -> None:
+        """Suppress enter/leave popup changes during widget reparenting."""
+        self._preserve_popup = preserve
 
     def enterEvent(self, event) -> None:
-        if self._indicator_help:
+        if self._indicator_help and not self._preserve_popup:
             if self._popup:
                 self._popup.close()
             self._popup = IndicatorPopup()
@@ -164,7 +204,7 @@ class PulsingLabel(QLabel):
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if self._popup:
+        if self._popup and not self._preserve_popup:
             self._popup.close()
             self._popup = None
         super().leaveEvent(event)

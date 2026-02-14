@@ -11,6 +11,7 @@ GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
+NOTIFICATION_SEEN_FILE = STORAGE_DIR / "notification_seen.json"
 CQ_CONTEXT_FILE = STORAGE_DIR / "cq_selected_ctx"
 CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
 
@@ -27,6 +28,9 @@ _DEFAULT_NOTIFICATIONS: dict[str, dict[str, bool]] = {
     'mr_all_responded': {'dock': True, 'banner': False},
     'mr_approved': {'dock': True, 'banner': False},
     'session_completed': {'dock': True, 'banner': False},
+    'review_requested': {'dock': True, 'banner': False},
+    'assigned': {'dock': True, 'banner': False},
+    'mentioned': {'dock': True, 'banner': False},
 }
 
 
@@ -48,6 +52,29 @@ def get_notification_prefs(prefs: dict[str, Any]) -> dict[str, dict[str, bool]]:
             'banner': entry.get('banner', defaults['banner']),
         }
     return merged
+
+
+def load_notification_seen() -> dict[str, list[str]]:
+    """Load the set of seen notification IDs per SCM type.
+
+    Returns:
+        Dict mapping scm_type ("gitlab", "github") to list of seen ID strings.
+    """
+    if not NOTIFICATION_SEEN_FILE.exists():
+        return {}
+    try:
+        with open(NOTIFICATION_SEEN_FILE, 'r') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def save_notification_seen(seen: dict[str, list[str]]) -> None:
+    """Save the set of seen notification IDs per SCM type."""
+    atomic_json_write(NOTIFICATION_SEEN_FILE, seen)
 
 
 def load_gitlab_config() -> Optional[dict[str, Any]]:

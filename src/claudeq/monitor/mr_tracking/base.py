@@ -35,6 +35,19 @@ class MRStatus:
     approved_by: Optional[list[str]] = None
 
 
+@dataclass
+class UserNotification:
+    """A notification from an SCM provider (GitLab Todo / GitHub Notification)."""
+    id: str
+    scm_type: str  # "gitlab" or "github"
+    reason: str  # "review_requested", "assigned", "mentioned", "other"
+    title: str  # Target title (MR/issue title)
+    target_url: str  # URL to open in browser
+    project_name: Optional[str] = None
+    author: Optional[str] = None
+    created_at: Optional[str] = None
+
+
 class SCMProvider(ABC):
     """Abstract base class for SCM providers (GitLab, GitHub, etc.)."""
 
@@ -113,3 +126,15 @@ class SCMProvider(ABC):
         Returns:
             List of CqCommand instances for each unresponded thread.
         """
+
+    def supports_notifications(self) -> bool:
+        """Whether this provider supports user notification tracking."""
+        return False
+
+    def get_user_notifications(self) -> list[UserNotification]:
+        """Get pending user notifications (GitLab Todos / GitHub Notifications).
+
+        Returns:
+            List of UserNotification instances.
+        """
+        return []

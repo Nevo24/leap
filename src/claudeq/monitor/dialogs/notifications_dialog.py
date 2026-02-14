@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QLabel, QVBoxLayout,
 )
@@ -13,10 +14,23 @@ _TYPE_LABELS = {
     'mr_all_responded': 'All threads responded',
     'mr_approved': 'MR approved',
     'session_completed': 'Claude finished processing',
+    'review_requested': 'Review requested',
+    'assigned': 'Assigned to you',
+    'mentioned': 'Mentioned',
 }
 
-# Ordered list of type keys (stable display order)
-_TYPE_ORDER = ['mr_unresponded', 'mr_all_responded', 'mr_approved', 'session_completed']
+# Grouped type keys with section titles.
+_SECTIONS: list[tuple[str, list[str]]] = [
+    ('MR / Session Tracking', [
+        'mr_unresponded', 'mr_all_responded', 'mr_approved', 'session_completed',
+    ]),
+    ('GitLab / GitHub Notifications', [
+        'review_requested', 'assigned', 'mentioned',
+    ]),
+]
+
+# Flat ordered list (derived from sections) for external consumers.
+_TYPE_ORDER = [key for _, keys in _SECTIONS for key in keys]
 
 
 class NotificationsDialog(QDialog):
@@ -29,7 +43,7 @@ class NotificationsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle('Notifications')
-        self.resize(400, 200)
+        self.resize(400, 260)
 
         layout = QVBoxLayout(self)
 
@@ -40,21 +54,34 @@ class NotificationsDialog(QDialog):
 
         self._checks: dict[str, dict[str, QCheckBox]] = {}
 
-        for row_idx, key in enumerate(_TYPE_ORDER, start=1):
-            label_text = _TYPE_LABELS.get(key, key)
-            grid.addWidget(QLabel(label_text), row_idx, 0)
+        row = 1
+        for section_idx, (title, keys) in enumerate(_SECTIONS):
+            # Section header spanning all columns
+            if section_idx > 0:
+                grid.addWidget(QLabel(''), row, 0)  # spacer row
+                row += 1
+            header = QLabel(title)
+            header.setFont(QFont(header.font().family(), -1, QFont.Bold))
+            header.setStyleSheet('color: #aaaaaa;')
+            grid.addWidget(header, row, 0, 1, 3)
+            row += 1
 
-            prefs = current_prefs.get(key, {})
+            for key in keys:
+                label_text = _TYPE_LABELS.get(key, key)
+                grid.addWidget(QLabel(label_text), row, 0)
 
-            dock_cb = QCheckBox()
-            dock_cb.setChecked(prefs.get('dock', True))
-            grid.addWidget(dock_cb, row_idx, 1)
+                prefs = current_prefs.get(key, {})
 
-            banner_cb = QCheckBox()
-            banner_cb.setChecked(prefs.get('banner', False))
-            grid.addWidget(banner_cb, row_idx, 2)
+                dock_cb = QCheckBox()
+                dock_cb.setChecked(prefs.get('dock', True))
+                grid.addWidget(dock_cb, row, 1)
 
-            self._checks[key] = {'dock': dock_cb, 'banner': banner_cb}
+                banner_cb = QCheckBox()
+                banner_cb.setChecked(prefs.get('banner', False))
+                grid.addWidget(banner_cb, row, 2)
+
+                self._checks[key] = {'dock': dock_cb, 'banner': banner_cb}
+                row += 1
 
         layout.addLayout(grid)
         layout.addSpacing(8)

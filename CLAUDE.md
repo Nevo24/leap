@@ -103,13 +103,16 @@ assets/
 | `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
 | `StatusLog` | `monitor/ui/status_log.py` | In-memory status message log + viewer dialog |
 | `SettingsDialog` | `monitor/dialogs/settings_dialog.py` | Settings: terminal, repos dir, cleanup unused repos |
-| `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
-| `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking |
+| `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking + user notifications (Todos) |
+| `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
+| `UserNotification` | `monitor/mr_tracking/base.py` | Dataclass for SCM user notifications (GitLab Todos / GitHub notifications) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `NotificationType` | `monitor/ui/dock_badge.py` | Enum of notification event types |
 | `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |
 | `NotificationsDialog` | `monitor/dialogs/notifications_dialog.py` | Per-type notification config (dock/banner toggles) |
 | `get_notification_prefs()` | `monitor/mr_tracking/config.py` | Merge saved notification prefs with defaults |
+| `load_notification_seen()` | `monitor/mr_tracking/config.py` | Load seen notification IDs per SCM type |
+| `save_notification_seen()` | `monitor/mr_tracking/config.py` | Persist seen notification IDs per SCM type |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `is_valid_tag()` | `utils/constants.py` | Shared tag validation (alphanumeric + hyphens + underscores) |
 | `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
@@ -128,6 +131,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Client lock | `.storage/sockets/<tag>.client.lock` |
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` |
+| Notification seen state | `.storage/notification_seen.json` |
 
 ## File Cleanup & Lifecycle
 
@@ -290,9 +294,9 @@ Listens on Unix socket for client messages
 - **Client commands**: Each command handler is extracted into a private `_handle_*` method on `ClaudeQClient`. The `_process_command` dispatcher delegates to these handlers.
 - **Socket pattern**: `SocketClient._send_request()` is the single source of truth for client→server socket communication. `send_socket_request()` in `utils/socket_utils.py` is the lightweight variant for monitor/session_manager code that doesn't need rate-limited error reporting.
 
-## SCM Polling (GitLab MR Tracking)
+## SCM Polling (MR Tracking & User Notifications)
 
-The monitor polls GitLab for MR status updates on tracked sessions. Key timeouts and safeguards:
+The monitor polls GitLab/GitHub for MR status updates on tracked sessions and user-level notifications. Key timeouts and safeguards:
 
 - **GitLab client timeout**: 15s per HTTP request (`gitlab.Gitlab(timeout=15)`)
 - **Poll cycle timeout**: 30s for all `ThreadPoolExecutor` futures via `as_completed(timeout=30)`
@@ -321,6 +325,17 @@ The "Auto '/cq' fetch" checkbox (bottom bar, next to "Include git bots") control
 
 A `/cq` comment on a thread does **not** count as a user response for unresponded thread detection — only the bot acknowledgment reply (`[ClaudeQ bot] on it!`) marks a thread as handled. Setting persisted in `.storage/monitor_prefs.json` as `auto_fetch_cq`.
 
+### User Notifications (GitLab Todos / GitHub Notifications)
+
+The monitor can poll for user-level notifications from GitLab and GitHub — these are independent of MR tracking and cover the user's entire SCM account (review requests, assignments, mentions).
+
+- **Per-provider enable/disable**: Each SCM provider has an `enable_notifications` checkbox in its setup dialog (Settings > Connect to GitLab / Connect to GitHub). Internally tracked as `notif_scm_types: set[str]` — only providers in the set are polled
+- **Polling**: `SCMPollerWorker` calls `get_user_notifications()` on each enabled provider each poll cycle. Returns `List[UserNotification]` with reason, title, URL, author
+- **Deduplication**: Seen notification IDs are tracked per SCM type in `_notification_seen` and persisted to `.storage/notification_seen.json` across monitor restarts. Only unseen notifications trigger dock badge / banner events
+- **First-run seeding**: On first enable for a provider, all existing notifications are marked as seen (seeded) so only new ones trigger alerts
+- **Auth error handling**: 403 errors from notification APIs (e.g., missing token scope) trigger a blocking popup and auto-disable notifications for that provider. The user must re-enable via the setup dialog after fixing their token
+- **Notification types**: `review_requested`, `assigned`, `mentioned` map to `NotificationType` enum values and are independently configurable in the Notifications dialog (dock badge + banner toggles)
+
 ### Dock Badge & Banner Notifications
 
 The monitor has two notification channels, independently configurable per event type via **Settings > Notifications...**:
@@ -330,12 +345,17 @@ The monitor has two notification channels, independently configurable per event 
 
 **Notification types:**
 
-| Type | Dock badge | Banner text example |
-|------|-----------|-------------------|
+| Type | Trigger | Banner text example |
+|------|---------|-------------------|
 | `mr_unresponded` | MR state changed to unresponded or count increased | `"MR !42 'Fix auth' has 3 unresponded thread(s)"` |
 | `mr_all_responded` | MR went from unresponded to all responded | `"MR !42 'Fix auth' — all threads responded"` |
 | `mr_approved` | MR approved (False→True) | `"MR !42 'Fix auth' approved by John, Jane"` |
 | `session_completed` | Running→Idle (busy for at least 1.5s) | `"Claude finished processing"` |
+| `review_requested` | User requested to review an MR/PR | `"Review requested on MR !42 'Fix auth' by John"` |
+| `assigned` | User assigned to an MR/PR | `"You are assigned to MR !42 'Fix auth'"` |
+| `mentioned` | User mentioned in a discussion | `"You were mentioned in thread on MR !42"` |
+
+The first four types come from MR tracking (per-session). The last three come from user-level SCM notifications (GitLab Todos / GitHub notifications) — these fire regardless of whether the MR is tracked in ClaudeQ.
 
 Dock badge counts sum into a single number. Focusing the monitor window resets all counts.
 
