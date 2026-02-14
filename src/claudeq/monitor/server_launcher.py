@@ -62,10 +62,10 @@ class ServerLauncher:
                     pinned['project_path'] = ''
                     self._start_server_from_mr(tag, pinned)
                 else:
-                    # Local path free — check branch is correct
+                    # Local path free — force-align to remote
                     branch = pinned.get('branch', '')
-                    self._w._show_status(f"Checking '{project_dir.name}' is up to date...")
-                    self._server_check_git(tag, pinned, project_dir, branch)
+                    self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
+                    self._server_force_align(tag, pinned, project_dir, branch)
             return
 
         # Auto-pinned row — open directly
@@ -171,9 +171,9 @@ class ServerLauncher:
             w.start()
             return
 
-        # Project exists and no CQ server using it — check git state
-        self._w._show_status(f"Checking '{project_dir.name}' is up to date...")
-        self._server_check_git(tag, pinned, project_dir, branch)
+        # Project exists and no CQ server using it — force-align to remote
+        self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
+        self._server_force_align(tag, pinned, project_dir, branch)
 
     def _on_server_cloned(
         self, tag: str, pinned: dict[str, Any], project_dir: Path,
@@ -183,52 +183,77 @@ class ServerLauncher:
         if not clone_ok[0]:
             QMessageBox.warning(self._w, 'Clone Failed', clone_err[0] or 'Unknown error.')
             return
-        self._w._show_status(f"Cloned. Checking branch '{branch}'...")
-        self._server_check_git(tag, pinned, project_dir, branch)
+        self._w._show_status(f"Cloned. Checking out branch '{branch}'...")
+        self._server_force_align(tag, pinned, project_dir, branch)
 
-    def _server_check_git(
+    def _server_force_align(
         self, tag: str, pinned: dict[str, Any], project_dir: Path, branch: str,
     ) -> None:
-        """Fetch remote branch, check if local is up-to-date, checkout if needed."""
-        self._w._show_status(f"Fetching branch '{branch}' in '{project_dir.name}'...")
-        state: dict[str, Any] = {'fetch_err': '', 'up_to_date': False, 'dirty': False}
+        """Fetch remote branch, force-checkout and hard-reset to origin.
 
-        def _check() -> None:
+        These are managed clones in repos_dir, not user workspaces — local
+        changes are always discarded in favour of the remote state.
+        """
+        self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
+        fetch_err: list[str] = ['']
+        align_err: list[str] = ['']
+
+        def _align() -> None:
             cwd = str(project_dir)
+
+            # 1. Fetch the branch
             refspec = f'+refs/heads/{branch}:refs/remotes/origin/{branch}'
             r = subprocess.run(
                 ['git', 'fetch', 'origin', refspec],
                 capture_output=True, text=True, cwd=cwd, timeout=30,
             )
             if r.returncode != 0:
-                state['fetch_err'] = r.stderr.strip() or 'fetch failed'
+                fetch_err[0] = r.stderr.strip() or 'fetch failed'
                 return
-            r = subprocess.run(
-                ['git', 'merge-base', '--is-ancestor', f'origin/{branch}', 'HEAD'],
-                capture_output=True, text=True, cwd=cwd, timeout=5,
-            )
-            state['up_to_date'] = r.returncode == 0
-            if not state['up_to_date']:
-                r = subprocess.run(
-                    ['git', 'status', '--porcelain'],
-                    capture_output=True, text=True, cwd=cwd, timeout=5,
-                )
-                state['dirty'] = bool(r.stdout.strip())
 
-        w = BackgroundCallWorker(_check, self._w)
-        w.finished.connect(lambda: self._on_server_git_checked(
-            tag, pinned, project_dir, branch, state,
+            try:
+                # 2. Checkout branch (create tracking branch if needed)
+                r = subprocess.run(
+                    ['git', 'checkout', branch],
+                    capture_output=True, text=True, cwd=cwd, timeout=10,
+                )
+                if r.returncode != 0:
+                    subprocess.run(
+                        ['git', 'checkout', '--track', f'origin/{branch}'],
+                        check=True, capture_output=True, text=True,
+                        cwd=cwd, timeout=10,
+                    )
+                # 3. Hard-reset to remote (unconditional)
+                subprocess.run(
+                    ['git', 'reset', '--hard', f'origin/{branch}'],
+                    check=True, capture_output=True, text=True,
+                    cwd=cwd, timeout=10,
+                )
+                # 4. Remove untracked files
+                subprocess.run(
+                    ['git', 'clean', '-fd'],
+                    check=True, capture_output=True, text=True,
+                    cwd=cwd, timeout=10,
+                )
+            except subprocess.CalledProcessError as e:
+                align_err[0] = e.stderr or str(e)
+            except Exception as e:
+                align_err[0] = str(e)
+
+        w = BackgroundCallWorker(_align, self._w)
+        w.finished.connect(lambda: self._on_server_force_aligned(
+            tag, pinned, project_dir, branch, fetch_err, align_err,
         ))
         w.finished.connect(w.deleteLater)
         w.start()
 
-    def _on_server_git_checked(
+    def _on_server_force_aligned(
         self, tag: str, pinned: dict[str, Any], project_dir: Path,
-        branch: str, state: dict[str, Any],
+        branch: str, fetch_err: list, align_err: list,
     ) -> None:
-        """Handle git check result for server start."""
-        if state['fetch_err']:
-            err = state['fetch_err'].lower()
+        """Handle force-align completion for server start."""
+        if fetch_err[0]:
+            err = fetch_err[0].lower()
             branch_gone = (
                 "couldn't find remote ref" in err
                 or 'not found' in err
@@ -246,11 +271,10 @@ class ServerLauncher:
                 if reply == QMessageBox.Yes:
                     self._server_finish(tag, pinned, project_dir)
             else:
-                # Network error or other fetch failure — let user retry
                 reply = QMessageBox.question(
                     self._w, 'Fetch Failed',
                     f"Could not fetch branch '{branch}' from remote:\n"
-                    f"{state['fetch_err']}\n\n"
+                    f"{fetch_err[0]}\n\n"
                     f"Start CQ without syncing?",
                     QMessageBox.Yes | QMessageBox.No,
                 )
@@ -258,71 +282,14 @@ class ServerLauncher:
                     self._server_finish(tag, pinned, project_dir)
             return
 
-        if state['up_to_date']:
-            self._server_finish(tag, pinned, project_dir)
-            return
-
-        if state['dirty']:
+        if align_err[0]:
             QMessageBox.warning(
-                self._w, 'Cannot Update',
-                f"'{project_dir.name}' is behind '{branch}' and has "
-                f"uncommitted changes.\n\n"
-                f"Commit or stash your changes first.",
+                self._w, 'Sync Failed',
+                f"Could not sync '{project_dir.name}' to origin/{branch}:\n"
+                f"{align_err[0]}",
             )
             return
 
-        # Behind but clean — checkout + pull
-        self._w._show_status(f"Updating {project_dir.name} to latest '{branch}'...")
-        checkout_err: list[str] = ['']
-
-        def _checkout() -> None:
-            try:
-                cwd = str(project_dir)
-                r = subprocess.run(
-                    ['git', 'checkout', branch],
-                    capture_output=True, text=True, cwd=cwd, timeout=10,
-                )
-                if r.returncode != 0:
-                    subprocess.run(
-                        ['git', 'checkout', '--track', f'origin/{branch}'],
-                        check=True, capture_output=True, text=True,
-                        cwd=cwd, timeout=10,
-                    )
-                # Try fast-forward first; if diverged, hard-reset to remote
-                # (these are managed clones in repos_dir, not user workspaces)
-                r = subprocess.run(
-                    ['git', 'pull', '--ff-only'],
-                    capture_output=True, text=True, cwd=cwd, timeout=30,
-                )
-                if r.returncode != 0:
-                    subprocess.run(
-                        ['git', 'reset', '--hard', f'origin/{branch}'],
-                        check=True, capture_output=True, text=True,
-                        cwd=cwd, timeout=10,
-                    )
-            except subprocess.CalledProcessError as e:
-                checkout_err[0] = e.stderr or str(e)
-            except Exception as e:
-                checkout_err[0] = str(e)
-
-        w = BackgroundCallWorker(_checkout, self._w)
-        w.finished.connect(lambda: self._on_server_checked_out(
-            tag, pinned, project_dir, checkout_err,
-        ))
-        w.finished.connect(w.deleteLater)
-        w.start()
-
-    def _on_server_checked_out(
-        self, tag: str, pinned: dict[str, Any], project_dir: Path,
-        checkout_err: list,
-    ) -> None:
-        """Handle checkout completion for server start."""
-        if checkout_err[0]:
-            QMessageBox.warning(
-                self._w, 'Checkout Failed',
-                f"Could not switch to branch:\n{checkout_err[0]}",
-            )
-            return
         self._server_finish(tag, pinned, project_dir)
 
     def _server_finish(self, tag: str, pinned: dict[str, Any], project_dir: Path) -> None:

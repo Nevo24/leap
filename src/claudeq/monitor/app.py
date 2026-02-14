@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QInputDialog, QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QObject, QTimer, Qt
-from PyQt5.QtGui import QIcon, QCloseEvent
+from PyQt5.QtGui import QColor, QIcon, QCloseEvent
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL, SOCKET_DIR, is_valid_tag
 from claudeq.utils.socket_utils import send_socket_request
@@ -102,15 +102,20 @@ class MonitorWindow(QMainWindow):
     """Main window for ClaudeQ Monitor."""
 
     # Column indices
-    COL_TAG = 0
-    COL_PROJECT = 1
-    COL_BRANCH = 2
-    COL_MR = 3
-    COL_STATUS = 4
-    COL_QUEUE = 5
-    COL_SERVER = 6
+    COL_DELETE = 0
+    COL_TAG = 1
+    COL_PROJECT = 2
+    COL_SERVER = 3
+    COL_SERVER_BRANCH = 4
+    COL_STATUS = 5
+    COL_QUEUE = 6
     COL_CLIENT = 7
-    COL_DELETE = 8
+    COL_MR = 8
+    COL_MR_BRANCH = 9
+
+    # Column groups for background tinting
+    _SERVER_GROUP_COLS = frozenset({3, 4, 5, 6})   # Server, Server Branch, Status, Queue
+    _MR_GROUP_COLS = frozenset({8, 9})              # MR, MR Branch
 
     def __init__(self) -> None:
         """Initialize the monitor window."""
@@ -152,6 +157,7 @@ class MonitorWindow(QMainWindow):
         self.sessions = self._merge_sessions(get_active_sessions())
         self._update_table()
         self._init_scm_providers()
+        self._auto_track_mr_pinned()
 
         # Always start auto-refresh
         self.timer.start(1000)
@@ -178,26 +184,23 @@ class MonitorWindow(QMainWindow):
 
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels([
-            'Tag', 'Project', 'Branch', 'MR', 'Status', 'Queue', 'Server', 'Client', 'Delete'
+            '', 'Tag', 'Project', 'Server', 'Server Branch', 'Status', 'Queue',
+            'Client', 'MR', 'MR Branch',
         ])
 
         # Column header tooltips
         _col_tooltips = {
             self.COL_TAG: 'CQ session name',
             self.COL_PROJECT: 'Project directory name',
-            self.COL_BRANCH: (
-                'The git branch this row was created to work on.\n'
-                '(+ button: the MR source branch.\n'
-                ' claudeq command: the branch the folder was on when it started.)'
-            ),
-            self.COL_MR: 'Merge/pull request tracking status',
+            self.COL_SERVER: 'CQ server process (green = running)',
+            self.COL_SERVER_BRANCH: 'The git branch the server is running on',
             self.COL_STATUS: 'Whether Claude is busy processing or idle',
             self.COL_QUEUE: 'Number of messages waiting in the queue',
-            self.COL_SERVER: 'CQ server process (green = running)',
             self.COL_CLIENT: 'CQ client process (green = connected)',
-            self.COL_DELETE: 'Remove this row',
+            self.COL_MR: 'Merge/pull request tracking status',
+            self.COL_MR_BRANCH: 'MR/PR source branch',
         }
         for col, tip in _col_tooltips.items():
             item = self.table.horizontalHeaderItem(col)
@@ -209,12 +212,15 @@ class MonitorWindow(QMainWindow):
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(True)
 
+        # Hide vertical header (row indices) — delete button is in COL_DELETE
+        self.table.verticalHeader().setVisible(False)
+
         # Delete column: narrow fixed width
         self.table.setColumnWidth(self.COL_DELETE, 30)
         header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
 
         # Restore saved column widths or distribute equally
-        # Migrate old 8-col prefs to 9-col by ignoring stale widths
+        # Reset saved widths when column layout changes
         col_count = self.table.columnCount()
         saved_widths = self._prefs.get('column_widths')
         if saved_widths and len(saved_widths) == col_count:
@@ -337,15 +343,18 @@ class MonitorWindow(QMainWindow):
         self.move(x, y)
 
     def _apply_equal_column_widths(self) -> None:
-        """Distribute column widths equally across all columns."""
+        """Distribute column widths equally across resizable columns."""
         col_count = self.table.columnCount()
         if col_count <= 0:
             return
         win_width = self.geometry().width() or 1150
-        # Subtract row-header width (~30px) and vertical scrollbar (~20px)
+        # Subtract delete column (30px) and vertical scrollbar (~20px)
         available = win_width - 50
-        col_width = available // col_count
+        resizable = col_count - 1  # exclude COL_DELETE
+        col_width = available // max(resizable, 1)
         for col in range(col_count):
+            if col == self.COL_DELETE:
+                continue
             self.table.setColumnWidth(col, col_width)
 
     def _reset_window_size(self) -> None:
@@ -392,6 +401,14 @@ class MonitorWindow(QMainWindow):
             self._scm_providers.pop(SCMType.GITHUB.value, None)
 
         self._update_scm_buttons()
+
+    def _auto_track_mr_pinned(self) -> None:
+        """Auto-start MR tracking for all MR-pinned sessions on startup."""
+        if not self._scm_providers:
+            return
+        for tag, pin in self._pinned_sessions.items():
+            if pin.get('remote_project_path') and tag not in self._tracked_tags:
+                self._start_tracking(tag)
 
     def _update_scm_buttons(self) -> None:
         """Update SCM button text/style based on connection state."""
@@ -836,7 +853,16 @@ class MonitorWindow(QMainWindow):
         )
         self._send_banner_notifications(events)
 
-    _CENTER_COLS = frozenset({4, 5})  # COL_STATUS, COL_QUEUE
+    _CENTER_COLS = frozenset({5, 6})  # COL_STATUS, COL_QUEUE
+    _GROUP_BG = QColor(45, 45, 48)  # Light grey tint for server/MR groups
+    def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
+        """Set a cell widget, applying group background tint if applicable."""
+        if col in self._SERVER_GROUP_COLS or col in self._MR_GROUP_COLS:
+            widget.setAutoFillBackground(True)
+            pal = widget.palette()
+            pal.setColor(widget.backgroundRole(), self._GROUP_BG)
+            widget.setPalette(pal)
+        self.table.setCellWidget(row, col, widget)
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         """Set cell text only if it changed, to avoid flicker."""
@@ -845,6 +871,8 @@ class MonitorWindow(QMainWindow):
             item = QTableWidgetItem(text)
             if col in self._CENTER_COLS:
                 item.setTextAlignment(Qt.AlignCenter)
+            if col in self._SERVER_GROUP_COLS or col in self._MR_GROUP_COLS:
+                item.setBackground(self._GROUP_BG)
             self.table.setItem(row, col, item)
         elif item.text() != text:
             item.setText(text)
@@ -874,10 +902,16 @@ class MonitorWindow(QMainWindow):
 
             if not self.sessions:
                 self.table.setRowCount(1)
-                self._set_cell_text(0, 0, 'No active sessions')
-                for col in range(1, self.table.columnCount()):
+                for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
-                    self._set_cell_text(0, col, '')
+                    item = self.table.item(0, col)
+                    if item:
+                        item.setBackground(QColor(0, 0, 0, 0))
+                    text = 'No active sessions' if col == self.COL_TAG else ''
+                    if not item:
+                        self.table.setItem(0, col, QTableWidgetItem(text))
+                    elif item.text() != text:
+                        item.setText(text)
                 return
 
             self.table.setRowCount(new_count)
@@ -887,36 +921,64 @@ class MonitorWindow(QMainWindow):
                 server_pid = session.get('server_pid')
                 is_dead = server_pid is None
 
+                # Delete button (leftmost column, replaces row index)
+                del_container = QWidget()
+                del_layout = QHBoxLayout(del_container)
+                del_layout.setContentsMargins(0, 0, 0, 0)
+                del_layout.setSpacing(0)
+                del_btn = QPushButton('X')
+                del_btn.setFixedSize(24, del_btn.sizeHint().height())
+                del_btn.setStyleSheet(
+                    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                )
+                del_btn.setToolTip(f'Remove row for {tag}')
+                del_btn.clicked.connect(
+                    lambda checked, t=tag: self._delete_row(t)
+                )
+                del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
+                self.table.setCellWidget(row, self.COL_DELETE, del_container)
+
                 # Text cells — only update if value changed
                 self._set_cell_text(row, self.COL_TAG, tag)
 
-                # For MR-pinned rows, show the MR's branch (stable);
-                # for auto-pinned rows, show the live branch.
                 pinned_data = self._pinned_sessions.get(tag, {})
+
+                # Server Branch always shows the live branch
+                server_branch = session['branch']
+
+                # MR Branch shows the MR's source branch if tracked
                 if pinned_data.get('remote_project_path'):
-                    display_branch = pinned_data.get('branch') or session['branch']
+                    mr_branch = pinned_data.get('branch') or 'N/A'
                 else:
-                    display_branch = session['branch']
+                    mr_branch = 'N/A'
 
                 if is_dead:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
-                    self._set_cell_text(row, self.COL_BRANCH, display_branch)
+                    self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
                 else:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
-                    self._set_cell_text(row, self.COL_BRANCH, display_branch)
+                    self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
                     status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
                     self._set_cell_text(row, self.COL_STATUS, status)
                     self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-                # MR column: "Track MR" → "Checking..." → tracked PulsingLabel + X
+                # MR column: "Track MR" (spans MR+MR Branch) → "Checking..." → tracked
                 if tag in self._checking_tags:
+                    if self.table.columnSpan(row, self.COL_MR) > 1:
+                        self.table.setSpan(row, self.COL_MR, 1, 1)
                     checking_label = PulsingLabel()
                     checking_label.setText('Checking...')
                     checking_label.setStyleSheet('color: grey; font-style: italic;')
-                    self.table.setCellWidget(row, self.COL_MR, checking_label)
+                    self._set_cell_widget(row, self.COL_MR, checking_label)
+                    self._set_cell_text(row, self.COL_MR_BRANCH, '')
                 elif tag in self._tracked_tags:
+                    # Remove span — MR and MR Branch are separate columns
+                    if self.table.columnSpan(row, self.COL_MR) > 1:
+                        self.table.setSpan(row, self.COL_MR, 1, 1)
+
                     mr_container = QWidget()
                     mr_layout = QHBoxLayout(mr_container)
                     mr_layout.setContentsMargins(0, 0, 0, 0)
@@ -931,7 +993,8 @@ class MonitorWindow(QMainWindow):
                     mr_status = self._mr_statuses.get(tag)
                     self._apply_mr_status(mr_widget, approval_label, mr_status)
                     mr_widget.set_has_unresponded(
-                        mr_status is not None and mr_status.state == MRState.UNRESPONDED
+                        mr_status is not None
+                        and mr_status.state == MRState.UNRESPONDED
                     )
                     mr_widget.set_server_running(not is_dead)
                     mr_widget.set_send_to_cq_callback(
@@ -963,8 +1026,12 @@ class MonitorWindow(QMainWindow):
                     )
                     mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
 
-                    self.table.setCellWidget(row, self.COL_MR, mr_container)
+                    self._set_cell_widget(row, self.COL_MR, mr_container)
+                    # MR Branch shows the MR source branch
+                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
                 else:
+                    # Not tracked — span "Track MR" across both MR columns
+                    self.table.setSpan(row, self.COL_MR, 1, 2)
                     existing = self.table.cellWidget(row, self.COL_MR)
                     if isinstance(existing, QPushButton) \
                             and getattr(existing, '_cq_tag', None) == tag:
@@ -977,7 +1044,7 @@ class MonitorWindow(QMainWindow):
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
                         )
-                        self.table.setCellWidget(row, self.COL_MR, track_btn)
+                        self._set_cell_widget(row, self.COL_MR, track_btn)
 
                 client_pid = session.get('client_pid')
                 has_client = session.get('has_client', False)
@@ -1033,7 +1100,7 @@ class MonitorWindow(QMainWindow):
                             self._close_server(t, spid)
                     )
                     server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
-                self.table.setCellWidget(row, self.COL_SERVER, server_container)
+                self._set_cell_widget(row, self.COL_SERVER, server_container)
 
                 # Client button + close button
                 client_container = QWidget()
@@ -1070,24 +1137,6 @@ class MonitorWindow(QMainWindow):
                     client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
 
                 self.table.setCellWidget(row, self.COL_CLIENT, client_container)
-
-                # Delete button (centered in cell)
-                del_container = QWidget()
-                del_layout = QHBoxLayout(del_container)
-                del_layout.setContentsMargins(0, 0, 0, 0)
-                del_layout.setSpacing(0)
-                del_btn = QPushButton('X')
-                del_btn.setFixedSize(24, 24)
-                del_btn.setStyleSheet(
-                    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                )
-                del_btn.setToolTip(f'Remove row for {tag}')
-                del_btn.clicked.connect(
-                    lambda checked, t=tag: self._delete_row(t)
-                )
-                del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
-                self.table.setCellWidget(row, self.COL_DELETE, del_container)
         finally:
             self.table.setUpdatesEnabled(True)
 
@@ -1653,7 +1702,7 @@ class MonitorWindow(QMainWindow):
                 continue
             break
 
-        # Pin the session with remote info (no MR tracking yet — user starts it manually)
+        # Pin the session with remote info and auto-start MR tracking
         self._pinned_sessions[tag] = {
             'tag': tag,
             'remote_project_path': parsed.project_path,
@@ -1673,6 +1722,9 @@ class MonitorWindow(QMainWindow):
             [s for s in self.sessions if s.get('server_pid') is not None]
         )
         self._update_table()
+
+        # Auto-start MR tracking for rows added via "+"
+        self._start_tracking(tag)
 
     def _update_mr_column(self) -> None:
         """Update just the MR column widgets without rebuilding the whole table."""

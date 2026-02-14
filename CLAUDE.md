@@ -100,7 +100,7 @@ assets/
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI for session management |
 | `ContextEditorDialog` | `monitor/dialogs/scm_context_dialog.py` | Context preset editor dialog |
-| `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/checkout/start flow |
+| `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
 | `StatusLog` | `monitor/ui/status_log.py` | In-memory status message log + viewer dialog |
 | `SettingsDialog` | `monitor/dialogs/settings_dialog.py` | Settings: terminal, repos dir, cleanup unused repos |
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking |
@@ -348,8 +348,8 @@ Dock badge counts sum into a single number. Focusing the monitor window resets a
 Monitor rows persist across server/client lifecycle and monitor restarts via `pinned_sessions.json`. Key behaviors:
 
 - **Auto-pinning**: Every active session is automatically pinned on discovery
-- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue but preserves Project/Branch info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers the git sync flow (fetch, branch checkout)
-- **Delete column**: Each row has a delete (X) button that always prompts for confirmation. If processes are running, warns they will be closed
+- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue but preserves Project/Branch info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers force-align (fetch + hard reset to remote)
+- **Delete button**: Each row has a delete (X) button in the leftmost column (replacing row indices). Always prompts for confirmation. If processes are running, warns they will be closed
 - **`_deleted_tags` set**: Prevents auto-refresh from re-pinning rows that were just deleted
 
 ### Add Row from MR/PR URL
@@ -359,18 +359,18 @@ The "+" button adds a monitored row from a GitLab/GitHub MR URL:
 1. User pastes MR/PR URL → `parse_mr_url()` extracts SCM type, project path, MR number
 2. Fetches MR details via `get_mr_details()` (branch name, title)
 3. Asks user for a CQ session tag (validated by `is_valid_tag()`)
-4. Pins the row with remote MR info — no git operations, no auto MR tracking
-5. User can click "Track MR" to start MR tracking, or "Server" to start a CQ server
+4. Pins the row with remote MR info and auto-starts MR tracking
+5. MR column shows tracking status immediately, MR Branch shows the MR source branch
 
 Input validation loops: invalid tag or duplicate tag loops back to the input dialog instead of stopping the flow.
 
-### Branch Column
+### Column Layout
 
-The Branch column shows "what this row is about":
-- **MR-pinned rows**: Always shows the MR's source branch (from pinned data), both when alive and dead
-- **Auto-pinned rows**: Shows the live local branch (resolved via `get_git_branch()` each refresh)
+Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Queue]** | **[Client]** | **[MR, MR Branch]**. The Server and MR groups have a light grey background tint. The X column contains the delete button (no row indices).
 
-Auto-pinning updates the branch for auto-pinned rows each refresh, but preserves the MR branch for MR-pinned rows (so mismatch detection works).
+- **Server Branch**: Always shows the live git branch the server is running on. For dead rows, shows the last known branch.
+- **MR Branch**: Shows the MR's source branch when MR tracking is active. "N/A" otherwise.
+- **Track MR button**: Spans both MR and MR Branch columns when not tracked. When tracked, splits into separate MR status + MR Branch columns. Clicking the MR X button restores the spanning Track MR button.
 
 ### Branch Mismatch Warning
 
@@ -384,12 +384,11 @@ When clicking "Server" on an MR-pinned dead row:
 2. Looks in `repos_dir` (Settings, default `/tmp/claudeq-repos`) for the project
 3. Checks `repo-name`, `repo-name_1`, `repo-name_2`... — skips any dir with a running CQ server
 4. If no available dir exists → clones fresh with next numeric suffix
-5. If available dir found → fetches remote, checks if local is up-to-date
-6. If branch deleted on remote → opens CQ in project dir anyway
-7. If behind and clean → checks out + pulls. If behind and dirty → warns and stops
-8. Opens `cq '<tag>'` in the default terminal at the project directory
+5. If available dir found → **force-aligns** to remote: fetch + checkout + `git reset --hard origin/<branch>` + `git clean -fd`
+6. If branch deleted on remote → user prompted to open on stale state
+7. Opens `cq '<tag>'` in the default terminal at the project directory
 
-Even when the `project_path` is already known from a previous start, the git sync check (fetch + branch checkout) still runs to ensure the branch is correct.
+These are managed clones (not user workspaces), so local changes are always discarded in favour of the remote state.
 
 ### Tag Validation
 
@@ -402,9 +401,10 @@ When a CQ server starts (`cq <tag>`), it checks `.storage/pinned_sessions.json` 
 Validation checks (in order):
 1. **Repo match**: Parses `git remote.origin.url` and compares project path with pinned `remote_project_path`
 2. **Branch match**: Compares `git branch --show-current` with pinned `branch` (skipped if branch is empty or `N/A`)
-3. **Commits synced**: Runs `git fetch origin <branch>` then `git merge-base --is-ancestor` to verify local is not behind remote
+3. **Behind remote**: Runs `git fetch origin <branch>` then `git merge-base --is-ancestor` to verify local is not behind remote
+4. **Ahead / dirty warnings** (non-fatal): If local has commits ahead of remote or uncommitted changes, prints a yellow warning but allows startup
 
-If any check fails, the server prints a red error and exits. Network failures during fetch are tolerated (don't block startup).
+Checks 1-3 fail with a red error and exit. Check 4 is a non-fatal warning. Network failures during fetch are tolerated (don't block startup).
 
 Implemented in `ClaudeQServer._validate_pinned_session()` (`server/server.py`), called early in `__init__` before socket/PTY setup.
 

@@ -384,13 +384,56 @@ class ClaudeQServer:
                 )
                 if result.returncode != 0:
                     print(
-                        f"\033[91mError: Tag '{self.tag}': local branch "
-                        f"'{pinned_branch}' is behind the monitored remote. "
-                        f"Pull or rebase first.\033[0m"
+                        f"\033[91m✖ Tag '{self.tag}' is tracked by ClaudeQ Monitor "
+                        f"for branch '{pinned_branch}', but the local repo is "
+                        f"behind remote. Pull or rebase before starting.\033[0m"
                     )
                     sys.exit(1)
             except (subprocess.TimeoutExpired, OSError):
                 pass  # Can't verify — allow startup
+
+            # --- Yellow warnings for ahead / dirty state (non-fatal) ---
+            ahead_count = 0
+            has_uncommitted = False
+            try:
+                result = subprocess.run(
+                    ['git', 'rev-list', f'origin/{pinned_branch}..HEAD', '--count'],
+                    capture_output=True, text=True, timeout=5
+                )
+                ahead_count = int(result.stdout.strip()) if result.returncode == 0 else 0
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+
+            try:
+                result = subprocess.run(
+                    ['git', 'status', '--porcelain'],
+                    capture_output=True, text=True, timeout=5
+                )
+                has_uncommitted = result.returncode == 0 and bool(result.stdout.strip())
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+            if ahead_count > 0 and has_uncommitted:
+                suffix = (
+                    f"is {ahead_count} commit{'s' if ahead_count != 1 else ''} "
+                    f"ahead of remote with uncommitted changes"
+                )
+            elif ahead_count > 0:
+                suffix = (
+                    f"is {ahead_count} commit{'s' if ahead_count != 1 else ''} "
+                    f"ahead of remote"
+                )
+            elif has_uncommitted:
+                suffix = "has uncommitted changes"
+            else:
+                suffix = ''
+
+            if suffix:
+                print(
+                    f"\033[93m⚠ Tag '{self.tag}' is tracked by ClaudeQ Monitor "
+                    f"for branch '{pinned_branch}', but the local repo {suffix}. "
+                    f"Proceeding anyway.\033[0m"
+                )
 
     def _is_busy(self) -> bool:
         """
