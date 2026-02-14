@@ -60,9 +60,9 @@ class StatusLogDialog(QDialog):
             for entry in entries:
                 ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
                 msg = html.escape(entry.message)
-                # Color [Notification] prefix in cyan
+                # Color [Notification] prefix in light pink
                 if msg.startswith('[Notification]'):
-                    prefix = '<span style="color: cyan;">[Notification]</span>'
+                    prefix = '<span style="color: #FFB6C1;">[Notification]</span>'
                     msg = prefix + msg[len('[Notification]'):]
                 line = f'[{ts}] {msg}'
                 if entry.url:
