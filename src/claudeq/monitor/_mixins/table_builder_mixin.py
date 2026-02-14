@@ -160,7 +160,7 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_STATUS, status)
                     self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-                # MR column: "Track MR" (spans MR+MR Branch) → "Checking..." → tracked
+                # MR column: "Track MR" → "Checking..." → tracked
                 if tag in self._checking_tags:
                     if self.table.columnSpan(row, self.COL_MR) > 1:
                         self.table.setSpan(row, self.COL_MR, 1, 1)
@@ -168,7 +168,7 @@ class TableBuilderMixin(_Base):
                     checking_label.setText('Checking...')
                     checking_label.setStyleSheet('color: grey; font-style: italic;')
                     self._set_cell_widget(row, self.COL_MR, checking_label)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, '')
+                    self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
                 elif tag in self._tracked_tags:
                     # Remove span — MR and MR Branch are separate columns
                     if self.table.columnSpan(row, self.COL_MR) > 1:
@@ -253,8 +253,9 @@ class TableBuilderMixin(_Base):
                     if reused_approval:
                         approval_label.set_preserve_popup(False)
                 else:
-                    # Not tracked — span "Track MR" across both MR columns
-                    self.table.setSpan(row, self.COL_MR, 1, 2)
+                    # Not tracked — button in MR column only, MR Branch shows N/A
+                    if self.table.columnSpan(row, self.COL_MR) > 1:
+                        self.table.setSpan(row, self.COL_MR, 1, 1)
                     existing = self.table.cellWidget(row, self.COL_MR)
                     if isinstance(existing, QPushButton) \
                             and getattr(existing, '_cq_tag', None) == tag:
@@ -270,8 +271,8 @@ class TableBuilderMixin(_Base):
                         if is_dead:
                             track_btn.setEnabled(False)
                             track_btn.setToolTip('Start a server first to discover MR from branch')
-                        # Direct setCellWidget — button spans MR+MR Branch, no border
                         self.table.setCellWidget(row, self.COL_MR, track_btn)
+                    self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
 
                 client_pid = session.get('client_pid')
                 has_client = session.get('has_client', False)

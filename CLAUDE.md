@@ -410,7 +410,7 @@ Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Q
 
 - **Server Branch**: Always shows the live git branch the server is running on. For dead rows, shows the last known branch.
 - **MR Branch**: Shows the MR's source branch when MR tracking is active. "N/A" otherwise.
-- **Track MR button**: Spans both MR and MR Branch columns when not tracked. When tracked, splits into separate MR status + MR Branch columns. Clicking the MR X button restores the spanning Track MR button.
+- **Track MR button**: Shown in the MR column only when not tracked; MR Branch shows "N/A". When tracked, MR column shows status and MR Branch shows the source branch. Clicking the MR X button restores the Track MR button and N/A branch.
 
 ### Branch Mismatch Warning
 
