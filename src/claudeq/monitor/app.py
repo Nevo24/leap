@@ -182,6 +182,7 @@ class MonitorWindow(QMainWindow):
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
+        self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
         self._status_log = StatusLog()
         self._server_launcher = ServerLauncher(self)
 
@@ -448,12 +449,12 @@ class MonitorWindow(QMainWindow):
         self._update_scm_buttons()
 
     def _auto_track_mr_pinned(self) -> None:
-        """Auto-start MR tracking for all MR-pinned sessions on startup."""
+        """Auto-reconnect MR tracking for sessions that were tracked last time."""
         if not self._scm_providers:
             return
         for tag, pin in self._pinned_sessions.items():
-            if pin.get('remote_project_path') and tag not in self._tracked_tags:
-                self._start_tracking(tag)
+            if pin.get('mr_tracked') and tag not in self._tracked_tags:
+                self._start_tracking(tag, _silent=True)
 
     def _update_scm_buttons(self) -> None:
         """Update SCM button text/style based on connection state."""
@@ -531,6 +532,7 @@ class MonitorWindow(QMainWindow):
             self._mr_statuses.clear()
             self._tracked_tags.clear()
             self._pending_tracking_context.clear()
+            self._silent_tracking_tags.clear()
             self._init_scm_providers()
             self._show_status('GitLab connection updated')
 
@@ -544,6 +546,7 @@ class MonitorWindow(QMainWindow):
             self._mr_statuses.clear()
             self._tracked_tags.clear()
             self._pending_tracking_context.clear()
+            self._silent_tracking_tags.clear()
             self._init_scm_providers()
             self._show_status('GitHub connection updated')
 
@@ -1207,7 +1210,7 @@ class MonitorWindow(QMainWindow):
         finally:
             self.table.setUpdatesEnabled(True)
 
-    def _start_tracking(self, tag: str) -> None:
+    def _start_tracking(self, tag: str, _silent: bool = False) -> None:
         """Start MR tracking for a session via a background one-shot check."""
         # Find the session data for this tag
         session = next((s for s in self.sessions if s['tag'] == tag), None)
@@ -1216,6 +1219,9 @@ class MonitorWindow(QMainWindow):
 
         provider = self._get_provider_for_session(session)
         if not provider:
+            if _silent:
+                self._show_status(f"Auto-reconnect skipped for '{tag}': no matching SCM provider")
+                return
             if not self._scm_providers:
                 QMessageBox.information(
                     self, 'No SCM Connected',
@@ -1250,16 +1256,18 @@ class MonitorWindow(QMainWindow):
             # Resolve from local git repo
             project_path = session.get('project_path')
             if not project_path:
-                QMessageBox.information(
-                    self, 'No MR Found', 'No project path for this session.'
-                )
+                if not _silent:
+                    QMessageBox.information(
+                        self, 'No MR Found', 'No project path for this session.'
+                    )
                 return
 
             remote_info = get_git_remote_info(project_path)
             if not remote_info:
-                QMessageBox.information(
-                    self, 'No MR Found', 'Could not determine Git remote info.'
-                )
+                if not _silent:
+                    QMessageBox.information(
+                        self, 'No MR Found', 'Could not determine Git remote info.'
+                    )
                 return
             scm_project_path = remote_info.project_path
             scm_branch = remote_info.branch
@@ -1272,6 +1280,8 @@ class MonitorWindow(QMainWindow):
             }
 
         # Show "Checking..." while the API call runs in the background
+        if _silent:
+            self._silent_tracking_tags.add(tag)
         self._show_status(f"Checking MR for '{tag}'...")
         self._checking_tags.add(tag)
         self._set_busy(True)
@@ -1311,11 +1321,18 @@ class MonitorWindow(QMainWindow):
             self._show_status(f"Stopped MR tracking for '{tag}'")
         self._tracked_tags.discard(tag)
         self._checking_tags.discard(tag)
+        self._silent_tracking_tags.discard(tag)
         self._mr_statuses.pop(tag, None)
         self._mr_widgets.pop(tag, None)
         self._mr_approval_widgets.pop(tag, None)
         self._pending_tracking_context.pop(tag, None)
         self._dock_badge.discard_tag(tag)
+
+        # Persist tracking-off so auto-reconnect won't re-track on next startup
+        pin = self._pinned_sessions.get(tag)
+        if pin and pin.get('mr_tracked'):
+            pin['mr_tracked'] = False
+            save_pinned_sessions(self._pinned_sessions)
 
         # If server is dead, remove the row entirely
         session = next((s for s in self.sessions if s['tag'] == tag), None)
@@ -1348,14 +1365,25 @@ class MonitorWindow(QMainWindow):
         """Handle the result of a one-shot MR check."""
         self._set_busy(False)
         self._checking_tags.discard(tag)
+        silent = tag in self._silent_tracking_tags
+        self._silent_tracking_tags.discard(tag)
+
+        # Row was deleted while the check was in-flight — discard result
+        if tag in self._deleted_tags:
+            self._pending_tracking_context.pop(tag, None)
+            return
 
         if status.state == MRState.NO_MR:
             self._pending_tracking_context.pop(tag, None)
+            if silent:
+                self._show_status(f"Auto-reconnect: no open MR found for '{tag}'")
+                self._remove_dead_untracked_row(tag)
             self._update_table()
-            QMessageBox.information(
-                self, 'No MR Found',
-                'No open merge request found for this branch.'
-            )
+            if not silent:
+                QMessageBox.information(
+                    self, 'No MR Found',
+                    'No open merge request found for this branch.'
+                )
             return
 
         # MR found — promote to tracked and enrich pinned session
@@ -1369,9 +1397,16 @@ class MonitorWindow(QMainWindow):
                 'branch': ctx['branch'],
                 'mr_title': status.mr_title or '',
                 'mr_url': status.mr_url or '',
+                'mr_tracked': True,
             })
             self._pinned_sessions[tag] = pin
             save_pinned_sessions(self._pinned_sessions)
+        else:
+            # No context but MR found (e.g. auto-reconnect) — persist flag
+            pin = self._pinned_sessions.get(tag)
+            if pin and not pin.get('mr_tracked'):
+                pin['mr_tracked'] = True
+                save_pinned_sessions(self._pinned_sessions)
 
         self._show_status(f"MR found for '{tag}' — tracking started")
         self._tracked_tags.add(tag)
@@ -1386,10 +1421,19 @@ class MonitorWindow(QMainWindow):
         """Handle an error from a one-shot MR check."""
         self._set_busy(False)
         self._checking_tags.discard(tag)
+        silent = tag in self._silent_tracking_tags
+        self._silent_tracking_tags.discard(tag)
         self._pending_tracking_context.pop(tag, None)
+
+        # Row was deleted while the check was in-flight — discard error
+        if tag in self._deleted_tags:
+            return
+        if silent:
+            self._remove_dead_untracked_row(tag)
         self._update_table()
         self._show_status(f"MR tracking error for '{tag}': {message}")
-        QMessageBox.warning(self, 'Error', message)
+        if not silent:
+            QMessageBox.warning(self, 'Error', message)
 
     def _show_status(self, msg: str, timeout_ms: int = 5000) -> None:
         """Log a status message and update the inline log labels."""
@@ -1743,6 +1787,21 @@ class MonitorWindow(QMainWindow):
 
         self._deleted_tags.add(tag)
         self._remove_pinned_session(tag)
+
+    def _remove_dead_untracked_row(self, tag: str) -> None:
+        """Silently remove a dead row that has no active MR tracking.
+
+        Called during silent auto-reconnect when MR tracking fails and
+        no server is running — the row serves no purpose.
+        """
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session or session.get('server_pid') is not None:
+            return  # Server is running — keep the row
+        self._pinned_sessions.pop(tag, None)
+        save_pinned_sessions(self._pinned_sessions)
+        self._deleted_tags.add(tag)
+        self.sessions = [s for s in self.sessions if s['tag'] != tag]
+        self._show_status(f"Removed dead row '{tag}' (MR tracking failed, no server)")
 
     def _remove_pinned_session(self, tag: str) -> None:
         """Remove a pinned session and clean up all tracking state."""

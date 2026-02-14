@@ -349,7 +349,8 @@ Monitor rows persist across server/client lifecycle and monitor restarts via `pi
 
 - **Auto-pinning**: Every active session is automatically pinned on discovery
 - **Row survival rule**: A row must have a running server OR active MR tracking. Dead rows without MR tracking are auto-removed on the next refresh cycle
-- **Track MR enrichment**: When "Track MR" finds an MR on an auto-pinned row, the pinned session is enriched with `remote_project_path`, `host_url`, `scm_type`, `branch`, `mr_title`, `mr_url` — making the row survive server death
+- **Track MR enrichment**: When "Track MR" finds an MR on an auto-pinned row, the pinned session is enriched with `remote_project_path`, `host_url`, `scm_type`, `branch`, `mr_title`, `mr_url`, `mr_tracked` — making the row survive server death
+- **MR auto-reconnect on startup**: When the monitor restarts, it silently re-connects MR tracking for rows that had `mr_tracked: True` when the monitor last ran. Popups are suppressed. If reconnection fails (no MR found or API error) and no server is running, the row is silently removed
 - **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue/Server Branch but preserves Project info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers force-align (fetch + hard reset to remote). Track MR button is disabled on dead rows
 - **Close server prompt**: If a session has no MR tracking, closing the server warns the user the row will be removed and offers to close the client too
 - **Stop MR tracking prompt**: If the server is dead, stopping MR tracking warns the user the row will be removed and offers to close the client too
