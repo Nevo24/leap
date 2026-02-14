@@ -50,13 +50,21 @@ src/
     │   └── image_handler.py     # Clipboard image handling
     │
     ├── monitor/                 # GUI Monitor (PyQt5)
-    │   ├── app.py               # MonitorWindow
+    │   ├── app.py               # MonitorWindow (core window + UI init + lifecycle)
     │   ├── server_launcher.py   # MR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
     │   ├── cq_sender.py         # Socket sender for /cq commands
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
+    │   │
+    │   ├── _mixins/             # MonitorWindow mixin classes
+    │   │   ├── scm_config_mixin.py    # SCM provider init, setup dialogs, toggles
+    │   │   ├── session_mixin.py       # Session merge, navigate, close, delete
+    │   │   ├── mr_tracking_mixin.py   # MR tracking, polling, thread send, add-row
+    │   │   ├── mr_display_mixin.py    # MR column styling, dock badge, banners
+    │   │   ├── notifications_mixin.py # User notification handling
+    │   │   └── table_builder_mixin.py # Table build, refresh, settings
     │   │
     │   ├── dialogs/             # Dialog windows
     │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, cleanup)
@@ -69,7 +77,8 @@ src/
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
     │   │   ├── dock_badge.py    # Dock icon badge overlay + notification event detection
-    │   │   └── status_log.py    # Status log history (in-memory + dialog)
+    │   │   ├── status_log.py    # Status log history (in-memory + dialog)
+    │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides)
     │   │
     │   ├── mr_tracking/         # MR tracking subsystem
     │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus, MRDetails
@@ -98,7 +107,13 @@ assets/
 | `ClaudeQServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
 | `ClaudeQClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
-| `MonitorWindow` | `monitor/app.py` | PyQt5 GUI for session management |
+| `MonitorWindow` | `monitor/app.py` | PyQt5 GUI core window (uses mixins for methods) |
+| `SCMConfigMixin` | `monitor/_mixins/scm_config_mixin.py` | SCM provider init, setup dialogs, toggles |
+| `SessionMixin` | `monitor/_mixins/session_mixin.py` | Session merge, navigate, close, delete |
+| `MRTrackingMixin` | `monitor/_mixins/mr_tracking_mixin.py` | MR tracking, polling, thread send, add-row |
+| `MRDisplayMixin` | `monitor/_mixins/mr_display_mixin.py` | MR column styling, dock badge, banners |
+| `NotificationsMixin` | `monitor/_mixins/notifications_mixin.py` | User notification handling |
+| `TableBuilderMixin` | `monitor/_mixins/table_builder_mixin.py` | Table build, refresh, settings |
 | `ContextEditorDialog` | `monitor/dialogs/scm_context_dialog.py` | Context preset editor dialog |
 | `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
 | `StatusLog` | `monitor/ui/status_log.py` | In-memory status message log + viewer dialog |
