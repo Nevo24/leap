@@ -143,14 +143,17 @@ class NotificationsMixin(_Base):
                 if ev:
                     all_events.append(ev)
 
-            # Update seen set (prunes disappeared IDs naturally)
-            self._notification_seen[scm_type] = current_ids
+            # Merge current IDs into seen set (never prune — once seen, always seen)
+            self._notification_seen[scm_type] = seen_ids | current_ids
 
-        # Prune seen sets for SCM types that returned zero notifications
-        # (e.g., user marked all todos as done on the web)
-        for seeded_type in list(self._notification_seeded):
-            if seeded_type not in by_type:
-                self._notification_seen[seeded_type] = set()
+        # Cap seen sets to prevent unbounded growth (keep most recent 500)
+        _MAX_SEEN = 500
+        for scm_type in list(self._notification_seen):
+            seen = self._notification_seen[scm_type]
+            if len(seen) > _MAX_SEEN:
+                # Keep only IDs that are still current (active on the server)
+                current = {n.id for n in notifications if n.scm_type == scm_type}
+                self._notification_seen[scm_type] = current
 
         # Persist seen IDs
         serializable = {k: list(v) for k, v in self._notification_seen.items()}
