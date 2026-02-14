@@ -1055,6 +1055,8 @@ class MonitorWindow(QMainWindow):
                     )
                     mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
 
+                    mr_layout.addStretch()
+
                     approval_label = IndicatorLabel()
                     self._mr_approval_widgets[tag] = approval_label
                     mr_layout.addWidget(approval_label)
@@ -1084,6 +1086,8 @@ class MonitorWindow(QMainWindow):
                         self._prefs.get('auto_fetch_cq', True)
                     )
                     mr_layout.addWidget(mr_widget)
+
+                    mr_layout.addStretch()
 
                     self._set_cell_widget(row, self.COL_MR, mr_container)
                     # MR Branch shows the MR source branch
