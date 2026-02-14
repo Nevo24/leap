@@ -144,6 +144,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Socket | `.storage/sockets/<tag>.sock` |
 | Metadata | `.storage/sockets/<tag>.meta` |
 | Client lock | `.storage/sockets/<tag>.client.lock` |
+| Server lock | `.storage/sockets/<tag>.server.lock/` (directory) |
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` |
 | Notification seen state | `.storage/notification_seen.json` |
@@ -160,8 +161,8 @@ ClaudeQ has multiple cleanup mechanisms. This table shows **exactly** which func
 | `ClaudeQClient._cleanup_lock()` | `client/client.py:103` | `.client.lock` | | | | ✅ | | | |
 | `ClaudeQClient._cleanup_temp_images()` | `client/client.py:117` | `/tmp/*.png` (temp images) | | | | ✅ | | | |
 | `ClaudeQServer._cleanup_old_history_files()` | `server/server.py:262` | `.history` (older than TTL) | ✅ | | | | | | |
-| `cleanup_dead_sockets()` | `claudeq-main.sh:148` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead) | ✅ (background) | | | | | | |
-| `cq-cleanup` script | `claudeq-cleanup.sh` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead) | | | | | ✅ | | |
+| `cleanup_dead_sockets()` | `claudeq-main.sh:148` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead)<br>`.server.lock/` (dead) | ✅ (background) | | | | | | |
+| `cq-cleanup` script | `claudeq-cleanup.sh` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead)<br>`.server.lock/` (dead) | | | | | ✅ | | |
 
 **Legend:**
 - ✅ = Cleanup runs at this event
@@ -177,6 +178,7 @@ ClaudeQ has multiple cleanup mechanisms. This table shows **exactly** which func
 | `.queue` | First message queued | Server exit (if empty), dead session cleanup, user discard | Until empty or discarded |
 | `.history` | First user input | History TTL cleanup on server startup | Deleted after `history_ttl_days` (default: 3) |
 | `.client.lock` | Client connects | Client exit, dead session cleanup | Temporary |
+| `.server.lock/` | Server starting (shell) | Shell trap on exit, dead session cleanup | Temporary |
 | `/tmp/*.png` | Ctrl+V image paste | Client exit | Temporary |
 
 ### Settings Configuration

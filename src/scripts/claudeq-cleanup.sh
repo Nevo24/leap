@@ -33,6 +33,7 @@ if [ -d "$SOCKET_DIR" ]; then
         rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
         rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
         rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
+        rmdir "$SOCKET_DIR/$tag.server.lock" 2>/dev/null
         ((removed_count++))
     done
 fi

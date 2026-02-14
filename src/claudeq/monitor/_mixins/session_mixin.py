@@ -325,6 +325,10 @@ class SessionMixin(_Base):
 
     def _start_server(self, tag: str) -> None:
         """Start a new server for a pinned (dead) row."""
+        if tag in self._starting_tags:
+            return  # Already launching — ignore duplicate click
+        self._starting_tags.add(tag)
+        self._update_table()  # Immediately show disabled "Starting..." button
         self._server_launcher.start_server(tag)
 
     def _delete_row(self, tag: str) -> None:

@@ -154,6 +154,7 @@ cleanup_dead_sockets() {
                 rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
                 rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
                 rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
+                rmdir "$SOCKET_DIR/$tag.server.lock" 2>/dev/null
             fi
         done
     fi
@@ -217,7 +218,33 @@ if [ $# -gt 0 ]; then
     exit 1
 fi
 
-# No arguments and no server - start server
+# No arguments and no server - acquire exclusive lock before starting server.
+# This prevents a race condition where two terminals start a server for the
+# same tag simultaneously (e.g., double-clicking Server in the monitor).
+# Uses mkdir which is atomic on all filesystems (works on macOS without flock).
+LOCK_DIR="$SOCKET_DIR/${TAG}.server.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    # Another process is already starting a server for this tag.
+    # Wait briefly for the socket to appear, then connect as client.
+    echo "⏳ Another server is starting for '$TAG', waiting..." >&2
+    for i in $(seq 1 20); do
+        sleep 0.5
+        if [ -S "$SOCKET_PATH" ] && test_socket_alive; then
+            echo "✓ Server is now running - launching client" >&2
+            echo -ne "\033]0;cq-client ${TAG}\007"
+            exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "$@"
+        fi
+    done
+    echo "❌ Timed out waiting for server '$TAG'" >&2
+    # Clean up stale lock in case the first process died
+    rmdir "$LOCK_DIR" 2>/dev/null
+    exit 1
+fi
+# Lock acquired — we own server startup for this tag.
+# Clean up the lock directory on exit (normal exit, SIGTERM, SIGINT).
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+
+# Start server
 # Set terminal tab name
 echo -ne "\033]0;cq-server ${TAG}\007"
 exec "$PYTHON_CMD" "$SERVER_SCRIPT" "$TAG" "${FLAGS[@]}"

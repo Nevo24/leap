@@ -95,6 +95,7 @@ class MonitorWindow(
         self._prefs = load_monitor_prefs()
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
+        self._starting_tags: set[str] = set()  # guard against double-click server start
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
         self._status_log = StatusLog()

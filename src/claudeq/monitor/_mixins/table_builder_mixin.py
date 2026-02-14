@@ -111,6 +111,11 @@ class TableBuilderMixin(_Base):
 
             self.table.setRowCount(new_count)
 
+            # Clear starting guard for tags whose server is now running
+            if self._starting_tags:
+                alive = {s['tag'] for s in self.sessions if s.get('server_pid')}
+                self._starting_tags -= alive
+
             for row, session in enumerate(self.sessions):
                 tag = session['tag']
                 server_pid = session.get('server_pid')
@@ -298,8 +303,14 @@ class TableBuilderMixin(_Base):
                     server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
 
                 if is_dead:
-                    server_btn = QPushButton('Server')
-                    server_btn.setToolTip(f'Start server for {tag}')
+                    starting = tag in self._starting_tags
+                    server_btn = QPushButton('Starting...' if starting else 'Server')
+                    server_btn.setToolTip(
+                        f'Server is starting for {tag}...' if starting
+                        else f'Start server for {tag}'
+                    )
+                    if starting:
+                        server_btn.setEnabled(False)
                     server_btn.clicked.connect(
                         lambda checked, t=tag: self._start_server(t)
                     )
