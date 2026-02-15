@@ -51,16 +51,39 @@ class TooltipApp(QApplication):
 
     def notify(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.ToolTip:
-            if not self.tooltips_enabled:
-                return True  # Suppress
             widget = obj if isinstance(obj, QWidget) else None
-            if widget and widget.toolTip():
-                from PyQt5.QtWidgets import QToolTip as _QToolTip
-                _QToolTip.showText(
-                    event.globalPos(), widget.toolTip(), widget,
-                    widget.rect(), 2_147_483_647,
-                )
-                return True
+            if widget:
+                # Always show cell tooltips in table views (truncated text)
+                from PyQt5.QtWidgets import QAbstractItemView
+                parent = widget.parent()
+                if isinstance(parent, QAbstractItemView):
+                    index = parent.indexAt(event.pos())
+                    if index.isValid():
+                        display = index.data(Qt.DisplayRole)
+                        if display:
+                            fm = widget.fontMetrics()
+                            text_w = fm.horizontalAdvance(str(display))
+                            cell_w = parent.visualRect(index).width()
+                            if text_w > cell_w - 8:
+                                tip = index.data(Qt.ToolTipRole)
+                                if tip:
+                                    from PyQt5.QtWidgets import QToolTip as _QToolTip
+                                    _QToolTip.showText(
+                                        event.globalPos(), tip, widget,
+                                        parent.visualRect(index),
+                                        2_147_483_647,
+                                    )
+                    return True
+
+                if not self.tooltips_enabled:
+                    return True  # Suppress
+                if widget.toolTip():
+                    from PyQt5.QtWidgets import QToolTip as _QToolTip
+                    _QToolTip.showText(
+                        event.globalPos(), widget.toolTip(), widget,
+                        widget.rect(), 2_147_483_647,
+                    )
+                    return True
         return super().notify(obj, event)
 
 

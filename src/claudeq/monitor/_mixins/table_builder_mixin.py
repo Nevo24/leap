@@ -60,12 +60,14 @@ class TableBuilderMixin(_Base):
         center = col in self._CENTER_COLS or text == 'N/A'
         if item is None:
             item = QTableWidgetItem(text)
+            item.setToolTip(text)
             if center:
                 item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, col, item)
         else:
             if item.text() != text:
                 item.setText(text)
+                item.setToolTip(text)
             alignment = Qt.AlignCenter if center else int(Qt.AlignLeft | Qt.AlignVCenter)
             if item.textAlignment() != alignment:
                 item.setTextAlignment(alignment)
