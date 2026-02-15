@@ -16,6 +16,9 @@ from claudeq.monitor.mr_tracking.config import (
 )
 
 
+MAX_CONTEXT_NAME_LEN = 70
+
+
 class ContextEditorDialog(QDialog):
     """Dialog to edit CQ context text with named presets."""
 
@@ -131,6 +134,13 @@ class ContextEditorDialog(QDialog):
                 return
             name = name.strip()
             prev_name = name
+            if len(name) > MAX_CONTEXT_NAME_LEN:
+                QMessageBox.warning(
+                    self, 'Name Too Long',
+                    f'Context name must be {MAX_CONTEXT_NAME_LEN} characters or fewer '
+                    f'(currently {len(name)}).',
+                )
+                continue
             existing = load_saved_contexts()
             if name in existing:
                 reply = QMessageBox.question(
@@ -159,6 +169,13 @@ class ContextEditorDialog(QDialog):
                 return
             name = name.strip()
             prev_name = name
+            if len(name) > MAX_CONTEXT_NAME_LEN:
+                QMessageBox.warning(
+                    self, 'Name Too Long',
+                    f'Context name must be {MAX_CONTEXT_NAME_LEN} characters or fewer '
+                    f'(currently {len(name)}).',
+                )
+                continue
             existing = load_saved_contexts()
             if name in existing:
                 reply = QMessageBox.question(

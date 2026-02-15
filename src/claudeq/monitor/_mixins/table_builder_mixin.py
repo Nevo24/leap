@@ -13,7 +13,8 @@ from PyQt5.QtCore import Qt
 
 from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
-    get_notification_prefs, save_monitor_prefs,
+    get_notification_prefs, load_saved_contexts, load_selected_context_name,
+    save_monitor_prefs, save_selected_context_name,
 )
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.monitor.scm_polling import SessionRefreshWorker
@@ -543,6 +544,28 @@ class TableBuilderMixin(_Base):
 
         dialog = ContextEditorDialog(self)
         dialog.exec_()
+        self._populate_context_combo()
+
+    def _populate_context_combo(self) -> None:
+        """Reload context combo items from saved presets and selection."""
+        combo = self.context_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem('(None)')
+        for name in sorted(load_saved_contexts().keys()):
+            combo.addItem(name)
+        selected = load_selected_context_name()
+        idx = combo.findText(selected) if selected else 0
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _on_context_combo_changed(self) -> None:
+        """Handle context combo selection change."""
+        text = self.context_combo.currentText()
+        if text == '(None)':
+            save_selected_context_name('')
+        else:
+            save_selected_context_name(text)
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""

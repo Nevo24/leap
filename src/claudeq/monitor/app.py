@@ -12,9 +12,9 @@ import time
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QTableWidget, QTableWidgetItem, QPushButton, QCheckBox, QHeaderView,
-    QMessageBox, QProgressBar,
+    QApplication, QComboBox, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QTableWidget, QTableWidgetItem, QPushButton, QCheckBox,
+    QHeaderView, QMessageBox, QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent
@@ -22,7 +22,8 @@ from PyQt5.QtGui import QIcon, QCloseEvent
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
     load_monitor_prefs, load_notification_seen, load_pinned_sessions,
-    save_monitor_prefs,
+    load_saved_contexts, load_selected_context_name, save_monitor_prefs,
+    save_selected_context_name,
 )
 from claudeq.monitor.scm_polling import (
     CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
@@ -212,16 +213,23 @@ class MonitorWindow(
         settings_btn.clicked.connect(self._open_settings)
         top_layout.addWidget(settings_btn)
 
-        context_btn = QPushButton('Context')
-        context_btn.setToolTip('Edit context text attached to CQ messages')
-        context_btn.clicked.connect(self._open_context_editor)
-        top_layout.addWidget(context_btn)
+        ctx_label = QLabel('Context:')
+        top_layout.addWidget(ctx_label)
 
-        add_btn = QPushButton('+')
-        add_btn.setFixedWidth(30)
-        add_btn.setToolTip('Add session from MR/PR URL')
-        add_btn.clicked.connect(self._add_row)
-        top_layout.addWidget(add_btn)
+        self.context_combo = QComboBox()
+        self.context_combo.setMinimumWidth(180)
+        self.context_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.context_combo.setToolTip('Active context preset attached to CQ messages')
+        self._populate_context_combo()
+        self.context_combo.currentIndexChanged.connect(
+            self._on_context_combo_changed)
+        top_layout.addWidget(self.context_combo)
+
+        context_edit_label = QLabel('\U0001f4dd')
+        context_edit_label.setToolTip('Edit context presets')
+        context_edit_label.setCursor(Qt.PointingHandCursor)
+        context_edit_label.mousePressEvent = lambda _: self._open_context_editor()
+        top_layout.addWidget(context_edit_label)
 
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Size')
@@ -229,6 +237,15 @@ class MonitorWindow(
         reset_cols_btn.clicked.connect(self._reset_window_size)
         top_layout.addWidget(reset_cols_btn)
         layout.addLayout(top_layout)
+
+        add_row_layout = QHBoxLayout()
+        add_btn = QPushButton('+')
+        add_btn.setFixedWidth(30)
+        add_btn.setToolTip('Add session from MR/PR URL')
+        add_btn.clicked.connect(self._add_row)
+        add_row_layout.addWidget(add_btn)
+        add_row_layout.addStretch()
+        layout.addLayout(add_row_layout)
 
         layout.addWidget(self.table)
 
