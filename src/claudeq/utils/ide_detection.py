@@ -15,30 +15,39 @@ def detect_ide() -> str:
     """
     Detect which IDE/terminal the application is running in.
 
+    Checks TERM_PROGRAM first (set by the actual terminal emulator)
+    before TERMINAL_EMULATOR (which can leak across sessions from
+    JetBrains IDEs).
+
     Returns:
         Name of the detected IDE ('PyCharm', 'VS Code', 'iTerm2', etc.)
         or 'Unknown' if not detected.
     """
+    term_program = os.environ.get('TERM_PROGRAM', '')
     terminal_emulator = os.environ.get('TERMINAL_EMULATOR', '')
 
-    # Check for JetBrains IDE
+    # Check TERM_PROGRAM first — it's set by the real terminal emulator
+    # and is more reliable than TERMINAL_EMULATOR which can leak.
+    if term_program == 'vscode':
+        return 'VS Code'
+
+    if term_program == 'iTerm.app':
+        return 'iTerm2'
+
+    if term_program == 'Apple_Terminal':
+        return 'Terminal.app'
+
+    # Check for JetBrains IDE (only if TERM_PROGRAM didn't identify
+    # a known terminal — avoids false positives from leaked env vars)
     if 'JetBrains' in terminal_emulator or 'jetbrains' in terminal_emulator.lower():
         ide = _detect_jetbrains_ide()
         if ide:
             return ide
         return 'JetBrains IDE'
 
-    # Check for VS Code
-    if 'vscode' in terminal_emulator.lower() or os.environ.get('TERM_PROGRAM') == 'vscode':
+    # VS Code also sets TERMINAL_EMULATOR in some configurations
+    if 'vscode' in terminal_emulator.lower():
         return 'VS Code'
-
-    # Check for iTerm2
-    if os.environ.get('TERM_PROGRAM') == 'iTerm.app':
-        return 'iTerm2'
-
-    # Check for Terminal.app
-    if os.environ.get('TERM_PROGRAM') == 'Apple_Terminal':
-        return 'Terminal.app'
 
     return 'Unknown'
 

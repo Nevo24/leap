@@ -436,6 +436,10 @@ class MonitorWindow(
 
 def main() -> None:
     """Main entry point for ClaudeQ Monitor."""
+    log_level = os.environ.get('CQ_LOG_LEVEL', 'WARNING').upper()
+    logging.basicConfig(level=getattr(logging, log_level, logging.WARNING),
+                        format='%(asctime)s %(name)s %(levelname)s %(message)s')
+
     app = TooltipApp(sys.argv)
     app.setApplicationName('ClaudeQ Monitor')
     app.setStyle(PersistentTooltipStyle(app.style()))

@@ -5,6 +5,7 @@ Handles navigating to terminal tabs in various IDEs.
 """
 
 import glob
+import logging
 import os
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _escape_groovy(s: str) -> str:
@@ -38,6 +41,9 @@ def open_terminal_with_command(
     Returns:
         True if a new terminal was opened successfully.
     """
+    logger.debug("open_terminal_with_command: preferred_ide=%r, project_path=%r, command=%r",
+                 preferred_ide, project_path, command)
+
     if preferred_ide:
         # Try the specific IDE first. If it fails, fall through to generic
         # fallback so that a terminal always opens somewhere.
@@ -46,17 +52,24 @@ def open_terminal_with_command(
         if any(ide in preferred_ide for ide in jetbrains_ides):
             if _open_jetbrains_terminal(preferred_ide, project_path, command):
                 return True
+            logger.debug("JetBrains open failed, falling through")
         elif 'VS Code' in preferred_ide:
             if _open_vscode_terminal(project_path, command):
                 return True
+            logger.debug("VS Code open failed, falling through")
         elif preferred_ide == 'iTerm2':
             if _open_iterm2_terminal(command):
                 return True
+            logger.debug("iTerm2 open failed, falling through")
         elif preferred_ide == 'Terminal.app':
             if _open_terminal_app_terminal(command):
                 return True
+            logger.debug("Terminal.app open failed, falling through")
+        else:
+            logger.debug("preferred_ide=%r did not match any known IDE", preferred_ide)
 
     # Preferred IDE failed or unknown — try Terminal.app then iTerm2
+    logger.debug("Trying generic fallback: Terminal.app then iTerm2")
     if _open_terminal_app_terminal(command):
         return True
     return _open_iterm2_terminal(command)
@@ -703,12 +716,15 @@ def _open_iterm2_terminal(command: str) -> bool:
             text=True,
             timeout=10
         )
+        logger.debug("iTerm2 tab script: rc=%d stdout=%r stderr=%r",
+                     result.returncode, result.stdout.strip(), result.stderr.strip())
         if result.returncode == 0:
             return True
-    except (subprocess.SubprocessError, OSError):
-        pass
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("iTerm2 tab script exception: %s", e)
 
     # Fallback: create a new window (handles case where no windows exist)
+    logger.debug("iTerm2 tab failed, trying new window")
     window_script = f'''
     tell application "iTerm"
         create window with default profile
@@ -727,9 +743,11 @@ def _open_iterm2_terminal(command: str) -> bool:
             text=True,
             timeout=10
         )
+        logger.debug("iTerm2 window script: rc=%d stdout=%r stderr=%r",
+                     result.returncode, result.stdout.strip(), result.stderr.strip())
         return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        pass
+    except (subprocess.SubprocessError, OSError) as e:
+        logger.debug("iTerm2 window script exception: %s", e)
 
     return False
 
