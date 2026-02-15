@@ -68,8 +68,9 @@ class MRTrackingMixin(_Base):
         # Resolve project path and branch for the SCM query.
         # MR-pinned rows have remote_project_path/branch stored directly;
         # active sessions resolve from the local git remote.
+        # Prefer mr_branch (pinned MR branch) over the live branch.
         remote_project = session.get('remote_project_path')
-        branch = session.get('branch')
+        branch = session.get('mr_branch') or session.get('branch')
 
         if remote_project and branch and branch != 'N/A':
             # Use pinned MR data directly (no local repo needed)

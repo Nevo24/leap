@@ -159,7 +159,10 @@ class SCMPollerWorker(QThread):
         # active sessions resolve from the local git remote.
         remote_project = session.get('remote_project_path')
         scm_type_str = session.get('scm_type')
-        branch = session.get('branch')
+        # Prefer the pinned MR branch over the live branch so polling
+        # keeps tracking the correct MR even when the user switches
+        # branches locally.
+        branch = session.get('mr_branch') or session.get('branch')
 
         if remote_project and scm_type_str and branch and branch != 'N/A':
             # Use pinned MR data directly

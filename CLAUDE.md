@@ -414,9 +414,14 @@ Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Q
 - **MR Branch**: Shows the MR's source branch when MR tracking is active. "N/A" otherwise.
 - **Track MR button**: Shown in the MR column only when not tracked; MR Branch shows "N/A". When tracked, MR column shows status and MR Branch shows the source branch. Clicking the MR X button restores the Track MR button and N/A branch.
 
-### Branch Mismatch Warning
+### Branch Mismatch & Validation
 
-When a running CQ server's local branch differs from the MR's expected branch, the Server button shows `⚠ Server` in orange with a tooltip: "Branch mismatch: expected 'feature-x', got 'master'". This can happen when the user switches branches from another terminal. Only applies to MR-pinned rows.
+Two scenarios can cause branch-related issues on MR-pinned rows:
+
+1. **Branch changes while server is running** — user switches branch in another terminal, an IDE auto-checks out, or local falls behind remote. The monitor detects this on each table refresh and shows `⚠ Server` in orange with a tooltip: "Branch mismatch: expected 'feature-x', got 'master'". This is a visual warning only; the server keeps running.
+2. **MR merged and branch deleted on remote** — detected when starting/syncing a dead MR row via `server_launcher.py`. The user is prompted: "Branch was deleted on remote (MR merged?). Open on stale local state?"
+
+Other mismatches (wrong directory, wrong repo, wrong branch at startup) are **blocked before the server starts** by `_validate_pinned_session()` in `server.py` — see "Server Startup Validation" below.
 
 ### Server Start from MR Row
 

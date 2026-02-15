@@ -87,6 +87,10 @@ class SessionMixin(_Base):
                 for key in ('remote_project_path', 'host_url', 'scm_type'):
                     if pin.get(key) and not session.get(key):
                         session[key] = pin[key]
+                # For MR-pinned rows, store the MR branch so the poller uses
+                # it instead of the live branch (which may have drifted).
+                if pin.get('remote_project_path') and pin.get('branch'):
+                    session['mr_branch'] = pin['branch']
                 merged.append(session)
             elif not (pin.get('remote_project_path')
                       or tag in self._tracked_tags
@@ -103,12 +107,14 @@ class SessionMixin(_Base):
                     project_name = pin['remote_project_path'].rsplit('/', 1)[-1]
                 else:
                     project_name = pin.get('project_path', '').rsplit('/', 1)[-1] or 'N/A'
+                pinned_branch = pin.get('branch') or 'N/A'
                 merged.append({
                     'tag': tag,
                     'claude_busy': False,
                     'queue_size': 0,
                     'project': project_name,
-                    'branch': pin.get('branch') or 'N/A',
+                    'branch': pinned_branch,
+                    'mr_branch': pinned_branch if pin.get('remote_project_path') else None,
                     'project_path': pin.get('project_path') or None,
                     'ide': pin.get('ide') or None,
                     'server_pid': None,
