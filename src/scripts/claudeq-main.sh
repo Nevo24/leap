@@ -140,6 +140,9 @@ SOCKET_PATH="$SOCKET_DIR/${TAG}.sock"
 SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
 CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
 
+# Ensure storage subdirectories exist (may be missing on first run after install)
+mkdir -p "$SOCKET_DIR" "$QUEUE_DIR"
+
 # Auto-cleanup dead sockets and orphaned locks (silent, runs in background)
 cleanup_dead_sockets() {
     if [ -d "$SOCKET_DIR" ]; then
