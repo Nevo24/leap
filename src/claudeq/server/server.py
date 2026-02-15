@@ -346,6 +346,7 @@ class ClaudeQServer:
                 f"\033[91mError: Tag '{self.tag}' is monitored for repo "
                 f"'{pinned_project}', but current directory is {local_desc}.\033[0m"
             )
+            self._release_startup_lock()
             sys.exit(1)
 
         # --- Branch match ---
@@ -365,6 +366,7 @@ class ClaudeQServer:
                     f"'{pinned_branch}', but current branch is "
                     f"'{local_branch or '(unknown)'}'.\033[0m"
                 )
+                self._release_startup_lock()
                 sys.exit(1)
 
             # --- Commits synced ---
@@ -388,6 +390,7 @@ class ClaudeQServer:
                         f"for branch '{pinned_branch}', but the local repo is "
                         f"behind remote. Pull or rebase before starting.\033[0m"
                     )
+                    self._release_startup_lock()
                     sys.exit(1)
             except (subprocess.TimeoutExpired, OSError):
                 pass  # Can't verify — allow startup
