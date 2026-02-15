@@ -132,6 +132,30 @@ update:
 		echo "After installation, you can use 'make update' to update to newer versions."; \
 		exit 1; \
 	fi
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "$(YELLOW)⚠ You have uncommitted local changes:$(NC)"; \
+		git status --short; \
+		echo ""; \
+		echo "Please commit or stash your changes before updating."; \
+		exit 1; \
+	fi
+	@UPSTREAM=$$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null); \
+	if [ -n "$$UPSTREAM" ]; then \
+		LOCAL=$$(git rev-parse HEAD); \
+		REMOTE=$$(git rev-parse "$$UPSTREAM" 2>/dev/null); \
+		BASE=$$(git merge-base HEAD "$$UPSTREAM" 2>/dev/null); \
+		if [ "$$LOCAL" != "$$REMOTE" ] && [ "$$REMOTE" = "$$BASE" ]; then \
+			echo "$(YELLOW)⚠ You have local commits that haven't been pushed:$(NC)"; \
+			git log --oneline "$$UPSTREAM"..HEAD; \
+			echo ""; \
+			read -p "  Continue updating anyway? Your commits may conflict. (y/N) " -n 1 -r REPLY; \
+			echo; \
+			if [ "$$REPLY" != "y" ] && [ "$$REPLY" != "Y" ]; then \
+				echo "Update cancelled. Push your changes first, then retry."; \
+				exit 1; \
+			fi; \
+		fi; \
+	fi
 	@echo "$(PROMPT_PREFIX) Pulling latest code from git..."
 	@git pull || (echo "$(YELLOW)⚠ Git pull failed. Please resolve conflicts and try again.$(NC)" && exit 1)
 	@echo "$(GREEN)✓ Code updated$(NC)"
