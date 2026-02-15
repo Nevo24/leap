@@ -6,6 +6,7 @@ Orchestrates PTY handling, socket server, and queue management.
 
 import atexit
 import json
+import os
 import re
 import shutil
 import signal
@@ -523,6 +524,27 @@ class ClaudeQServer:
                 pass
             time.sleep(TITLE_RESET_INTERVAL)
 
+    def _stdin_watchdog_loop(self) -> None:
+        """Background thread to detect when the terminal is closed.
+
+        pexpect.spawn() creates a new PTY session, so the server may
+        not receive SIGHUP when the original terminal tab is closed.
+        Poll the original terminal fd to detect the loss and trigger
+        a clean shutdown.
+        """
+        try:
+            stdin_fd = sys.stdin.fileno()
+        except (AttributeError, ValueError):
+            return  # Not a real fd — nothing to watch
+        while self.running:
+            time.sleep(2)
+            try:
+                # tcgetpgrp raises OSError/EIO when the terminal is gone
+                os.tcgetpgrp(stdin_fd)
+            except OSError:
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
     def _handle_resize(self, sig: int, frame: Any) -> None:
         """Handle terminal resize signal."""
         try:
@@ -589,6 +611,7 @@ class ClaudeQServer:
         self.socket_handler.start()
         threading.Thread(target=self._auto_sender_loop, daemon=True).start()
         threading.Thread(target=self._title_keeper_loop, daemon=True).start()
+        threading.Thread(target=self._stdin_watchdog_loop, daemon=True).start()
 
         # Wait for the socket to be bound before releasing the startup lock,
         # so concurrent `cq <tag>` invocations see the socket and connect as

@@ -140,7 +140,7 @@ SOCKET_PATH="$SOCKET_DIR/${TAG}.sock"
 SERVER_SCRIPT="$SCRIPT_DIR/claudeq-server.py"
 CLIENT_SCRIPT="$SCRIPT_DIR/claudeq-client.py"
 
-# Auto-cleanup dead sockets (silent, runs in background)
+# Auto-cleanup dead sockets and orphaned locks (silent, runs in background)
 cleanup_dead_sockets() {
     if [ -d "$SOCKET_DIR" ]; then
         for sock in "$SOCKET_DIR"/*.sock; do
@@ -156,6 +156,29 @@ cleanup_dead_sockets() {
                 rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
                 rmdir "$SOCKET_DIR/$tag.server.lock" 2>/dev/null
             fi
+        done
+
+        # Orphaned .client.lock files whose socket is already gone
+        for lock in "$SOCKET_DIR"/*.client.lock; do
+            [ -e "$lock" ] || continue
+            local tag=$(basename "$lock" .client.lock)
+            [ -S "$SOCKET_DIR/$tag.sock" ] && continue
+            local pid=$(cat "$lock" 2>/dev/null)
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                continue
+            fi
+            rm -f "$lock" 2>/dev/null
+        done
+
+        # Orphaned .server.lock dirs whose socket is gone and no process running
+        for lock_dir in "$SOCKET_DIR"/*.server.lock; do
+            [ -d "$lock_dir" ] || continue
+            local tag=$(basename "$lock_dir" .server.lock)
+            [ -S "$SOCKET_DIR/$tag.sock" ] && continue
+            if ps aux | grep -E "claudeq-server.py $tag(\s|$)" | grep -v grep > /dev/null 2>&1; then
+                continue
+            fi
+            rmdir "$lock_dir" 2>/dev/null
         done
     fi
 }

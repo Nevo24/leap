@@ -38,6 +38,39 @@ if [ -d "$SOCKET_DIR" ]; then
     done
 fi
 
+# Second pass: orphaned .client.lock files whose socket is gone
+if [ -d "$SOCKET_DIR" ]; then
+    for lock_file in "$SOCKET_DIR"/*.client.lock; do
+        [ -e "$lock_file" ] || continue
+        tag=$(basename "$lock_file" .client.lock)
+        # If the socket still exists, the first pass already handled it
+        [ -S "$SOCKET_DIR/$tag.sock" ] && continue
+        # No socket — check if the lock holder is still alive
+        pid=$(cat "$lock_file" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            continue  # Process still alive (unusual but don't touch it)
+        fi
+        echo "  Removing orphaned client lock: $tag"
+        rm -f "$lock_file"
+        ((removed_count++))
+    done
+fi
+
+# Third pass: orphaned .server.lock dirs whose socket is gone
+if [ -d "$SOCKET_DIR" ]; then
+    for lock_dir in "$SOCKET_DIR"/*.server.lock; do
+        [ -d "$lock_dir" ] || continue
+        tag=$(basename "$lock_dir" .server.lock)
+        [ -S "$SOCKET_DIR/$tag.sock" ] && continue
+        if ps aux | grep -E "claudeq-server.py $tag(\s|$)" | grep -v grep > /dev/null 2>&1; then
+            continue  # Server is starting up
+        fi
+        echo "  Removing orphaned server lock: $tag"
+        rmdir "$lock_dir" 2>/dev/null
+        ((removed_count++))
+    done
+fi
+
 echo ""
 if [ $removed_count -eq 0 ]; then
     echo "✓ No dead sessions found"

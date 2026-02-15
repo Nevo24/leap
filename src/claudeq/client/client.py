@@ -62,8 +62,13 @@ class ClaudeQClient:
         # Load settings from file (persistent across all clients)
         self.show_auto_sent_notifications = load_settings().get('show_auto_sent_notifications', True)
 
-        # Acquire exclusive lock
+        # Acquire exclusive lock and register cleanup immediately so
+        # the lock is always released even if __init__ fails later.
         self._acquire_lock()
+        atexit.register(self._cleanup_lock)
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGHUP, self._signal_handler)  # Terminal close (Cmd+W)
 
         # Error tracking for rate limiting
         self._last_socket_error_time = 0
@@ -75,12 +80,6 @@ class ClaudeQClient:
             self.history_file, self._get_prompt,
             on_paste_image=self._paste_clipboard_image,
         )
-
-        # Register cleanup
-        atexit.register(self._cleanup_lock)
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-        signal.signal(signal.SIGHUP, self._signal_handler)  # Terminal close (Cmd+W)
 
     def _acquire_lock(self) -> None:
         """Acquire exclusive client lock to prevent multiple clients.
