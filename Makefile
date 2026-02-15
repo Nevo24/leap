@@ -71,7 +71,10 @@ install-core:
 
 .PHONY: ensure-storage
 ensure-storage:
-	@mkdir -p "$(REPO_PATH)/.storage"
+	@mkdir -p "$(REPO_PATH)/.storage" \
+		"$(REPO_PATH)/.storage/sockets" \
+		"$(REPO_PATH)/.storage/queues" \
+		"$(REPO_PATH)/.storage/history"
 
 .PHONY: write-install-metadata
 write-install-metadata: ensure-storage
