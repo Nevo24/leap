@@ -174,6 +174,9 @@ update:
 		poetry install --no-root --with monitor; \
 		$(BUILD_MONITOR_APP); \
 		echo "$(GREEN)✓ Monitor updated$(NC)"; \
+	else \
+		echo ""; \
+		echo "  Monitor not installed. To install it, run: make install-monitor"; \
 	fi
 	@echo ""
 	@echo "$(PROMPT_PREFIX) Updating IDE configurations..."
