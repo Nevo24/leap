@@ -675,9 +675,15 @@ def _open_terminal_app_terminal(command: str) -> bool:
 
 
 def _open_iterm2_terminal(command: str) -> bool:
-    """Open a new iTerm2 tab and run a command."""
+    """Open a new iTerm2 tab and run a command.
+
+    Tries to create a tab in the current window first.  If that fails
+    (e.g. no windows exist), falls back to creating a new window.
+    """
     escaped = command.replace('\\', '\\\\').replace('"', '\\"')
-    script = f'''
+
+    # Try new tab in current window first
+    tab_script = f'''
     tell application "iTerm"
         tell current window
             create tab with default profile
@@ -692,7 +698,31 @@ def _open_iterm2_terminal(command: str) -> bool:
 
     try:
         result = subprocess.run(
-            ['osascript', '-e', script],
+            ['osascript', '-e', tab_script],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            return True
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    # Fallback: create a new window (handles case where no windows exist)
+    window_script = f'''
+    tell application "iTerm"
+        create window with default profile
+        tell current session of current window
+            write text "{escaped}"
+        end tell
+        activate
+    end tell
+    return true
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', window_script],
             capture_output=True,
             text=True,
             timeout=10
