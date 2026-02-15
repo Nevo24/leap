@@ -83,31 +83,64 @@ class ClaudeQClient:
         signal.signal(signal.SIGHUP, self._signal_handler)  # Terminal close (Cmd+W)
 
     def _acquire_lock(self) -> None:
-        """Acquire exclusive client lock to prevent multiple clients."""
-        try:
-            self.lock_fd = open(self.lock_file, 'w')
-            fcntl.flock(self.lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.lock_fd.write(str(os.getpid()))
-            self.lock_fd.flush()
-            os.fsync(self.lock_fd.fileno())
-            self._lock_ino = os.fstat(self.lock_fd.fileno()).st_ino
-        except BlockingIOError:
-            pid_info = ""
-            try:
-                with open(self.lock_file, 'r') as f:
-                    pid = f.read().strip()
-                    pid_info = f" (PID: {pid})"
-            except OSError:
-                pass
+        """Acquire exclusive client lock to prevent multiple clients.
 
-            print(f"\n❌ Error: Another client is already connected to server '{self.tag}'{pid_info}")
-            print("Only one interactive client per server is allowed.\n")
-            print(f"If you're sure no other client is running, remove:")
-            print(f"  {self.lock_file}\n")
-            sys.exit(1)
-        except OSError as e:
-            print(f"Error creating lock file: {e}")
-            sys.exit(1)
+        Uses flock + inode verification to handle the case where the
+        monitor deletes the lock file while the old client still holds
+        an flock on the (now orphaned) fd.  After locking, we verify
+        the on-disk file is the same inode we locked; if not, another
+        process replaced it, so we retry.
+        """
+        max_attempts = 3
+        for _attempt in range(max_attempts):
+            try:
+                fd = open(self.lock_file, 'w')
+                fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                # Verify the file on disk is the one we locked.
+                # If the monitor deleted the file between our open() and
+                # flock(), another client may have created a new file.
+                try:
+                    disk_ino = self.lock_file.stat().st_ino
+                except OSError:
+                    disk_ino = None
+                locked_ino = os.fstat(fd.fileno()).st_ino
+
+                if disk_ino != locked_ino:
+                    # We locked an orphaned file — close and retry.
+                    fd.close()
+                    continue
+
+                fd.write(str(os.getpid()))
+                fd.flush()
+                os.fsync(fd.fileno())
+                self.lock_fd = fd
+                self._lock_ino = locked_ino
+                return
+            except BlockingIOError:
+                try:
+                    fd.close()
+                except (OSError, UnboundLocalError):
+                    pass
+                break
+            except OSError as e:
+                print(f"Error creating lock file: {e}")
+                sys.exit(1)
+
+        # If we get here, flock failed (BlockingIOError) or inode retries exhausted.
+        pid_info = ""
+        try:
+            with open(self.lock_file, 'r') as f:
+                pid = f.read().strip()
+                pid_info = f" (PID: {pid})"
+        except OSError:
+            pass
+
+        print(f"\n❌ Error: Another client is already connected to server '{self.tag}'{pid_info}")
+        print("Only one interactive client per server is allowed.\n")
+        print(f"If you're sure no other client is running, remove:")
+        print(f"  {self.lock_file}\n")
+        sys.exit(1)
 
     def _cleanup_lock(self) -> None:
         """Release and remove client lock file."""

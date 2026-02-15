@@ -1,12 +1,14 @@
 """Standalone utility functions for ClaudeQ Monitor."""
 
+import os
+import signal
 from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import QMessageBox
 
 from claudeq.monitor.session_manager import (
-    load_session_metadata, session_exists, is_client_lock_held,
+    load_session_metadata, read_client_pid, session_exists, is_client_lock_held,
 )
 from claudeq.monitor.navigation import find_terminal_with_title, open_terminal_with_command
 from claudeq.utils.constants import SOCKET_DIR
@@ -31,7 +33,18 @@ def find_icon() -> Optional[Path]:
 
 
 def _remove_client_lock(tag: str) -> None:
-    """Remove the client lock file so a new client can connect."""
+    """Kill the old client process (if alive) and remove the lock file.
+
+    Sending SIGTERM lets the client clean up its own lock via atexit,
+    but we also unlink as a safety net in case the signal doesn't land.
+    """
+    pid = read_client_pid(tag)
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
     lock_file = SOCKET_DIR / f"{tag}.client.lock"
     try:
         if lock_file.exists():
