@@ -587,6 +587,17 @@ class ClaudeQServer:
         threading.Thread(target=self._auto_sender_loop, daemon=True).start()
         threading.Thread(target=self._title_keeper_loop, daemon=True).start()
 
+        # Wait for the socket to be bound before releasing the startup lock,
+        # so concurrent `cq <tag>` invocations see the socket and connect as
+        # clients instead of trying to start a second server.
+        self.socket_handler.wait_ready()
+
+        # Release the shell startup lock now that the socket is listening.
+        # The lock dir was created by claudeq-main.sh to prevent duplicate
+        # servers; the shell trap can't clean it because exec replaced the
+        # shell with this Python process.
+        self._release_startup_lock()
+
         # Handle signals
         signal.signal(signal.SIGWINCH, self._handle_resize)
         signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
@@ -605,9 +616,23 @@ class ClaudeQServer:
         finally:
             self.cleanup()
 
+    def _release_startup_lock(self) -> None:
+        """Remove the shell startup lock directory.
+
+        The lock dir is created by claudeq-main.sh (mkdir) to prevent
+        duplicate servers.  Because the shell uses ``exec`` to hand off
+        to Python, the shell trap never fires, so we clean it up here.
+        """
+        lock_dir = SOCKET_DIR / f"{self.tag}.server.lock"
+        try:
+            lock_dir.rmdir()
+        except OSError:
+            pass
+
     def cleanup(self) -> None:
         """Clean up all resources."""
         self.running = False
+        self._release_startup_lock()
         self.socket_handler.stop()
         self.socket_handler.cleanup()
         self.metadata.cleanup()

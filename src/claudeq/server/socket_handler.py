@@ -31,6 +31,7 @@ class SocketHandler:
         self.message_handler = message_handler
         self.server_socket: Optional[socket.socket] = None
         self.running = True
+        self._ready_event = threading.Event()
 
     def start(self) -> None:
         """Start the socket server in the background."""
@@ -46,6 +47,7 @@ class SocketHandler:
         self.server_socket.bind(str(self.socket_path))
         self.server_socket.listen(5)
         self.server_socket.settimeout(1.0)
+        self._ready_event.set()
 
         while self.running:
             try:
@@ -107,6 +109,17 @@ class SocketHandler:
             print(f"Error sending response: {e}", file=sys.stderr, flush=True)
         finally:
             conn.close()
+
+    def wait_ready(self, timeout: float = 5.0) -> bool:
+        """Wait until the socket is bound and listening.
+
+        Args:
+            timeout: Maximum seconds to wait.
+
+        Returns:
+            True if the socket is ready, False if timed out.
+        """
+        return self._ready_event.wait(timeout)
 
     def stop(self) -> None:
         """Stop the socket server."""
