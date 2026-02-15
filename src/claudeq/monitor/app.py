@@ -78,6 +78,7 @@ class MonitorWindow(
         self._mr_statuses: dict[str, MRStatus] = {}
         self._mr_widgets: dict[str, PulsingLabel] = {}
         self._mr_approval_widgets: dict[str, IndicatorLabel] = {}
+        self._cell_cache: dict[tuple[str, str], tuple[tuple, QWidget]] = {}
         self._scm_providers: dict[str, SCMProvider] = {}  # SCMType.value -> provider
         self._scm_worker: Optional[SCMPollerWorker] = None
         self._scm_oneshot_worker: Optional[SCMOneShotWorker] = None

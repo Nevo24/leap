@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
@@ -70,15 +70,33 @@ class TableBuilderMixin(_Base):
             if item.textAlignment() != alignment:
                 item.setTextAlignment(alignment)
 
+    def _cell_cached(self, tag: str, col: str, state: tuple,
+                     row: int, table_col: int) -> bool:
+        """Check if a cell widget can be reused (state unchanged, same row)."""
+        cached = self._cell_cache.get((tag, col))
+        return (cached is not None
+                and cached[0] == state
+                and not sip.isdeleted(cached[1])
+                and self.table.cellWidget(row, table_col) is cached[1])
+
+    def _cache_cell(self, tag: str, col: str, state: tuple,
+                    row: int, table_col: int) -> None:
+        """Store the current cell widget in the cache after building it."""
+        self._cell_cache[(tag, col)] = (
+            state, self.table.cellWidget(row, table_col))
+
     def _update_table(self) -> None:
         """Update table with current sessions.
 
-        Most cell widgets are recreated each refresh to avoid dangling C++
-        pointers (Qt auto-deletes cell widgets on setRowCount shrink).
-        MR status widgets (PulsingLabel, IndicatorLabel) are reused across
-        refreshes to preserve hover popups — they survive reparenting into
-        new containers via addWidget().  Stale MR widgets (for removed tags)
-        are cleaned up after the loop.
+        Cell widgets for button columns (Delete, Server, Client, MR) are
+        cached by ``(tag, column)`` with a state key.  When the state key
+        matches and the widget is still at the correct row, the cell is
+        left untouched — preserving active tooltips.  When the state
+        changes, the cell is rebuilt from scratch and re-cached.
+
+        MR status widgets (PulsingLabel, IndicatorLabel) are additionally
+        cached in ``_mr_widgets`` / ``_mr_approval_widgets`` to preserve
+        hover popups via ``set_preserve_popup()``.
         """
         new_count = len(self.sessions)
 
@@ -98,6 +116,7 @@ class TableBuilderMixin(_Base):
                         pass
                 self._mr_widgets.clear()
                 self._mr_approval_widgets.clear()
+                self._cell_cache.clear()
                 self.table.setRowCount(1)
                 for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
@@ -120,36 +139,43 @@ class TableBuilderMixin(_Base):
                 tag = session['tag']
                 server_pid = session.get('server_pid')
                 is_dead = server_pid is None
-
-                # Delete button (leftmost column, replaces row index)
-                del_container = QWidget()
-                del_layout = QHBoxLayout(del_container)
-                del_layout.setContentsMargins(0, 0, 0, 0)
-                del_layout.setSpacing(0)
-                del_btn = QPushButton('X')
-                del_btn.setFixedSize(24, del_btn.sizeHint().height())
-                del_btn.setStyleSheet(
-                    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                )
-                del_btn.setToolTip(f'Remove row for {tag}')
-                del_btn.clicked.connect(
-                    lambda checked, t=tag: self._delete_row(t)
-                )
-                del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
-                self._set_cell_widget(row, self.COL_DELETE, del_container)
-
-                # Text cells — only update if value changed
-                self._set_cell_text(row, self.COL_TAG, tag)
-
+                client_pid = session.get('client_pid')
+                has_client = session.get('has_client', False)
                 pinned_data = self._pinned_sessions.get(tag, {})
+                pinned_branch = pinned_data.get('branch', '')
+
+                # ── Delete button ──────────────────────────────────
+                del_state = ()  # never changes for a given tag
+                if not self._cell_cached(tag, 'del', del_state,
+                                         row, self.COL_DELETE):
+                    del_container = QWidget()
+                    del_layout = QHBoxLayout(del_container)
+                    del_layout.setContentsMargins(0, 0, 0, 0)
+                    del_layout.setSpacing(0)
+                    del_btn = QPushButton('X')
+                    del_btn.setFixedSize(24, del_btn.sizeHint().height())
+                    del_btn.setStyleSheet(
+                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    )
+                    del_btn.setToolTip(f'Remove row for {tag}')
+                    del_btn.clicked.connect(
+                        lambda checked, t=tag: self._delete_row(t)
+                    )
+                    del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
+                    self._set_cell_widget(row, self.COL_DELETE, del_container)
+                    self._cache_cell(tag, 'del', del_state,
+                                     row, self.COL_DELETE)
+
+                # ── Text cells ─────────────────────────────────────
+                self._set_cell_text(row, self.COL_TAG, tag)
 
                 # Server Branch always shows the live branch
                 server_branch = session['branch']
 
                 # MR Branch shows the MR's source branch if tracked
                 if pinned_data.get('remote_project_path'):
-                    mr_branch = pinned_data.get('branch') or 'N/A'
+                    mr_branch = pinned_branch or 'N/A'
                 else:
                     mr_branch = 'N/A'
 
@@ -165,27 +191,152 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_STATUS, status)
                     self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
 
-                # MR column: "Track MR" → "Checking..." → tracked
-                if tag in self._checking_tags:
-                    if self.table.columnSpan(row, self.COL_MR) > 1:
-                        self.table.setSpan(row, self.COL_MR, 1, 1)
-                    checking_label = PulsingLabel()
-                    checking_label.setText('Checking...')
-                    checking_label.setStyleSheet('color: grey; font-style: italic;')
-                    self._set_cell_widget(row, self.COL_MR, checking_label)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
-                elif tag in self._tracked_tags:
-                    # Remove span — MR and MR Branch are separate columns
-                    if self.table.columnSpan(row, self.COL_MR) > 1:
-                        self.table.setSpan(row, self.COL_MR, 1, 1)
+                # ── Server button + close button ───────────────────
+                starting = tag in self._starting_tags if is_dead else False
+                branch_mismatch = bool(
+                    not is_dead
+                    and pinned_data.get('remote_project_path')
+                    and pinned_branch
+                    and pinned_branch != 'N/A'
+                    and session.get('branch')
+                    and session['branch'] != pinned_branch
+                )
+                srv_state = (is_dead, starting, branch_mismatch,
+                             pinned_branch, session.get('branch', ''),
+                             server_pid)
 
+                if not self._cell_cached(tag, 'server', srv_state,
+                                         row, self.COL_SERVER):
+                    server_container = QWidget()
+                    server_layout = QHBoxLayout(server_container)
+                    server_layout.setContentsMargins(0, 0, 0, 0)
+                    server_layout.setSpacing(2)
+
+                    if not is_dead:
+                        server_x = QPushButton('X')
+                        server_x.setFixedSize(24, server_x.sizeHint().height())
+                        server_x.setStyleSheet(
+                            'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                            'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                        )
+                        server_x.setToolTip(f'Close server {tag}')
+                        server_x.clicked.connect(
+                            lambda checked, t=tag, spid=server_pid:
+                                self._close_server(t, spid)
+                        )
+                        server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
+
+                    if is_dead:
+                        server_btn = QPushButton(
+                            'Starting...' if starting else 'Server')
+                        server_btn.setToolTip(
+                            f'Server is starting for {tag}...' if starting
+                            else f'Start server for {tag}'
+                        )
+                        if starting:
+                            server_btn.setEnabled(False)
+                        server_btn.clicked.connect(
+                            lambda checked, t=tag: self._start_server(t)
+                        )
+                    else:
+                        if branch_mismatch:
+                            server_btn = QPushButton('\u26a0 Server')
+                            server_btn.setStyleSheet(
+                                'QPushButton { color: #ffa500; } '
+                                'QToolTip { color: #e0e0e0; }')
+                            server_btn.setToolTip(
+                                f"Branch mismatch: expected '{pinned_branch}', "
+                                f"got '{session['branch']}'"
+                            )
+                        else:
+                            server_btn = QPushButton('Server')
+                            server_btn.setStyleSheet(
+                                'QPushButton { color: #00ff00; } '
+                                'QToolTip { color: #e0e0e0; }')
+                            server_btn.setToolTip(
+                                f'Jump to server terminal for {tag}')
+                        server_btn.clicked.connect(
+                            lambda checked, t=tag:
+                                self._focus_session(t, 'server')
+                        )
+                    server_layout.addWidget(server_btn)
+                    self._set_cell_widget(row, self.COL_SERVER,
+                                          server_container)
+                    self._cache_cell(tag, 'server', srv_state,
+                                     row, self.COL_SERVER)
+
+                # ── Client button + close button ───────────────────
+                cli_state = (is_dead, has_client, client_pid)
+
+                if not self._cell_cached(tag, 'client', cli_state,
+                                         row, self.COL_CLIENT):
+                    client_container = QWidget()
+                    client_layout = QHBoxLayout(client_container)
+                    client_layout.setContentsMargins(0, 0, 0, 0)
+                    client_layout.setSpacing(2)
+
+                    if has_client:
+                        client_x = QPushButton('X')
+                        client_x.setFixedSize(24, client_x.sizeHint().height())
+                        client_x.setStyleSheet(
+                            'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+                            'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                        )
+                        client_x.setToolTip(f'Close client {tag}')
+                        client_x.clicked.connect(
+                            lambda checked, t=tag, pid=client_pid:
+                                self._close_client(t, pid)
+                        )
+                        client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
+
+                    client_btn = QPushButton('Client')
+                    if is_dead and not has_client:
+                        client_btn.setEnabled(False)
+                        client_btn.setToolTip('No client connected')
+                    else:
+                        if has_client:
+                            client_btn.setStyleSheet(
+                                'QPushButton { color: #00ff00; } '
+                                'QToolTip { color: #e0e0e0; }')
+                            client_btn.setToolTip(
+                                f'Jump to client terminal for {tag}')
+                        else:
+                            client_btn.setToolTip(
+                                f'Open new client for {tag}')
+                        client_btn.clicked.connect(
+                            lambda checked, t=tag:
+                                self._focus_session(t, 'client')
+                        )
+                    client_layout.addWidget(client_btn)
+                    self._set_cell_widget(row, self.COL_CLIENT,
+                                          client_container)
+                    self._cache_cell(tag, 'client', cli_state,
+                                     row, self.COL_CLIENT)
+
+                # ── MR column: "Track MR" → "Checking..." → tracked
+                if tag in self._checking_tags:
+                    mr_state = ('checking',)
+                    if not self._cell_cached(tag, 'mr', mr_state,
+                                             row, self.COL_MR):
+                        if self.table.columnSpan(row, self.COL_MR) > 1:
+                            self.table.setSpan(row, self.COL_MR, 1, 1)
+                        checking_label = PulsingLabel()
+                        checking_label.setText('Checking...')
+                        checking_label.setStyleSheet(
+                            'color: grey; font-style: italic;')
+                        self._set_cell_widget(row, self.COL_MR,
+                                              checking_label)
+                        self._cache_cell(tag, 'mr', mr_state,
+                                         row, self.COL_MR)
+                    self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
+
+                elif tag in self._tracked_tags:
                     stale_mr_tags.discard(tag)
 
-                    # Reuse existing MR widgets to preserve hover popups
+                    # Get or create MR widgets
                     mr_widget = self._mr_widgets.get(tag)
                     if mr_widget and not sip.isdeleted(mr_widget):
                         reused_mr = True
-                        mr_widget.set_preserve_popup(True)
                     else:
                         mr_widget = PulsingLabel()
                         self._mr_widgets[tag] = mr_widget
@@ -194,34 +345,66 @@ class TableBuilderMixin(_Base):
                     approval_label = self._mr_approval_widgets.get(tag)
                     if approval_label and not sip.isdeleted(approval_label):
                         reused_approval = True
-                        approval_label.set_preserve_popup(True)
                     else:
                         approval_label = IndicatorLabel()
                         self._mr_approval_widgets[tag] = approval_label
                         reused_approval = False
 
-                    mr_container = QWidget()
-                    mr_layout = QHBoxLayout(mr_container)
-                    mr_layout.setContentsMargins(0, 0, 0, 0)
-                    mr_layout.setSpacing(2)
-
-                    mr_x = QPushButton('X')
-                    mr_x.setFixedSize(24, mr_x.sizeHint().height())
-                    mr_x.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+                    # Reuse MR container if widgets survived and cell is
+                    # still at the right row.
+                    mr_state = ('tracked',)
+                    mr_cached = (
+                        reused_mr and reused_approval
+                        and self._cell_cached(tag, 'mr', mr_state,
+                                              row, self.COL_MR)
                     )
-                    mr_x.setToolTip(f'Stop tracking MR for {tag}')
-                    mr_x.clicked.connect(
-                        lambda checked, t=tag: self._stop_tracking(t)
-                    )
-                    mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
+                    if not mr_cached:
+                        if self.table.columnSpan(row, self.COL_MR) > 1:
+                            self.table.setSpan(row, self.COL_MR, 1, 1)
 
-                    mr_layout.addStretch()
-                    mr_layout.addWidget(approval_label)
+                        if reused_mr:
+                            mr_widget.set_preserve_popup(True)
+                        if reused_approval:
+                            approval_label.set_preserve_popup(True)
 
+                        mr_container = QWidget()
+                        mr_layout = QHBoxLayout(mr_container)
+                        mr_layout.setContentsMargins(0, 0, 0, 0)
+                        mr_layout.setSpacing(2)
+
+                        mr_x = QPushButton('X')
+                        mr_x.setFixedSize(24, mr_x.sizeHint().height())
+                        mr_x.setStyleSheet(
+                            'QPushButton { color: #999; font-size: 11px; '
+                            'padding: 0; }'
+                            'QPushButton:hover { color: #ff4444; '
+                            'font-weight: bold; }'
+                        )
+                        mr_x.setToolTip(f'Stop tracking MR for {tag}')
+                        mr_x.clicked.connect(
+                            lambda checked, t=tag: self._stop_tracking(t)
+                        )
+                        mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
+
+                        mr_layout.addStretch()
+                        mr_layout.addWidget(approval_label)
+                        mr_layout.addWidget(mr_widget)
+                        mr_layout.addStretch()
+
+                        self._set_cell_widget(row, self.COL_MR,
+                                              mr_container)
+                        self._cache_cell(tag, 'mr', mr_state,
+                                         row, self.COL_MR)
+
+                        if reused_mr:
+                            mr_widget.set_preserve_popup(False)
+                        if reused_approval:
+                            approval_label.set_preserve_popup(False)
+
+                    # Always update MR widget properties (change each poll)
                     mr_status = self._mr_statuses.get(tag)
-                    self._apply_mr_status(mr_widget, approval_label, mr_status)
+                    self._apply_mr_status(mr_widget, approval_label,
+                                          mr_status)
                     mr_widget.set_has_unresponded(
                         mr_status is not None
                         and mr_status.state == MRState.UNRESPONDED
@@ -232,150 +415,44 @@ class TableBuilderMixin(_Base):
                             lambda t=tag: self._send_all_threads_to_cq(t)
                         )
                         mr_widget.set_send_combined_to_cq_callback(
-                            lambda t=tag: self._send_all_threads_combined_to_cq(t)
+                            lambda t=tag:
+                                self._send_all_threads_combined_to_cq(t)
                         )
                         mr_widget.set_send_cq_threads_callback(
                             lambda t=tag: self._send_cq_threads_to_cq(t)
                         )
                         mr_widget.set_send_cq_threads_combined_callback(
-                            lambda t=tag: self._send_cq_threads_combined_to_cq(t)
+                            lambda t=tag:
+                                self._send_cq_threads_combined_to_cq(t)
                         )
                     mr_widget.set_auto_fetch_cq(
                         self._prefs.get('auto_fetch_cq', True)
                     )
-                    mr_layout.addWidget(mr_widget)
-
-                    mr_layout.addStretch()
-
-                    self._set_cell_widget(row, self.COL_MR, mr_container)
-                    # MR Branch shows the MR source branch
                     self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
 
-                    # Restore popup behavior after reparenting.
-                    # Popup stays at its original position (same table cell).
-                    if reused_mr:
-                        mr_widget.set_preserve_popup(False)
-                    if reused_approval:
-                        approval_label.set_preserve_popup(False)
                 else:
-                    # Not tracked — button in MR column only, MR Branch shows N/A
-                    if self.table.columnSpan(row, self.COL_MR) > 1:
-                        self.table.setSpan(row, self.COL_MR, 1, 1)
-                    existing = self.table.cellWidget(row, self.COL_MR)
-                    if isinstance(existing, QPushButton) \
-                            and getattr(existing, '_cq_tag', None) == tag:
-                        pass  # Reuse — avoids destroying the button mid-click
-                    else:
+                    # Not tracked — "Track MR" button
+                    mr_state = ('untracked', is_dead)
+                    if not self._cell_cached(tag, 'mr', mr_state,
+                                             row, self.COL_MR):
+                        if self.table.columnSpan(row, self.COL_MR) > 1:
+                            self.table.setSpan(row, self.COL_MR, 1, 1)
                         track_btn = QPushButton('Track MR')
-                        track_btn._cq_tag = tag
-                        track_btn.setToolTip(f'Start tracking MR/PR for {tag}')
+                        track_btn.setToolTip(
+                            'Start a server first to discover MR from branch'
+                            if is_dead
+                            else f'Start tracking MR/PR for {tag}'
+                        )
                         track_btn.setStyleSheet('font-size: 11px;')
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
                         )
                         if is_dead:
                             track_btn.setEnabled(False)
-                            track_btn.setToolTip('Start a server first to discover MR from branch')
                         self.table.setCellWidget(row, self.COL_MR, track_btn)
+                        self._cache_cell(tag, 'mr', mr_state,
+                                         row, self.COL_MR)
                     self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
-
-                client_pid = session.get('client_pid')
-                has_client = session.get('has_client', False)
-
-                # Server button + close button
-                server_container = QWidget()
-                server_layout = QHBoxLayout(server_container)
-                server_layout.setContentsMargins(0, 0, 0, 0)
-                server_layout.setSpacing(2)
-
-                if not is_dead:
-                    server_x = QPushButton('X')
-                    server_x.setFixedSize(24, server_x.sizeHint().height())
-                    server_x.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                    )
-                    server_x.setToolTip(f'Close server {tag}')
-                    server_x.clicked.connect(
-                        lambda checked, t=tag, spid=server_pid:
-                            self._close_server(t, spid)
-                    )
-                    server_layout.addWidget(server_x, 0, Qt.AlignVCenter)
-
-                if is_dead:
-                    starting = tag in self._starting_tags
-                    server_btn = QPushButton('Starting...' if starting else 'Server')
-                    server_btn.setToolTip(
-                        f'Server is starting for {tag}...' if starting
-                        else f'Start server for {tag}'
-                    )
-                    if starting:
-                        server_btn.setEnabled(False)
-                    server_btn.clicked.connect(
-                        lambda checked, t=tag: self._start_server(t)
-                    )
-                else:
-                    # Check branch mismatch for MR-pinned rows
-                    pinned_branch = pinned_data.get('branch', '')
-                    branch_mismatch = (
-                        pinned_data.get('remote_project_path')
-                        and pinned_branch
-                        and pinned_branch != 'N/A'
-                        and session.get('branch')
-                        and session['branch'] != pinned_branch
-                    )
-                    if branch_mismatch:
-                        server_btn = QPushButton('\u26a0 Server')
-                        server_btn.setStyleSheet('QPushButton { color: #ffa500; } QToolTip { color: #e0e0e0; }')
-                        server_btn.setToolTip(
-                            f"Branch mismatch: expected '{pinned_branch}', "
-                            f"got '{session['branch']}'"
-                        )
-                    else:
-                        server_btn = QPushButton('Server')
-                        server_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
-                        server_btn.setToolTip(f'Jump to server terminal for {tag}')
-                    server_btn.clicked.connect(
-                        lambda checked, t=tag: self._focus_session(t, 'server')
-                    )
-                server_layout.addWidget(server_btn)
-                self._set_cell_widget(row, self.COL_SERVER, server_container)
-
-                # Client button + close button
-                client_container = QWidget()
-                client_layout = QHBoxLayout(client_container)
-                client_layout.setContentsMargins(0, 0, 0, 0)
-                client_layout.setSpacing(2)
-
-                if has_client:
-                    client_x = QPushButton('X')
-                    client_x.setFixedSize(24, client_x.sizeHint().height())
-                    client_x.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                    )
-                    client_x.setToolTip(f'Close client {tag}')
-                    client_x.clicked.connect(
-                        lambda checked, t=tag, pid=client_pid: self._close_client(t, pid)
-                    )
-                    client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
-
-                client_btn = QPushButton('Client')
-                if is_dead and not has_client:
-                    client_btn.setEnabled(False)
-                    client_btn.setToolTip('No client connected')
-                else:
-                    if has_client:
-                        client_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
-                        client_btn.setToolTip(f'Jump to client terminal for {tag}')
-                    else:
-                        client_btn.setToolTip(f'Open new client for {tag}')
-                    client_btn.clicked.connect(
-                        lambda checked, t=tag: self._focus_session(t, 'client')
-                    )
-                client_layout.addWidget(client_btn)
-
-                self._set_cell_widget(row, self.COL_CLIENT, client_container)
 
             # Clean up stale MR widgets for tags no longer shown
             for stale_tag in stale_mr_tags:
@@ -386,6 +463,13 @@ class TableBuilderMixin(_Base):
                     except RuntimeError:
                         pass
                 self._mr_approval_widgets.pop(stale_tag, None)
+
+            # Clean up stale cell cache entries for tags no longer shown
+            current_tags = {s['tag'] for s in self.sessions}
+            stale_keys = [k for k in self._cell_cache
+                          if k[0] not in current_tags]
+            for k in stale_keys:
+                self._cell_cache.pop(k, None)
         finally:
             self.table.setUpdatesEnabled(True)
 
