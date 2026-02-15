@@ -61,6 +61,7 @@ class SCMPollerWorker(QThread):
     results_ready = pyqtSignal(dict)
     notifications_ready = pyqtSignal(list)  # list[UserNotification]
     notification_auth_error = pyqtSignal(str)  # scm_type with 403/auth failure
+    cq_ack_failed = pyqtSignal()  # /cq ack post failed (likely token scope issue)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -239,10 +240,14 @@ class SCMPollerWorker(QThread):
                                     cmd.mr_iid, tag)
                     else:
                         logger.error("Failed to send /cq message to session '%s'", tag)
-                    # Always acknowledge to prevent re-processing
-                    provider.acknowledge_cq_command(
+                    # Acknowledge to prevent re-processing
+                    acked = provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
+                    if not acked:
+                        logger.error("Failed to acknowledge /cq on MR !%s", cmd.mr_iid)
+                        self.cq_ack_failed.emit()
+                        return  # Stop processing — ack will fail for all
                 else:
                     provider.report_no_session(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
@@ -336,6 +341,7 @@ class SendThreadsWorker(QThread):
 
     finished = pyqtSignal(int, str)  # (sent_count, matched_tag)
     error = pyqtSignal(str)  # error_message
+    ack_failed = pyqtSignal()  # /cq ack post failed
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -358,18 +364,23 @@ class SendThreadsWorker(QThread):
             return
         try:
             sent_count = 0
+            ack_ok = True
             for cmd in self._commands:
                 message = format_cq_message(cmd)
                 sent = send_to_cq_session(self._matched_tag, message)
                 if sent:
-                    self._provider.acknowledge_cq_command(
+                    acked = self._provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
+                    if not acked:
+                        ack_ok = False
                     sent_count += 1
                 else:
                     logger.error("Failed to send thread to session '%s'", self._matched_tag)
 
             self.finished.emit(sent_count, self._matched_tag)
+            if not ack_ok:
+                self.ack_failed.emit()
         except Exception:
             logger.exception("Error in SendThreadsWorker")
             self.error.emit("Failed to send threads.")
@@ -380,6 +391,7 @@ class SendThreadsCombinedWorker(QThread):
 
     finished = pyqtSignal(int, str)  # (thread_count, matched_tag)
     error = pyqtSignal(str)  # error_message
+    ack_failed = pyqtSignal()  # /cq ack post failed
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -412,11 +424,16 @@ class SendThreadsCombinedWorker(QThread):
             sent = send_to_cq_session(self._matched_tag, combined)
             if sent:
                 # Acknowledge all threads
+                ack_ok = True
                 for cmd in self._commands:
-                    self._provider.acknowledge_cq_command(
+                    acked = self._provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
+                    if not acked:
+                        ack_ok = False
                 self.finished.emit(len(self._commands), self._matched_tag)
+                if not ack_ok:
+                    self.ack_failed.emit()
             else:
                 logger.error(
                     "Failed to send combined threads to session '%s'",

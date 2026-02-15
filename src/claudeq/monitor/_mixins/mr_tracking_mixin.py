@@ -12,7 +12,8 @@ from PyQt5.QtCore import Qt
 from claudeq.utils.constants import is_valid_tag
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import (
-    load_gitlab_config, load_pinned_sessions, save_pinned_sessions,
+    load_gitlab_config, load_pinned_sessions, save_monitor_prefs,
+    save_pinned_sessions,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, parse_mr_url
 from claudeq.monitor.scm_polling import (
@@ -316,6 +317,7 @@ class MRTrackingMixin(_Base):
         worker.results_ready.connect(self._on_scm_results)
         worker.notifications_ready.connect(self._on_notifications_received)
         worker.notification_auth_error.connect(self._on_notification_auth_error)
+        worker.cq_ack_failed.connect(self._on_cq_ack_failed)
         worker.finished.connect(self._on_scm_worker_finished)
         self._scm_worker = worker
         worker.start()
@@ -430,6 +432,7 @@ class MRTrackingMixin(_Base):
         self._send_threads_worker.configure(provider, commands, matched_tag)
         self._send_threads_worker.finished.connect(self._on_send_threads_finished)
         self._send_threads_worker.error.connect(self._on_send_threads_error)
+        self._send_threads_worker.ack_failed.connect(self._on_cq_ack_failed)
         self._send_threads_worker.start()
 
     def _on_send_threads_finished(self, sent_count: int, matched_tag: str) -> None:
@@ -456,6 +459,37 @@ class MRTrackingMixin(_Base):
         QApplication.restoreOverrideCursor()
         self._show_status(f"Thread send error: {message}")
         QMessageBox.warning(self, 'Error', message)
+
+    def _on_cq_ack_failed(self) -> None:
+        """Handle failure to post '[ClaudeQ bot] on it!' acknowledgment.
+
+        Without the ack, the same /cq command will be re-detected every poll
+        cycle, causing duplicate sends.  Disable auto-fetch and warn the user.
+        """
+        # Stop polling to prevent duplicate popups
+        self._scm_poll_timer.stop()
+
+        # Disable auto-fetch
+        self._prefs['auto_fetch_cq'] = False
+        save_monitor_prefs(self._prefs)
+        self.auto_cq_check.setChecked(False)
+
+        QMessageBox.warning(
+            self, '/cq Acknowledgment Failed',
+            'Failed to post "[ClaudeQ bot] on it!" reply to the MR thread.\n\n'
+            'Without this reply, the same /cq command will be re-detected '
+            'each poll cycle, causing duplicate sends.\n\n'
+            'Auto /cq fetch has been disabled to prevent this.\n\n'
+            'Common cause: the SCM token lacks the "api" scope '
+            '(GitLab) or sufficient permissions (GitHub).\n'
+            'Update your token, then re-enable "Auto \'/cq\' fetch".'
+        )
+
+        self._show_status("/cq auto-fetch disabled (acknowledgment failed)")
+
+        # Restart polling (now without auto-fetch)
+        if self._tracked_tags or self._get_notif_scm_types():
+            self._scm_poll_timer.start(self._get_poll_interval() * 1000)
 
     def _send_all_threads_combined_to_cq(self, tag: str) -> None:
         """Send all unresponded MR threads as one concatenated message (non-blocking).
@@ -538,6 +572,7 @@ class MRTrackingMixin(_Base):
         self._send_combined_worker.configure(provider, commands, matched_tag)
         self._send_combined_worker.finished.connect(self._on_send_combined_finished)
         self._send_combined_worker.error.connect(self._on_send_threads_error)
+        self._send_combined_worker.ack_failed.connect(self._on_cq_ack_failed)
         self._send_combined_worker.start()
 
     def _on_send_combined_finished(self, thread_count: int, matched_tag: str) -> None:
