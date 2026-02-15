@@ -65,10 +65,16 @@ class GitHubProvider(SCMProvider):
             return None
         try:
             pr = repo.get_pull(mr_iid)
+            branch_deleted = False
+            try:
+                repo.get_branch(pr.head.ref)
+            except Exception:
+                branch_deleted = True
             return MRDetails(
                 source_branch=pr.head.ref,
                 mr_title=pr.title,
                 mr_url=pr.html_url,
+                source_branch_deleted=branch_deleted,
             )
         except Exception:
             logger.debug("Failed to get PR #%s in %s", mr_iid, project_path)

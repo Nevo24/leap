@@ -20,6 +20,7 @@ class MRDetails:
     source_branch: str
     mr_title: str
     mr_url: str
+    source_branch_deleted: bool = False
 
 
 @dataclass

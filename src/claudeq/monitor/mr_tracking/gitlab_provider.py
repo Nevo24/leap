@@ -56,10 +56,16 @@ class GitLabProvider(SCMProvider):
             return None
         try:
             mr = project.mergerequests.get(mr_iid)
+            branch_deleted = False
+            try:
+                project.branches.get(mr.source_branch)
+            except Exception:
+                branch_deleted = True
             return MRDetails(
                 source_branch=mr.source_branch,
                 mr_title=mr.title,
                 mr_url=mr.web_url,
+                source_branch_deleted=branch_deleted,
             )
         except Exception:
             logger.debug("Failed to get MR !%s in %s", mr_iid, project_path)

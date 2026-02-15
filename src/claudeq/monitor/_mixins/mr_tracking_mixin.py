@@ -210,7 +210,7 @@ class MRTrackingMixin(_Base):
             self._pending_tracking_context.pop(tag, None)
             if silent:
                 self._show_status(f"Auto-reconnect: no open MR found for '{tag}'")
-                self._remove_dead_untracked_row(tag)
+            self._remove_dead_untracked_row(tag)
             self._update_table()
             if not silent:
                 QMessageBox.information(
@@ -666,6 +666,17 @@ class MRTrackingMixin(_Base):
         details = result_holder[0]
         if not details:
             QMessageBox.warning(self, 'MR Not Found', 'Could not fetch MR/PR details.')
+            return
+
+        if details.source_branch_deleted:
+            QMessageBox.warning(
+                self, 'Branch Deleted',
+                f"The source branch '{details.source_branch}' no longer exists "
+                f"on the remote.\n\n"
+                f"This usually means the MR/PR has been merged and the branch "
+                f"was deleted.\n\n"
+                f"The row cannot be added to the monitor.",
+            )
             return
 
         prev_tag = ''
