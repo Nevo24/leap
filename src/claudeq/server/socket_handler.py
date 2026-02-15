@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+MAX_MESSAGE_SIZE = 1_048_576  # 1 MB
+
+
 class SocketHandler:
     """Handles Unix socket server for client connections."""
 
@@ -73,9 +76,15 @@ class SocketHandler:
         try:
             conn.settimeout(5.0)
             chunks = []
+            total_size = 0
             while True:
                 chunk = conn.recv(4096)
                 if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_MESSAGE_SIZE:
+                    response = {'status': 'error', 'message': 'Message too large'}
+                    print(f"Error: Client sent message exceeding {MAX_MESSAGE_SIZE} bytes, rejecting", file=sys.stderr, flush=True)
                     break
                 chunks.append(chunk)
                 # Try to parse — if valid JSON, we have the full message
@@ -84,14 +93,23 @@ class SocketHandler:
                     break
                 except json.JSONDecodeError:
                     continue
-            data = b''.join(chunks).decode('utf-8')
+            if total_size > MAX_MESSAGE_SIZE:
+                # Drain remaining data so the client gets our error response
+                try:
+                    conn.settimeout(1.0)
+                    while conn.recv(65536):
+                        pass
+                except (socket.timeout, OSError):
+                    pass
+            else:
+                data = b''.join(chunks).decode('utf-8')
 
-            # Check if data is empty (client disconnected)
-            if not data or not data.strip():
-                return
+                # Check if data is empty (client disconnected)
+                if not data or not data.strip():
+                    return
 
-            msg = json.loads(data)
-            response = self.message_handler(msg)
+                msg = json.loads(data)
+                response = self.message_handler(msg)
 
         except json.JSONDecodeError as e:
             response = {'status': 'error', 'message': 'Invalid JSON'}

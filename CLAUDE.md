@@ -302,7 +302,7 @@ Listens on Unix socket for client messages
 - **Server** → `src/claudeq/server/`, update `ClaudeQServer`
 - **Client** → `src/claudeq/client/`, update `ClaudeQClient`
 - **Monitor** → `src/claudeq/monitor/`, update `MonitorWindow`
-- **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a CQ server via Unix socket. Do not duplicate the connect/send/recv pattern.
+- **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a CQ server via Unix socket. Do not duplicate the connect/send/recv pattern. Incoming messages are capped at `MAX_MESSAGE_SIZE` (1 MB) in `socket_handler.py`; larger payloads are rejected.
 
 ## Code Conventions
 

@@ -7,6 +7,7 @@ check git state, checkout branches, and open CQ in a terminal.
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -86,7 +87,7 @@ class ServerLauncher:
         self, tag: str, preferred_ide: Optional[str], project_path: Optional[str],
     ) -> None:
         """Open a CQ server in a terminal at the given project path."""
-        cmd = f"cd {project_path} && claudeq '{tag}'" if project_path else f"claudeq '{tag}'"
+        cmd = f"cd {shlex.quote(project_path)} && claudeq {shlex.quote(tag)}" if project_path else f"claudeq {shlex.quote(tag)}"
         worker = BackgroundCallWorker(
             lambda: open_terminal_with_command(
                 cmd, preferred_ide=preferred_ide, project_path=project_path,

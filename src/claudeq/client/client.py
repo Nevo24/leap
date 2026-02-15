@@ -182,9 +182,9 @@ class ClaudeQClient:
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle termination signals."""
-        print("\n\nExiting...")
+        self.running = False
         self._cleanup_lock()
-        sys.exit(0)
+        os._exit(0)
 
     def _paste_clipboard_image(self) -> Optional[str]:
         """Check clipboard for an image, save it, and return display text.

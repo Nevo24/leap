@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Optional
 
 
+def _escape_groovy(s: str) -> str:
+    """Escape a string for safe interpolation in a Groovy double-quoted string."""
+    return s.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
+
+
 def open_terminal_with_command(
     command: str,
     preferred_ide: Optional[str] = None,
@@ -175,12 +180,12 @@ def _navigate_jetbrains(
         if project_path:
             custom_script = custom_script.replace(
                 'var projectPath = System.getenv("CLAUDEQ_PROJECT_PATH")',
-                f'var projectPath = "{project_path}"'
+                f'var projectPath = "{_escape_groovy(project_path)}"'
             )
         if terminal_title:
             custom_script = custom_script.replace(
                 'var terminalTabName = System.getenv("CLAUDEQ_TERMINAL_TITLE")',
-                f'var terminalTabName = "{terminal_title}"'
+                f'var terminalTabName = "{_escape_groovy(terminal_title)}"'
             )
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
@@ -370,7 +375,7 @@ def _close_jetbrains(
         project_match = f'''
     for (var i = 0; i < allProjects.length; i++) {{
         var project = allProjects[i]
-        if (project.getBasePath() != null && project.getBasePath().equals("{project_path}")) {{
+        if (project.getBasePath() != null && project.getBasePath().equals("{_escape_groovy(project_path)}")) {{
             targetProject = project
             break
         }}
@@ -392,7 +397,7 @@ IDE.application.invokeLater {{
         if (terminalWindow != null) {{
             try {{
                 var contentManager = terminalWindow.getContentManager()
-                var content = contentManager.findContent("{terminal_title}")
+                var content = contentManager.findContent("{_escape_groovy(terminal_title)}")
                 if (content != null) {{
                     contentManager.removeContent(content, true)
                 }}
@@ -570,7 +575,7 @@ def _open_jetbrains_terminal(
         project_match = f'''
     for (var i = 0; i < allProjects.length; i++) {{
         var project = allProjects[i]
-        if (project.getBasePath() != null && project.getBasePath().equals("{project_path}")) {{
+        if (project.getBasePath() != null && project.getBasePath().equals("{_escape_groovy(project_path)}")) {{
             targetProject = project
             break
         }}
@@ -594,7 +599,7 @@ IDE.application.invokeLater {{
         new Thread({{
             Thread.sleep(500)
             IDE.application.invokeLater {{
-                widget.executeCommand("{command}")
+                widget.executeCommand("{_escape_groovy(command)}")
             }}
         }} as Runnable).start()
     }}

@@ -83,6 +83,7 @@ class ClaudeQServer:
         self.last_send_time: Optional[float] = None
         self._last_output_time: float = 0.0
         self._baseline_children: set[str] = set()
+        self._busy_lock = threading.Lock()  # Protects _last_output_time and _baseline_children
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -171,8 +172,12 @@ class ClaudeQServer:
 
         elif msg_type == 'shutdown':
             # Use a thread so we can return the response before exiting.
-            # sys.exit(0) triggers atexit cleanup (stops socket, terminates PTY, removes files).
-            threading.Thread(target=lambda: sys.exit(0), daemon=True).start()
+            # Sends SIGTERM to our own process, which the main thread catches
+            # and triggers atexit cleanup (stops socket, terminates PTY, removes files).
+            threading.Thread(
+                target=lambda: (time.sleep(0.1), os.kill(os.getpid(), signal.SIGTERM)),
+                daemon=True,
+            ).start()
             return {'status': 'ok'}
 
         return {'status': 'error', 'message': f"Unknown message type: {msg_type}"}
@@ -462,11 +467,16 @@ class ClaudeQServer:
             if time_since_send < MIN_BUSY_DURATION:
                 return True
 
+        # Snapshot busy-state variables under lock to avoid torn reads.
+        with self._busy_lock:
+            last_output_time = self._last_output_time
+            baseline_children = self._baseline_children
+
         # Check if PTY is still producing output (Claude streaming).
         # Only counts as busy if we sent a message recently — idle prompt
         # redraws and escape sequences should not trigger busy state.
-        if self._last_output_time and self.last_send_time:
-            time_since_output = time.time() - self._last_output_time
+        if last_output_time and self.last_send_time:
+            time_since_output = time.time() - last_output_time
             time_since_send = time.time() - self.last_send_time
             if time_since_output < OUTPUT_SETTLE_DURATION and time_since_send < 300:
                 return True
@@ -479,18 +489,19 @@ class ClaudeQServer:
                     capture_output=True
                 )
                 children = set(c for c in result.stdout.decode().strip().split() if c)
-                new_children = children - self._baseline_children
+                new_children = children - baseline_children
                 if new_children:
                     # New children found.  If output has been silent for a
                     # long time, these are almost certainly persistent
                     # processes (caffeinate, MCP servers), not tools.
-                    silence = (time.time() - self._last_output_time) if self._last_output_time else float('inf')
+                    silence = (time.time() - last_output_time) if last_output_time else float('inf')
                     if silence <= 10.0:
                         return True
                     # Silent too long — absorb as persistent and fall through
                 # Update baseline to absorb any persistent processes
                 # spawned during the last processing cycle.
-                self._baseline_children = children
+                with self._busy_lock:
+                    self._baseline_children = children
             except (subprocess.SubprocessError, OSError):
                 pass
 
@@ -504,16 +515,16 @@ class ClaudeQServer:
             if self.queue.is_empty or self._is_busy():
                 continue
 
-            message = self.queue.pop()
+            message = self.queue.peek()
             if not message:
                 continue
 
             try:
                 self._send_to_claude(message)
+                self.queue.pop()  # Only remove after successful send
                 self.queue.track_sent(message)
             except Exception:
-                # Re-queue on failure
-                self.queue.requeue(message)
+                pass  # Message stays in queue, will be retried next cycle
 
     def _title_keeper_loop(self) -> None:
         """Background thread to maintain terminal title."""
@@ -569,7 +580,8 @@ class ClaudeQServer:
         data = self._OSC_TITLE_RE.sub(b'', data)
 
         # Track when PTY last produced output (used by _is_busy).
-        self._last_output_time = time.time()
+        with self._busy_lock:
+            self._last_output_time = time.time()
 
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).
@@ -663,12 +675,15 @@ class ClaudeQServer:
         self.socket_handler.cleanup()
         self.metadata.cleanup()
         self.pty.terminate()
-        # Remove queue file if empty (no pending messages)
-        if self.queue.is_empty and self.queue_file.exists():
-            try:
-                self.queue_file.unlink()
-            except OSError:
-                pass
+        # Remove queue file if empty (no pending messages).
+        # Hold the queue lock so no message can be added between the
+        # emptiness check and the unlink.
+        with self.queue._lock:
+            if not self.queue.queue and self.queue_file.exists():
+                try:
+                    self.queue_file.unlink()
+                except OSError:
+                    pass
 
 
 def main() -> None:

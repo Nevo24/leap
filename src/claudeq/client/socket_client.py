@@ -49,8 +49,8 @@ class SocketClient:
         Returns:
             Server response dictionary, or None on error.
         """
+        client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             client_socket.settimeout(5.0)
             client_socket.connect(str(self.socket_path))
 
@@ -62,7 +62,6 @@ class SocketClient:
                 if not chunk:
                     break
                 chunks.append(chunk)
-            client_socket.close()
             response = b''.join(chunks).decode('utf-8')
 
             return json.loads(response)
@@ -72,7 +71,7 @@ class SocketClient:
                 print(f"  → Check if there's a terminal running: cq-server {self.tag}")
                 print(f"  → Details: {e}")
             return None
-        except json.JSONDecodeError as e:
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
             if not silent and self._should_print_error():
                 print(f"Error: Server sent malformed response")
                 print(
@@ -88,6 +87,11 @@ class SocketClient:
             if not silent and self._should_print_error():
                 print(f"Error communicating with server: {e}")
             return None
+        finally:
+            try:
+                client_socket.close()
+            except OSError:
+                pass
 
     def send(
         self, msg_type: str, message: str = "", silent: bool = False
