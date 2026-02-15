@@ -130,9 +130,12 @@ class TableBuilderMixin(_Base):
                     item.setText('No active sessions')
                 return
 
-            # Reset the full-row span used by the "No active sessions" state
+            # Reset the full-row span and placeholder text from the empty state
             if self.table.columnSpan(0, 0) > 1:
                 self.table.setSpan(0, 0, 1, 1)
+                item = self.table.item(0, 0)
+                if item and item.text() == 'No active sessions':
+                    item.setText('')
 
             self.table.setRowCount(new_count)
 
