@@ -35,6 +35,32 @@ class ServerLauncher:
     def __init__(self, window: MonitorWindow) -> None:
         self._w = window
 
+    def _get_scm_token(self, scm_type: str) -> Optional[str]:
+        """Get the authentication token for the given SCM type from the provider."""
+        provider = self._w._scm_providers.get(scm_type)
+        if provider is None:
+            return None
+        if scm_type == 'gitlab':
+            return getattr(provider, '_gl', None) and provider._gl.private_token
+        if scm_type == 'github':
+            return getattr(provider, '_token', None)
+        return None
+
+    def _build_clone_url(self, host_url: str, remote_project: str, scm_type: str) -> str:
+        """Build clone URL, injecting SCM token for authentication if available."""
+        base_url = f"{host_url}/{remote_project}.git"
+        token = self._get_scm_token(scm_type)
+        if not token or not host_url.startswith('http'):
+            return base_url
+        # Inject token: https://host → https://user:token@host
+        scheme_end = host_url.index('://') + 3
+        scheme = host_url[:scheme_end]
+        host = host_url[scheme_end:]
+        if scm_type == 'github':
+            return f"{scheme}x-access-token:{token}@{host}/{remote_project}.git"
+        # GitLab uses oauth2 as the username
+        return f"{scheme}oauth2:{token}@{host}/{remote_project}.git"
+
     def start_server(self, tag: str) -> None:
         """Start a new server for a pinned (dead) row.
 
@@ -140,7 +166,7 @@ class ServerLauncher:
         )
 
         if needs_clone:
-            clone_url = f"{host_url}/{remote_project}.git"
+            clone_url = self._build_clone_url(host_url, remote_project, pinned.get('scm_type', ''))
             if in_use_names:
                 used = ', '.join(in_use_names)
                 self._w._show_status(
@@ -198,9 +224,21 @@ class ServerLauncher:
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
         fetch_err: list[str] = ['']
         align_err: list[str] = ['']
+        # Pre-compute authenticated URL on main thread (accesses providers)
+        auth_url = self._build_clone_url(
+            pinned.get('host_url', ''), pinned.get('remote_project_path', ''),
+            pinned.get('scm_type', ''),
+        )
 
         def _align() -> None:
             cwd = str(project_dir)
+
+            # 0. Ensure remote URL has auth token (for repos cloned before token injection)
+            if auth_url:
+                subprocess.run(
+                    ['git', 'remote', 'set-url', 'origin', auth_url],
+                    capture_output=True, text=True, cwd=cwd, timeout=5,
+                )
 
             # 1. Fetch the branch
             refspec = f'+refs/heads/{branch}:refs/remotes/origin/{branch}'
