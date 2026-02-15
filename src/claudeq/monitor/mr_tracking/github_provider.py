@@ -264,22 +264,20 @@ class GitHubProvider(SCMProvider):
         if not thread_comments:
             return None
 
-        # Check if any comment is /cq from the configured user
-        has_cq_trigger = False
-        for comment in thread_comments:
+        # Find the last /cq trigger and last bot acknowledgment.
+        # An ack only covers /cq commands that appear before it.
+        last_cq_index = -1
+        last_ack_index = -1
+        for i, comment in enumerate(thread_comments):
             body = (comment.body or '').strip()
             author = comment.user.login if comment.user else ''
             if body == '/cq' and author == self._username:
-                has_cq_trigger = True
-                break
-
-        if not has_cq_trigger:
-            return None
-
-        # Check if already acknowledged
-        for comment in thread_comments:
+                last_cq_index = i
             if CQ_ACK_MESSAGE in (comment.body or ''):
-                return None
+                last_ack_index = i
+
+        if last_cq_index < 0 or last_cq_index < last_ack_index:
+            return None
 
         # Extract thread notes (excluding bot comments)
         thread_notes = []

@@ -340,7 +340,7 @@ The "Auto '/cq' fetch" checkbox (bottom bar, next to "Include git bots") control
 - **ON (default)**: `SCMPollerWorker` calls `scan_cq_commands()` each poll cycle, sends matching threads to CQ, and acknowledges them. The manual `/cq` menu items are greyed out.
 - **OFF**: Poller skips `/cq` scanning. User can manually fetch via the right-click menu items.
 
-A `/cq` comment on a thread does **not** count as a user response for unresponded thread detection — only the bot acknowledgment reply (`[ClaudeQ bot] on it!`) marks a thread as handled. Setting persisted in `.storage/monitor_prefs.json` as `auto_fetch_cq`.
+A `/cq` comment on a thread does **not** count as a user response for unresponded thread detection — only the bot acknowledgment reply (`[ClaudeQ bot] on it!`) marks a thread as handled. The ack only covers `/cq` commands that appear **before** it in the thread; a new `/cq` posted after an existing ack is treated as a fresh trigger. Setting persisted in `.storage/monitor_prefs.json` as `auto_fetch_cq`.
 
 ### User Notifications (GitLab Todos / GitHub Notifications)
 

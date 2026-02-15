@@ -324,22 +324,20 @@ class GitLabProvider(SCMProvider):
         if not notes:
             return None
 
-        # Check if any note is /cq from the configured user
-        has_cq_trigger = False
-        for note in notes:
+        # Find the last /cq trigger and last bot acknowledgment.
+        # An ack only covers /cq commands that appear before it.
+        last_cq_index = -1
+        last_ack_index = -1
+        for i, note in enumerate(notes):
             body = note.get('body', '').strip()
             author = self._note_author(note)
             if body == '/cq' and author == self._username:
-                has_cq_trigger = True
-                break
-
-        if not has_cq_trigger:
-            return None
-
-        # Check if already acknowledged
-        for note in notes:
+                last_cq_index = i
             if CQ_ACK_MESSAGE in note.get('body', ''):
-                return None
+                last_ack_index = i
+
+        if last_cq_index < 0 or last_cq_index < last_ack_index:
+            return None
 
         # Extract thread notes (excluding system notes)
         thread_notes = []
