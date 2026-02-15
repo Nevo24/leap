@@ -448,7 +448,7 @@ When a CQ server starts (`cq <tag>`), it checks `.storage/pinned_sessions.json` 
 Validation checks (in order):
 1. **Repo match**: Parses `git remote.origin.url` and compares project path with pinned `remote_project_path`
 2. **Branch match**: Compares `git branch --show-current` with pinned `branch` (skipped if branch is empty or `N/A`)
-3. **Behind remote**: Runs `git fetch origin <branch>` then `git merge-base --is-ancestor` to verify local is not behind remote
+3. **Behind remote**: Runs `git fetch` (with SCM token injection via `_build_auth_fetch_url()`) then `git merge-base --is-ancestor` to verify local is not behind remote
 4. **Ahead / dirty warnings** (non-fatal): If local has commits ahead of remote or uncommitted changes, prints a yellow warning but allows startup
 
 Checks 1-3 fail with a red error and exit. Check 4 is a non-fatal warning. Network failures during fetch are tolerated (don't block startup).

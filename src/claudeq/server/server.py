@@ -297,6 +297,49 @@ class ClaudeQServer:
             # Don't fail startup if cleanup fails
             pass
 
+    @staticmethod
+    def _build_auth_fetch_url(pinned: dict[str, Any]) -> Optional[str]:
+        """Build an authenticated fetch URL from pinned session + SCM config.
+
+        Reads the SCM token from the appropriate config file (gitlab_config.json
+        or github_config.json) and injects it into the host URL.  Returns None
+        if no token is available or the URL is non-HTTP (e.g. SSH).
+        """
+        host_url = pinned.get('host_url', '')
+        project = pinned.get('remote_project_path', '')
+        scm_type = pinned.get('scm_type', '')
+        if not host_url or not project or not host_url.startswith('http'):
+            return None
+
+        # Read token from the SCM config file
+        token: Optional[str] = None
+        if scm_type == 'gitlab':
+            cfg_path = STORAGE_DIR / "gitlab_config.json"
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, 'r') as f:
+                        token = json.load(f).get('private_token')
+                except (json.JSONDecodeError, OSError):
+                    pass
+        elif scm_type == 'github':
+            cfg_path = STORAGE_DIR / "github_config.json"
+            if cfg_path.exists():
+                try:
+                    with open(cfg_path, 'r') as f:
+                        token = json.load(f).get('token')
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        if not token:
+            return None
+
+        scheme_end = host_url.index('://') + 3
+        scheme = host_url[:scheme_end]
+        host = host_url[scheme_end:]
+        if scm_type == 'github':
+            return f"{scheme}x-access-token:{token}@{host}/{project}.git"
+        return f"{scheme}oauth2:{token}@{host}/{project}.git"
+
     def _validate_pinned_session(self) -> None:
         """Validate current repo/branch against monitor pinned session data.
 
@@ -376,11 +419,23 @@ class ClaudeQServer:
                 sys.exit(1)
 
             # --- Commits synced ---
+            fetch_url = self._build_auth_fetch_url(entry)
             try:
-                subprocess.run(
-                    ['git', 'fetch', 'origin', pinned_branch],
-                    capture_output=True, timeout=15
-                )
+                if fetch_url:
+                    # Fetch using authenticated URL directly (no remote URL change)
+                    refspec = (
+                        f'+refs/heads/{pinned_branch}'
+                        f':refs/remotes/origin/{pinned_branch}'
+                    )
+                    subprocess.run(
+                        ['git', 'fetch', fetch_url, refspec],
+                        capture_output=True, timeout=15
+                    )
+                else:
+                    subprocess.run(
+                        ['git', 'fetch', 'origin', pinned_branch],
+                        capture_output=True, timeout=15
+                    )
             except (subprocess.TimeoutExpired, OSError):
                 pass  # Network issues shouldn't block startup
 
