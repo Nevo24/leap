@@ -120,13 +120,19 @@ class TableBuilderMixin(_Base):
                 self.table.setRowCount(1)
                 for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
-                    text = 'No active sessions' if col == self.COL_TAG else ''
-                    item = self.table.item(0, col)
-                    if not item:
-                        self.table.setItem(0, col, QTableWidgetItem(text))
-                    elif item.text() != text:
-                        item.setText(text)
+                total_cols = self.table.columnCount()
+                # Span the entire row so no column separators are visible
+                self.table.setSpan(0, 0, 1, total_cols)
+                item = self.table.item(0, 0)
+                if not item:
+                    self.table.setItem(0, 0, QTableWidgetItem('No active sessions'))
+                elif item.text() != 'No active sessions':
+                    item.setText('No active sessions')
                 return
+
+            # Reset the full-row span used by the "No active sessions" state
+            if self.table.columnSpan(0, 0) > 1:
+                self.table.setSpan(0, 0, 1, 1)
 
             self.table.setRowCount(new_count)
 
