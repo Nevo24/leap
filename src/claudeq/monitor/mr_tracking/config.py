@@ -12,8 +12,12 @@ GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
 NOTIFICATION_SEEN_FILE = STORAGE_DIR / "notification_seen.json"
-CQ_CONTEXT_FILE = STORAGE_DIR / "cq_selected_ctx"
-CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
+CQ_TEMPLATE_FILE = STORAGE_DIR / "cq_selected_template"
+CQ_TEMPLATES_FILE = STORAGE_DIR / "cq_templates.json"
+
+# Backward-compat: old file names for migration
+_OLD_CQ_CONTEXT_FILE = STORAGE_DIR / "cq_selected_ctx"
+_OLD_CQ_CONTEXTS_FILE = STORAGE_DIR / "cq_contexts.json"
 
 # Default monitor preferences
 _DEFAULT_PREFS = {
@@ -162,22 +166,31 @@ def save_monitor_prefs(prefs: dict[str, Any]) -> None:
     atomic_json_write(MONITOR_PREFS_FILE, prefs)
 
 
-def load_selected_context_name() -> str:
-    """Load the name of the currently selected context preset.
+def _migrate_old_template_files() -> None:
+    """Migrate old context files to new template names (one-time)."""
+    if _OLD_CQ_CONTEXT_FILE.exists() and not CQ_TEMPLATE_FILE.exists():
+        _OLD_CQ_CONTEXT_FILE.rename(CQ_TEMPLATE_FILE)
+    if _OLD_CQ_CONTEXTS_FILE.exists() and not CQ_TEMPLATES_FILE.exists():
+        _OLD_CQ_CONTEXTS_FILE.rename(CQ_TEMPLATES_FILE)
+
+
+def load_selected_template_name() -> str:
+    """Load the name of the currently selected template preset.
 
     Returns:
         The preset name, or empty string if none selected.
     """
-    if not CQ_CONTEXT_FILE.exists():
+    _migrate_old_template_files()
+    if not CQ_TEMPLATE_FILE.exists():
         return ''
     try:
-        return CQ_CONTEXT_FILE.read_text(encoding='utf-8').strip()
+        return CQ_TEMPLATE_FILE.read_text(encoding='utf-8').strip()
     except OSError:
         return ''
 
 
-def save_selected_context_name(name: str) -> None:
-    """Save the name of the currently selected context preset."""
+def save_selected_template_name(name: str) -> None:
+    """Save the name of the currently selected template preset."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(STORAGE_DIR), suffix='.tmp')
     try:
@@ -185,7 +198,7 @@ def save_selected_context_name(name: str) -> None:
             f.write(name)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, str(CQ_CONTEXT_FILE))
+        os.replace(tmp_path, str(CQ_TEMPLATE_FILE))
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -194,31 +207,32 @@ def save_selected_context_name(name: str) -> None:
         raise
 
 
-def load_cq_context() -> str:
-    """Load the text of the currently selected context preset.
+def load_cq_template() -> str:
+    """Load the text of the currently selected template preset.
 
-    Resolves the selected preset name to its text from cq_contexts.json.
+    Resolves the selected preset name to its text from cq_templates.json.
 
     Returns:
-        The context string, or empty string if no preset selected or not found.
+        The template string, or empty string if no preset selected or not found.
     """
-    name = load_selected_context_name()
+    name = load_selected_template_name()
     if not name:
         return ''
-    contexts = load_saved_contexts()
-    return contexts.get(name, '')
+    templates = load_saved_templates()
+    return templates.get(name, '')
 
 
-def load_saved_contexts() -> dict[str, str]:
-    """Load all named context presets from storage.
+def load_saved_templates() -> dict[str, str]:
+    """Load all named template presets from storage.
 
     Returns:
-        Dict mapping context name to text.
+        Dict mapping template name to text.
     """
-    if not CQ_CONTEXTS_FILE.exists():
+    _migrate_old_template_files()
+    if not CQ_TEMPLATES_FILE.exists():
         return {}
     try:
-        with open(CQ_CONTEXTS_FILE, 'r', encoding='utf-8') as f:
+        with open(CQ_TEMPLATES_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict):
             return data
@@ -227,23 +241,23 @@ def load_saved_contexts() -> dict[str, str]:
     return {}
 
 
-def _write_saved_contexts(contexts: dict[str, str]) -> None:
-    """Write all named context presets to storage."""
-    atomic_json_write(CQ_CONTEXTS_FILE, contexts, ensure_ascii=False)
+def _write_saved_templates(templates: dict[str, str]) -> None:
+    """Write all named template presets to storage."""
+    atomic_json_write(CQ_TEMPLATES_FILE, templates, ensure_ascii=False)
 
 
-def save_named_context(name: str, text: str) -> None:
-    """Save a context preset under the given name."""
-    contexts = load_saved_contexts()
-    contexts[name] = text
-    _write_saved_contexts(contexts)
+def save_named_template(name: str, text: str) -> None:
+    """Save a template preset under the given name."""
+    templates = load_saved_templates()
+    templates[name] = text
+    _write_saved_templates(templates)
 
 
-def delete_named_context(name: str) -> None:
-    """Delete a saved context preset by name."""
-    contexts = load_saved_contexts()
-    contexts.pop(name, None)
-    _write_saved_contexts(contexts)
+def delete_named_template(name: str) -> None:
+    """Delete a saved template preset by name."""
+    templates = load_saved_templates()
+    templates.pop(name, None)
+    _write_saved_templates(templates)
 
 
 def load_pinned_sessions() -> dict[str, dict[str, Any]]:

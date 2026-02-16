@@ -1,4 +1,4 @@
-"""Table construction, refresh, settings, and context editor methods."""
+"""Table construction, refresh, settings, and template editor methods."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from PyQt5.QtCore import Qt
 
 from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
-    get_notification_prefs, load_saved_contexts, load_selected_context_name,
-    save_monitor_prefs, save_selected_context_name,
+    get_notification_prefs, load_saved_templates, load_selected_template_name,
+    save_monitor_prefs, save_selected_template_name,
 )
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.monitor.scm_polling import SessionRefreshWorker
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class TableBuilderMixin(_Base):
-    """Methods for table construction, cell helpers, refresh, and settings."""
+    """Methods for table construction, cell helpers, refresh, settings, and template editor."""
 
     _CENTER_COLS = frozenset({5, 6})  # COL_STATUS, COL_QUEUE
 
@@ -538,28 +538,28 @@ class TableBuilderMixin(_Base):
             self._apply_tooltips_setting()
             self._show_status('Settings saved')
 
-    def _open_context_editor(self) -> None:
-        """Open a dialog to edit the CQ context text with named presets."""
-        from claudeq.monitor.dialogs.scm_context_dialog import ContextEditorDialog
+    def _open_template_editor(self) -> None:
+        """Open a dialog to edit the CQ template text with named presets."""
+        from claudeq.monitor.dialogs.scm_template_dialog import TemplateEditorDialog
 
-        dialog = ContextEditorDialog(self)
+        dialog = TemplateEditorDialog(self)
         dialog.exec_()
-        self._populate_context_combo()
+        self._populate_template_combo()
 
-    def _populate_context_combo(self) -> None:
-        """Reload context combo items from saved presets and selection."""
+    def _populate_template_combo(self) -> None:
+        """Reload template combo items from saved presets and selection."""
         max_display = 40
-        combo = self.context_combo
+        combo = self.template_combo
         combo.blockSignals(True)
         combo.clear()
         combo.addItem('(None)')
-        for name in sorted(load_saved_contexts().keys()):
+        for name in sorted(load_saved_templates().keys()):
             if len(name) > max_display:
                 combo.addItem(name[:max_display] + '\u2026')
                 combo.setItemData(combo.count() - 1, name, Qt.UserRole)
             else:
                 combo.addItem(name)
-        selected = load_selected_context_name()
+        selected = load_selected_template_name()
         if selected and len(selected) > max_display:
             display = selected[:max_display] + '\u2026'
             idx = combo.findText(display)
@@ -567,30 +567,30 @@ class TableBuilderMixin(_Base):
             idx = combo.findText(selected) if selected else 0
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
-        self._update_context_combo_tooltip()
+        self._update_template_combo_tooltip()
 
-    def _on_context_combo_changed(self) -> None:
-        """Handle context combo selection change."""
-        text = self.context_combo.currentText()
+    def _on_template_combo_changed(self) -> None:
+        """Handle template combo selection change."""
+        text = self.template_combo.currentText()
         if text == '(None)':
-            save_selected_context_name('')
-            self._update_context_combo_tooltip()
+            save_selected_template_name('')
+            self._update_template_combo_tooltip()
             return
         # Resolve truncated display name back to full name via UserRole
-        idx = self.context_combo.currentIndex()
-        full_name = self.context_combo.itemData(idx, Qt.UserRole)
-        save_selected_context_name(full_name if full_name else text)
-        self._update_context_combo_tooltip()
+        idx = self.template_combo.currentIndex()
+        full_name = self.template_combo.itemData(idx, Qt.UserRole)
+        save_selected_template_name(full_name if full_name else text)
+        self._update_template_combo_tooltip()
 
-    def _update_context_combo_tooltip(self) -> None:
-        """Set combo tooltip to the full context name when truncated."""
-        combo = self.context_combo
+    def _update_template_combo_tooltip(self) -> None:
+        """Set combo tooltip to the full template name when truncated."""
+        combo = self.template_combo
         idx = combo.currentIndex()
         full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
         if full_name:
             combo.setToolTip(full_name)
         else:
-            combo.setToolTip('Active context preset attached to CQ messages')
+            combo.setToolTip('Active template preset attached to CQ messages')
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""

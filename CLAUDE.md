@@ -72,7 +72,7 @@ src/
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
-    │   │   └── scm_context_dialog.py  # Context editor dialog (named presets)
+    │   │   └── scm_template_dialog.py # Template editor dialog (named presets)
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -114,7 +114,7 @@ assets/
 | `MRDisplayMixin` | `monitor/_mixins/mr_display_mixin.py` | MR column styling, dock badge, banners |
 | `NotificationsMixin` | `monitor/_mixins/notifications_mixin.py` | User notification handling |
 | `TableBuilderMixin` | `monitor/_mixins/table_builder_mixin.py` | Table build, refresh, settings |
-| `ContextEditorDialog` | `monitor/dialogs/scm_context_dialog.py` | Context preset editor dialog |
+| `TemplateEditorDialog` | `monitor/dialogs/scm_template_dialog.py` | Template preset editor dialog |
 | `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
 | `StatusLog` | `monitor/ui/status_log.py` | In-memory status message log + viewer dialog |
 | `SettingsDialog` | `monitor/dialogs/settings_dialog.py` | Settings: terminal, repos dir, cleanup unused repos |

@@ -22,8 +22,7 @@ from PyQt5.QtGui import QIcon, QCloseEvent, QResizeEvent
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
     load_monitor_prefs, load_notification_seen, load_pinned_sessions,
-    load_saved_contexts, load_selected_context_name, save_monitor_prefs,
-    save_selected_context_name,
+    save_monitor_prefs,
 )
 from claudeq.monitor.scm_polling import (
     CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
@@ -217,29 +216,28 @@ class MonitorWindow(
         # Top controls
         top_layout = QHBoxLayout()
 
-        settings_btn = QPushButton('\u2699 Settings')
+        settings_btn = QPushButton('\u2699  Settings')
         settings_btn.setToolTip('Monitor settings')
         settings_btn.clicked.connect(self._open_settings)
         top_layout.addWidget(settings_btn)
 
-        ctx_label = QLabel('Context:')
-        top_layout.addWidget(ctx_label)
+        edit_template_btn = QPushButton('\u270e  Templates')
+        edit_template_btn.setToolTip('Edit template presets')
+        edit_template_btn.clicked.connect(self._open_template_editor)
+        top_layout.addWidget(edit_template_btn)
 
-        self.context_combo = QComboBox()
-        self.context_combo.setObjectName('context_combo')
-        self.context_combo.setMinimumWidth(180)
-        self.context_combo.setMaximumWidth(300)
-        self.context_combo.setToolTip('Active context preset attached to CQ messages')
-        self._populate_context_combo()
-        self.context_combo.currentIndexChanged.connect(
-            self._on_context_combo_changed)
-        top_layout.addWidget(self.context_combo)
+        tpl_label = QLabel('MR threads template:')
+        top_layout.addWidget(tpl_label)
 
-        context_edit_label = QLabel('\U0001f4dd')
-        context_edit_label.setToolTip('Edit context presets')
-        context_edit_label.setCursor(Qt.PointingHandCursor)
-        context_edit_label.mousePressEvent = lambda _: self._open_context_editor()
-        top_layout.addWidget(context_edit_label)
+        self.template_combo = QComboBox()
+        self.template_combo.setObjectName('template_combo')
+        self.template_combo.setMinimumWidth(180)
+        self.template_combo.setMaximumWidth(300)
+        self.template_combo.setToolTip('Active template preset attached to CQ messages')
+        self._populate_template_combo()
+        self.template_combo.currentIndexChanged.connect(
+            self._on_template_combo_changed)
+        top_layout.addWidget(self.template_combo)
 
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Size')

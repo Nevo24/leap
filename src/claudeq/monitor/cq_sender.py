@@ -4,7 +4,7 @@ import logging
 
 from claudeq.utils.constants import SOCKET_DIR
 from claudeq.utils.socket_utils import send_socket_request
-from claudeq.monitor.mr_tracking.config import load_cq_context
+from claudeq.monitor.mr_tracking.config import load_cq_template
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 def send_to_cq_session(tag: str, message: str) -> bool:
     """Send a queued message to a CQ session via Unix socket.
 
-    The selected context (from cq_selected_ctx.txt) is prepended to the
+    The selected template (from cq_selected_template) is prepended to the
     message if set.
 
     Args:
@@ -27,9 +27,9 @@ def send_to_cq_session(tag: str, message: str) -> bool:
         logger.warning("Socket not found for session: %s", tag)
         return False
 
-    context = load_cq_context()
-    if context:
-        message = context + '\n' + message
+    template = load_cq_template()
+    if template:
+        message = template + '\n' + message
 
     result = send_socket_request(
         socket_path, {'type': 'queue', 'message': '[gitlab] ' + message}
