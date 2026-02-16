@@ -311,24 +311,28 @@ class ClaudeQServer:
         if not host_url or not project or not host_url.startswith('http'):
             return None
 
-        # Read token from the SCM config file
+        # Read token from the SCM config file (supports env var mode)
         token: Optional[str] = None
         if scm_type == 'gitlab':
             cfg_path = STORAGE_DIR / "gitlab_config.json"
-            if cfg_path.exists():
-                try:
-                    with open(cfg_path, 'r') as f:
-                        token = json.load(f).get('private_token')
-                except (json.JSONDecodeError, OSError):
-                    pass
+            token_key = 'private_token'
         elif scm_type == 'github':
             cfg_path = STORAGE_DIR / "github_config.json"
-            if cfg_path.exists():
-                try:
-                    with open(cfg_path, 'r') as f:
-                        token = json.load(f).get('token')
-                except (json.JSONDecodeError, OSError):
-                    pass
+            token_key = 'token'
+        else:
+            return None
+
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, 'r') as f:
+                    cfg = json.load(f)
+                if cfg.get('token_mode') == 'env_var':
+                    var_name = cfg.get(token_key, '')
+                    token = os.environ.get(var_name) if var_name else None
+                else:
+                    token = cfg.get(token_key)
+            except (json.JSONDecodeError, OSError):
+                pass
 
         if not token:
             return None

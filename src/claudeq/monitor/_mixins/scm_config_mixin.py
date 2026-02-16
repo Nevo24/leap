@@ -9,7 +9,8 @@ from PyQt5.QtCore import Qt
 
 from claudeq.monitor.mr_tracking.base import SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    load_github_config, load_gitlab_config, save_monitor_prefs,
+    load_github_config, load_gitlab_config, resolve_scm_token,
+    save_monitor_prefs,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
 from claudeq.utils.constants import SCM_POLL_INTERVAL
@@ -32,12 +33,13 @@ class SCMConfigMixin(_Base):
 
         # GitLab
         gitlab_config = load_gitlab_config()
-        if gitlab_config and 'private_token' in gitlab_config and 'username' in gitlab_config:
+        gitlab_token = resolve_scm_token(gitlab_config, 'private_token') if gitlab_config else None
+        if gitlab_config and gitlab_token and 'username' in gitlab_config:
             try:
                 from claudeq.monitor.mr_tracking.gitlab_provider import GitLabProvider
                 self._scm_providers[SCMType.GITLAB.value] = GitLabProvider(
                     gitlab_url=gitlab_config.get('gitlab_url', 'https://gitlab.com'),
-                    private_token=gitlab_config['private_token'],
+                    private_token=gitlab_token,
                     username=gitlab_config['username'],
                     filter_bots=filter_bots,
                 )
@@ -49,11 +51,12 @@ class SCMConfigMixin(_Base):
 
         # GitHub
         github_config = load_github_config()
-        if github_config and 'token' in github_config and 'username' in github_config:
+        github_token = resolve_scm_token(github_config, 'token') if github_config else None
+        if github_config and github_token and 'username' in github_config:
             try:
                 from claudeq.monitor.mr_tracking.github_provider import GitHubProvider
                 self._scm_providers[SCMType.GITHUB.value] = GitHubProvider(
-                    token=github_config['token'],
+                    token=github_token,
                     username=github_config['username'],
                     github_url=github_config.get('github_url') or None,
                     filter_bots=filter_bots,

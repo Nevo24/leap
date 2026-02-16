@@ -125,6 +125,7 @@ assets/
 | `NotificationType` | `monitor/ui/dock_badge.py` | Enum of notification event types |
 | `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |
 | `NotificationsDialog` | `monitor/dialogs/notifications_dialog.py` | Per-type notification config (dock/banner toggles) |
+| `resolve_scm_token()` | `monitor/mr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `get_notification_prefs()` | `monitor/mr_tracking/config.py` | Merge saved notification prefs with defaults |
 | `load_notification_seen()` | `monitor/mr_tracking/config.py` | Load seen notification IDs per SCM type |
 | `save_notification_seen()` | `monitor/mr_tracking/config.py` | Persist seen notification IDs per SCM type |
@@ -345,6 +346,17 @@ The "Auto '/cq' fetch" checkbox (bottom bar, next to "Include git bots") control
 - **OFF**: Poller skips `/cq` scanning. User can manually fetch via the right-click menu items.
 
 A `/cq` comment on a thread does **not** count as a user response for unresponded thread detection — only the bot acknowledgment reply (`[ClaudeQ bot] on it!`) marks a thread as handled. The ack only covers `/cq` commands that appear **before** it in the thread; a new `/cq` posted after an existing ack is treated as a fresh trigger. Setting persisted in `.storage/monitor_prefs.json` as `auto_fetch_cq`.
+
+### Environment Variable Token Mode
+
+The SCM setup dialogs (GitLab / GitHub) support two token modes:
+
+- **Token** (default): The token value is stored directly in the config JSON (`gitlab_config.json` / `github_config.json`)
+- **Environment variable**: The config stores the name of an env var (e.g. `GITLAB_TOKEN`). The token is resolved from `os.environ` at runtime
+
+Config field: `token_mode: "direct" | "env_var"`. Missing or `"direct"` means the raw token value is used (backward compatible).
+
+Resolution: `resolve_scm_token(config, token_key)` in `config.py` is the single resolution point for all monitor-side token consumers. The server (`_build_auth_fetch_url`) inlines the same logic to avoid importing from the monitor package.
 
 ### User Notifications (GitLab Todos / GitHub Notifications)
 

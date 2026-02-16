@@ -77,6 +77,28 @@ def save_notification_seen(seen: dict[str, list[str]]) -> None:
     atomic_json_write(NOTIFICATION_SEEN_FILE, seen)
 
 
+def resolve_scm_token(config: dict[str, Any], token_key: str) -> Optional[str]:
+    """Resolve the SCM token from config, supporting env var mode.
+
+    If ``config['token_mode']`` is ``'env_var'``, the value stored under
+    *token_key* is treated as an environment variable name and looked up
+    via ``os.environ``.  Otherwise (``'direct'`` or missing key — backward
+    compat) the raw value is returned.
+
+    Args:
+        config: The provider config dict (gitlab_config or github_config).
+        token_key: The dict key that holds the token or env var name
+                   (e.g. ``'private_token'`` or ``'token'``).
+
+    Returns:
+        The resolved token string, or None if unavailable.
+    """
+    if config.get('token_mode') == 'env_var':
+        var_name = config.get(token_key, '')
+        return os.environ.get(var_name) if var_name else None
+    return config.get(token_key)
+
+
 def load_gitlab_config() -> Optional[dict[str, Any]]:
     """Load GitLab configuration from storage.
 

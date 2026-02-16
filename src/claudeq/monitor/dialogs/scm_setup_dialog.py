@@ -1,11 +1,12 @@
 """Base SCM connection setup dialog for ClaudeQ Monitor."""
 
+import os
 from abc import abstractmethod
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QCheckBox, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QMessageBox, QSpinBox, QWidget,
+    QButtonGroup, QCheckBox, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QMessageBox, QRadioButton, QSpinBox, QWidget,
 )
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL
@@ -105,6 +106,26 @@ class SCMSetupDialog(QDialog):
 
         # Token
         layout.addWidget(QLabel(self._token_label()))
+
+        # Token mode: direct value vs environment variable
+        mode_layout = QHBoxLayout()
+        self._token_direct_radio = QRadioButton('Token')
+        self._token_direct_radio.setToolTip('Paste the token value directly (stored in .storage/)')
+        self._token_envvar_radio = QRadioButton('Environment variable')
+        self._token_envvar_radio.setToolTip(
+            'Enter the name of an environment variable that holds the token\n'
+            '(e.g. GITLAB_TOKEN). The token is resolved at runtime and never stored.'
+        )
+        self._token_mode_group = QButtonGroup(self)
+        self._token_mode_group.addButton(self._token_direct_radio)
+        self._token_mode_group.addButton(self._token_envvar_radio)
+        self._token_direct_radio.setChecked(True)
+        self._token_direct_radio.toggled.connect(self._on_token_mode_changed)
+        mode_layout.addWidget(self._token_direct_radio)
+        mode_layout.addWidget(self._token_envvar_radio)
+        mode_layout.addStretch()
+        layout.addLayout(mode_layout)
+
         self.token_input = QLineEdit()
         self.token_input.setEchoMode(QLineEdit.Password)
         self.token_input.setPlaceholderText(self._token_placeholder())
@@ -152,6 +173,41 @@ class SCMSetupDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+    def _on_token_mode_changed(self, direct_checked: bool) -> None:
+        """Toggle token input between direct and env var mode."""
+        self.token_input.clear()
+        if direct_checked:
+            self.token_input.setEchoMode(QLineEdit.Password)
+            self.token_input.setPlaceholderText(self._token_placeholder())
+        else:
+            self.token_input.setEchoMode(QLineEdit.Normal)
+            self.token_input.setPlaceholderText('e.g. GITLAB_TOKEN')
+
+    @staticmethod
+    def _is_valid_env_var_name(name: str) -> bool:
+        """Check if a string looks like a valid environment variable name."""
+        return bool(name) and all(
+            c.isalnum() or c == '_' for c in name
+        ) and not name[0].isdigit()
+
+    def _validate_token_mode(self) -> bool:
+        """Validate token input matches the selected mode.
+
+        Returns True if valid, False if a warning was shown.
+        """
+        value = self.token_input.text().strip()
+        if not value:
+            return True
+        if self._token_envvar_radio.isChecked() and not self._is_valid_env_var_name(value):
+            QMessageBox.warning(
+                self, 'Invalid environment variable',
+                f'"{value}" is not a valid environment variable name.\n\n'
+                'If you want to use a token directly, select the "Token" '
+                'radio button instead.',
+            )
+            return False
+        return True
+
     def _toggle_url_visible(self, checked: bool) -> None:
         self._url_label_widget.setVisible(checked)
         self.url_input.setVisible(checked)
@@ -168,6 +224,12 @@ class SCMSetupDialog(QDialog):
         if saved_url and saved_url != default_url:
             self._url_check.setChecked(True)
             self.url_input.setText(saved_url)
+        if config.get('token_mode') == 'env_var':
+            self._token_envvar_radio.setChecked(True)
+            # Explicitly set Normal echo mode — radio signal may not fire
+            # during construction, and plaintext makes it clear no token is stored
+            self.token_input.setEchoMode(QLineEdit.Normal)
+            self.token_input.setPlaceholderText('e.g. GITLAB_TOKEN')
         self.token_input.setText(config.get(self._config_token_key(), ''))
         self.poll_input.setValue(config.get('poll_interval', SCM_POLL_INTERVAL))
         self.notif_check.setChecked(config.get('enable_notifications', False))
@@ -179,11 +241,28 @@ class SCMSetupDialog(QDialog):
 
     def _test_connection(self) -> None:
         url = self.url_input.text().strip() or self._url_default()
-        token = self.token_input.text().strip()
-        if not token:
-            self.status_label.setText('Please enter a token.')
+        raw_token = self.token_input.text().strip()
+        if not raw_token:
+            if self._token_envvar_radio.isChecked():
+                self.status_label.setText('Please enter an environment variable name.')
+            else:
+                self.status_label.setText('Please enter a token.')
             self.status_label.setStyleSheet('color: red;')
             return
+
+        if not self._validate_token_mode():
+            return
+
+        # Resolve env var if in env var mode
+        if self._token_envvar_radio.isChecked():
+            token = os.environ.get(raw_token)
+            if not token:
+                self.status_label.setText(
+                    f'Environment variable ${raw_token} is not set.')
+                self.status_label.setStyleSheet('color: red;')
+                return
+        else:
+            token = raw_token
 
         self.status_label.setText('Testing...')
         self.status_label.setStyleSheet('color: grey;')
@@ -212,13 +291,17 @@ class SCMSetupDialog(QDialog):
     def _save(self) -> None:
         url = self.url_input.text().strip() or self._url_default()
         token = self.token_input.text().strip()
+        if not self._validate_token_mode():
+            return
         if not self._verified_username:
             QMessageBox.warning(self, 'Error', 'Test the connection first.')
             return
 
+        token_mode = 'env_var' if self._token_envvar_radio.isChecked() else 'direct'
         config = {
             self._config_url_key(): url,
             self._config_token_key(): token,
+            'token_mode': token_mode,
             'username': self._verified_username,
             'poll_interval': self.poll_input.value(),
             'enable_notifications': self.notif_check.isChecked(),
