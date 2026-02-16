@@ -358,6 +358,13 @@ Config field: `token_mode: "direct" | "env_var"`. Missing or `"direct"` means th
 
 Resolution: `resolve_scm_token(config, token_key)` in `config.py` is the single resolution point for all monitor-side token consumers. The server (`_build_auth_fetch_url`) inlines the same logic to avoid importing from the monitor package.
 
+**Startup validation (env var mode only):** `_resolve_and_validate_env_token()` in `scm_config_mixin.py` runs on monitor startup. If the env var is unset or the resolved token fails auth, the provider is disabled and the saved `username` is cleared from the config so the warning popup shows only once. The user must re-open the setup dialog and test the connection to re-enable.
+
+- Direct mode tokens are **not** re-validated on startup (they were already validated via "Test Connection" when saved)
+- If no `username` exists in the config (provider was never configured or was previously disabled), validation is skipped entirely — no popup, no network call
+
+**Row survival with disconnected provider:** When an env var token becomes invalid, MR-pinned rows (those with `remote_project_path` set) survive auto-removal even without an active provider. The `_merge_sessions()` auto-removal check in `session_mixin.py` protects rows that have `remote_project_path` OR are in `_tracked_tags` OR `_checking_tags`. Since `remote_project_path` is a persistent field in `pinned_sessions.json`, MR-pinned dead rows are never pruned due to a disconnected provider. When the user fixes the env var and reconnects, `_auto_track_mr_pinned()` restores tracking for all sessions with `mr_tracked: True`.
+
 ### User Notifications (GitLab Todos / GitHub Notifications)
 
 The monitor can poll for user-level notifications from GitLab and GitHub — these are independent of MR tracking and cover the user's entire SCM account (review requests, assignments, mentions).

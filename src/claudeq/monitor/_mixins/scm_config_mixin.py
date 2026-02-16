@@ -6,11 +6,12 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QMessageBox
 
 from claudeq.monitor.mr_tracking.base import SCMProvider
 from claudeq.monitor.mr_tracking.config import (
     load_github_config, load_gitlab_config, resolve_scm_token,
-    save_monitor_prefs,
+    save_github_config, save_gitlab_config, save_monitor_prefs,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
 from claudeq.utils.constants import SCM_POLL_INTERVAL
@@ -28,12 +29,19 @@ class SCMConfigMixin(_Base):
     """Methods for SCM provider initialization, setup dialogs, and toggles."""
 
     def _init_scm_providers(self) -> None:
-        """Load SCM configs and create providers for each configured platform."""
+        """Load SCM configs and create providers for each configured platform.
+
+        For env var token mode, validates the resolved token on startup.
+        If validation fails (env var unset or token invalid), the provider is
+        disabled, the saved username is cleared (so the popup won't repeat on
+        next startup), and a warning is shown once.
+        """
         filter_bots = not self._prefs.get('include_bots', False)
 
         # GitLab
         gitlab_config = load_gitlab_config()
-        gitlab_token = resolve_scm_token(gitlab_config, 'private_token') if gitlab_config else None
+        gitlab_token = self._resolve_and_validate_env_token(
+            gitlab_config, 'private_token', 'GitLab', save_gitlab_config)
         if gitlab_config and gitlab_token and 'username' in gitlab_config:
             try:
                 from claudeq.monitor.mr_tracking.gitlab_provider import GitLabProvider
@@ -51,7 +59,8 @@ class SCMConfigMixin(_Base):
 
         # GitHub
         github_config = load_github_config()
-        github_token = resolve_scm_token(github_config, 'token') if github_config else None
+        github_token = self._resolve_and_validate_env_token(
+            github_config, 'token', 'GitHub', save_github_config)
         if github_config and github_token and 'username' in github_config:
             try:
                 from claudeq.monitor.mr_tracking.github_provider import GitHubProvider
@@ -68,6 +77,91 @@ class SCMConfigMixin(_Base):
             self._scm_providers.pop(SCMType.GITHUB.value, None)
 
         self._update_scm_buttons()
+
+    def _resolve_and_validate_env_token(
+        self,
+        config: Optional[dict[str, Any]],
+        token_key: str,
+        provider_name: str,
+        save_fn: Any,
+    ) -> Optional[str]:
+        """Resolve the token and validate it if using env var mode.
+
+        For direct mode: returns the stored token as-is (already validated
+        via Test Connection when saved).
+
+        For env var mode: resolves the env var. If unset or the token is
+        invalid, shows a one-time warning and clears the saved username so
+        the warning won't repeat on subsequent startups.
+
+        Returns:
+            The resolved token, or None if unavailable/invalid.
+        """
+        if not config or 'username' not in config:
+            return None  # Not configured — nothing to validate
+        token = resolve_scm_token(config, token_key)
+        if config.get('token_mode') != 'env_var':
+            return token  # Direct mode — trust the saved value
+
+        var_name = config.get(token_key, '')
+
+        # Env var not set
+        if not token:
+            self._disable_env_var_provider(config, save_fn, provider_name,
+                                           f'Environment variable ${var_name} is not set.')
+            return None
+
+        # Env var set — validate the token actually works
+        success, error = self._test_env_var_token(provider_name, config, token)
+        if not success:
+            self._disable_env_var_provider(
+                config, save_fn, provider_name,
+                f'Token from ${var_name} is invalid.\n\n{error}')
+            return None
+
+        return token
+
+    @staticmethod
+    def _test_env_var_token(provider_name: str, config: dict[str, Any],
+                            token: str) -> tuple[bool, str]:
+        """Quick auth check for a resolved env var token."""
+        try:
+            if provider_name == 'GitLab':
+                import gitlab
+                gl = gitlab.Gitlab(
+                    config.get('gitlab_url', 'https://gitlab.com'),
+                    private_token=token, timeout=10)
+                gl.auth()
+                return True, gl.user.username
+            elif provider_name == 'GitHub':
+                from github import Github
+                base_url = config.get('github_url', '')
+                if base_url:
+                    stripped = base_url.lower().rstrip('/')
+                    if stripped in ('https://github.com', 'http://github.com'):
+                        base_url = ''
+                if base_url:
+                    gh = Github(login_or_token=token, base_url=base_url, timeout=10)
+                else:
+                    gh = Github(login_or_token=token, timeout=10)
+                return True, gh.get_user().login
+        except Exception as e:
+            return False, str(e)
+        return False, 'Unknown provider'
+
+    @staticmethod
+    def _disable_env_var_provider(config: dict[str, Any], save_fn: Any,
+                                  provider_name: str, reason: str) -> None:
+        """Clear the saved username so this provider won't re-init on next startup."""
+        config.pop('username', None)
+        save_fn(config)
+        QMessageBox.warning(
+            None,
+            f'{provider_name} disconnected',
+            f'{reason}\n\n'
+            f'{provider_name} connection is disabled. Re-open the setup '
+            f'dialog and test the connection to re-enable.',
+        )
 
     def _update_scm_buttons(self) -> None:
         """Update SCM button text/style based on connection state."""
