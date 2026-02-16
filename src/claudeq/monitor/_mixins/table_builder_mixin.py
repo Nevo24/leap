@@ -551,16 +551,42 @@ class TableBuilderMixin(_Base):
     ) -> None:
         """Show right-click context menu on the Server button."""
         menu = QMenu(self)
-        action = QAction('Send direct message', self)
+
+        direct_action = QAction('Send template directly', self)
         if is_dead:
-            action.setEnabled(False)
+            direct_action.setEnabled(False)
         else:
-            action.triggered.connect(lambda: self._send_direct_template(tag))
-        menu.addAction(action)
+            direct_action.triggered.connect(
+                lambda: self._send_direct_template(tag)
+            )
+        menu.addAction(direct_action)
+
+        queue_action = QAction('Send template to queue', self)
+        if is_dead:
+            queue_action.setEnabled(False)
+        else:
+            queue_action.triggered.connect(
+                lambda: self._send_direct_template_to_queue(tag)
+            )
+        menu.addAction(queue_action)
+
         menu.exec_(btn.mapToGlobal(pos))
 
     def _send_direct_template(self, tag: str) -> None:
-        """Send the direct message template to the given CQ session."""
+        """Send the direct message template directly to the CQ session."""
+        from claudeq.monitor.cq_sender import send_to_cq_session_direct
+
+        template = load_cq_direct_template()
+        if not template:
+            self._show_status('No direct message template selected')
+            return
+        if send_to_cq_session_direct(tag, template):
+            self._show_status(f'Direct template sent to {tag}')
+        else:
+            self._show_status(f'Failed to send direct template to {tag}')
+
+    def _send_direct_template_to_queue(self, tag: str) -> None:
+        """Queue the direct message template for the CQ session."""
         from claudeq.monitor.cq_sender import send_to_cq_session_raw
 
         template = load_cq_direct_template()
@@ -568,9 +594,9 @@ class TableBuilderMixin(_Base):
             self._show_status('No direct message template selected')
             return
         if send_to_cq_session_raw(tag, template):
-            self._show_status(f'Direct template sent to {tag}')
+            self._show_status(f'Direct template queued for {tag}')
         else:
-            self._show_status(f'Failed to send direct template to {tag}')
+            self._show_status(f'Failed to queue direct template for {tag}')
 
     def _open_template_editor(self) -> None:
         """Open a dialog to edit the CQ template text with named presets."""

@@ -64,3 +64,31 @@ def send_to_cq_session_raw(tag: str, message: str) -> bool:
         return False
 
     return result.get('status') in ('ok', 'queued')
+
+
+def send_to_cq_session_direct(tag: str, message: str) -> bool:
+    """Send a message directly to a CQ session, bypassing the queue.
+
+    The message is sent immediately to Claude via the PTY, regardless of
+    whether Claude is currently busy.
+
+    Args:
+        tag: Session tag name.
+        message: Message to send directly.
+
+    Returns:
+        True on success, False on failure.
+    """
+    socket_path = SOCKET_DIR / f"{tag}.sock"
+    if not socket_path.exists():
+        logger.warning("Socket not found for session: %s", tag)
+        return False
+
+    result = send_socket_request(
+        socket_path, {'type': 'direct', 'message': message}
+    )
+    if result is None:
+        logger.error("Failed to send directly to session %s", tag)
+        return False
+
+    return result.get('status') == 'sent'
