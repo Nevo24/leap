@@ -54,7 +54,7 @@ src/
     │   ├── server_launcher.py   # MR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
-    │   ├── cq_sender.py         # Socket sender for /cq commands
+    │   ├── cq_sender.py         # Socket sender for /cq commands + direct template
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   │
@@ -125,6 +125,10 @@ assets/
 | `NotificationType` | `monitor/ui/dock_badge.py` | Enum of notification event types |
 | `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |
 | `NotificationsDialog` | `monitor/dialogs/notifications_dialog.py` | Per-type notification config (dock/banner toggles) |
+| `load_cq_template()` | `monitor/mr_tracking/config.py` | Load active MR threads template text |
+| `load_cq_direct_template()` | `monitor/mr_tracking/config.py` | Load active direct message template text |
+| `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends MR template) |
+| `send_to_cq_session_raw()` | `monitor/cq_sender.py` | Send message to CQ session (no template prepend) |
 | `resolve_scm_token()` | `monitor/mr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `get_notification_prefs()` | `monitor/mr_tracking/config.py` | Merge saved notification prefs with defaults |
 | `load_notification_seen()` | `monitor/mr_tracking/config.py` | Load seen notification IDs per SCM type |
@@ -149,6 +153,9 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` |
 | Notification seen state | `.storage/notification_seen.json` |
+| MR threads template selection | `.storage/cq_selected_template` |
+| Direct msg template selection | `.storage/cq_selected_direct_template` |
+| Template presets | `.storage/cq_templates.json` |
 
 ## File Cleanup & Lifecycle
 

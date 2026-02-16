@@ -13,6 +13,7 @@ MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
 NOTIFICATION_SEEN_FILE = STORAGE_DIR / "notification_seen.json"
 CQ_TEMPLATE_FILE = STORAGE_DIR / "cq_selected_template"
+CQ_DIRECT_TEMPLATE_FILE = STORAGE_DIR / "cq_selected_direct_template"
 CQ_TEMPLATES_FILE = STORAGE_DIR / "cq_templates.json"
 
 # Backward-compat: old file names for migration
@@ -205,6 +206,51 @@ def save_selected_template_name(name: str) -> None:
         except OSError:
             pass
         raise
+
+
+def load_selected_direct_template_name() -> str:
+    """Load the name of the currently selected direct message template preset.
+
+    Returns:
+        The preset name, or empty string if none selected.
+    """
+    if not CQ_DIRECT_TEMPLATE_FILE.exists():
+        return ''
+    try:
+        return CQ_DIRECT_TEMPLATE_FILE.read_text(encoding='utf-8').strip()
+    except OSError:
+        return ''
+
+
+def save_selected_direct_template_name(name: str) -> None:
+    """Save the name of the currently selected direct message template preset."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(STORAGE_DIR), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(name)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(CQ_DIRECT_TEMPLATE_FILE))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_cq_direct_template() -> str:
+    """Load the text of the currently selected direct message template preset.
+
+    Returns:
+        The template string, or empty string if no preset selected or not found.
+    """
+    name = load_selected_direct_template_name()
+    if not name:
+        return ''
+    templates = load_saved_templates()
+    return templates.get(name, '')
 
 
 def load_cq_template() -> str:

@@ -39,3 +39,28 @@ def send_to_cq_session(tag: str, message: str) -> bool:
         return False
 
     return result.get('status') in ('ok', 'queued')
+
+
+def send_to_cq_session_raw(tag: str, message: str) -> bool:
+    """Send a message to a CQ session without prepending any template.
+
+    Args:
+        tag: Session tag name.
+        message: Message to queue as-is.
+
+    Returns:
+        True on success, False on failure.
+    """
+    socket_path = SOCKET_DIR / f"{tag}.sock"
+    if not socket_path.exists():
+        logger.warning("Socket not found for session: %s", tag)
+        return False
+
+    result = send_socket_request(
+        socket_path, {'type': 'queue', 'message': message}
+    )
+    if result is None:
+        logger.error("Failed to send to session %s", tag)
+        return False
+
+    return result.get('status') in ('ok', 'queued')

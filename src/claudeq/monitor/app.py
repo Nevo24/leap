@@ -12,9 +12,9 @@ import time
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QTableWidget, QTableWidgetItem, QPushButton, QCheckBox,
-    QHeaderView, QMessageBox, QProgressBar,
+    QApplication, QComboBox, QGridLayout, QMainWindow, QWidget, QVBoxLayout,
+    QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QPushButton,
+    QCheckBox, QHeaderView, QMessageBox, QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
 from PyQt5.QtGui import QIcon, QCloseEvent, QResizeEvent
@@ -221,23 +221,43 @@ class MonitorWindow(
         settings_btn.clicked.connect(self._open_settings)
         top_layout.addWidget(settings_btn)
 
+        top_layout.addStretch()
+
         edit_template_btn = QPushButton('\u270e  Templates')
         edit_template_btn.setToolTip('Edit template presets')
         edit_template_btn.clicked.connect(self._open_template_editor)
         top_layout.addWidget(edit_template_btn)
 
+        template_grid = QGridLayout()
+        template_grid.setSpacing(4)
+
         tpl_label = QLabel('MR threads template:')
-        top_layout.addWidget(tpl_label)
+        template_grid.addWidget(tpl_label, 0, 0)
 
         self.template_combo = QComboBox()
         self.template_combo.setObjectName('template_combo')
         self.template_combo.setMinimumWidth(180)
         self.template_combo.setMaximumWidth(300)
-        self.template_combo.setToolTip('Active template preset attached to CQ messages')
+        self.template_combo.setToolTip('Active template attached to MR thread messages (via right-click MR threads-status emoji)')
         self._populate_template_combo()
         self.template_combo.currentIndexChanged.connect(
             self._on_template_combo_changed)
-        top_layout.addWidget(self.template_combo)
+        template_grid.addWidget(self.template_combo, 0, 1)
+
+        direct_label = QLabel('Direct msg template:')
+        template_grid.addWidget(direct_label, 1, 0)
+
+        self.direct_template_combo = QComboBox()
+        self.direct_template_combo.setObjectName('direct_template_combo')
+        self.direct_template_combo.setMinimumWidth(180)
+        self.direct_template_combo.setMaximumWidth(300)
+        self.direct_template_combo.setToolTip('Active template that can be sent directly to the server (via right-click on Server button)')
+        self._populate_direct_template_combo()
+        self.direct_template_combo.currentIndexChanged.connect(
+            self._on_direct_template_combo_changed)
+        template_grid.addWidget(self.direct_template_combo, 1, 1)
+
+        top_layout.addLayout(template_grid)
 
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Size')

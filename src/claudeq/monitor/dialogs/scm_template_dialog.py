@@ -11,8 +11,10 @@ from PyQt5.QtWidgets import (
 )
 
 from claudeq.monitor.mr_tracking.config import (
-    delete_named_template, load_saved_templates, load_selected_template_name,
-    save_named_template, save_selected_template_name,
+    delete_named_template, load_saved_templates,
+    load_selected_direct_template_name, load_selected_template_name,
+    save_named_template, save_selected_direct_template_name,
+    save_selected_template_name,
 )
 
 
@@ -70,12 +72,14 @@ class TemplateEditorDialog(QDialog):
                 self._text_edit.setPlainText(templates[selected_name])
         self._current_name = selected_name
 
-        # Bottom buttons: Apply & Close + Cancel
+        # Bottom buttons: two Apply & Close buttons + Cancel
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        apply_btn = QPushButton('Apply && Close')
+        apply_mr_btn = QPushButton('Apply to MR threads && Close')
+        apply_direct_btn = QPushButton('Apply to Direct msg && Close')
         cancel_btn = QPushButton('Cancel')
-        btn_layout.addWidget(apply_btn)
+        btn_layout.addWidget(apply_mr_btn)
+        btn_layout.addWidget(apply_direct_btn)
         btn_layout.addWidget(cancel_btn)
         dlg_layout.addLayout(btn_layout)
 
@@ -85,7 +89,8 @@ class TemplateEditorDialog(QDialog):
         self._save_btn.clicked.connect(self._on_save)
         save_as_btn.clicked.connect(self._on_save_as)
         self._delete_btn.clicked.connect(self._on_delete)
-        apply_btn.clicked.connect(self._on_apply)
+        apply_mr_btn.clicked.connect(self._on_apply_mr)
+        apply_direct_btn.clicked.connect(self._on_apply_direct)
         cancel_btn.clicked.connect(self.reject)
 
         self._refresh_combo(selected_name)
@@ -237,8 +242,8 @@ class TemplateEditorDialog(QDialog):
                 self._text_edit.clear()
             self._update_button_states()
 
-    def _on_apply(self) -> None:
-        # Check if text differs from the saved version
+    def _maybe_save_unsaved(self) -> bool:
+        """Check for unsaved changes and offer to save. Returns False if cancelled."""
         name = self._current_name
         if name:
             saved_text = load_saved_templates().get(name, '')
@@ -249,8 +254,21 @@ class TemplateEditorDialog(QDialog):
                     QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                 )
                 if reply == QMessageBox.Cancel:
-                    return
+                    return False
                 if reply == QMessageBox.Yes:
                     save_named_template(name, self._text_edit.toPlainText())
-        save_selected_template_name(name)
+        return True
+
+    def _on_apply_mr(self) -> None:
+        """Apply the current template to the MR threads combobox and close."""
+        if not self._maybe_save_unsaved():
+            return
+        save_selected_template_name(self._current_name)
+        self.accept()
+
+    def _on_apply_direct(self) -> None:
+        """Apply the current template to the Direct msg combobox and close."""
+        if not self._maybe_save_unsaved():
+            return
+        save_selected_direct_template_name(self._current_name)
         self.accept()

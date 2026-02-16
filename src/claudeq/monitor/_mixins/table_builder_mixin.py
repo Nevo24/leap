@@ -7,14 +7,17 @@ from typing import TYPE_CHECKING
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QHBoxLayout, QPushButton, QTableWidgetItem, QWidget,
+    QAction, QApplication, QHBoxLayout, QMenu, QPushButton,
+    QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
 
 from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
-    get_notification_prefs, load_saved_templates, load_selected_template_name,
-    save_monitor_prefs, save_selected_template_name,
+    get_notification_prefs, load_cq_direct_template, load_saved_templates,
+    load_selected_direct_template_name, load_selected_template_name,
+    save_monitor_prefs, save_selected_direct_template_name,
+    save_selected_template_name,
 )
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.monitor.scm_polling import SessionRefreshWorker
@@ -271,6 +274,11 @@ class TableBuilderMixin(_Base):
                             lambda checked, t=tag:
                                 self._focus_session(t, 'server')
                         )
+                    server_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+                    server_btn.customContextMenuRequested.connect(
+                        lambda pos, btn=server_btn, t=tag, dead=is_dead:
+                            self._show_server_context_menu(btn, pos, t, dead)
+                    )
                     server_layout.addWidget(server_btn)
                     self._set_cell_widget(row, self.COL_SERVER,
                                           server_container)
@@ -538,6 +546,32 @@ class TableBuilderMixin(_Base):
             self._apply_tooltips_setting()
             self._show_status('Settings saved')
 
+    def _show_server_context_menu(
+        self, btn: QPushButton, pos: 'QPoint', tag: str, is_dead: bool,
+    ) -> None:
+        """Show right-click context menu on the Server button."""
+        menu = QMenu(self)
+        action = QAction('Send direct message', self)
+        if is_dead:
+            action.setEnabled(False)
+        else:
+            action.triggered.connect(lambda: self._send_direct_template(tag))
+        menu.addAction(action)
+        menu.exec_(btn.mapToGlobal(pos))
+
+    def _send_direct_template(self, tag: str) -> None:
+        """Send the direct message template to the given CQ session."""
+        from claudeq.monitor.cq_sender import send_to_cq_session_raw
+
+        template = load_cq_direct_template()
+        if not template:
+            self._show_status('No direct message template selected')
+            return
+        if send_to_cq_session_raw(tag, template):
+            self._show_status(f'Direct template sent to {tag}')
+        else:
+            self._show_status(f'Failed to send direct template to {tag}')
+
     def _open_template_editor(self) -> None:
         """Open a dialog to edit the CQ template text with named presets."""
         from claudeq.monitor.dialogs.scm_template_dialog import TemplateEditorDialog
@@ -545,6 +579,7 @@ class TableBuilderMixin(_Base):
         dialog = TemplateEditorDialog(self)
         dialog.exec_()
         self._populate_template_combo()
+        self._populate_direct_template_combo()
 
     def _populate_template_combo(self) -> None:
         """Reload template combo items from saved presets and selection."""
@@ -591,6 +626,51 @@ class TableBuilderMixin(_Base):
             combo.setToolTip(full_name)
         else:
             combo.setToolTip('Active template preset attached to CQ messages')
+
+    def _populate_direct_template_combo(self) -> None:
+        """Reload direct template combo items from saved presets and selection."""
+        max_display = 40
+        combo = self.direct_template_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem('(None)')
+        for name in sorted(load_saved_templates().keys()):
+            if len(name) > max_display:
+                combo.addItem(name[:max_display] + '\u2026')
+                combo.setItemData(combo.count() - 1, name, Qt.UserRole)
+            else:
+                combo.addItem(name)
+        selected = load_selected_direct_template_name()
+        if selected and len(selected) > max_display:
+            display = selected[:max_display] + '\u2026'
+            idx = combo.findText(display)
+        else:
+            idx = combo.findText(selected) if selected else 0
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+        self._update_direct_template_combo_tooltip()
+
+    def _on_direct_template_combo_changed(self) -> None:
+        """Handle direct template combo selection change."""
+        text = self.direct_template_combo.currentText()
+        if text == '(None)':
+            save_selected_direct_template_name('')
+            self._update_direct_template_combo_tooltip()
+            return
+        idx = self.direct_template_combo.currentIndex()
+        full_name = self.direct_template_combo.itemData(idx, Qt.UserRole)
+        save_selected_direct_template_name(full_name if full_name else text)
+        self._update_direct_template_combo_tooltip()
+
+    def _update_direct_template_combo_tooltip(self) -> None:
+        """Set combo tooltip to the full template name when truncated."""
+        combo = self.direct_template_combo
+        idx = combo.currentIndex()
+        full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
+        if full_name:
+            combo.setToolTip(full_name)
+        else:
+            combo.setToolTip('Active template preset attached to direct server messages')
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""

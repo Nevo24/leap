@@ -80,7 +80,9 @@ class TooltipApp(QApplication):
                 combo = widget if isinstance(widget, QComboBox) else None
                 if combo is None and isinstance(parent, QComboBox):
                     combo = parent
-                if combo is not None and combo.objectName() == 'template_combo':
+                if combo is not None and combo.objectName() in (
+                    'template_combo', 'direct_template_combo',
+                ):
                     idx = combo.currentIndex()
                     full_name = combo.itemData(idx, Qt.UserRole)
                     if full_name:
