@@ -16,6 +16,10 @@ from claudeq.monitor.mr_tracking.config import (
     save_named_template, save_selected_direct_template_name,
     save_selected_template_name,
 )
+from claudeq.monitor.ui.table_helpers import (
+    APPLY_MR_BTN, APPLY_QUICK_MSG_BTN, MR_TEMPLATE_HINT,
+    QUICK_MSG_TEMPLATE_HINT,
+)
 
 
 MAX_TEMPLATE_NAME_LEN = 70
@@ -35,10 +39,15 @@ class TemplateEditorDialog(QDialog):
 
         dlg_layout = QVBoxLayout(self)
 
-        hint = QLabel('This text will be attached to every message sent from the monitor to CQ.')
-        hint.setWordWrap(True)
-        hint.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
-        dlg_layout.addWidget(hint)
+        hint_mr = QLabel(MR_TEMPLATE_HINT)
+        hint_mr.setWordWrap(True)
+        hint_mr.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 0px;')
+        dlg_layout.addWidget(hint_mr)
+
+        hint_quick = QLabel(QUICK_MSG_TEMPLATE_HINT)
+        hint_quick.setWordWrap(True)
+        hint_quick.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
+        dlg_layout.addWidget(hint_quick)
 
         # Preset row: combo + New + Save + Save As... + Delete
         preset_layout = QHBoxLayout()
@@ -75,8 +84,8 @@ class TemplateEditorDialog(QDialog):
         # Bottom buttons: two Apply & Close buttons + Cancel
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        apply_mr_btn = QPushButton('Apply to MR threads && Close')
-        apply_direct_btn = QPushButton('Apply to Direct msg && Close')
+        apply_mr_btn = QPushButton(APPLY_MR_BTN)
+        apply_direct_btn = QPushButton(APPLY_QUICK_MSG_BTN)
         cancel_btn = QPushButton('Cancel')
         btn_layout.addWidget(apply_mr_btn)
         btn_layout.addWidget(apply_direct_btn)

@@ -34,6 +34,8 @@ from claudeq.monitor.server_launcher import ServerLauncher
 from claudeq.monitor.ui.dock_badge import DockBadge
 from claudeq.monitor.ui.status_log import StatusLog, StatusLogDialog
 from claudeq.monitor.ui.table_helpers import (
+    MR_TEMPLATE_LABEL, MR_TEMPLATE_TOOLTIP,
+    QUICK_MSG_TEMPLATE_LABEL, QUICK_MSG_TEMPLATE_TOOLTIP,
     PersistentTooltipStyle, SeparatorDelegate, SeparatorHeaderView, TooltipApp,
 )
 from claudeq.monitor.ui.ui_widgets import PulsingLabel, IndicatorLabel
@@ -235,27 +237,27 @@ class MonitorWindow(
         template_grid = QGridLayout()
         template_grid.setSpacing(4)
 
-        tpl_label = QLabel('MR threads template:')
+        tpl_label = QLabel(MR_TEMPLATE_LABEL)
         template_grid.addWidget(tpl_label, 0, 0)
 
         self.template_combo = QComboBox()
         self.template_combo.setObjectName('template_combo')
         self.template_combo.setMinimumWidth(180)
         self.template_combo.setMaximumWidth(300)
-        self.template_combo.setToolTip('Active template attached to MR thread messages (via right-click MR threads-status emoji)')
+        self.template_combo.setToolTip(MR_TEMPLATE_TOOLTIP)
         self._populate_template_combo()
         self.template_combo.currentIndexChanged.connect(
             self._on_template_combo_changed)
         template_grid.addWidget(self.template_combo, 0, 1)
 
-        direct_label = QLabel('Direct msg template:')
+        direct_label = QLabel(QUICK_MSG_TEMPLATE_LABEL)
         template_grid.addWidget(direct_label, 1, 0)
 
         self.direct_template_combo = QComboBox()
         self.direct_template_combo.setObjectName('direct_template_combo')
         self.direct_template_combo.setMinimumWidth(180)
         self.direct_template_combo.setMaximumWidth(300)
-        self.direct_template_combo.setToolTip('Active template that can be sent directly to the server (via right-click on Server button)')
+        self.direct_template_combo.setToolTip(QUICK_MSG_TEMPLATE_TOOLTIP)
         self._populate_direct_template_combo()
         self.direct_template_combo.currentIndexChanged.connect(
             self._on_direct_template_combo_changed)

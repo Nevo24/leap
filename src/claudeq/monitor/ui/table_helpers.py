@@ -14,6 +14,21 @@ from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt
 from PyQt5.QtGui import QColor, QPen
 
 
+# Template UI strings (single source of truth for labels, tooltips, hints).
+MR_TEMPLATE_LABEL = 'MR threads template:'
+MR_TEMPLATE_TOOLTIP = 'Attached to every MR thread message sent to CQ'
+MR_TEMPLATE_HINT = 'MR threads: This template is attached to every MR thread message sent to CQ.'
+
+QUICK_MSG_TEMPLATE_LABEL = 'Quick message template:'
+QUICK_MSG_TEMPLATE_TOOLTIP = 'A message that can be quickly sent via right-click on Server button'
+QUICK_MSG_TEMPLATE_HINT = 'Quick message: This template is sent as a standalone message (via right-click on Server button).'
+
+QUICK_MSG_SEND_DIRECTLY = 'Send quick message directly'
+QUICK_MSG_SEND_TO_QUEUE = 'Send quick message to queue'
+
+APPLY_MR_BTN = 'Apply to MR threads && Close'
+APPLY_QUICK_MSG_BTN = 'Apply to Quick message && Close'
+
 # Column group boundaries for vertical separators.
 # Groups: [Tag, Project] | [Server, ServerBranch, Status, Queue] | [Client] | [MR, MRBranch]
 GROUP_BOUNDARY_COLS = frozenset({0, 2, 6, 7})   # Solid white (between groups)

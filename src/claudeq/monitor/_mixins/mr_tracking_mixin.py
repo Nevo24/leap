@@ -195,6 +195,34 @@ class MRTrackingMixin(_Base):
         self._update_table()
         self._update_dock_badge()
 
+    def _clear_pinned_mr_data(self, tag: str) -> None:
+        """Clear pinned MR data so Track MR falls back to the server's live git info."""
+        # If server is dead, warn that clearing will remove the row
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if session and session.get('server_pid') is None:
+            reply = QMessageBox.question(
+                self, 'Clear Pinned MR Data',
+                f"The server for '{tag}' is not running.\n"
+                f"Clearing pinned MR data will remove this row.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        pin = self._pinned_sessions.get(tag)
+        if pin:
+            for key in ('remote_project_path', 'host_url', 'scm_type',
+                        'mr_title', 'mr_url', 'mr_tracked'):
+                pin.pop(key, None)
+            pin['branch'] = ''
+            save_pinned_sessions(self._pinned_sessions)
+
+        # Invalidate the mr_branch cell cache
+        self._cell_cache.pop((tag, 'mr_branch'), None)
+
+        self._show_status(f"Cleared pinned MR data for '{tag}'")
+        self._update_table()
+
     def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
         """Handle the result of a one-shot MR check."""
         self._set_busy(False)

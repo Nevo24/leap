@@ -54,7 +54,7 @@ src/
     │   ├── server_launcher.py   # MR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
-    │   ├── cq_sender.py         # Socket sender for /cq commands + direct template
+    │   ├── cq_sender.py         # Socket sender for /cq commands + quick message
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   │
@@ -126,7 +126,7 @@ assets/
 | `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |
 | `NotificationsDialog` | `monitor/dialogs/notifications_dialog.py` | Per-type notification config (dock/banner toggles) |
 | `load_cq_template()` | `monitor/mr_tracking/config.py` | Load active MR threads template text |
-| `load_cq_direct_template()` | `monitor/mr_tracking/config.py` | Load active direct message template text |
+| `load_cq_direct_template()` | `monitor/mr_tracking/config.py` | Load active quick message template text |
 | `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends MR template) |
 | `send_to_cq_session_raw()` | `monitor/cq_sender.py` | Send message to CQ session (no template prepend) |
 | `resolve_scm_token()` | `monitor/mr_tracking/config.py` | Resolve token from config (supports env var mode) |
@@ -154,7 +154,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Monitor prefs | `.storage/monitor_prefs.json` |
 | Notification seen state | `.storage/notification_seen.json` |
 | MR threads template selection | `.storage/cq_selected_template` |
-| Direct msg template selection | `.storage/cq_selected_direct_template` |
+| Quick message template selection | `.storage/cq_selected_direct_template` |
 | Template presets | `.storage/cq_templates.json` |
 
 ## File Cleanup & Lifecycle
@@ -441,8 +441,9 @@ Input validation loops: invalid tag or duplicate tag loops back to the input dia
 Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Queue]** | **[Client]** | **[MR, MR Branch]**. Solid white vertical lines separate groups; semi-transparent white lines separate columns within a group. The X column contains the delete button (no row indices). Close (X) buttons for Server, Client, and MR appear on the left side of their respective cells.
 
 - **Server Branch**: Always shows the live git branch the server is running on. For dead rows, shows the last known branch.
-- **MR Branch**: Shows the MR's source branch when MR tracking is active. "N/A" otherwise.
-- **Track MR button**: Shown in the MR column only when not tracked; MR Branch shows "N/A". When tracked, MR column shows status and MR Branch shows the source branch. Clicking the MR X button restores the Track MR button and N/A branch.
+- **MR Branch**: Shows the MR's source branch when MR tracking is active. When MR-pinned but untracked, shows the stored branch with an X button to clear pinned MR data (so "Track MR" falls back to the server's live git branch). "N/A" for non-MR-pinned untracked rows.
+- **Track MR button**: Shown in the MR column only when not tracked. When tracked, MR column shows status and MR Branch shows the source branch. Clicking the MR X button restores the Track MR button.
+- **MR Branch X button**: Shown only on MR-pinned untracked rows. Clears `remote_project_path`, `host_url`, `scm_type`, `mr_title`, `mr_url`, `mr_tracked` from pinned session and resets `branch` to empty. If server is dead, warns the row will be removed.
 
 ### Branch Mismatch & Validation
 

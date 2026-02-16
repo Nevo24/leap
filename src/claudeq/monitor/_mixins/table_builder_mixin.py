@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QHBoxLayout, QMenu, QPushButton,
+    QAction, QApplication, QHBoxLayout, QLabel, QMenu, QPushButton,
     QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
@@ -22,7 +22,11 @@ from claudeq.monitor.mr_tracking.config import (
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.monitor.scm_polling import SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
-from claudeq.monitor.ui.table_helpers import GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS
+from claudeq.monitor.ui.table_helpers import (
+    GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
+    MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_DIRECTLY, QUICK_MSG_SEND_TO_QUEUE,
+    QUICK_MSG_TEMPLATE_TOOLTIP,
+)
 
 if TYPE_CHECKING:
     from claudeq.monitor.app import MonitorWindow
@@ -348,7 +352,8 @@ class TableBuilderMixin(_Base):
                                               checking_label)
                         self._cache_cell(tag, 'mr', mr_state,
                                          row, self.COL_MR)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
+                    self.table.removeCellWidget(row, self.COL_MR_BRANCH)
+                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
 
                 elif tag in self._tracked_tags:
                     stale_mr_tags.discard(tag)
@@ -448,6 +453,7 @@ class TableBuilderMixin(_Base):
                     mr_widget.set_auto_fetch_cq(
                         self._prefs.get('auto_fetch_cq', True)
                     )
+                    self.table.removeCellWidget(row, self.COL_MR_BRANCH)
                     self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
 
                 else:
@@ -472,7 +478,55 @@ class TableBuilderMixin(_Base):
                         self._set_cell_widget(row, self.COL_MR, track_btn)
                         self._cache_cell(tag, 'mr', mr_state,
                                          row, self.COL_MR)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
+
+                    # MR Branch: show stored branch + X button if MR-pinned
+                    is_mr_pinned = (
+                        pinned_data.get('remote_project_path')
+                        and mr_branch != 'N/A'
+                    )
+                    if is_mr_pinned:
+                        mr_br_state = ('untracked_pinned', mr_branch)
+                        if not self._cell_cached(tag, 'mr_branch', mr_br_state,
+                                                 row, self.COL_MR_BRANCH):
+                            mr_br_container = QWidget()
+                            mr_br_layout = QHBoxLayout(mr_br_container)
+                            mr_br_layout.setContentsMargins(0, 0, 0, 0)
+                            mr_br_layout.setSpacing(4)
+
+                            mr_br_x = QPushButton('X')
+                            mr_br_x.setFixedSize(24, mr_br_x.sizeHint().height())
+                            mr_br_x.setStyleSheet(
+                                'QPushButton { color: #999; font-size: 11px; '
+                                'padding: 0; }'
+                                'QPushButton:hover { color: #ff4444; '
+                                'font-weight: bold; }'
+                            )
+                            mr_br_x.setToolTip(
+                                f'Clear pinned MR data for {tag}')
+                            mr_br_x.clicked.connect(
+                                lambda checked, t=tag:
+                                    self._clear_pinned_mr_data(t)
+                            )
+                            mr_br_layout.addWidget(
+                                mr_br_x, 0, Qt.AlignVCenter)
+
+                            mr_br_label = QLabel(mr_branch)
+                            mr_br_label.setToolTip(mr_branch)
+                            mr_br_layout.addWidget(mr_br_label, 1)
+
+                            # Clear underlying item text so it doesn't
+                            # render through behind the widget.
+                            item = self.table.item(row, self.COL_MR_BRANCH)
+                            if item:
+                                item.setText('')
+                            self._set_cell_widget(
+                                row, self.COL_MR_BRANCH, mr_br_container)
+                            self._cache_cell(
+                                tag, 'mr_branch', mr_br_state,
+                                row, self.COL_MR_BRANCH)
+                    else:
+                        self.table.removeCellWidget(row, self.COL_MR_BRANCH)
+                        self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
 
             # Clean up stale MR widgets for tags no longer shown
             for stale_tag in stale_mr_tags:
@@ -552,7 +606,7 @@ class TableBuilderMixin(_Base):
         """Show right-click context menu on the Server button."""
         menu = QMenu(self)
 
-        direct_action = QAction('Send template directly', self)
+        direct_action = QAction(QUICK_MSG_SEND_DIRECTLY, self)
         if is_dead:
             direct_action.setEnabled(False)
         else:
@@ -561,7 +615,7 @@ class TableBuilderMixin(_Base):
             )
         menu.addAction(direct_action)
 
-        queue_action = QAction('Send template to queue', self)
+        queue_action = QAction(QUICK_MSG_SEND_TO_QUEUE, self)
         if is_dead:
             queue_action.setEnabled(False)
         else:
@@ -578,12 +632,12 @@ class TableBuilderMixin(_Base):
 
         template = load_cq_direct_template()
         if not template:
-            self._show_status('No direct message template selected')
+            self._show_status('No quick message template selected')
             return
         if send_to_cq_session_direct(tag, template):
-            self._show_status(f'Direct template sent to {tag}')
+            self._show_status(f'Quick message sent to {tag}')
         else:
-            self._show_status(f'Failed to send direct template to {tag}')
+            self._show_status(f'Failed to send quick message to {tag}')
 
     def _send_direct_template_to_queue(self, tag: str) -> None:
         """Queue the direct message template for the CQ session."""
@@ -591,12 +645,12 @@ class TableBuilderMixin(_Base):
 
         template = load_cq_direct_template()
         if not template:
-            self._show_status('No direct message template selected')
+            self._show_status('No quick message template selected')
             return
         if send_to_cq_session_raw(tag, template):
-            self._show_status(f'Direct template queued for {tag}')
+            self._show_status(f'Quick message queued for {tag}')
         else:
-            self._show_status(f'Failed to queue direct template for {tag}')
+            self._show_status(f'Failed to queue quick message for {tag}')
 
     def _open_template_editor(self) -> None:
         """Open a dialog to edit the CQ template text with named presets."""
@@ -651,7 +705,7 @@ class TableBuilderMixin(_Base):
         if full_name:
             combo.setToolTip(full_name)
         else:
-            combo.setToolTip('Active template preset attached to CQ messages')
+            combo.setToolTip(MR_TEMPLATE_TOOLTIP)
 
     def _populate_direct_template_combo(self) -> None:
         """Reload direct template combo items from saved presets and selection."""
@@ -696,7 +750,7 @@ class TableBuilderMixin(_Base):
         if full_name:
             combo.setToolTip(full_name)
         else:
-            combo.setToolTip('Active template preset attached to direct server messages')
+            combo.setToolTip(QUICK_MSG_TEMPLATE_TOOLTIP)
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""
