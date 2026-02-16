@@ -64,7 +64,7 @@ class TooltipApp(QApplication):
                             fm = widget.fontMetrics()
                             text_w = fm.horizontalAdvance(str(display))
                             cell_w = parent.visualRect(index).width()
-                            if text_w > cell_w - 8:
+                            if text_w > cell_w - 10:
                                 tip = index.data(Qt.ToolTipRole)
                                 if tip:
                                     from PyQt5.QtWidgets import QToolTip as _QToolTip
@@ -77,14 +77,17 @@ class TooltipApp(QApplication):
 
                 # Always show full-name tooltip on truncated context combo items
                 from PyQt5.QtWidgets import QComboBox
-                if isinstance(widget, QComboBox) and widget.objectName() == 'context_combo':
-                    idx = widget.currentIndex()
-                    full_name = widget.itemData(idx, Qt.UserRole)
+                combo = widget if isinstance(widget, QComboBox) else None
+                if combo is None and isinstance(parent, QComboBox):
+                    combo = parent
+                if combo is not None and combo.objectName() == 'context_combo':
+                    idx = combo.currentIndex()
+                    full_name = combo.itemData(idx, Qt.UserRole)
                     if full_name:
                         from PyQt5.QtWidgets import QToolTip as _QToolTip
                         _QToolTip.showText(
-                            event.globalPos(), full_name, widget,
-                            widget.rect(), 2_147_483_647,
+                            event.globalPos(), full_name, combo,
+                            combo.rect(), 2_147_483_647,
                         )
                         return True
                     # Not truncated — fall through to normal tooltips_enabled check

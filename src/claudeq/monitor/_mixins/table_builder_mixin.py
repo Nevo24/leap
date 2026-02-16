@@ -567,17 +567,30 @@ class TableBuilderMixin(_Base):
             idx = combo.findText(selected) if selected else 0
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
+        self._update_context_combo_tooltip()
 
     def _on_context_combo_changed(self) -> None:
         """Handle context combo selection change."""
         text = self.context_combo.currentText()
         if text == '(None)':
             save_selected_context_name('')
+            self._update_context_combo_tooltip()
             return
         # Resolve truncated display name back to full name via UserRole
         idx = self.context_combo.currentIndex()
         full_name = self.context_combo.itemData(idx, Qt.UserRole)
         save_selected_context_name(full_name if full_name else text)
+        self._update_context_combo_tooltip()
+
+    def _update_context_combo_tooltip(self) -> None:
+        """Set combo tooltip to the full context name when truncated."""
+        combo = self.context_combo
+        idx = combo.currentIndex()
+        full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
+        if full_name:
+            combo.setToolTip(full_name)
+        else:
+            combo.setToolTip('Active context preset attached to CQ messages')
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""
