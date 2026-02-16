@@ -469,7 +469,7 @@ class TableBuilderMixin(_Base):
                         )
                         if is_dead:
                             track_btn.setEnabled(False)
-                        self.table.setCellWidget(row, self.COL_MR, track_btn)
+                        self._set_cell_widget(row, self.COL_MR, track_btn)
                         self._cache_cell(tag, 'mr', mr_state,
                                          row, self.COL_MR)
                     self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
