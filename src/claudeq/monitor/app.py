@@ -199,6 +199,10 @@ class MonitorWindow(
         self.table.setColumnWidth(self.COL_DELETE, 30)
         header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
 
+        # Last column: Fixed prevents draggable right-edge handle;
+        # programmatic setColumnWidth() still works in resizeEvent.
+        header.setSectionResizeMode(self.COL_MR_BRANCH, QHeaderView.Fixed)
+
         # Restore saved column widths or distribute equally
         # Reset saved widths when column layout changes
         col_count = self.table.columnCount()
@@ -441,19 +445,17 @@ class MonitorWindow(
         if resizable_total <= 0:
             return
         available = viewport_w - delete_w
-        ratio = available / resizable_total
+        # Cumulative rounding: compute each column's target from cumulative
+        # proportions so every column shifts evenly, even for tiny changes.
+        cumulative_old = 0
         used = 0
-        last_resizable = col_count - 1
-        for col in range(col_count):
-            if col == self.COL_DELETE:
-                continue
-            if col == last_resizable:
-                # Give remaining pixels to the last column to prevent drift
-                self.table.setColumnWidth(col, max(30, available - used))
-            else:
-                w = max(30, round(self.table.columnWidth(col) * ratio))
-                self.table.setColumnWidth(col, w)
-                used += w
+        resizable_cols = [c for c in range(col_count) if c != self.COL_DELETE]
+        for col in resizable_cols:
+            cumulative_old += self.table.columnWidth(col)
+            target = round(available * cumulative_old / resizable_total)
+            w = max(30, target - used)
+            self.table.setColumnWidth(col, w)
+            used += w
 
     def changeEvent(self, event: QEvent) -> None:
         """Reset dock badge when window becomes active."""
