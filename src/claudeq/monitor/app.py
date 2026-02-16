@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QHeaderView, QMessageBox, QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
-from PyQt5.QtGui import QIcon, QCloseEvent
+from PyQt5.QtGui import QIcon, QCloseEvent, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
@@ -98,6 +98,7 @@ class MonitorWindow(
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._starting_tags: set[str] = set()  # guard against double-click server start
+        self._ui_ready = False  # suppress resizeEvent during init
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
         self._status_log = StatusLog()
@@ -137,7 +138,15 @@ class MonitorWindow(
         # Restore saved window geometry or center on screen
         saved_geom = self._prefs.get('window_geometry')
         if saved_geom and len(saved_geom) == 4:
-            self.setGeometry(*saved_geom)
+            # Validate the saved position is on a visible screen
+            from PyQt5.QtCore import QPoint
+            center = QPoint(saved_geom[0] + saved_geom[2] // 2,
+                            saved_geom[1] + saved_geom[3] // 2)
+            screen = QApplication.screenAt(center)
+            if screen:
+                self.setGeometry(*saved_geom)
+            else:
+                self._center_on_screen()
         else:
             self._center_on_screen()
 
@@ -182,7 +191,7 @@ class MonitorWindow(
         header = self.table.horizontalHeader()
         header.setStyleSheet('QHeaderView::section { border: none; padding: 4px; }')
         header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setStretchLastSection(True)
+        header.setStretchLastSection(False)
 
         # Hide vertical header (row indices) — delete button is in COL_DELETE
         self.table.verticalHeader().setVisible(False)
@@ -375,9 +384,12 @@ class MonitorWindow(
         col_count = self.table.columnCount()
         if col_count <= 0:
             return
-        win_width = self.geometry().width() or 1150
-        # Subtract delete column (30px) and vertical scrollbar (~20px)
-        available = win_width - 50
+        viewport_w = self.table.viewport().width()
+        if viewport_w <= 0:
+            # Viewport not ready yet — estimate from window geometry
+            viewport_w = (self.geometry().width() or 1150) - 50
+        delete_w = self.table.columnWidth(self.COL_DELETE)
+        available = viewport_w - delete_w
         resizable = col_count - 1  # exclude COL_DELETE
         col_width = available // max(resizable, 1)
         for col in range(col_count):
@@ -393,6 +405,37 @@ class MonitorWindow(
     # ------------------------------------------------------------------
     #  Window lifecycle
     # ------------------------------------------------------------------
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Scale all resizable columns proportionally on window resize."""
+        super().resizeEvent(event)
+        if not self._ui_ready:
+            return
+        viewport_w = self.table.viewport().width()
+        if viewport_w <= 0:
+            return
+        col_count = self.table.columnCount()
+        delete_w = self.table.columnWidth(self.COL_DELETE)
+        resizable_total = sum(
+            self.table.columnWidth(col)
+            for col in range(col_count) if col != self.COL_DELETE
+        )
+        if resizable_total <= 0:
+            return
+        available = viewport_w - delete_w
+        ratio = available / resizable_total
+        used = 0
+        last_resizable = col_count - 1
+        for col in range(col_count):
+            if col == self.COL_DELETE:
+                continue
+            if col == last_resizable:
+                # Give remaining pixels to the last column to prevent drift
+                self.table.setColumnWidth(col, max(30, available - used))
+            else:
+                w = max(30, round(self.table.columnWidth(col) * ratio))
+                self.table.setColumnWidth(col, w)
+                used += w
 
     def changeEvent(self, event: QEvent) -> None:
         """Reset dock badge when window becomes active."""
@@ -474,6 +517,10 @@ def main() -> None:
     window._tooltip_app = app
     window._apply_tooltips_setting()
     window.show()
+
+    # Enable proportional column scaling after the window is fully shown
+    # and all initial resize events have settled.
+    QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
 
     # Handle Ctrl+C gracefully
     def signal_handler(sig: int, frame: Any) -> None:
