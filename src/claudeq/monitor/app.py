@@ -217,8 +217,9 @@ class MonitorWindow(
         top_layout.addWidget(ctx_label)
 
         self.context_combo = QComboBox()
+        self.context_combo.setObjectName('context_combo')
         self.context_combo.setMinimumWidth(180)
-        self.context_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.context_combo.setMaximumWidth(300)
         self.context_combo.setToolTip('Active context preset attached to CQ messages')
         self._populate_context_combo()
         self.context_combo.currentIndexChanged.connect(

@@ -75,6 +75,20 @@ class TooltipApp(QApplication):
                                     )
                     return True
 
+                # Always show full-name tooltip on truncated context combo items
+                from PyQt5.QtWidgets import QComboBox
+                if isinstance(widget, QComboBox) and widget.objectName() == 'context_combo':
+                    idx = widget.currentIndex()
+                    full_name = widget.itemData(idx, Qt.UserRole)
+                    if full_name:
+                        from PyQt5.QtWidgets import QToolTip as _QToolTip
+                        _QToolTip.showText(
+                            event.globalPos(), full_name, widget,
+                            widget.rect(), 2_147_483_647,
+                        )
+                        return True
+                    # Not truncated — fall through to normal tooltips_enabled check
+
                 if not self.tooltips_enabled:
                     return True  # Suppress
                 if widget.toolTip():

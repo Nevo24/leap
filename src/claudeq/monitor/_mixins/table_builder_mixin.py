@@ -548,14 +548,23 @@ class TableBuilderMixin(_Base):
 
     def _populate_context_combo(self) -> None:
         """Reload context combo items from saved presets and selection."""
+        max_display = 40
         combo = self.context_combo
         combo.blockSignals(True)
         combo.clear()
         combo.addItem('(None)')
         for name in sorted(load_saved_contexts().keys()):
-            combo.addItem(name)
+            if len(name) > max_display:
+                combo.addItem(name[:max_display] + '\u2026')
+                combo.setItemData(combo.count() - 1, name, Qt.UserRole)
+            else:
+                combo.addItem(name)
         selected = load_selected_context_name()
-        idx = combo.findText(selected) if selected else 0
+        if selected and len(selected) > max_display:
+            display = selected[:max_display] + '\u2026'
+            idx = combo.findText(display)
+        else:
+            idx = combo.findText(selected) if selected else 0
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
 
@@ -564,8 +573,11 @@ class TableBuilderMixin(_Base):
         text = self.context_combo.currentText()
         if text == '(None)':
             save_selected_context_name('')
-        else:
-            save_selected_context_name(text)
+            return
+        # Resolve truncated display name back to full name via UserRole
+        idx = self.context_combo.currentIndex()
+        full_name = self.context_combo.itemData(idx, Qt.UserRole)
+        save_selected_context_name(full_name if full_name else text)
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""
