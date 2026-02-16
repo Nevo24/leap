@@ -89,10 +89,18 @@ class SCMSetupDialog(QDialog):
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        # URL
-        layout.addWidget(QLabel(self._url_label()))
+        # URL — hidden by default behind "Self-hosted" toggle
+        self._url_check = QCheckBox('Self-hosted (custom URL)')
+        self._url_check.toggled.connect(self._toggle_url_visible)
+        layout.addWidget(self._url_check)
+
+        self._url_label_widget = QLabel(self._url_label())
+        self._url_label_widget.setVisible(False)
+        layout.addWidget(self._url_label_widget)
+
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText(self._url_placeholder())
+        self.url_input.setVisible(False)
         layout.addWidget(self.url_input)
 
         # Token
@@ -144,11 +152,22 @@ class SCMSetupDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+    def _toggle_url_visible(self, checked: bool) -> None:
+        self._url_label_widget.setVisible(checked)
+        self.url_input.setVisible(checked)
+        if not checked:
+            self.url_input.clear()
+
     def _load_existing(self) -> None:
         config = self._load_config()
         if not config:
             return
-        self.url_input.setText(config.get(self._config_url_key(), ''))
+        saved_url = config.get(self._config_url_key(), '')
+        default_url = self._url_default()
+        # Auto-expand URL field if a non-default URL is saved
+        if saved_url and saved_url != default_url:
+            self._url_check.setChecked(True)
+            self.url_input.setText(saved_url)
         self.token_input.setText(config.get(self._config_token_key(), ''))
         self.poll_input.setValue(config.get('poll_interval', SCM_POLL_INTERVAL))
         self.notif_check.setChecked(config.get('enable_notifications', False))

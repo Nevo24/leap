@@ -18,7 +18,7 @@ class GitHubSetupDialog(SCMSetupDialog):
         return 'Connect GitHub'
 
     def _url_label(self) -> str:
-        return 'GitHub API URL (leave empty for github.com):'
+        return 'GitHub Enterprise API URL:'
 
     def _url_placeholder(self) -> str:
         return 'https://api.github.com'

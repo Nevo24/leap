@@ -69,7 +69,7 @@ src/
     │   ├── dialogs/             # Dialog windows
     │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, cleanup)
     │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
-    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog
+    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   └── scm_context_dialog.py  # Context editor dialog (named presets)
