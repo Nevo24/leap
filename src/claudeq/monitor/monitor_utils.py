@@ -1,17 +1,47 @@
 """Standalone utility functions for ClaudeQ Monitor."""
 
+import logging
 import os
 import signal
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import QMessageBox
+
+logger = logging.getLogger(__name__)
 
 from claudeq.monitor.session_manager import (
     load_session_metadata, read_client_pid, session_exists, is_client_lock_held,
 )
 from claudeq.monitor.navigation import find_terminal_with_title, open_terminal_with_command
 from claudeq.utils.constants import SOCKET_DIR
+
+
+def load_shell_env() -> None:
+    """Import environment variables from the user's login shell.
+
+    macOS apps launched from Finder/Dock do not inherit shell env vars
+    (e.g. those exported in ~/.zshrc).  This spawns a login shell to
+    capture its environment and merges missing vars into os.environ so
+    that features like env-var token mode work in the bundled .app.
+    """
+    shell = os.environ.get('SHELL', '/bin/zsh')
+    try:
+        result = subprocess.run(
+            [shell, '-l', '-c', 'env -0'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return
+        for entry in result.stdout.split('\0'):
+            if not entry:
+                continue
+            key, sep, value = entry.partition('=')
+            if sep and key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        logger.debug("Failed to load shell environment", exc_info=True)
 
 
 def find_icon() -> Optional[Path]:

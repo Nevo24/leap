@@ -29,7 +29,7 @@ from claudeq.monitor.scm_polling import (
     SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
 )
 from claudeq.monitor.session_manager import get_active_sessions
-from claudeq.monitor.monitor_utils import find_icon
+from claudeq.monitor.monitor_utils import find_icon, load_shell_env
 from claudeq.monitor.server_launcher import ServerLauncher
 from claudeq.monitor.ui.dock_badge import DockBadge
 from claudeq.monitor.ui.status_log import StatusLog, StatusLogDialog
@@ -519,6 +519,7 @@ class MonitorWindow(
 
 def main() -> None:
     """Main entry point for ClaudeQ Monitor."""
+    load_shell_env()
     app = TooltipApp(sys.argv)
     app.setApplicationName('ClaudeQ Monitor')
     app.setStyle(PersistentTooltipStyle(app.style()))
