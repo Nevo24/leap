@@ -103,7 +103,7 @@ install-monitor: .env ensure-storage write-install-metadata
 
 .PHONY: run-monitor
 run-monitor:
-	@PYTHONPATH=$(SRC_DIR) poetry run python -c "from claudeq.monitor.app import main; main()" & PID=$$!; trap "kill -9 $$PID 2>/dev/null; exit 0" INT TERM; wait $$PID
+	@PYTHONPATH=$(SRC_DIR) poetry run python -c "from claudeq.monitor.app import main; main()"
 
 .PHONY: run-cleanup-sessions
 run-cleanup-sessions:

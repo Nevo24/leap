@@ -6,6 +6,7 @@ PyQt5-based GUI for viewing and managing active ClaudeQ sessions.
 
 import logging
 import os
+import signal
 import sys
 import time
 from typing import Any, Optional
@@ -543,6 +544,18 @@ def main() -> None:
     # Enable proportional column scaling after the window is fully shown
     # and all initial resize events have settled.
     QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
+
+    # Handle Ctrl+C gracefully
+    def signal_handler(sig: int, frame: Any) -> None:
+        window.close()
+        app.quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Allow Python to handle signals during Qt event loop
+    timer = QTimer()
+    timer.start(500)
+    timer.timeout.connect(lambda: None)
 
     sys.exit(app.exec_())
 
