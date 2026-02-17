@@ -552,6 +552,7 @@ def main() -> None:
     import select as _select
     _sig_r, _sig_w = os.pipe()
     os.set_blocking(_sig_r, False)
+    os.set_blocking(_sig_w, False)
     signal.set_wakeup_fd(_sig_w, warn_on_full_buffer=False)
     signal.signal(signal.SIGINT, lambda s, f: None)
     signal.signal(signal.SIGTERM, lambda s, f: None)
