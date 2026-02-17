@@ -6,9 +6,7 @@ PyQt5-based GUI for viewing and managing active ClaudeQ sessions.
 
 import logging
 import os
-import signal
 import sys
-import threading
 import time
 from typing import Any, Optional
 
@@ -545,23 +543,6 @@ def main() -> None:
     # Enable proportional column scaling after the window is fully shown
     # and all initial resize events have settled.
     QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
-
-    # PyQt5 holds the GIL in its C++ event loop, so Python signal handlers
-    # never execute. Use set_wakeup_fd() which writes at the C level when
-    # a signal arrives, then a daemon thread watches the pipe and exits.
-    import select as _select
-    _sig_r, _sig_w = os.pipe()
-    os.set_blocking(_sig_r, False)
-    os.set_blocking(_sig_w, False)
-    signal.set_wakeup_fd(_sig_w, warn_on_full_buffer=False)
-    signal.signal(signal.SIGINT, lambda s, f: None)
-    signal.signal(signal.SIGTERM, lambda s, f: None)
-
-    def _signal_watcher() -> None:
-        _select.select([_sig_r], [], [])
-        os._exit(0)
-
-    threading.Thread(target=_signal_watcher, daemon=True).start()
 
     sys.exit(app.exec_())
 
