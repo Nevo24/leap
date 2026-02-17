@@ -545,14 +545,25 @@ def main() -> None:
     # and all initial resize events have settled.
     QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
 
-    # Handle Ctrl+C gracefully
+    # ── Ctrl+C handling ──────────────────────────────────────────────
+    # Reclaim the terminal foreground process group so SIGINT from
+    # Ctrl+C is delivered to us (make/poetry may have changed it).
+    try:
+        _tty_fd = sys.stdin.fileno()
+        _our_pgid = os.getpgrp()
+        if os.tcgetpgrp(_tty_fd) != _our_pgid:
+            signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+            os.tcsetpgrp(_tty_fd, _our_pgid)
+    except (OSError, AttributeError):
+        pass
+
     def signal_handler(sig: int, frame: Any) -> None:
-        window.close()
-        app.quit()
+        os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    # Allow Python to handle signals during Qt event loop
+    # Timer trick — force periodic bytecode execution so Python
+    # processes pending signals while Qt's C++ event loop runs.
     timer = QTimer()
     timer.start(500)
     timer.timeout.connect(lambda: None)
