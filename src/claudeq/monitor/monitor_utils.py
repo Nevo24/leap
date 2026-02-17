@@ -29,7 +29,7 @@ def load_shell_env() -> None:
     shell = os.environ.get('SHELL', '/bin/zsh')
     try:
         result = subprocess.run(
-            [shell, '-l', '-c', 'env -0'],
+            [shell, '-l', '-i', '-c', 'env -0'],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
