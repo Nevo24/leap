@@ -373,6 +373,18 @@ class ClaudeQServer:
         except Exception:
             pass
 
+    def _input_filter(self, data: bytes) -> bytes:
+        """Track user keyboard input for state detection.
+
+        Args:
+            data: Raw input bytes from keyboard.
+
+        Returns:
+            Input bytes unchanged (pass-through).
+        """
+        self.state.on_input(data)
+        return data
+
     def _output_filter(self, data: bytes) -> bytes:
         """
         Filter PTY output to inject notifications and strip title escapes.
@@ -454,7 +466,10 @@ class ClaudeQServer:
         set_terminal_title(f"cq-server {self.tag}")
 
         try:
-            self.pty.interact(output_filter=self._output_filter)
+            self.pty.interact(
+                output_filter=self._output_filter,
+                input_filter=self._input_filter,
+            )
         except (KeyboardInterrupt, SystemExit):
             pass
         except Exception as e:

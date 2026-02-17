@@ -7,6 +7,7 @@ signal files with a PTY silence fallback.
 """
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -30,6 +31,16 @@ class ClaudeStateTracker:
     """
 
     _VALID_SIGNAL_STATES = frozenset({'idle', 'needs_permission', 'has_question'})
+    # Matches ANSI escape sequences (CSI, OSC, charset, keypad, cursor
+    # save/restore) and carriage returns — used to filter TUI refresh
+    # noise from real printable output.
+    _ANSI_RE: re.Pattern[bytes] = re.compile(
+        rb'\x1b\[[0-9;?]*[A-Za-z]'
+        rb'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
+        rb'|\x1b[()][0-9A-Za-z]'
+        rb'|\x1b[=>]'
+        rb'|\r'
+    )
 
     def __init__(self, signal_file: Path, auto_send_mode: str = 'pause') -> None:
         self._signal_file = signal_file
@@ -39,6 +50,14 @@ class ClaudeStateTracker:
         self._lock = threading.Lock()
         self._waiting_since: Optional[float] = None
         self._last_output_time: float = 0.0
+        # Track user input to distinguish typing echo from Claude output.
+        self._last_input_time: float = time.time()
+        # Accumulated printable output bytes while idle (reset on input
+        # and state transitions).  Used to detect idle → running.
+        self._idle_output_acc: int = 0
+        # Buffer recent PTY output so "Interrupted" can be detected even
+        # when split across chunk boundaries by the TUI renderer.
+        self._output_buf: bytearray = bytearray()
 
     # -- Public API ----------------------------------------------------------
 
@@ -74,6 +93,7 @@ class ClaudeStateTracker:
                                 self._waiting_since = time.time()
                             else:
                                 self._waiting_since = None
+                        self._idle_output_acc = 0
                         return new_state
             except (json.JSONDecodeError, OSError):
                 pass
@@ -86,6 +106,7 @@ class ClaudeStateTracker:
                     with self._lock:
                         self._state = 'idle'
                         self._waiting_since = None
+                    self._idle_output_acc = 0
                     return 'idle'
 
         return current
@@ -108,6 +129,19 @@ class ClaudeStateTracker:
         # 'pause' mode (default)
         return state == 'idle'
 
+    def on_input(self, data: bytes) -> None:
+        """Called when the user types in the server terminal.
+
+        Tracks input timing so output-based idle → running detection
+        can distinguish user keystroke echo from Claude's processing
+        output.
+
+        Args:
+            data: Raw input bytes from the keyboard.
+        """
+        self._last_input_time = time.time()
+        self._idle_output_acc = 0
+
     def on_send(self) -> None:
         """Called when a message is sent to Claude.
 
@@ -116,6 +150,8 @@ class ClaudeStateTracker:
         with self._lock:
             self._state = 'running'
             self._waiting_since = None
+        self._output_buf.clear()
+        self._idle_output_acc = 0
 
         try:
             self._signal_file.unlink(missing_ok=True)
@@ -125,21 +161,51 @@ class ClaudeStateTracker:
     def on_output(self, data: bytes) -> None:
         """Called when PTY output is received.
 
-        Updates the last-output timestamp, detects interruption from
-        PTY output (Ctrl+C/Escape), and detects resume after a
-        permission/question prompt (with a 2s grace period).
+        Updates the last-output timestamp, detects state transitions:
+        - idle → running: sustained printable output without recent input
+        - running → has_question: "Interrupted" text detected
+        - needs_permission/has_question → running: printable output resume
 
         Args:
             data: Raw output bytes from the PTY.
         """
-        self._last_output_time = time.time()
+        now = time.time()
+        prev_output_time = self._last_output_time
+        self._last_output_time = now
+
+        # Detect Claude starting to process when user types directly in
+        # the server terminal (on_send not called).  Accumulate printable
+        # output bytes and transition to 'running' once a threshold is
+        # reached.  Reset the accumulator on long output gaps (prevents
+        # slow TUI noise from building up) and on user input (via
+        # on_input).
+        if self._state == 'idle':
+            stripped = self._ANSI_RE.sub(b'', data).strip()
+            if stripped:
+                if now - prev_output_time > 2.0:
+                    self._idle_output_acc = 0
+                if now - self._last_input_time > 0.5:
+                    self._idle_output_acc += len(stripped)
+                    if self._idle_output_acc > 200:
+                        self._idle_output_acc = 0
+                        with self._lock:
+                            self._state = 'running'
+                            self._waiting_since = None
+            return
 
         # Detect Claude interruption — Stop hook doesn't fire on Ctrl+C/Escape,
         # so detect it from PTY output and treat as waiting for user input.
-        if self._state == 'running' and b'Interrupted' in data:
-            with self._lock:
-                self._state = 'has_question'
-                self._waiting_since = time.time()
+        # Buffer recent output so the pattern is found even when the TUI
+        # renderer splits "Interrupted" across chunk boundaries.
+        if self._state == 'running':
+            self._output_buf.extend(data)
+            if len(self._output_buf) > 512:
+                self._output_buf = self._output_buf[-512:]
+            if b'Interrupted' in self._output_buf:
+                self._output_buf.clear()
+                with self._lock:
+                    self._state = 'has_question'
+                    self._waiting_since = time.time()
 
         # Detect resume after permission/question — new PTY output means
         # the user answered and Claude is processing again.  Delete the
@@ -148,15 +214,21 @@ class ClaudeStateTracker:
         # Grace period: ignore the first 2s of output after entering the
         # waiting state (prompt text / escape sequences may still render).
         elif self._state in ('needs_permission', 'has_question'):
+            self._output_buf.clear()
             ws = self._waiting_since
             if ws is not None and (time.time() - ws) > 2.0:
-                with self._lock:
-                    self._state = 'running'
-                    self._waiting_since = None
-                try:
-                    self._signal_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                # Only treat as resume if the output has printable text
+                # beyond ANSI escape sequences — filters TUI cursor blinks
+                # and screen refreshes that arrive while Claude is idle.
+                stripped = self._ANSI_RE.sub(b'', data).strip()
+                if stripped:
+                    with self._lock:
+                        self._state = 'running'
+                        self._waiting_since = None
+                    try:
+                        self._signal_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
     @property
     def current_state(self) -> str:

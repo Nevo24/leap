@@ -201,15 +201,23 @@ class PTYHandler:
             except OSError:
                 pass
 
-    def interact(self, output_filter: Optional[Callable[[bytes], bytes]] = None) -> None:
+    def interact(
+        self,
+        output_filter: Optional[Callable[[bytes], bytes]] = None,
+        input_filter: Optional[Callable[[bytes], bytes]] = None,
+    ) -> None:
         """
         Enter interactive mode with the Claude CLI.
 
         Args:
             output_filter: Optional function to filter output before display.
+            input_filter: Optional function to filter keyboard input.
         """
         if self.process:
-            self.process.interact(output_filter=output_filter)
+            self.process.interact(
+                output_filter=output_filter,
+                input_filter=input_filter,
+            )
 
     def terminate(self) -> None:
         """Terminate the Claude CLI process."""
