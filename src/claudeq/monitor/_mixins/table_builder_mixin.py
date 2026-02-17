@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 
 from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
@@ -211,16 +212,19 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
 
                     claude_state = session.get('claude_state', 'idle')
-                    state_map = {
-                        'idle': '\u26aa Idle',
-                        'running': '\u2705 Running',
-                        'needs_permission': '\u26a0\ufe0f Permission',
-                        'has_question': '\u2753 Question',
+                    state_display = {
+                        'idle': ('\u25cb Idle', None),
+                        'running': ('\u25cf Running', QColor(76, 175, 80)),
+                        'needs_permission': ('\u25b2 Permission', QColor(255, 152, 0)),
+                        'has_question': ('\u25c6 Question', QColor(100, 181, 246)),
                     }
-                    self._set_cell_text(
-                        row, self.COL_STATUS,
-                        state_map.get(claude_state, claude_state),
-                    )
+                    text, color = state_display.get(claude_state, (claude_state, None))
+                    self._set_cell_text(row, self.COL_STATUS, text)
+                    item = self.table.item(row, self.COL_STATUS)
+                    if item and color:
+                        item.setForeground(color)
+                    elif item:
+                        item.setForeground(QColor(255, 255, 255))
 
                     # Queue column with right-click context menu
                     auto_send_mode = session.get('auto_send_mode', 'pause')
