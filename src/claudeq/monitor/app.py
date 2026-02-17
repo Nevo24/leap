@@ -545,38 +545,12 @@ def main() -> None:
     # and all initial resize events have settled.
     QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
 
-    # Handle Ctrl+C — use a socket pair to wake Qt's event loop from
-    # the signal handler, since Python signal handlers can't run while
-    # Qt's C++ event loop holds the GIL.
-    import socket as _socket
-    _rsock, _wsock = _socket.socketpair()
-    _rsock.setblocking(False)
-    _wsock.setblocking(False)
-
-    def signal_handler(sig: int, frame: Any) -> None:
-        # Write a byte to wake the notifier — this is async-signal-safe
-        try:
-            _wsock.send(b'\x00')
-        except Exception:
-            os._exit(0)
-
-    def _on_signal_activated() -> None:
-        try:
-            _rsock.recv(1)
-        except Exception:
-            pass
-        try:
-            window.closeEvent(QCloseEvent())
-        except Exception:
-            pass
-        os._exit(0)
-
-    from PyQt5.QtCore import QSocketNotifier
-    notifier = QSocketNotifier(_rsock.fileno(), QSocketNotifier.Read)
-    notifier.activated.connect(_on_signal_activated)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # Restore default SIGINT handler so Ctrl+C kills the process
+    # immediately. PyQt5 on macOS intercepts signals at the C level,
+    # making Python signal handlers unreliable. Prefs are saved
+    # periodically and on normal window close; Ctrl+C is a hard kill.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     sys.exit(app.exec_())
 
