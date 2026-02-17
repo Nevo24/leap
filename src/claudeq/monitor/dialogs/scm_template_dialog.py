@@ -41,11 +41,13 @@ class TemplateEditorDialog(QDialog):
 
         hint_mr = QLabel(MR_TEMPLATE_HINT)
         hint_mr.setWordWrap(True)
+        hint_mr.setIndent(0)
         hint_mr.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 0px;')
         dlg_layout.addWidget(hint_mr)
 
         hint_quick = QLabel(QUICK_MSG_TEMPLATE_HINT)
         hint_quick.setWordWrap(True)
+        hint_quick.setIndent(0)
         hint_quick.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
         dlg_layout.addWidget(hint_quick)
 
