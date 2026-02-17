@@ -143,6 +143,7 @@ All commands are **case-insensitive**.
 | Command | Description |
 |---------|-------------|
 | 🖼 `Ctrl+V` | Paste clipboard image as `[Image #N]` |
+| 🔄 `!autosend pause/always` or `!as` | Toggle auto-send mode |
 | 🔔 `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
 
 ### 💡 IDE Configuration
@@ -333,7 +334,7 @@ For installation and maintenance commands, see [Make Commands Reference](#make-c
 
 ### How Auto-Send Works
 
-The server monitors Claude's child processes to detect when it's busy executing tools (Bash, Read, etc.). Messages are only auto-sent when Claude has no active child processes, ensuring they don't interrupt ongoing work.
+The server uses Claude Code's [hooks system](https://docs.anthropic.com/en/docs/claude-code/hooks) to detect when Claude finishes processing, needs tool permission, or is asking a question. Messages are only auto-sent when Claude is idle, ensuring they don't interrupt ongoing work or accidentally answer tool permission prompts.
 
 ### Image Format
 

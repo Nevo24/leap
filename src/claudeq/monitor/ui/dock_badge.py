@@ -23,6 +23,8 @@ class NotificationType(Enum):
     MR_ALL_RESPONDED = 'mr_all_responded'
     MR_APPROVED = 'mr_approved'
     SESSION_COMPLETED = 'session_completed'
+    SESSION_NEEDS_PERMISSION = 'session_needs_permission'
+    SESSION_HAS_QUESTION = 'session_has_question'
     REVIEW_REQUESTED = 'review_requested'
     ASSIGNED = 'assigned'
     MENTIONED = 'mentioned'
@@ -51,7 +53,7 @@ class DockBadge:
     def __init__(self) -> None:
         self._base_icon: Optional[QPixmap] = None
         self._seen_mr_statuses: dict[str, MRStatus] = {}
-        self._seen_session_busy: dict[str, bool] = {}
+        self._seen_session_states: dict[str, str] = {}  # tag -> claude_state
         self._busy_since: dict[str, float] = {}  # tag -> monotonic timestamp
         self._mr_changed: int = 0
         self._session_changed: int = 0
@@ -155,19 +157,24 @@ class DockBadge:
         window_active: bool,
         dock_enabled: Optional[dict[str, bool]] = None,
     ) -> list[NotificationEvent]:
-        """Track session status changes (Running -> Idle).
+        """Track session state changes and emit notification events.
+
+        Detects transitions from 'running' to other states:
+        - running -> idle: SESSION_COMPLETED
+        - running -> needs_permission: SESSION_NEEDS_PERMISSION
+        - running -> has_question: SESSION_HAS_QUESTION
 
         Args:
-            sessions: List of session dicts with 'tag' and 'claude_busy' keys.
+            sessions: List of session dicts with 'tag' and 'claude_state' keys.
             window_active: Whether the monitor window is currently focused.
             dock_enabled: Map of NotificationType.value -> bool for dock counting.
 
         Returns:
-            List of NotificationEvent for Running->Idle transitions.
+            List of NotificationEvent for state transitions.
         """
-        current = {s['tag']: s.get('claude_busy', False) for s in sessions}
+        current = {s['tag']: s.get('claude_state', 'idle') for s in sessions}
         if window_active:
-            self._seen_session_busy = dict(current)
+            self._seen_session_states = dict(current)
             self._session_changed = 0
             self._render_total()
             return []
@@ -176,28 +183,29 @@ class DockBadge:
         now = time.monotonic()
         dock_count = 0
 
-        # Track when sessions become busy; detect Running -> Idle transitions
-        for tag, busy in current.items():
-            prev = self._seen_session_busy.get(tag)
-            if busy and prev is not True:
-                # Just became busy -- record the start time
+        _TRANSITION_MAP = {
+            'idle': NotificationType.SESSION_COMPLETED,
+            'needs_permission': NotificationType.SESSION_NEEDS_PERMISSION,
+            'has_question': NotificationType.SESSION_HAS_QUESTION,
+        }
+
+        for tag, state in current.items():
+            prev = self._seen_session_states.get(tag)
+            if state == 'running' and prev != 'running':
                 self._busy_since[tag] = now
-            elif prev is True and not busy:
-                # Running -> Idle -- only count if busy long enough
+            elif prev == 'running' and state != 'running':
                 started = self._busy_since.pop(tag, None)
                 if started is not None and (now - started) >= self.MIN_BUSY_SECONDS:
-                    ev = NotificationEvent(
-                        type=NotificationType.SESSION_COMPLETED,
-                        tag=tag,
-                    )
-                    events.append(ev)
-                    if dock_enabled is None or dock_enabled.get(ev.type.value, True):
-                        dock_count += 1
-            elif not busy:
+                    notif_type = _TRANSITION_MAP.get(state)
+                    if notif_type:
+                        ev = NotificationEvent(type=notif_type, tag=tag)
+                        events.append(ev)
+                        if dock_enabled is None or dock_enabled.get(ev.type.value, True):
+                            dock_count += 1
+            elif state != 'running':
                 self._busy_since.pop(tag, None)
 
-        # Always update so we detect the next transition
-        self._seen_session_busy = dict(current)
+        self._seen_session_states = dict(current)
         self._session_changed += dock_count
         self._render_total()
         return events
@@ -238,7 +246,7 @@ class DockBadge:
     def discard_tag(self, tag: str) -> None:
         """Remove a tag from the seen snapshots."""
         self._seen_mr_statuses.pop(tag, None)
-        self._seen_session_busy.pop(tag, None)
+        self._seen_session_states.pop(tag, None)
 
     def _render_total(self) -> None:
         """Render the combined badge count."""

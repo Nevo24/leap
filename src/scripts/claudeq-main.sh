@@ -156,6 +156,7 @@ cleanup_dead_sockets() {
                 rm -f "$sock" 2>/dev/null
                 rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
                 rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
+                rm -f "$SOCKET_DIR/$tag.signal" 2>/dev/null
                 rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
                 rmdir "$SOCKET_DIR/$tag.server.lock" 2>/dev/null
             fi

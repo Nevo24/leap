@@ -364,10 +364,23 @@ class ClaudeQClient:
         if response:
             queue_size = response.get('queue_size', 0)
             queue_contents = response.get('queue_contents', [])
-            ready = response.get('ready', False)
+            claude_state = response.get('claude_state', 'idle')
+            auto_send_mode = response.get('auto_send_mode', 'pause')
 
-            print("\n📊 Server status:")
-            print(f"  {'✓ Idle, will accept next message' if ready else '✗ Busy, waiting for ClaudeCLI'}")
+            state_display = {
+                'idle': '\u2713 Idle \u2014 will accept next message',
+                'running': '\u23f3 Running \u2014 Claude is processing',
+                'needs_permission': '\u26a0\ufe0f Needs Permission \u2014 waiting for tool approval',
+                'has_question': '\u2753 Has Question \u2014 Claude is asking you something',
+            }
+            mode_display = {
+                'pause': 'Pause on input',
+                'always': 'Always send',
+            }
+
+            print("\n\U0001f4ca Server status:")
+            print(f"  {state_display.get(claude_state, claude_state)}")
+            print(f"  Auto-send: {mode_display.get(auto_send_mode, auto_send_mode)}")
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
             if queue_contents:
@@ -379,7 +392,7 @@ class ClaudeQClient:
                 print("  (queue is empty)")
             print()
         else:
-            print("✗ Could not get server status\n")
+            print("\u2717 Could not get server status\n")
 
     def _force_send(self) -> None:
         """Force send next queued message."""
@@ -462,8 +475,15 @@ class ClaudeQClient:
         print()
         print("  \U0001F916 Auto-queue: Server handles auto-sending")
         print()
-        print("  \U0001F514 Toggle auto-sent notifications: !auto-sent on/off  (or !asm on/off)")
-        print("=" * 70)
+        # Fetch current auto-send mode from server
+        response = self.socket.get_status(silent=True)
+        as_mode = response.get('auto_send_mode', 'pause') if response else 'pause'
+        as_label = 'pause' if as_mode == 'pause' else 'always'
+        notif_label = 'on' if self.show_auto_sent_notifications else 'off'
+
+        print(f"  \U0001F504 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
+        print(f"  \U0001F514 Auto-sent notifications: !auto-sent on/off  (or !asm)  [current: {notif_label}]")
+        print("=" * 80)
         print()
 
     def _print_startup_banner(self) -> None:
@@ -525,6 +545,35 @@ class ClaudeQClient:
             print("✓ Auto-sent notifications disabled (saved globally)\n")
         else:
             print("✗ Invalid option. Use: on/off\n")
+
+    def _handle_auto_send_mode(self, line_lower: str) -> None:
+        """
+        Handle !autosend / !as mode command.
+
+        Args:
+            line_lower: Lowercased input line.
+        """
+        parts = line_lower.split(None, 1)
+        if len(parts) < 2:
+            # Show current mode from server
+            response = self.socket.get_status(silent=True)
+            mode = response.get('auto_send_mode', 'pause') if response else 'pause'
+            mode_display = {'pause': 'Pause on input', 'always': 'Always send'}
+            print(f"Auto-send mode: {mode_display.get(mode, mode)}")
+            print("Usage: !autosend pause/always  (or !as pause/always)\n")
+            return
+
+        mode = parts[1].strip()
+        if mode not in ('pause', 'always'):
+            print("\u2717 Invalid mode. Use: pause or always\n")
+            return
+
+        response = self.socket.set_auto_send_mode(mode)
+        if response and response.get('status') == 'ok':
+            mode_display = {'pause': 'Pause on input', 'always': 'Always send'}
+            print(f"\u2713 Auto-send mode: {mode_display.get(mode, mode)}\n")
+        else:
+            print("\u2717 Failed to set auto-send mode\n")
 
     def _handle_edit_command(self, line: str) -> None:
         """
@@ -609,6 +658,14 @@ class ClaudeQClient:
             return True
         if line_lower.startswith('!auto-sent ') or line_lower.startswith('!asm '):
             self._handle_auto_sent_toggle(line_lower)
+            return True
+
+        # !autosend / !as
+        if line_lower in ['!autosend', '!as']:
+            self._handle_auto_send_mode(line_lower)
+            return True
+        if line_lower.startswith('!autosend ') or line_lower.startswith('!as '):
+            self._handle_auto_send_mode(line_lower)
             return True
 
         # !x / !quit / !exit

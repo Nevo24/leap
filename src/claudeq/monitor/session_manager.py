@@ -141,8 +141,9 @@ def get_active_sessions() -> list[dict[str, Any]]:
             continue
 
         queue_size = status_response.get('queue_size', 0)
-        is_ready = status_response.get('ready', True)
-        claude_busy = not is_ready
+        claude_state = status_response.get('claude_state', 'idle')
+        auto_send_mode = status_response.get('auto_send_mode', 'pause')
+
 
         # Load metadata
         metadata = load_session_metadata(tag)
@@ -187,7 +188,8 @@ def get_active_sessions() -> list[dict[str, Any]]:
 
         sessions.append({
             'tag': tag,
-            'claude_busy': claude_busy,
+            'claude_state': claude_state,
+            'auto_send_mode': auto_send_mode,
             'queue_size': queue_size,
             'project': project_name or 'N/A',
             'branch': branch_name or 'N/A',

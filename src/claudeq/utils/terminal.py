@@ -37,6 +37,6 @@ def print_banner(session_type: str, tag: str) -> None:
   \_____|_|\__,_|\__,_|\__,_|\___|\___|
 """
     print(banner)
-    print("=" * 70)
+    print("=" * 80)
     print(f"  PTY {session_type.upper()} - Session: {tag}")
-    print("=" * 70)
+    print("=" * 80)

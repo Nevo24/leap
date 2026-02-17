@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QHBoxLayout, QLabel, QMenu, QPushButton,
-    QTableWidgetItem, QWidget,
+    QAction, QApplication, QHBoxLayout, QLabel, QMenu,
+    QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
 
@@ -20,6 +20,7 @@ from claudeq.monitor.mr_tracking.config import (
     save_selected_template_name,
 )
 from claudeq.monitor.session_manager import get_active_sessions
+from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.scm_polling import SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
@@ -203,12 +204,44 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
+                    # Remove any queue widget from a previous live state
+                    self.table.removeCellWidget(row, self.COL_QUEUE)
                 else:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
-                    status = '\u2705 Running' if session['claude_busy'] else '\u26aa Idle'
-                    self._set_cell_text(row, self.COL_STATUS, status)
-                    self._set_cell_text(row, self.COL_QUEUE, str(session['queue_size']))
+
+                    claude_state = session.get('claude_state', 'idle')
+                    state_map = {
+                        'idle': '\u26aa Idle',
+                        'running': '\u2705 Running',
+                        'needs_permission': '\u26a0\ufe0f Permission',
+                        'has_question': '\u2753 Question',
+                    }
+                    self._set_cell_text(
+                        row, self.COL_STATUS,
+                        state_map.get(claude_state, claude_state),
+                    )
+
+                    # Queue column with right-click context menu
+                    auto_send_mode = session.get('auto_send_mode', 'pause')
+                    queue_size = session['queue_size']
+                    q_state = (queue_size, auto_send_mode)
+                    if not self._cell_cached(tag, 'queue', q_state,
+                                             row, self.COL_QUEUE):
+                        q_label = QLabel(str(queue_size))
+                        q_label.setAlignment(Qt.AlignCenter)
+                        q_label.setContextMenuPolicy(Qt.CustomContextMenu)
+                        q_label.customContextMenuRequested.connect(
+                            lambda pos, lbl=q_label, t=tag:
+                                self._show_queue_context_menu(lbl, pos, t)
+                        )
+                        # Clear underlying item text
+                        item = self.table.item(row, self.COL_QUEUE)
+                        if item:
+                            item.setText('')
+                        self._set_cell_widget(row, self.COL_QUEUE, q_label)
+                        self._cache_cell(tag, 'queue', q_state,
+                                         row, self.COL_QUEUE)
 
                 # ── Server button + close button ───────────────────
                 starting = tag in self._starting_tags if is_dead else False
@@ -625,6 +658,56 @@ class TableBuilderMixin(_Base):
         menu.addAction(queue_action)
 
         menu.exec_(btn.mapToGlobal(pos))
+
+    def _show_queue_context_menu(
+        self, label: QLabel, pos: 'QPoint', tag: str,
+    ) -> None:
+        """Show right-click context menu on the Queue column label."""
+        # Read the current mode from live session data (not the stale
+        # lambda capture) so the checkmark is always accurate.
+        current_mode = 'pause'
+        for s in self.sessions:
+            if s['tag'] == tag:
+                current_mode = s.get('auto_send_mode', 'pause')
+                break
+
+        check = '\u2713 '
+        menu = QMenu(self)
+
+        pause_label = f'{check}Pause on input (default)' if current_mode == 'pause' else '  Pause on input (default)'
+        pause_action = menu.addAction(pause_label)
+        pause_action.triggered.connect(
+            lambda _checked, t=tag: self._set_auto_send_mode(t, 'pause')
+        )
+
+        always_label = f'{check}Always send' if current_mode == 'always' else '  Always send'
+        always_action = menu.addAction(always_label)
+        always_action.triggered.connect(
+            lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
+        )
+
+        menu.exec_(label.mapToGlobal(pos))
+
+    def _set_auto_send_mode(self, tag: str, mode: str) -> None:
+        """Send set_auto_send_mode to the CQ server."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'set_auto_send_mode', 'mode': mode},
+        )
+        if response and response.get('status') == 'ok':
+            # Update local session data immediately so the next menu
+            # open (before the background refresh) shows the new mode.
+            for s in self.sessions:
+                if s['tag'] == tag:
+                    s['auto_send_mode'] = mode
+                    break
+            # Invalidate cache so next refresh rebuilds with new mode
+            self._cell_cache.pop((tag, 'queue'), None)
+            self._show_status(f'Auto-send mode: {mode}')
+        else:
+            self._show_status(f'Failed to set auto-send mode for {tag}')
 
     def _send_direct_template(self, tag: str) -> None:
         """Send the direct message template directly to the CQ session."""

@@ -3,7 +3,6 @@
 from claudeq.utils.constants import (
     SOCKET_DIR,
     QUEUE_DIR,
-    MIN_BUSY_DURATION,
     POLL_INTERVAL,
     TITLE_RESET_INTERVAL,
     MAX_RECENTLY_SENT,

@@ -51,7 +51,7 @@ endef
 default: install
 
 .PHONY: install
-install: .env install-core ensure-storage write-install-metadata configure-shell
+install: .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks
 	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using ClaudeQ:"
@@ -183,6 +183,7 @@ update:
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .configure-jetbrains
 	@echo "$(GREEN)✓ IDE configurations updated$(NC)"
+	@$(MAKE) .configure-claude-hooks
 	@echo ""
 	@$(GET_RC_FILE); \
 	if [ -f "$$RC_FILE" ] && grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
@@ -401,6 +402,15 @@ configure-shell:
 			fi; \
 		fi; \
 	fi
+
+.PHONY: .configure-claude-hooks
+.configure-claude-hooks:
+	@echo "$(PROMPT_PREFIX) Configuring Claude Code hooks..."
+	@mkdir -p "$$HOME/.claude/hooks"
+	@cp "$(SCRIPTS_DIR)/claudeq-hook.sh" "$$HOME/.claude/hooks/claudeq-hook.sh"
+	@chmod +x "$$HOME/.claude/hooks/claudeq-hook.sh"
+	@python3 "$(SCRIPTS_DIR)/configure_claude_hooks.py" "$$HOME/.claude/hooks/claudeq-hook.sh"
+	@echo "$(GREEN)  ✓ Claude Code hooks configured$(NC)"
 
 .PHONY: .detect-shell
 .detect-shell:

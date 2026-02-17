@@ -9,6 +9,7 @@ import shutil
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 import pexpect
@@ -17,14 +18,23 @@ import pexpect
 class PTYHandler:
     """Handles PTY spawning and interaction with Claude CLI."""
 
-    def __init__(self, flags: Optional[list[str]] = None):
+    def __init__(
+        self,
+        flags: Optional[list[str]] = None,
+        tag: Optional[str] = None,
+        signal_dir: Optional[Path] = None,
+    ):
         """
         Initialize PTY handler.
 
         Args:
             flags: Command-line flags to pass to Claude CLI.
+            tag: Session tag name (injected as CQ_TAG env var).
+            signal_dir: Directory for signal files (injected as CQ_SIGNAL_DIR).
         """
         self.flags = flags or []
+        self._tag = tag
+        self._signal_dir = signal_dir
         self.process: Optional[pexpect.spawn] = None
         self._send_lock = threading.Lock()
         self._output_received = threading.Event()
@@ -44,10 +54,17 @@ class PTYHandler:
             print("Error: 'claude' command not found")
             sys.exit(1)
 
+        env = dict(os.environ)
+        if self._tag:
+            env['CQ_TAG'] = self._tag
+        if self._signal_dir:
+            env['CQ_SIGNAL_DIR'] = str(self._signal_dir)
+
         self.process = pexpect.spawn(
             claude_path,
             args=self.flags,
-            dimensions=(rows, cols)
+            dimensions=(rows, cols),
+            env=env,
         )
 
     def _find_claude_cli(self) -> Optional[str]:

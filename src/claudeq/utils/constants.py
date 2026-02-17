@@ -61,8 +61,6 @@ HISTORY_DIR: Final[Path] = STORAGE_DIR / "history"
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
 # Timing constants
-MIN_BUSY_DURATION: Final[float] = 3.0  # Minimum seconds to consider busy after sending
-OUTPUT_SETTLE_DURATION: Final[float] = 2.0  # Seconds of PTY silence before considering idle
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
 
@@ -149,7 +147,8 @@ def get_default_settings() -> dict:
     """
     return {
         "show_auto_sent_notifications": True,
-        "history_ttl_days": 3
+        "history_ttl_days": 3,
+        "auto_send_mode": "pause"
     }
 
 

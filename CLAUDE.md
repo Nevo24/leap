@@ -24,7 +24,9 @@ src/
 │   ├── claudeq-client.py        # Thin launcher → ClaudeQClient
 │   ├── claudeq-monitor.py       # Thin launcher → MonitorWindow
 │   ├── claudeq_monitor_launcher.py  # py2app entry point
-│   └── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
+│   ├── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
+│   ├── configure_claude_hooks.py    # Merge ClaudeQ hooks into ~/.claude/settings.json
+│   └── claudeq-hook.sh             # Claude Code hook script (writes state to signal file)
 │
 └── claudeq/                     # Main Python package
     ├── __init__.py              # Version, exports
@@ -156,6 +158,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | MR threads template selection | `.storage/cq_selected_template` |
 | Quick message template selection | `.storage/cq_selected_direct_template` |
 | Template presets | `.storage/cq_templates.json` |
+| Signal file | `.storage/sockets/<tag>.signal` |
 
 ## File Cleanup & Lifecycle
 
@@ -165,12 +168,12 @@ ClaudeQ has multiple cleanup mechanisms. This table shows **exactly** which func
 
 | Function Name | Location | Files Cleaned | Server Up | Server Down | Client Up | Client Down | Manual `cq-cleanup` | Monitor Up | Monitor Down |
 |--------------|----------|---------------|-----------|-------------|-----------|-------------|---------------------|------------|--------------|
-| `ClaudeQServer.cleanup()` | `server/server.py:434` | `.sock`<br>`.meta`<br>`.queue` (if empty)<br>PTY process | | ✅ | | | | | ✅ (via shutdown msg) |
+| `ClaudeQServer.cleanup()` | `server/server.py:746` | `.sock`<br>`.meta`<br>`.signal`<br>`.queue` (if empty)<br>PTY process | | ✅ | | | | | ✅ (via shutdown msg) |
 | `ClaudeQClient._cleanup_lock()` | `client/client.py:103` | `.client.lock` | | | | ✅ | | | |
 | `ClaudeQClient._cleanup_temp_images()` | `client/client.py:117` | `/tmp/*.png` (temp images) | | | | ✅ | | | |
 | `ClaudeQServer._cleanup_old_history_files()` | `server/server.py:262` | `.history` (older than TTL) | ✅ | | | | | | |
-| `cleanup_dead_sockets()` | `claudeq-main.sh:148` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead)<br>`.server.lock/` (dead) | ✅ (background) | | | | | | |
-| `cq-cleanup` script | `claudeq-cleanup.sh` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.client.lock` (dead)<br>`.server.lock/` (dead) | | | | | ✅ | | |
+| `cleanup_dead_sockets()` | `claudeq-main.sh:148` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.signal` (dead)<br>`.client.lock` (dead)<br>`.server.lock/` (dead) | ✅ (background) | | | | | | |
+| `cq-cleanup` script | `claudeq-cleanup.sh` | `.sock` (dead)<br>`.queue` (dead)<br>`.meta` (dead)<br>`.signal` (dead)<br>`.client.lock` (dead)<br>`.server.lock/` (dead) | | | | | ✅ | | |
 
 **Legend:**
 - ✅ = Cleanup runs at this event
@@ -187,6 +190,7 @@ ClaudeQ has multiple cleanup mechanisms. This table shows **exactly** which func
 | `.history` | First user input | History TTL cleanup on server startup | Deleted after `history_ttl_days` (default: 3) |
 | `.client.lock` | Client connects | Client exit, dead session cleanup | Temporary |
 | `.server.lock/` | Server starting (shell) | Shell trap on exit, dead session cleanup | Temporary |
+| `.signal` | Claude sends a message | Server exit, hook overwrite, dead session cleanup | Temporary |
 | `/tmp/*.png` | Ctrl+V image paste | Client exit | Temporary |
 
 ### Settings Configuration
@@ -196,6 +200,7 @@ Edit `.storage/settings.json` to customize:
 ```json
 {
   "show_auto_sent_notifications": true,  // Show "🤖 Auto-sent" messages
+  "auto_send_mode": "pause",            // "pause" = only on idle; "always" = whenever not running
   "history_ttl_days": 3                  // Delete .history files older than N days
 }
 ```
@@ -251,6 +256,7 @@ Load these messages? [Y/n/d] (Y=load, n=discard, d=show full):
 | `!l` or `!list` | Show queue |
 | `!c` or `!clear` | Clear queue |
 | `!f` or `!force` | Force-send next queued message |
+| `!autosend` or `!as` | Toggle auto-send mode (pause/always) |
 | `!x` or `!quit` (`Ctrl+D`) | Exit client |
 
 ### Message Editing
@@ -398,11 +404,13 @@ The monitor has two notification channels, independently configurable per event 
 | `mr_all_responded` | MR went from unresponded to all responded | `"MR !42 'Fix auth' — all threads responded"` |
 | `mr_approved` | MR approved (False→True) | `"MR !42 'Fix auth' approved by John, Jane"` |
 | `session_completed` | Running→Idle (busy for at least 1.5s) | `"Claude finished processing"` |
+| `session_needs_permission` | Running→Needs Permission | `"Claude needs permission to use a tool"` |
+| `session_has_question` | Running→Has Question | `"Claude is asking you a question"` |
 | `review_requested` | User requested to review an MR/PR | `"Review requested on MR !42 'Fix auth' by John"` |
 | `assigned` | User assigned to an MR/PR | `"You are assigned to MR !42 'Fix auth'"` |
 | `mentioned` | User mentioned in a discussion | `"You were mentioned in thread on MR !42"` |
 
-The first four types come from MR tracking (per-session). The last three come from user-level SCM notifications (GitLab Todos / GitHub notifications) — these fire regardless of whether the MR is tracked in ClaudeQ.
+The first six types come from session tracking. The last three come from user-level SCM notifications (GitLab Todos / GitHub notifications) — these fire regardless of whether the MR is tracked in ClaudeQ.
 
 Dock badge counts sum into a single number. Focusing the monitor window resets all counts.
 

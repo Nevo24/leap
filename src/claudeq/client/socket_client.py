@@ -171,3 +171,21 @@ class SocketClient:
             {'type': 'edit_message', 'id': msg_id, 'new_message': new_message},
             silent=silent,
         )
+
+    def set_auto_send_mode(
+        self, mode: str, silent: bool = False
+    ) -> Optional[dict[str, Any]]:
+        """
+        Set the auto-send mode on the server.
+
+        Args:
+            mode: 'pause' or 'always'.
+            silent: If True, suppress error messages.
+
+        Returns:
+            Server response dictionary, or None on error.
+        """
+        return self._send_request(
+            {'type': 'set_auto_send_mode', 'mode': mode},
+            silent=silent,
+        )

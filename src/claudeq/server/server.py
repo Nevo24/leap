@@ -19,8 +19,8 @@ from typing import Any, Optional
 
 from claudeq.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
-    MIN_BUSY_DURATION, OUTPUT_SETTLE_DURATION,
-    POLL_INTERVAL, TITLE_RESET_INTERVAL, ensure_storage_dirs, load_settings
+    POLL_INTERVAL, TITLE_RESET_INTERVAL,
+    ensure_storage_dirs, load_settings, save_settings,
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
 from claudeq.server.pty_handler import PTYHandler
@@ -73,17 +73,17 @@ class ClaudeQServer:
                 pass
 
         # Initialize components
-        self.pty = PTYHandler(flags)
+        self.pty = PTYHandler(flags, tag=tag, signal_dir=SOCKET_DIR)
         self.queue = QueueManager(self.queue_file)
         self.metadata = SessionMetadata(tag, SOCKET_DIR)
         self.socket_handler = SocketHandler(self.socket_path, self._handle_message)
 
         # State tracking
-        self.last_sent_message: Optional[str] = None
-        self.last_send_time: Optional[float] = None
-        self._last_output_time: float = 0.0
-        self._baseline_children: set[str] = set()
-        self._busy_lock = threading.Lock()  # Protects _last_output_time and _baseline_children
+        self._claude_state: str = 'idle'
+        self._state_lock = threading.Lock()
+        self._signal_file = SOCKET_DIR / f"{tag}.signal"
+        self._auto_send_mode: str = load_settings().get('auto_send_mode', 'pause')
+        self._running_since: Optional[float] = None  # fallback timeout
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -127,11 +127,14 @@ class ClaudeQServer:
             return {'status': 'sent'}
 
         elif msg_type == 'status':
+            state = self._get_claude_state()
             return {
                 'queue_size': self.queue.size,
                 'queue_contents': self.queue.get_contents(),
                 'recently_sent': self.queue.get_recently_sent(),
-                'ready': not self._is_busy(),
+                'ready': self._is_ready(),
+                'claude_state': state,
+                'auto_send_mode': self._auto_send_mode,
                 'claude_running': self.pty.is_alive()
             }
 
@@ -170,6 +173,16 @@ class ClaudeQServer:
                 return {'status': 'ok', 'message': 'Message edited'}
             return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
 
+        elif msg_type == 'set_auto_send_mode':
+            mode = msg.get('mode', '')
+            if mode not in ('pause', 'always'):
+                return {'status': 'error', 'message': f"Invalid mode: {mode}. Use 'pause' or 'always'."}
+            self._auto_send_mode = mode
+            settings = load_settings()
+            settings['auto_send_mode'] = mode
+            save_settings(settings)
+            return {'status': 'ok', 'auto_send_mode': mode}
+
         elif msg_type == 'shutdown':
             # Use a thread so we can return the response before exiting.
             # Sends SIGTERM to our own process, which the main thread catches
@@ -193,8 +206,15 @@ class ClaudeQServer:
         Args:
             message: Message to send.
         """
-        self.last_sent_message = message
-        self.last_send_time = time.time()
+        with self._state_lock:
+            self._claude_state = 'running'
+            self._running_since = time.time()
+
+        # Delete stale signal file before sending
+        try:
+            self._signal_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
         if message.startswith('@'):
             self.pty.send_image_message(message)
@@ -254,7 +274,7 @@ class ClaudeQServer:
         """Show full queue contents."""
         print("\n" + "=" * 70)
         print("Full message queue:")
-        print("=" * 70)
+        print("=" * 80)
         contents = self.queue.get_contents()
         for i, msg_with_id in enumerate(contents):
             # Extract ID and message
@@ -268,7 +288,7 @@ class ClaudeQServer:
 
             print(f"\n[{i}] <{msg_id}>")
             print(f"    {msg}")
-        print("=" * 70)
+        print("=" * 80)
 
     def _cleanup_old_history_files(self) -> None:
         """Clean up history files older than configured TTL."""
@@ -503,75 +523,76 @@ class ClaudeQServer:
                     f"Proceeding anyway.\033[0m"
                 )
 
-    def _is_busy(self) -> bool:
+    def _get_claude_state(self) -> str:
         """
-        Check if Claude is busy processing.
+        Get Claude's current state using hook-based signal files.
 
-        Uses three signals:
-        1. MIN_BUSY_DURATION — too soon after sending a message.
-        2. Output settle — PTY is still producing output (streaming response).
-        3. Child process baseline — new children beyond the baseline indicate
-           tool execution (e.g. bash).  Persistent children like caffeinate
-           or MCP servers are absorbed into the baseline when idle.
+        Checks the signal file whenever state is not 'idle', so that
+        transitions like has_question -> idle are detected when the
+        user answers and Claude finishes (Stop hook fires).
+
+        Fallback: if 'running' for >600s with no hook signal, resets
+        to 'idle' to handle environments where hooks aren't installed.
 
         Returns:
-            True if Claude is busy, False otherwise.
+            One of: 'idle', 'running', 'needs_permission', 'has_question'.
         """
         if not self.pty.is_alive():
-            return False
+            with self._state_lock:
+                self._claude_state = 'idle'
+                self._running_since = None
+            return 'idle'
 
-        # Check if we recently sent a message
-        if self.last_send_time:
-            time_since_send = time.time() - self.last_send_time
-            if time_since_send < MIN_BUSY_DURATION:
-                return True
+        with self._state_lock:
+            current = self._claude_state
 
-        # Snapshot busy-state variables under lock to avoid torn reads.
-        with self._busy_lock:
-            last_output_time = self._last_output_time
-            baseline_children = self._baseline_children
-
-        # Check if PTY is still producing output (Claude streaming).
-        # Only counts as busy if we sent a message recently — idle prompt
-        # redraws and escape sequences should not trigger busy state.
-        if last_output_time and self.last_send_time:
-            time_since_output = time.time() - last_output_time
-            time_since_send = time.time() - self.last_send_time
-            if time_since_output < OUTPUT_SETTLE_DURATION and time_since_send < 300:
-                return True
-
-        # Check for NEW child processes (tools being run)
-        if self.pty.pid:
+        if current != 'idle':
+            # Check signal file for hook-written state transitions
             try:
-                result = subprocess.run(
-                    ['pgrep', '-P', str(self.pty.pid)],
-                    capture_output=True
-                )
-                children = set(c for c in result.stdout.decode().strip().split() if c)
-                new_children = children - baseline_children
-                if new_children:
-                    # New children found.  If output has been silent for a
-                    # long time, these are almost certainly persistent
-                    # processes (caffeinate, MCP servers), not tools.
-                    silence = (time.time() - last_output_time) if last_output_time else float('inf')
-                    if silence <= 10.0:
-                        return True
-                    # Silent too long — absorb as persistent and fall through
-                # Update baseline to absorb any persistent processes
-                # spawned during the last processing cycle.
-                with self._busy_lock:
-                    self._baseline_children = children
-            except (subprocess.SubprocessError, OSError):
+                if self._signal_file.exists():
+                    raw = self._signal_file.read_text().strip()
+                    data = json.loads(raw)
+                    new_state = data.get('state', '')
+                    if new_state in ('idle', 'needs_permission', 'has_question'):
+                        if new_state != current:
+                            with self._state_lock:
+                                self._claude_state = new_state
+                                self._running_since = None
+                            return new_state
+            except (json.JSONDecodeError, OSError):
                 pass
 
-        return False
+            # Fallback timeout: if running for too long without hook signal
+            if current == 'running':
+                with self._state_lock:
+                    if self._running_since and (time.time() - self._running_since) > 600:
+                        self._claude_state = 'idle'
+                        self._running_since = None
+                        return 'idle'
+
+        return current
+
+    def _is_ready(self) -> bool:
+        """Check if the auto-sender should send the next message.
+
+        In 'pause' mode: only send when Claude is idle.
+        In 'always' mode: send whenever Claude is not running.
+
+        Returns:
+            True if the auto-sender should send the next queued message.
+        """
+        state = self._get_claude_state()
+        if self._auto_send_mode == 'always':
+            return state != 'running'
+        # 'pause' mode (default)
+        return state == 'idle'
 
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
         while self.running:
             time.sleep(POLL_INTERVAL)
 
-            if self.queue.is_empty or self._is_busy():
+            if self.queue.is_empty or not self._is_ready():
                 continue
 
             message = self.queue.peek()
@@ -638,10 +659,6 @@ class ClaudeQServer:
         # the "cq-server <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
 
-        # Track when PTY last produced output (used by _is_busy).
-        with self._busy_lock:
-            self._last_output_time = time.time()
-
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
@@ -666,7 +683,7 @@ class ClaudeQServer:
         print("  ✅ No tmux needed!")
         print("")
         print("  Ctrl+C to exit")
-        print("=" * 70)
+        print("=" * 80)
         print()
 
         if not self.queue.is_empty:
@@ -734,6 +751,11 @@ class ClaudeQServer:
         self.socket_handler.cleanup()
         self.metadata.cleanup()
         self.pty.terminate()
+        # Remove signal file
+        try:
+            self._signal_file.unlink(missing_ok=True)
+        except OSError:
+            pass
         # Remove queue file if empty (no pending messages).
         # Hold the queue lock so no message can be added between the
         # emptiness check and the unlink.

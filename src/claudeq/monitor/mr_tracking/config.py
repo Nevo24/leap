@@ -33,6 +33,8 @@ _DEFAULT_NOTIFICATIONS: dict[str, dict[str, bool]] = {
     'mr_all_responded': {'dock': True, 'banner': False},
     'mr_approved': {'dock': True, 'banner': False},
     'session_completed': {'dock': True, 'banner': False},
+    'session_needs_permission': {'dock': True, 'banner': False},
+    'session_has_question': {'dock': True, 'banner': False},
     'review_requested': {'dock': True, 'banner': False},
     'assigned': {'dock': True, 'banner': False},
     'mentioned': {'dock': True, 'banner': False},

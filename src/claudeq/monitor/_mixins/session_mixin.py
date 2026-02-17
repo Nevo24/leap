@@ -110,7 +110,6 @@ class SessionMixin(_Base):
                 pinned_branch = pin.get('branch') or 'N/A'
                 merged.append({
                     'tag': tag,
-                    'claude_busy': False,
                     'queue_size': 0,
                     'project': project_name,
                     'branch': pinned_branch,

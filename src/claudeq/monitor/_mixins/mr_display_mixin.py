@@ -177,6 +177,10 @@ class MRDisplayMixin(_Base):
             return (tag, f"{mr_ref} approved")
         elif event.type == NotificationType.SESSION_COMPLETED:
             return (tag, 'Claude finished processing')
+        elif event.type == NotificationType.SESSION_NEEDS_PERMISSION:
+            return (tag, 'Claude needs permission to use a tool')
+        elif event.type == NotificationType.SESSION_HAS_QUESTION:
+            return (tag, 'Claude is asking you a question')
         elif event.type == NotificationType.REVIEW_REQUESTED:
             title = event.notification_title or ''
             project = event.project_name or ''
