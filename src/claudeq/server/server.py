@@ -667,6 +667,13 @@ class ClaudeQServer:
         # Track output time for PTY silence fallback
         self._last_output_time = time.time()
 
+        # Detect Claude interruption — Stop hook doesn't fire on Ctrl+C/Escape,
+        # so detect it from PTY output and treat as waiting for user input.
+        if self._claude_state == 'running' and b'Interrupted' in data:
+            with self._state_lock:
+                self._claude_state = 'has_question'
+                self._running_since = None
+
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
