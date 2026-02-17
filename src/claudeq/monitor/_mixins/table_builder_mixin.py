@@ -82,6 +82,23 @@ class TableBuilderMixin(_Base):
                 w.style().unpolish(w)
                 w.style().polish(w)
                 w.update()
+                # Make children transparent so wrapper bg shows uniformly.
+                # Skip PulsingLabel/IndicatorLabel (animated stylesheets).
+                for child in w.findChildren(QWidget):
+                    if isinstance(child, (PulsingLabel, IndicatorLabel)):
+                        continue
+                    if highlight:
+                        orig = child.property('_origSS')
+                        if orig is None:
+                            orig = child.styleSheet()
+                            child.setProperty('_origSS', orig)
+                        bg = 'background: transparent;'
+                        child.setStyleSheet(
+                            f'{orig} {bg}' if orig else bg)
+                    else:
+                        orig = child.property('_origSS')
+                        if orig is not None:
+                            child.setStyleSheet(orig)
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         """Set cell text only if it changed, to avoid flicker."""
