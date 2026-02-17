@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from claudeq.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
-    POLL_INTERVAL, TITLE_RESET_INTERVAL,
+    POLL_INTERVAL, TITLE_RESET_INTERVAL, OUTPUT_SILENCE_TIMEOUT,
     ensure_storage_dirs, load_settings, save_settings,
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
@@ -84,6 +84,7 @@ class ClaudeQServer:
         self._signal_file = SOCKET_DIR / f"{tag}.signal"
         self._auto_send_mode: str = load_settings().get('auto_send_mode', 'pause')
         self._running_since: Optional[float] = None  # fallback timeout
+        self._last_output_time: float = 0.0  # PTY silence fallback
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -531,8 +532,10 @@ class ClaudeQServer:
         transitions like has_question -> idle are detected when the
         user answers and Claude finishes (Stop hook fires).
 
-        Fallback: if 'running' for >600s with no hook signal, resets
-        to 'idle' to handle environments where hooks aren't installed.
+        Fallback: if PTY output has been silent for OUTPUT_SILENCE_TIMEOUT
+        seconds while state is 'running', resets to 'idle'. This handles
+        cases where hooks don't fire (e.g. user interrupts Claude with
+        Ctrl+C/Escape).
 
         Returns:
             One of: 'idle', 'running', 'needs_permission', 'has_question'.
@@ -562,13 +565,15 @@ class ClaudeQServer:
             except (json.JSONDecodeError, OSError):
                 pass
 
-            # Fallback timeout: if running for too long without hook signal
-            if current == 'running':
-                with self._state_lock:
-                    if self._running_since and (time.time() - self._running_since) > 600:
+            # Fallback: PTY silence timeout (handles interruptions,
+            # missing hooks, or any case where the hook doesn't fire)
+            if current == 'running' and self._last_output_time > 0:
+                silence = time.time() - self._last_output_time
+                if silence > OUTPUT_SILENCE_TIMEOUT:
+                    with self._state_lock:
                         self._claude_state = 'idle'
                         self._running_since = None
-                        return 'idle'
+                    return 'idle'
 
         return current
 
@@ -658,6 +663,9 @@ class ClaudeQServer:
         # Strip OSC title-change sequences so Claude CLI cannot override
         # the "cq-server <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
+
+        # Track output time for PTY silence fallback
+        self._last_output_time = time.time()
 
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).

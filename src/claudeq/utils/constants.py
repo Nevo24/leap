@@ -63,6 +63,7 @@ SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
+OUTPUT_SILENCE_TIMEOUT: Final[float] = 15.0  # Fallback: assume idle after N seconds of PTY silence
 
 # Queue limits
 MAX_RECENTLY_SENT: Final[int] = 20  # Maximum messages to track in recently_sent
