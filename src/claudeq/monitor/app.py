@@ -545,12 +545,16 @@ def main() -> None:
     # and all initial resize events have settled.
     QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
 
-    # Restore default SIGINT handler so Ctrl+C kills the process
-    # immediately. PyQt5 on macOS intercepts signals at the C level,
-    # making Python signal handlers unreliable. Prefs are saved
-    # periodically and on normal window close; Ctrl+C is a hard kill.
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    # PyQt5 + macOS Cocoa overrides Python signal handlers. Set SIG_DFL
+    # at the C level AFTER Qt starts its event loop, so our handler wins.
+    def _restore_sigint() -> None:
+        import ctypes
+        import ctypes.util
+        libc = ctypes.CDLL(ctypes.util.find_library('c'))
+        libc.signal(2, 0)   # signal(SIGINT, SIG_DFL)
+        libc.signal(15, 0)  # signal(SIGTERM, SIG_DFL)
+
+    QTimer.singleShot(100, _restore_sigint)
 
     sys.exit(app.exec_())
 
