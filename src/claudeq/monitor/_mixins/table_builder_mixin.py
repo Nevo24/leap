@@ -59,10 +59,8 @@ class TableBuilderMixin(_Base):
             border_css = ''
         wrapper = QWidget()
         wrapper.setObjectName('_cqSep')
-        wrapper.setProperty('_hover', 'false')
         wrapper.setStyleSheet(
-            f'#_cqSep {{ {border_css}}}'
-            ' #_cqSep[_hover="true"] { background: rgba(255, 255, 255, 20); }'
+            f'#_cqSep {{ {border_css}background: transparent; }}'
         )
         lay = QHBoxLayout(wrapper)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -71,34 +69,38 @@ class TableBuilderMixin(_Base):
         self.table.setCellWidget(row, col, wrapper)
 
     def _apply_hover_to_row(self, row: int, highlight: bool) -> None:
-        """Toggle the hover background on all cell widgets in a row."""
+        """Toggle the hover background on all cell widgets in a row.
+
+        The delegate paints the hover background for every cell (text
+        and widget).  Widget cells need their children made transparent
+        so the delegate background shows through uniformly.
+        """
         if row < 0 or row >= self.table.rowCount():
             return
-        value = 'true' if highlight else 'false'
         for col in range(self.table.columnCount()):
             w = self.table.cellWidget(row, col)
-            if w and w.objectName() == '_cqSep':
-                w.setProperty('_hover', value)
-                w.style().unpolish(w)
-                w.style().polish(w)
-                w.update()
-                # Make children transparent so wrapper bg shows uniformly.
-                # Skip PulsingLabel/IndicatorLabel (animated stylesheets).
-                for child in w.findChildren(QWidget):
-                    if isinstance(child, (PulsingLabel, IndicatorLabel)):
-                        continue
-                    if highlight:
-                        orig = child.property('_origSS')
-                        if orig is None:
-                            orig = child.styleSheet()
-                            child.setProperty('_origSS', orig)
-                        bg = 'background: transparent;'
-                        child.setStyleSheet(
-                            f'{orig} {bg}' if orig else bg)
+            if not w or w.objectName() != '_cqSep':
+                continue
+            # Make buttons/labels transparent so delegate bg shows
+            # through.  Skip PulsingLabel / IndicatorLabel (animated
+            # stylesheets that must not be overridden).
+            for child in w.findChildren((QPushButton, QLabel)):
+                if isinstance(child, (PulsingLabel, IndicatorLabel)):
+                    continue
+                if highlight:
+                    orig = child.property('_origSS')
+                    if orig is None:
+                        orig = child.styleSheet()
+                        child.setProperty('_origSS', orig)
+                    if isinstance(child, QPushButton):
+                        rule = ' QPushButton { background: transparent; }'
                     else:
-                        orig = child.property('_origSS')
-                        if orig is not None:
-                            child.setStyleSheet(orig)
+                        rule = ' QLabel { background: transparent; }'
+                    child.setStyleSheet(orig + rule)
+                else:
+                    orig = child.property('_origSS')
+                    if orig is not None:
+                        child.setStyleSheet(orig)
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         """Set cell text only if it changed, to avoid flicker."""
