@@ -191,6 +191,13 @@ class ClaudeStateTracker:
                         with self._lock:
                             self._state = 'running'
                             self._waiting_since = None
+                        # Delete stale signal file so get_state() doesn't
+                        # read the old "idle" from the previous Stop hook
+                        # and immediately reset us back to idle.
+                        try:
+                            self._signal_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
             return
 
         # Detect Claude interruption — Stop hook doesn't fire on Ctrl+C/Escape,
