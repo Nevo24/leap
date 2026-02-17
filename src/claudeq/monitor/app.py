@@ -545,16 +545,20 @@ def main() -> None:
     # and all initial resize events have settled.
     QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
 
-    # Handle Ctrl+C gracefully
+    # Handle Ctrl+C — hard-exit since Qt may block signal delivery
     def signal_handler(sig: int, frame: Any) -> None:
-        window.close()
-        app.quit()
+        try:
+            window.closeEvent(QCloseEvent())
+        except Exception:
+            pass
+        os._exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     # Allow Python to handle signals during Qt event loop
     timer = QTimer()
-    timer.start(500)
+    timer.start(200)
     timer.timeout.connect(lambda: None)
 
     sys.exit(app.exec_())
