@@ -106,6 +106,16 @@ class TemplateEditorDialog(QDialog):
 
         self._refresh_combo(selected_name)
 
+        # If no preset was selected but combo has items, sync _current_name
+        # with what the combo is visually showing so Apply works correctly.
+        if not self._current_name and self._combo.count() > 0:
+            fallback = self._combo.currentText()
+            if fallback:
+                self._current_name = fallback
+                templates = load_saved_templates()
+                self._text_edit.setPlainText(templates.get(fallback, ''))
+                self._update_button_states()
+
     def _update_button_states(self) -> None:
         has_preset = bool(self._current_name)
         self._save_btn.setEnabled(has_preset)
