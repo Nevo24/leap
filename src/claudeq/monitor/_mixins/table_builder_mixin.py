@@ -45,24 +45,43 @@ class TableBuilderMixin(_Base):
     _CENTER_COLS = frozenset({5, 6})  # COL_STATUS, COL_QUEUE
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
-        """Set a cell widget with column group separator styling.
+        """Set a cell widget wrapped in a hover-aware container.
 
-        Wraps the widget in a container with a right border when the column
-        sits at a group boundary or within a group.
+        All cell widgets are wrapped so the row hover highlight can be
+        toggled uniformly via the ``_hover`` dynamic property.  Columns
+        at group boundaries additionally get a right border.
         """
         if col in GROUP_BOUNDARY_COLS or col in INTRA_GROUP_COLS:
             border = ('1px solid white' if col in GROUP_BOUNDARY_COLS
                       else '1px solid rgba(255, 255, 255, 50)')
-            wrapper = QWidget()
-            wrapper.setObjectName('_cqSep')
-            wrapper.setStyleSheet(f'#_cqSep {{ border-right: {border}; }}')
-            lay = QHBoxLayout(wrapper)
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(0)
-            lay.addWidget(widget)
-            self.table.setCellWidget(row, col, wrapper)
+            border_css = f'border-right: {border}; '
         else:
-            self.table.setCellWidget(row, col, widget)
+            border_css = ''
+        wrapper = QWidget()
+        wrapper.setObjectName('_cqSep')
+        wrapper.setProperty('_hover', 'false')
+        wrapper.setStyleSheet(
+            f'#_cqSep {{ {border_css}}}'
+            ' #_cqSep[_hover="true"] { background: rgba(255, 255, 255, 20); }'
+        )
+        lay = QHBoxLayout(wrapper)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(widget)
+        self.table.setCellWidget(row, col, wrapper)
+
+    def _apply_hover_to_row(self, row: int, highlight: bool) -> None:
+        """Toggle the hover background on all cell widgets in a row."""
+        if row < 0 or row >= self.table.rowCount():
+            return
+        value = 'true' if highlight else 'false'
+        for col in range(self.table.columnCount()):
+            w = self.table.cellWidget(row, col)
+            if w and w.objectName() == '_cqSep':
+                w.setProperty('_hover', value)
+                w.style().unpolish(w)
+                w.style().polish(w)
+                w.update()
 
     def _set_cell_text(self, row: int, col: int, text: str) -> None:
         """Set cell text only if it changed, to avoid flicker."""
@@ -583,6 +602,9 @@ class TableBuilderMixin(_Base):
                 self._cell_cache.pop(k, None)
         finally:
             self.table.setUpdatesEnabled(True)
+            # Re-apply row hover highlight (widgets were replaced during rebuild)
+            if getattr(self, '_hovered_row', -1) >= 0:
+                self._apply_hover_to_row(self._hovered_row, True)
 
     def _refresh_data(self) -> None:
         """Refresh session data and update table (non-blocking).
@@ -843,3 +865,24 @@ class TableBuilderMixin(_Base):
         """Sync the tooltip app with the current preference."""
         if hasattr(self, '_tooltip_app'):
             self._tooltip_app.tooltips_enabled = self._prefs.get('show_tooltips', True)
+
+    def _check_row_hover(self) -> None:
+        """Poll cursor position to track which table row is hovered."""
+        from PyQt5.QtGui import QCursor
+
+        viewport = self.table.viewport()
+        local_pos = viewport.mapFromGlobal(QCursor.pos())
+
+        if viewport.rect().contains(local_pos):
+            index = self.table.indexAt(local_pos)
+            row = index.row() if index.isValid() else -1
+        else:
+            row = -1
+
+        if row != self._hovered_row:
+            old = self._hovered_row
+            self._hovered_row = row
+            self.table.setProperty('_hovered_row', row)
+            self._apply_hover_to_row(old, False)
+            self._apply_hover_to_row(row, True)
+            viewport.update()

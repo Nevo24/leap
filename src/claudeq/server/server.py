@@ -5,21 +5,18 @@ Orchestrates PTY handling, socket server, and queue management.
 """
 
 import atexit
-import json
 import os
 import re
 import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
-    POLL_INTERVAL, TITLE_RESET_INTERVAL, OUTPUT_SILENCE_TIMEOUT,
+    POLL_INTERVAL, TITLE_RESET_INTERVAL,
     ensure_storage_dirs, load_settings, save_settings,
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
@@ -27,6 +24,8 @@ from claudeq.server.pty_handler import PTYHandler
 from claudeq.server.socket_handler import SocketHandler
 from claudeq.server.queue_manager import QueueManager
 from claudeq.server.metadata import SessionMetadata
+from claudeq.server.state_tracker import ClaudeStateTracker
+from claudeq.server.validation import validate_pinned_session
 
 
 class ClaudeQServer:
@@ -58,8 +57,17 @@ class ClaudeQServer:
         # Ensure storage directories exist
         ensure_storage_dirs()
 
-        # Validate against monitor pinned sessions (MR-pinned rows)
-        self._validate_pinned_session()
+        # Validate against monitor pinned sessions (MR-pinned rows).
+        # Release the startup lock on failure so another server can start.
+        lock_dir = SOCKET_DIR / f"{tag}.server.lock"
+        try:
+            validate_pinned_session(tag, STORAGE_DIR)
+        except SystemExit:
+            try:
+                lock_dir.rmdir()
+            except OSError:
+                pass
+            raise
 
         # Initialize paths
         self.queue_file = QUEUE_DIR / f"{tag}.queue"
@@ -79,12 +87,10 @@ class ClaudeQServer:
         self.socket_handler = SocketHandler(self.socket_path, self._handle_message)
 
         # State tracking
-        self._claude_state: str = 'idle'
-        self._state_lock = threading.Lock()
-        self._signal_file = SOCKET_DIR / f"{tag}.signal"
-        self._auto_send_mode: str = load_settings().get('auto_send_mode', 'pause')
-        self._running_since: Optional[float] = None  # fallback timeout
-        self._last_output_time: float = 0.0  # PTY silence fallback
+        self.state = ClaudeStateTracker(
+            signal_file=SOCKET_DIR / f"{tag}.signal",
+            auto_send_mode=load_settings().get('auto_send_mode', 'pause'),
+        )
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -128,14 +134,14 @@ class ClaudeQServer:
             return {'status': 'sent'}
 
         elif msg_type == 'status':
-            state = self._get_claude_state()
+            state = self.state.get_state(self.pty.is_alive())
             return {
                 'queue_size': self.queue.size,
                 'queue_contents': self.queue.get_contents(),
                 'recently_sent': self.queue.get_recently_sent(),
-                'ready': self._is_ready(),
+                'ready': self.state.is_ready(self.pty.is_alive()),
                 'claude_state': state,
-                'auto_send_mode': self._auto_send_mode,
+                'auto_send_mode': self.state.auto_send_mode,
                 'claude_running': self.pty.is_alive()
             }
 
@@ -147,7 +153,7 @@ class ClaudeQServer:
                 with self._notification_lock:
                     remaining = self.queue.size
                     self.pending_notifications.append(
-                        f"🔥 Force-sent from queue ({remaining} remaining)"
+                        f"\U0001f525 Force-sent from queue ({remaining} remaining)"
                     )
                 return {
                     'status': 'sent',
@@ -178,7 +184,7 @@ class ClaudeQServer:
             mode = msg.get('mode', '')
             if mode not in ('pause', 'always'):
                 return {'status': 'error', 'message': f"Invalid mode: {mode}. Use 'pause' or 'always'."}
-            self._auto_send_mode = mode
+            self.state.auto_send_mode = mode
             settings = load_settings()
             settings['auto_send_mode'] = mode
             save_settings(settings)
@@ -207,15 +213,7 @@ class ClaudeQServer:
         Args:
             message: Message to send.
         """
-        with self._state_lock:
-            self._claude_state = 'running'
-            self._running_since = time.time()
-
-        # Delete stale signal file before sending
-        try:
-            self._signal_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+        self.state.on_send()
 
         if message.startswith('@'):
             self.pty.send_image_message(message)
@@ -224,7 +222,7 @@ class ClaudeQServer:
 
     def _prompt_load_old_queue(self) -> None:
         """Prompt user to load or discard old queued messages."""
-        print(f"\n⚠️  Found {self.queue.size} unsent message{'s' if self.queue.size != 1 else ''} from previous session:\n")
+        print(f"\n\u26a0\ufe0f  Found {self.queue.size} unsent message{'s' if self.queue.size != 1 else ''} from previous session:\n")
 
         # Show preview (first 60 chars of each message)
         preview_count = min(5, self.queue.size)
@@ -266,10 +264,10 @@ class ClaudeQServer:
         if response == 'n':
             # Discard queue
             self.queue.clear()
-            print("✓ Discarded old messages\n")
+            print("\u2713 Discarded old messages\n")
         else:
             # Load queue (default)
-            print(f"✓ Loaded {self.queue.size} message{'s' if self.queue.size != 1 else ''}\n")
+            print(f"\u2713 Loaded {self.queue.size} message{'s' if self.queue.size != 1 else ''}\n")
 
     def _show_queue_details(self) -> None:
         """Show full queue contents."""
@@ -318,286 +316,12 @@ class ClaudeQServer:
             # Don't fail startup if cleanup fails
             pass
 
-    @staticmethod
-    def _build_auth_fetch_url(pinned: dict[str, Any]) -> Optional[str]:
-        """Build an authenticated fetch URL from pinned session + SCM config.
-
-        Reads the SCM token from the appropriate config file (gitlab_config.json
-        or github_config.json) and injects it into the host URL.  Returns None
-        if no token is available or the URL is non-HTTP (e.g. SSH).
-        """
-        host_url = pinned.get('host_url', '')
-        project = pinned.get('remote_project_path', '')
-        scm_type = pinned.get('scm_type', '')
-        if not host_url or not project or not host_url.startswith('http'):
-            return None
-
-        # Read token from the SCM config file (supports env var mode)
-        token: Optional[str] = None
-        if scm_type == 'gitlab':
-            cfg_path = STORAGE_DIR / "gitlab_config.json"
-            token_key = 'private_token'
-        elif scm_type == 'github':
-            cfg_path = STORAGE_DIR / "github_config.json"
-            token_key = 'token'
-        else:
-            return None
-
-        if cfg_path.exists():
-            try:
-                with open(cfg_path, 'r') as f:
-                    cfg = json.load(f)
-                if cfg.get('token_mode') == 'env_var':
-                    var_name = cfg.get(token_key, '')
-                    token = os.environ.get(var_name) if var_name else None
-                else:
-                    token = cfg.get(token_key)
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        if not token:
-            return None
-
-        scheme_end = host_url.index('://') + 3
-        scheme = host_url[:scheme_end]
-        host = host_url[scheme_end:]
-        if scm_type == 'github':
-            return f"{scheme}x-access-token:{token}@{host}/{project}.git"
-        return f"{scheme}oauth2:{token}@{host}/{project}.git"
-
-    def _validate_pinned_session(self) -> None:
-        """Validate current repo/branch against monitor pinned session data.
-
-        If this tag corresponds to an MR-pinned row (has remote_project_path),
-        verify that we're in the right repo, on the right branch, and not
-        behind the remote. Exits with error if validation fails.
-        """
-        pinned_file = STORAGE_DIR / "pinned_sessions.json"
-        if not pinned_file.exists():
-            return
-
-        try:
-            with open(pinned_file, 'r') as f:
-                pinned_sessions = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return
-
-        entry = pinned_sessions.get(self.tag)
-        if not entry:
-            return
-
-        pinned_project = entry.get('remote_project_path')
-        if not pinned_project:
-            return  # Auto-pinned row, no validation needed
-
-        pinned_branch = entry.get('branch', '')
-
-        # --- Repo match ---
-        try:
-            result = subprocess.run(
-                ['git', 'config', '--get', 'remote.origin.url'],
-                capture_output=True, text=True, timeout=5
-            )
-            remote_url = result.stdout.strip()
-        except (subprocess.TimeoutExpired, OSError):
-            remote_url = ''
-
-        local_project = None
-        if remote_url:
-            # SSH: git@host:user/project.git
-            m = re.match(r'git@[^:]+:(.+?)(?:\.git)?$', remote_url)
-            if m:
-                local_project = m.group(1)
-            else:
-                # HTTPS: https://host/user/project.git
-                m = re.match(r'https?://[^/]+/(.+?)(?:\.git)?$', remote_url)
-                if m:
-                    local_project = m.group(1)
-
-        if not local_project or local_project != pinned_project:
-            local_desc = f"'{local_project}'" if local_project else 'not a matching git repo'
-            print(
-                f"\033[91mError: Tag '{self.tag}' is monitored for repo "
-                f"'{pinned_project}', but current directory is {local_desc}.\033[0m"
-            )
-            self._release_startup_lock()
-            sys.exit(1)
-
-        # --- Branch match ---
-        if pinned_branch and pinned_branch != 'N/A':
-            try:
-                result = subprocess.run(
-                    ['git', 'branch', '--show-current'],
-                    capture_output=True, text=True, timeout=5
-                )
-                local_branch = result.stdout.strip()
-            except (subprocess.TimeoutExpired, OSError):
-                local_branch = ''
-
-            if local_branch != pinned_branch:
-                print(
-                    f"\033[91mError: Tag '{self.tag}' is monitored for branch "
-                    f"'{pinned_branch}', but current branch is "
-                    f"'{local_branch or '(unknown)'}'.\033[0m"
-                )
-                self._release_startup_lock()
-                sys.exit(1)
-
-            # --- Commits synced ---
-            fetch_url = self._build_auth_fetch_url(entry)
-            try:
-                if fetch_url:
-                    # Fetch using authenticated URL directly (no remote URL change)
-                    refspec = (
-                        f'+refs/heads/{pinned_branch}'
-                        f':refs/remotes/origin/{pinned_branch}'
-                    )
-                    subprocess.run(
-                        ['git', 'fetch', fetch_url, refspec],
-                        capture_output=True, timeout=15
-                    )
-                else:
-                    subprocess.run(
-                        ['git', 'fetch', 'origin', pinned_branch],
-                        capture_output=True, timeout=15
-                    )
-            except (subprocess.TimeoutExpired, OSError):
-                pass  # Network issues shouldn't block startup
-
-            try:
-                result = subprocess.run(
-                    ['git', 'merge-base', '--is-ancestor',
-                     f'origin/{pinned_branch}', 'HEAD'],
-                    capture_output=True, timeout=5
-                )
-                if result.returncode != 0:
-                    print(
-                        f"\033[91m✖ Tag '{self.tag}' is tracked by ClaudeQ Monitor "
-                        f"for branch '{pinned_branch}', but the local repo is "
-                        f"behind remote. Pull or rebase before starting.\033[0m"
-                    )
-                    self._release_startup_lock()
-                    sys.exit(1)
-            except (subprocess.TimeoutExpired, OSError):
-                pass  # Can't verify — allow startup
-
-            # --- Yellow warnings for ahead / dirty state (non-fatal) ---
-            ahead_count = 0
-            has_uncommitted = False
-            try:
-                result = subprocess.run(
-                    ['git', 'rev-list', f'origin/{pinned_branch}..HEAD', '--count'],
-                    capture_output=True, text=True, timeout=5
-                )
-                ahead_count = int(result.stdout.strip()) if result.returncode == 0 else 0
-            except (subprocess.TimeoutExpired, OSError, ValueError):
-                pass
-
-            try:
-                result = subprocess.run(
-                    ['git', 'status', '--porcelain'],
-                    capture_output=True, text=True, timeout=5
-                )
-                has_uncommitted = result.returncode == 0 and bool(result.stdout.strip())
-            except (subprocess.TimeoutExpired, OSError):
-                pass
-
-            if ahead_count > 0 and has_uncommitted:
-                suffix = (
-                    f"is {ahead_count} commit{'s' if ahead_count != 1 else ''} "
-                    f"ahead of remote with uncommitted changes"
-                )
-            elif ahead_count > 0:
-                suffix = (
-                    f"is {ahead_count} commit{'s' if ahead_count != 1 else ''} "
-                    f"ahead of remote"
-                )
-            elif has_uncommitted:
-                suffix = "has uncommitted changes"
-            else:
-                suffix = ''
-
-            if suffix:
-                print(
-                    f"\033[93m⚠ Tag '{self.tag}' is tracked by ClaudeQ Monitor "
-                    f"for branch '{pinned_branch}', but the local repo {suffix}. "
-                    f"Proceeding anyway.\033[0m"
-                )
-
-    def _get_claude_state(self) -> str:
-        """
-        Get Claude's current state using hook-based signal files.
-
-        Checks the signal file whenever state is not 'idle', so that
-        transitions like has_question -> idle are detected when the
-        user answers and Claude finishes (Stop hook fires).
-
-        Fallback: if PTY output has been silent for OUTPUT_SILENCE_TIMEOUT
-        seconds while state is 'running', resets to 'idle'. This handles
-        cases where hooks don't fire (e.g. user interrupts Claude with
-        Ctrl+C/Escape).
-
-        Returns:
-            One of: 'idle', 'running', 'needs_permission', 'has_question'.
-        """
-        if not self.pty.is_alive():
-            with self._state_lock:
-                self._claude_state = 'idle'
-                self._running_since = None
-            return 'idle'
-
-        with self._state_lock:
-            current = self._claude_state
-
-        if current != 'idle':
-            # Check signal file for hook-written state transitions
-            try:
-                if self._signal_file.exists():
-                    raw = self._signal_file.read_text().strip()
-                    data = json.loads(raw)
-                    new_state = data.get('state', '')
-                    if new_state in ('idle', 'needs_permission', 'has_question'):
-                        if new_state != current:
-                            with self._state_lock:
-                                self._claude_state = new_state
-                                self._running_since = None
-                            return new_state
-            except (json.JSONDecodeError, OSError):
-                pass
-
-            # Fallback: PTY silence timeout (handles interruptions,
-            # missing hooks, or any case where the hook doesn't fire)
-            if current == 'running' and self._last_output_time > 0:
-                silence = time.time() - self._last_output_time
-                if silence > OUTPUT_SILENCE_TIMEOUT:
-                    with self._state_lock:
-                        self._claude_state = 'idle'
-                        self._running_since = None
-                    return 'idle'
-
-        return current
-
-    def _is_ready(self) -> bool:
-        """Check if the auto-sender should send the next message.
-
-        In 'pause' mode: only send when Claude is idle.
-        In 'always' mode: send whenever Claude is not running.
-
-        Returns:
-            True if the auto-sender should send the next queued message.
-        """
-        state = self._get_claude_state()
-        if self._auto_send_mode == 'always':
-            return state != 'running'
-        # 'pause' mode (default)
-        return state == 'idle'
-
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
         while self.running:
             time.sleep(POLL_INTERVAL)
 
-            if self.queue.is_empty or not self._is_ready():
+            if self.queue.is_empty or not self.state.is_ready(self.pty.is_alive()):
                 continue
 
             message = self.queue.peek()
@@ -664,15 +388,8 @@ class ClaudeQServer:
         # the "cq-server <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
 
-        # Track output time for PTY silence fallback
-        self._last_output_time = time.time()
-
-        # Detect Claude interruption — Stop hook doesn't fire on Ctrl+C/Escape,
-        # so detect it from PTY output and treat as waiting for user input.
-        if self._claude_state == 'running' and b'Interrupted' in data:
-            with self._state_lock:
-                self._claude_state = 'has_question'
-                self._running_since = None
+        # Delegate state detection to the state tracker
+        self.state.on_output(data)
 
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).
@@ -693,16 +410,16 @@ class ClaudeQServer:
         print("  To send messages from another tab, run:")
         print(f"    cq {self.tag}")
         print("")
-        print("  ✅ Native scrolling in IntelliJ")
-        print("  ✅ Full terminal width")
-        print("  ✅ No tmux needed!")
+        print("  \u2705 Native scrolling in IntelliJ")
+        print("  \u2705 Full terminal width")
+        print("  \u2705 No tmux needed!")
         print("")
         print("  Ctrl+C to exit")
         print("=" * 80)
         print()
 
         if not self.queue.is_empty:
-            print(f"📝 Queue has {self.queue.size} messages\n")
+            print(f"\U0001f4dd Queue has {self.queue.size} messages\n")
 
     def run(self) -> None:
         """Run the server main loop."""
@@ -766,11 +483,7 @@ class ClaudeQServer:
         self.socket_handler.cleanup()
         self.metadata.cleanup()
         self.pty.terminate()
-        # Remove signal file
-        try:
-            self._signal_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+        self.state.cleanup()
         # Remove queue file if empty (no pending messages).
         # Hold the queue lock so no message can be added between the
         # emptiness check and the unlink.

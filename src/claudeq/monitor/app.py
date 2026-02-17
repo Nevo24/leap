@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QHeaderView, QMessageBox, QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QTimer, Qt
-from PyQt5.QtGui import QIcon, QCloseEvent, QResizeEvent
+from PyQt5.QtGui import QCursor, QIcon, QCloseEvent, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
@@ -100,6 +100,7 @@ class MonitorWindow(
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._starting_tags: set[str] = set()  # guard against double-click server start
         self._ui_ready = False  # suppress resizeEvent during init
+        self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
         self._status_log = StatusLog()
@@ -218,6 +219,12 @@ class MonitorWindow(
             self._apply_equal_column_widths()
 
         self.table.setSelectionMode(QTableWidget.NoSelection)
+
+        # Row hover highlight — poll cursor position to track hovered row
+        self.table.setProperty('_hovered_row', -1)
+        self._hover_timer = QTimer()
+        self._hover_timer.timeout.connect(self._check_row_hover)
+        self._hover_timer.start(50)
 
         # Top controls
         top_layout = QHBoxLayout()
@@ -497,6 +504,7 @@ class MonitorWindow(
         self._shutting_down = True
         self.timer.stop()
         self._scm_poll_timer.stop()
+        self._hover_timer.stop()
         self._clear_dock_badge()
 
         # Save window geometry and column widths

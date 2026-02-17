@@ -36,6 +36,7 @@ INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 8})    # Semi-transparent white (withi
 
 BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
 BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)
+ROW_HOVER_BG = QColor(255, 255, 255, 20)
 
 
 class PersistentTooltipStyle(QProxyStyle):
@@ -125,6 +126,9 @@ class SeparatorDelegate(QStyledItemDelegate):
     """Delegate that draws vertical separator lines between column groups."""
 
     def paint(self, painter: Any, option: Any, index: QModelIndex) -> None:
+        table = self.parent()
+        if table is not None and index.row() == table.property('_hovered_row'):
+            painter.fillRect(option.rect, ROW_HOVER_BG)
         super().paint(painter, option, index)
         col = index.column()
         if col in GROUP_BOUNDARY_COLS:
