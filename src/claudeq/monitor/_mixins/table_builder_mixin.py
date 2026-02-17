@@ -889,6 +889,10 @@ class TableBuilderMixin(_Base):
         """Poll cursor position to track which table row is hovered."""
         from PyQt5.QtGui import QCursor
 
+        # Keep hover locked while a context menu is open
+        if QApplication.activePopupWidget():
+            return
+
         viewport = self.table.viewport()
         local_pos = viewport.mapFromGlobal(QCursor.pos())
 
