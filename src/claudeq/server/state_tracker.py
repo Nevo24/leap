@@ -52,6 +52,9 @@ class ClaudeStateTracker:
         self._last_output_time: float = 0.0
         # Track user input to distinguish typing echo from Claude output.
         self._last_input_time: float = time.time()
+        # True after the first real user keystroke (prevents the startup
+        # banner from falsely triggering idle → running).
+        self._seen_user_input: bool = False
         # Accumulated printable output bytes while idle (reset on input
         # and state transitions).  Used to detect idle → running.
         self._idle_output_acc: int = 0
@@ -134,11 +137,18 @@ class ClaudeStateTracker:
 
         Tracks input timing so output-based idle → running detection
         can distinguish user keystroke echo from Claude's processing
-        output.
+        output.  Ignores multi-byte escape sequences (terminal focus
+        events, cursor position reports) that are not real user input.
 
         Args:
             data: Raw input bytes from the keyboard.
         """
+        # Multi-byte sequences starting with ESC are terminal auto-responses
+        # (focus in/out \x1b[I/O, cursor reports \x1b[row;colR, etc.),
+        # not user keystrokes.  Single ESC byte is the actual Escape key.
+        if len(data) > 1 and data[0] == 0x1b:
+            return
+        self._seen_user_input = True
         self._last_input_time = time.time()
         self._idle_output_acc = 0
 
@@ -147,6 +157,7 @@ class ClaudeStateTracker:
 
         Sets state to 'running' and deletes the stale signal file.
         """
+        self._seen_user_input = True
         with self._lock:
             self._state = 'running'
             self._waiting_since = None
@@ -180,6 +191,8 @@ class ClaudeStateTracker:
         # slow TUI noise from building up) and on user input (via
         # on_input).
         if self._state == 'idle':
+            if not self._seen_user_input:
+                return
             stripped = self._ANSI_RE.sub(b'', data).strip()
             if stripped:
                 if now - prev_output_time > 2.0:
@@ -191,9 +204,6 @@ class ClaudeStateTracker:
                         with self._lock:
                             self._state = 'running'
                             self._waiting_since = None
-                        # Delete stale signal file so get_state() doesn't
-                        # read the old "idle" from the previous Stop hook
-                        # and immediately reset us back to idle.
                         try:
                             self._signal_file.unlink(missing_ok=True)
                         except OSError:
