@@ -7,13 +7,29 @@ signal files with a PTY silence fallback.
 """
 
 import json
+import logging
 import re
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from claudeq.utils.constants import OUTPUT_SILENCE_TIMEOUT
+from claudeq.utils.constants import OUTPUT_SILENCE_TIMEOUT, STORAGE_DIR
+
+_log = logging.getLogger('cq.state')
+
+
+def _setup_debug_log() -> None:
+    """Write state tracker debug messages to .storage/state_debug.log."""
+    if _log.handlers:
+        return
+    log_path = STORAGE_DIR / 'state_debug.log'
+    handler = logging.FileHandler(str(log_path), mode='w')
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s.%(msecs)03d %(message)s', datefmt='%H:%M:%S',
+    ))
+    _log.addHandler(handler)
+    _log.setLevel(logging.DEBUG)
 
 
 class ClaudeStateTracker:
@@ -73,6 +89,9 @@ class ClaudeStateTracker:
         # when split across chunk boundaries by the TUI renderer.
         self._output_buf: bytearray = bytearray()
 
+        _setup_debug_log()
+        _log.debug('INIT state=idle signal_file=%s', signal_file)
+
     # -- Public API ----------------------------------------------------------
 
     def get_state(self, pty_alive: bool) -> str:
@@ -109,8 +128,16 @@ class ClaudeStateTracker:
                         and self._waiting_since is not None
                         and (self._clock() - self._waiting_since) < 5.0
                     ):
-                        pass
+                        _log.debug(
+                            'GET_STATE signal=idle but protecting has_question '
+                            '(%.1fs since wait)',
+                            self._clock() - self._waiting_since,
+                        )
                     elif new_state in self._VALID_SIGNAL_STATES and new_state != current:
+                        _log.debug(
+                            'GET_STATE signal transition %s→%s',
+                            current, new_state,
+                        )
                         with self._lock:
                             self._state = new_state
                             if new_state in ('needs_permission', 'has_question'):
@@ -130,6 +157,9 @@ class ClaudeStateTracker:
             if current == 'running' and self._last_output_time > 0:
                 silence = self._clock() - self._last_output_time
                 if silence > OUTPUT_SILENCE_TIMEOUT:
+                    _log.debug(
+                        'GET_STATE silence timeout %.1fs → idle', silence,
+                    )
                     with self._lock:
                         self._state = 'idle'
                         self._waiting_since = None
@@ -172,7 +202,12 @@ class ClaudeStateTracker:
         # (focus in/out \x1b[I/O, cursor reports \x1b[row;colR, etc.),
         # not user keystrokes.  Single ESC byte is the actual Escape key.
         if len(data) > 1 and data[0] == 0x1b:
+            _log.debug('ON_INPUT filtered escape seq len=%d', len(data))
             return
+        _log.debug(
+            'ON_INPUT state=%s data=%r len=%d',
+            self._state, data[:20], len(data),
+        )
         self._seen_user_input = True
         self._last_input_time = self._clock()
         self._idle_output_acc = 0
@@ -182,6 +217,7 @@ class ClaudeStateTracker:
 
         Sets state to 'running' and deletes the stale signal file.
         """
+        _log.debug('ON_SEND → running')
         self._seen_user_input = True
         with self._lock:
             self._state = 'running'
@@ -227,6 +263,9 @@ class ClaudeStateTracker:
                 if len(self._output_buf) > 512:
                     self._output_buf = self._output_buf[-512:]
                 if b'Interrupted' in self._output_buf:
+                    _log.debug(
+                        'ON_OUTPUT idle→has_question (Escape race detected)',
+                    )
                     self._output_buf.clear()
                     self._idle_output_acc = 0
                     with self._lock:
@@ -247,6 +286,10 @@ class ClaudeStateTracker:
                 if now - self._last_input_time > 0.5:
                     self._idle_output_acc += len(stripped)
                     if self._idle_output_acc > 200:
+                        _log.debug(
+                            'ON_OUTPUT idle→running (accumulated %d bytes)',
+                            self._idle_output_acc,
+                        )
                         self._idle_output_acc = 0
                         self._output_buf.clear()
                         with self._lock:
@@ -266,7 +309,18 @@ class ClaudeStateTracker:
             self._output_buf.extend(data)
             if len(self._output_buf) > 512:
                 self._output_buf = self._output_buf[-512:]
-            if b'Interrupted' in self._output_buf:
+            has_interrupted = b'Interrupted' in self._output_buf
+            # Log every chunk while running to diagnose detection failures
+            stripped_preview = self._ANSI_RE.sub(b'', data).strip()
+            if stripped_preview:
+                _log.debug(
+                    'ON_OUTPUT running chunk len=%d buf_len=%d '
+                    'has_Interrupted=%s stripped=%r',
+                    len(data), len(self._output_buf),
+                    has_interrupted, stripped_preview[:80],
+                )
+            if has_interrupted:
+                _log.debug('ON_OUTPUT running→has_question (Interrupted)')
                 self._output_buf.clear()
                 with self._lock:
                     self._state = 'has_question'
@@ -293,6 +347,10 @@ class ClaudeStateTracker:
                 # and screen refreshes that arrive while Claude is idle.
                 stripped = self._ANSI_RE.sub(b'', data).strip()
                 if stripped:
+                    _log.debug(
+                        'ON_OUTPUT %s→running (resume, stripped=%r)',
+                        self._state, stripped[:60],
+                    )
                     with self._lock:
                         self._state = 'running'
                         self._waiting_since = None
