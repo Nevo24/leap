@@ -217,9 +217,9 @@ class TestOutputAccumulation:
         tracker.on_output(b'A' * 300)
         assert tracker.get_state(pty_alive=True) == 'idle'
 
-    def test_signal_idle_resets_seen_user_input(self, tmp_path: Path) -> None:
+    def test_signal_idle_blocks_false_running_retrigger(self, tmp_path: Path) -> None:
         """After signal file transitions to idle, prompt rendering
-        should not falsely re-trigger running."""
+        should not falsely re-trigger running (input predates idle)."""
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
         # Output accumulation → running
@@ -231,11 +231,12 @@ class TestOutputAccumulation:
         write_signal(tracker, 'idle')
         assert tracker.get_state(pty_alive=True) == 'idle'
         # Prompt rendering arrives — should NOT re-trigger running
+        # because user input (t=0) predates idle transition (t=5)
         t[0] = 6.0
         tracker.on_output(b'B' * 300)
         assert tracker.get_state(pty_alive=True) == 'idle'
 
-    def test_silence_timeout_resets_seen_user_input(self, tmp_path: Path) -> None:
+    def test_silence_timeout_blocks_false_running_retrigger(self, tmp_path: Path) -> None:
         """After silence timeout transitions to idle, prompt rendering
         should not falsely re-trigger running."""
         t = [0.0]
@@ -250,6 +251,26 @@ class TestOutputAccumulation:
         t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 2.0
         tracker.on_output(b'B' * 300)
         assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_new_input_after_idle_allows_accumulation(self, tmp_path: Path) -> None:
+        """User typing AFTER an idle transition should allow output
+        accumulation to detect running again."""
+        t = [0.0]
+        tracker = self._setup_idle_with_input(tmp_path, t)
+        t[0] = 1.0
+        tracker.on_output(b'A' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # Signal idle
+        t[0] = 5.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # User types again (AFTER idle transition)
+        t[0] = 7.0
+        tracker.on_input(b'x')
+        # New output → should trigger running
+        t[0] = 8.0
+        tracker.on_output(b'C' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +326,28 @@ class TestEscapeRace:
         tracker.on_input(b'\x1b')
         # PTY outputs "Interrupted" within 3s of input
         t[0] = 2.0
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'has_question'
+
+    def test_escape_race_after_signal_idle_transition(self, tmp_path: Path) -> None:
+        """Escape race detection must work even when the running→idle
+        signal transition happened just before 'Interrupted' arrives."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # User types directly → output accumulation → running
+        tracker.on_input(b'x')
+        t[0] = 1.0
+        tracker.on_output(b'A' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # User presses Escape
+        t[0] = 5.0
+        tracker.on_input(b'\x1b')
+        # Stop hook fires → signal file says idle → get_state transitions
+        t[0] = 5.1
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # PTY outputs "Interrupted" shortly after
+        t[0] = 5.2
         tracker.on_output(b'Interrupted')
         assert tracker.current_state == 'has_question'
 

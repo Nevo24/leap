@@ -61,6 +61,11 @@ class ClaudeStateTracker:
         # True after the first real user keystroke (prevents the startup
         # banner from falsely triggering idle → running).
         self._seen_user_input: bool = False
+        # Timestamp of the last transition to idle (signal file or silence
+        # timeout).  Output accumulation only triggers idle → running if
+        # user input occurred *after* this time, preventing false re-triggers
+        # from post-idle prompt/TUI rendering.
+        self._idle_since: float = 0.0
         # Accumulated printable output bytes while idle (reset on input
         # and state transitions).  Used to detect idle → running.
         self._idle_output_acc: int = 0
@@ -115,7 +120,7 @@ class ClaudeStateTracker:
                         self._idle_output_acc = 0
                         self._output_buf.clear()
                         if new_state == 'idle':
-                            self._seen_user_input = False
+                            self._idle_since = self._clock()
                         return new_state
             except (json.JSONDecodeError, OSError):
                 pass
@@ -129,7 +134,7 @@ class ClaudeStateTracker:
                         self._state = 'idle'
                         self._waiting_since = None
                     self._idle_output_acc = 0
-                    self._seen_user_input = False
+                    self._idle_since = self._clock()
                     return 'idle'
 
         return current
@@ -211,11 +216,12 @@ class ClaudeStateTracker:
         # slow TUI noise from building up) and on user input (via
         # on_input).
         if self._state == 'idle':
-            if not self._seen_user_input:
-                return
             # Detect Escape interruption — the Stop hook may race ahead
             # and write "idle" before PTY output with "Interrupted" arrives.
             # Buffer output within 3s of user input to catch this.
+            # Checked before _seen_user_input guard because the signal-file
+            # idle transition may have reset _seen_user_input indirectly
+            # (via _idle_since), but the Escape race still needs to work.
             if now - self._last_input_time < 3.0:
                 self._output_buf.extend(data)
                 if len(self._output_buf) > 512:
@@ -227,6 +233,13 @@ class ClaudeStateTracker:
                         self._state = 'has_question'
                         self._waiting_since = self._clock()
                     return
+            if not self._seen_user_input:
+                return
+            # Only accumulate output if user typed AFTER the last idle
+            # transition.  Prevents post-idle prompt/TUI rendering from
+            # falsely re-triggering running.
+            if self._last_input_time < self._idle_since:
+                return
             stripped = self._ANSI_RE.sub(b'', data).strip()
             if stripped:
                 if now - prev_output_time > 2.0:
