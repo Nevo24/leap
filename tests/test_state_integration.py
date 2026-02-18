@@ -168,6 +168,80 @@ class TestPTYOutputAccumulation:
         assert pty.get_state() == 'idle'
 
 
+class TestPTYTrustDialog:
+    """Workspace trust dialog detection at startup."""
+
+    def test_trust_dialog_plain_text(self, pty: PTYFixture) -> None:
+        """PTY output with literal spaces → needs_permission."""
+        assert pty.get_state() == 'idle'
+        assert not pty.tracker._seen_user_input
+
+        pty.send_line(
+            'printf "Accessing workspace:\\n/Users/test\\n'
+            '> 1. Yes, I trust this folder\\n'
+            '  2. No, exit\\n"'
+        )
+        pty.drain_to_tracker(timeout=1.0)
+
+        assert pty.tracker.current_state == 'needs_permission'
+
+    def test_trust_dialog_cursor_positioned(self, pty: PTYFixture) -> None:
+        """TUI output with cursor positioning (no literal spaces)."""
+        assert pty.get_state() == 'idle'
+
+        # Simulate Ink rendering: words positioned via CSI sequences,
+        # no literal spaces between words
+        pty.send_line(
+            r'printf "\033[10;3H1.\033[10;6HYes,'
+            r'\033[10;11HI\033[10;13Htrust'
+            r'\033[10;19Hthis\033[10;24Hfolder\n'
+            r'\033[11;3H2.\033[11;6HNo,\033[11;10Hexit\n"'
+        )
+        pty.drain_to_tracker(timeout=1.0)
+
+        assert pty.tracker.current_state == 'needs_permission'
+
+    def test_trust_dialog_recovers_via_signal(self, pty: PTYFixture) -> None:
+        """After trust dialog → needs_permission, a signal file idle
+        transition returns to idle (user answered the prompt, hooks
+        become active)."""
+        # Trigger trust dialog detection
+        pty.send_line('printf "Yes, I trust this folder\\n"')
+        pty.drain_to_tracker(timeout=1.0)
+        assert pty.tracker.current_state == 'needs_permission'
+
+        # User answers → Claude starts up → Stop hook fires
+        pty.tracker.on_input(b'\r')
+        time.sleep(2.5)  # past grace period
+        pty.write_signal('idle')
+        assert pty.get_state() == 'idle'
+
+    def test_trust_dialog_startup_output_goes_to_idle(
+        self, pty: PTYFixture,
+    ) -> None:
+        """Full flow: trust dialog → user answers → startup output →
+        should be idle (not running), because Claude hasn't processed
+        any request."""
+        # Trust dialog detected
+        pty.send_line('printf "Yes, I trust this folder\\n"')
+        pty.drain_to_tracker(timeout=1.0)
+        assert pty.tracker.current_state == 'needs_permission'
+
+        # User answers (Enter)
+        pty.tracker.on_input(b'\r')
+        time.sleep(2.5)  # past 2s grace period
+
+        # Claude startup output (logo, version, prompt)
+        pty.send_line(
+            r'printf "\033[2J\033[HClaude Code v2.1.41\n'
+            r'Opus 4.6 \xc2\xb7 Claude API\n/Users/test\n"'
+        )
+        pty.drain_to_tracker(timeout=1.0)
+
+        # Should be idle — not running
+        assert pty.tracker.current_state == 'idle'
+
+
 class TestPTYInterrupted:
     """'Interrupted' detection through real PTY output."""
 

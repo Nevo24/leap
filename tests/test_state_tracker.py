@@ -550,6 +550,128 @@ class TestIsReady:
 
 
 # ---------------------------------------------------------------------------
+# Startup trust dialog detection
+# ---------------------------------------------------------------------------
+
+class TestTrustDialog:
+    def test_trust_dialog_plain_text(self, tmp_path: Path) -> None:
+        """Workspace trust dialog with literal spaces → needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        t[0] = 1.0
+        tracker.on_output(
+            b'Accessing workspace:\r\n/Users/test\r\n'
+            b'\xe2\x9d\xaf 1. Yes, I trust this folder\r\n'
+            b'  2. No, exit\r\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+
+    def test_trust_dialog_cursor_positioned(self, tmp_path: Path) -> None:
+        """Real TUI output: cursor positioning CSI sequences replace spaces.
+        After ANSI stripping, words merge (e.g. 'Itrustthisfolder')."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        t[0] = 1.0
+        # Realistic Ink rendering: each word positioned via CSI
+        tracker.on_output(
+            b'\x1b[10;1H\xe2\x9d\xaf\x1b[10;3H1.\x1b[10;6HYes,'
+            b'\x1b[10;11HI\x1b[10;13Htrust\x1b[10;19Hthis'
+            b'\x1b[10;24Hfolder\r\n'
+            b'\x1b[11;3H2.\x1b[11;6HNo,\x1b[11;10Hexit\r\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+
+    def test_trust_dialog_split_across_chunks(self, tmp_path: Path) -> None:
+        """Trust dialog text split across PTY read chunks."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Chunk 1: beginning (1000 bytes of TUI rendering)
+        t[0] = 1.0
+        tracker.on_output(
+            b'\x1b[2J\x1b[H' + b'\xe2\x94\x80' * 100
+            + b'\x1b[5;1HAccessingworkspace:\r\n'
+            + b'\x1b[7;1HQuicksafetycheck\r\n'
+            + b'\x1b[10;1H\xe2\x9d\xaf\x1b[10;3H1.\x1b[10;6HYes,'
+            + b'\x1b[10;11HI\x1b[10;13Htrus'  # split mid-word
+        )
+        assert tracker.current_state == 'idle'
+        # Chunk 2: rest of dialog
+        t[0] = 1.1
+        tracker.on_output(
+            b't\x1b[10;18Hthis\x1b[10;23Hfolder\r\n'
+            b'\x1b[11;3H2.\x1b[11;6HNo,\x1b[11;10Hexit\r\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+
+    def test_trust_dialog_clears_buffer_and_accumulator(self, tmp_path: Path) -> None:
+        """After trust dialog detection, output buffer and accumulator reset."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        t[0] = 1.0
+        tracker.on_output(b'I trust this folder')
+        assert tracker.current_state == 'needs_permission'
+        assert len(tracker._output_buf) == 0
+        assert tracker._idle_output_acc == 0
+
+    def test_trust_dialog_sets_waiting_since(self, tmp_path: Path) -> None:
+        """Trust dialog sets _waiting_since for timeout tracking."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        t[0] = 5.0
+        tracker.on_output(b'I trust this folder')
+        assert tracker._waiting_since == 5.0
+
+    def test_trust_dialog_resume_goes_to_idle(self, tmp_path: Path) -> None:
+        """After trust dialog → needs_permission, answering and seeing
+        startup output should go to idle (not running), because Claude
+        hasn't processed any request yet."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Trust dialog detected
+        t[0] = 1.0
+        tracker.on_output(b'I trust this folder')
+        assert tracker.current_state == 'needs_permission'
+        assert tracker._trust_dialog_phase is True
+        # User answers (presses Enter)
+        t[0] = 3.0
+        tracker.on_input(b'\r')
+        # After 2s grace, Claude startup output arrives
+        t[0] = 4.0
+        tracker.on_output(b'Claude Code v2.1.41 Opus 4.6')
+        assert tracker.current_state == 'idle'
+        assert tracker._trust_dialog_phase is False
+
+    def test_trust_dialog_resume_does_not_affect_normal_permission(
+        self, tmp_path: Path,
+    ) -> None:
+        """Normal permission prompts (not trust dialog) still resume to
+        running as before."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        assert tracker._trust_dialog_phase is False
+        # User approves
+        t[0] = 3.0
+        tracker.on_input(b'y')
+        # After grace, output → running (normal behavior)
+        t[0] = 4.0
+        tracker.on_output(b'Processing...')
+        assert tracker.current_state == 'running'
+
+    def test_normal_output_does_not_trigger_trust_dialog(self, tmp_path: Path) -> None:
+        """Output without the trust dialog pattern stays idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        t[0] = 1.0
+        tracker.on_output(b'Hello world, processing your request...')
+        assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
 # cleanup
 # ---------------------------------------------------------------------------
 

@@ -88,6 +88,10 @@ class ClaudeStateTracker:
         # Buffer recent PTY output so "Interrupted" can be detected even
         # when split across chunk boundaries by the TUI renderer.
         self._output_buf: bytearray = bytearray()
+        # True while the trust dialog is showing.  When the user answers
+        # and Claude starts up, resume detection goes to 'idle' instead
+        # of 'running' because there's no pending request to process.
+        self._trust_dialog_phase: bool = False
 
         _setup_debug_log()
         _log.debug('INIT state=idle signal_file=%s', signal_file)
@@ -252,17 +256,47 @@ class ClaudeStateTracker:
         # slow TUI noise from building up) and on user input (via
         # on_input).
         if self._state == 'idle':
+            # Buffer all idle output for pattern detection (trust dialog
+            # at startup, Interrupted during Escape race).
+            self._output_buf.extend(data)
+            if len(self._output_buf) > 2048:
+                self._output_buf = self._output_buf[-2048:]
+
+            # Detect startup prompts (workspace trust dialog) from PTY
+            # output.  These appear before Claude Code's hooks are active,
+            # so no signal file is written.  Buffer + strip ANSI + remove
+            # spaces: the TUI (Ink) uses cursor-positioning CSI sequences
+            # for spacing, so stripping ANSI merges words together
+            # (e.g. "I trust this folder" → "Itrustthisfolder").
+            if not self._seen_user_input:
+                compact = self._ANSI_RE.sub(
+                    b'', bytes(self._output_buf),
+                ).replace(b' ', b'')
+                _log.debug(
+                    'ON_OUTPUT idle (startup) len=%d buf_len=%d '
+                    'compact=%r',
+                    len(data), len(self._output_buf),
+                    compact[-120:],
+                )
+                if b'Itrustthisfolder' in compact:
+                    _log.debug(
+                        'ON_OUTPUT idle→needs_permission (trust dialog)',
+                    )
+                    self._output_buf.clear()
+                    self._idle_output_acc = 0
+                    self._trust_dialog_phase = True
+                    with self._lock:
+                        self._state = 'needs_permission'
+                        self._waiting_since = self._clock()
+                    return
+
             # Detect Escape interruption — the Stop hook may race ahead
             # and write "idle" before PTY output with "Interrupted" arrives.
-            # Buffer output within 3s of user input to catch this.
             # Checked before _seen_user_input guard because the signal-file
             # idle transition may have reset _seen_user_input indirectly
             # (via _idle_since), but the Escape race still needs to work.
             if now - self._last_input_time < 3.0:
                 has_interrupted = b'Interrupted' in data
-                self._output_buf.extend(data)
-                if len(self._output_buf) > 512:
-                    self._output_buf = self._output_buf[-512:]
                 if has_interrupted or b'Interrupted' in self._output_buf:
                     _log.debug(
                         'ON_OUTPUT idle→has_question (Escape race detected)',
@@ -353,6 +387,22 @@ class ClaudeStateTracker:
                 # and screen refreshes that arrive while Claude is idle.
                 stripped = self._ANSI_RE.sub(b'', data).strip()
                 if stripped:
+                    # Trust dialog phase: startup output after user answered
+                    # the trust prompt is Claude booting up, not processing
+                    # a request.  Go straight to idle.
+                    if self._trust_dialog_phase:
+                        _log.debug(
+                            'ON_OUTPUT %s→idle (trust dialog startup)',
+                            self._state,
+                        )
+                        self._trust_dialog_phase = False
+                        with self._lock:
+                            self._state = 'idle'
+                            self._waiting_since = None
+                        self._idle_since = self._clock()
+                        self._idle_output_acc = 0
+                        return
+
                     _log.debug(
                         'ON_OUTPUT %s→running (resume, stripped=%r)',
                         self._state, stripped[:60],
