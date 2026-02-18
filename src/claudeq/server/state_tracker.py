@@ -97,6 +97,7 @@ class ClaudeStateTracker:
                             else:
                                 self._waiting_since = None
                         self._idle_output_acc = 0
+                        self._output_buf.clear()
                         return new_state
             except (json.JSONDecodeError, OSError):
                 pass
@@ -201,6 +202,7 @@ class ClaudeStateTracker:
                     self._idle_output_acc += len(stripped)
                     if self._idle_output_acc > 200:
                         self._idle_output_acc = 0
+                        self._output_buf.clear()
                         with self._lock:
                             self._state = 'running'
                             self._waiting_since = None
