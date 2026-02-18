@@ -306,6 +306,27 @@ class TestInterruptedDetection:
         tracker.on_output(b'X' * 600)
         assert len(tracker._output_buf) <= 512
 
+    def test_interrupted_in_large_chunk_after_buffer_trim(
+        self, tmp_path: Path,
+    ) -> None:
+        """BUG FIX: 'Interrupted' near the start of a large TUI redraw
+        chunk (>512 bytes) was lost after buffer trim.  The fix checks
+        the raw chunk before trimming."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Fill buffer with prior Claude response output
+        tracker.on_output(b'A' * 400)
+        assert tracker.current_state == 'running'
+        # Large TUI redraw: "Interrupted" near start, >512 bytes after
+        chunk = b'\x1b[2J\x1b[H'
+        chunk += b'Interrupted \xc2\xb7 What should Claude do instead?\r\n'
+        chunk += b'B' * 600  # status bar / prompt rendering
+        t[0] = 1.1
+        tracker.on_output(chunk)
+        assert tracker.current_state == 'has_question'
+
 
 # ---------------------------------------------------------------------------
 # Escape race (idle state Interrupted detection)

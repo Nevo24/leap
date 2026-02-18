@@ -182,6 +182,41 @@ class TestPTYInterrupted:
 
         assert pty.tracker.current_state == 'has_question'
 
+    def test_interrupted_lost_in_large_tui_redraw(self, pty: PTYFixture) -> None:
+        """BUG REPRO: Claude TUI redraws the full screen after Escape.
+        One big on_output chunk contains 'Interrupted' near the start,
+        followed by prompt + status bar (hundreds of bytes).  The 512-
+        byte buffer cap trims 'Interrupted' off the front."""
+        pty.tracker.on_send()
+        assert pty.get_state() == 'running'
+
+        # Fill the buffer with prior Claude response output
+        pty.tracker.on_output(b'A' * 500)
+        assert pty.tracker.current_state == 'running'
+
+        # Simulate Claude TUI screen redraw as ONE large chunk:
+        # ANSI positioning + "Interrupted" + prompt + full status bar.
+        # The chunk must have >512 bytes AFTER "Interrupted" to trigger
+        # the buffer-trim bug (fixed: raw chunk is checked first).
+        chunk = b'\x1b[2J\x1b[H'  # clear screen + home
+        chunk += b'Interrupted \xc2\xb7 What should Claude do instead?\r\n'
+        chunk += b'\x1b[32m>\x1b[0m \r\n'  # green prompt
+        # Realistic status bar (ANSI codes + text)
+        chunk += b'\x1b[24;1H\x1b[K'  # move to line 24, clear
+        chunk += b'Nevo.Mashiach [\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88'
+        chunk += b'           ] 10% | \x1b[36mOpus 4.6\x1b[0m | '
+        chunk += b'\x1b[33mdefault\x1b[0m | \x1b[32m~$0.02\x1b[0m | '
+        chunk += b'+ 0 \xe2\x80\x94 0 | v2.1.41 | 1 MCP server failed\r\n'
+        chunk += b'\x1b[25;1H\x1b[K'
+        chunk += b'\x1b[31m\xe2\x96\xba\xe2\x96\xba bypass permissions on'
+        chunk += b' (shift+tab to cycle)\x1b[0m'
+        # Pad with realistic ANSI cursor repositioning to push total
+        # well over 512 bytes after "Interrupted"
+        chunk += b'\x1b[1;1H' * 100
+
+        pty.tracker.on_output(chunk)
+        assert pty.tracker.current_state == 'has_question'
+
     def test_interrupted_with_surrounding_ansi(self, pty: PTYFixture) -> None:
         """'Interrupted' detected even with ANSI codes around it."""
         pty.tracker.on_send()

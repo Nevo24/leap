@@ -259,10 +259,11 @@ class ClaudeStateTracker:
             # idle transition may have reset _seen_user_input indirectly
             # (via _idle_since), but the Escape race still needs to work.
             if now - self._last_input_time < 3.0:
+                has_interrupted = b'Interrupted' in data
                 self._output_buf.extend(data)
                 if len(self._output_buf) > 512:
                     self._output_buf = self._output_buf[-512:]
-                if b'Interrupted' in self._output_buf:
+                if has_interrupted or b'Interrupted' in self._output_buf:
                     _log.debug(
                         'ON_OUTPUT idle→has_question (Escape race detected)',
                     )
@@ -306,10 +307,15 @@ class ClaudeStateTracker:
         # Buffer recent output so the pattern is found even when the TUI
         # renderer splits "Interrupted" across chunk boundaries.
         if self._state == 'running':
+            # Check the raw chunk BEFORE buffer trim — a large TUI redraw
+            # chunk can exceed 512 bytes with "Interrupted" near the start,
+            # causing it to be trimmed out of the rolling buffer.
+            has_interrupted = b'Interrupted' in data
             self._output_buf.extend(data)
             if len(self._output_buf) > 512:
                 self._output_buf = self._output_buf[-512:]
-            has_interrupted = b'Interrupted' in self._output_buf
+            if not has_interrupted:
+                has_interrupted = b'Interrupted' in self._output_buf
             # Log every chunk while running to diagnose detection failures
             stripped_preview = self._ANSI_RE.sub(b'', data).strip()
             if stripped_preview:
