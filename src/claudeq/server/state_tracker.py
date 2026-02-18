@@ -204,6 +204,20 @@ class ClaudeStateTracker:
         if self._state == 'idle':
             if not self._seen_user_input:
                 return
+            # Detect Escape interruption — the Stop hook may race ahead
+            # and write "idle" before PTY output with "Interrupted" arrives.
+            # Buffer output within 3s of user input to catch this.
+            if now - self._last_input_time < 3.0:
+                self._output_buf.extend(data)
+                if len(self._output_buf) > 512:
+                    self._output_buf = self._output_buf[-512:]
+                if b'Interrupted' in self._output_buf:
+                    self._output_buf.clear()
+                    self._idle_output_acc = 0
+                    with self._lock:
+                        self._state = 'has_question'
+                        self._waiting_since = time.time()
+                    return
             stripped = self._ANSI_RE.sub(b'', data).strip()
             if stripped:
                 if now - prev_output_time > 2.0:
