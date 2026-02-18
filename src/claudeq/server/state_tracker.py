@@ -89,7 +89,17 @@ class ClaudeStateTracker:
                     raw = self._signal_file.read_text().strip()
                     data = json.loads(raw)
                     new_state = data.get('state', '')
-                    if new_state in self._VALID_SIGNAL_STATES and new_state != current:
+                    # Stop hook fires on Escape too, writing "idle",
+                    # but Claude is actually prompting "What should
+                    # Claude do instead?" — keep has_question.
+                    if (
+                        new_state == 'idle'
+                        and current == 'has_question'
+                        and self._waiting_since is not None
+                        and (time.time() - self._waiting_since) < 5.0
+                    ):
+                        pass
+                    elif new_state in self._VALID_SIGNAL_STATES and new_state != current:
                         with self._lock:
                             self._state = new_state
                             if new_state in ('needs_permission', 'has_question'):
