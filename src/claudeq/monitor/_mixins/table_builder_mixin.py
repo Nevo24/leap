@@ -708,25 +708,36 @@ class TableBuilderMixin(_Base):
         self, label: QLabel, pos: 'QPoint', tag: str,
     ) -> None:
         """Show right-click context menu on the Queue column label."""
-        # Read the current mode from live session data (not the stale
-        # lambda capture) so the checkmark is always accurate.
+        # Read live session data so the checkmark and force-send state
+        # are always accurate.
         current_mode = 'pause'
+        queue_size = 0
         for s in self.sessions:
             if s['tag'] == tag:
                 current_mode = s.get('auto_send_mode', 'pause')
+                queue_size = s.get('queue_size', 0)
                 break
 
-        check = '\u2713 '
         menu = QMenu(self)
 
-        pause_label = f'{check}Pause on input (default)' if current_mode == 'pause' else '  Pause on input (default)'
-        pause_action = menu.addAction(pause_label)
+        force_action = menu.addAction('Force-send next queued message')
+        force_action.setEnabled(queue_size > 0)
+        force_action.triggered.connect(
+            lambda _checked, t=tag: self._force_send_next(t)
+        )
+
+        menu.addSeparator()
+
+        pause_action = menu.addAction('Pause on input (default)')
+        pause_action.setCheckable(True)
+        pause_action.setChecked(current_mode == 'pause')
         pause_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'pause')
         )
 
-        always_label = f'{check}Always send' if current_mode == 'always' else '  Always send'
-        always_action = menu.addAction(always_label)
+        always_action = menu.addAction('Always send')
+        always_action.setCheckable(True)
+        always_action.setChecked(current_mode == 'always')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
         )
@@ -753,6 +764,22 @@ class TableBuilderMixin(_Base):
             self._show_status(f'Auto-send mode: {mode}')
         else:
             self._show_status(f'Failed to set auto-send mode for {tag}')
+
+    def _force_send_next(self, tag: str) -> None:
+        """Force-send the next queued message to the CQ server."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'force_send'},
+        )
+        if response and response.get('status') == 'sent':
+            self._show_status(f'Force-sent queued message for {tag}')
+            self._refresh_data()
+        elif response and response.get('status') == 'empty':
+            self._show_status(f'No queued messages for {tag}')
+        else:
+            self._show_status(f'Failed to force-send for {tag}')
 
     def _send_direct_template(self, tag: str) -> None:
         """Send the direct message template directly to the CQ session."""
