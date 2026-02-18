@@ -114,6 +114,8 @@ class ClaudeStateTracker:
                                 self._waiting_since = None
                         self._idle_output_acc = 0
                         self._output_buf.clear()
+                        if new_state == 'idle':
+                            self._seen_user_input = False
                         return new_state
             except (json.JSONDecodeError, OSError):
                 pass
@@ -127,6 +129,7 @@ class ClaudeStateTracker:
                         self._state = 'idle'
                         self._waiting_since = None
                     self._idle_output_acc = 0
+                    self._seen_user_input = False
                     return 'idle'
 
         return current

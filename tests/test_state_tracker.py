@@ -217,6 +217,40 @@ class TestOutputAccumulation:
         tracker.on_output(b'A' * 300)
         assert tracker.get_state(pty_alive=True) == 'idle'
 
+    def test_signal_idle_resets_seen_user_input(self, tmp_path: Path) -> None:
+        """After signal file transitions to idle, prompt rendering
+        should not falsely re-trigger running."""
+        t = [0.0]
+        tracker = self._setup_idle_with_input(tmp_path, t)
+        # Output accumulation → running
+        t[0] = 1.0
+        tracker.on_output(b'A' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # Signal file says idle (Claude finished)
+        t[0] = 5.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Prompt rendering arrives — should NOT re-trigger running
+        t[0] = 6.0
+        tracker.on_output(b'B' * 300)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_silence_timeout_resets_seen_user_input(self, tmp_path: Path) -> None:
+        """After silence timeout transitions to idle, prompt rendering
+        should not falsely re-trigger running."""
+        t = [0.0]
+        tracker = self._setup_idle_with_input(tmp_path, t)
+        t[0] = 1.0
+        tracker.on_output(b'A' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # Silence timeout → idle
+        t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Prompt rendering — should NOT re-trigger running
+        t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 2.0
+        tracker.on_output(b'B' * 300)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
 
 # ---------------------------------------------------------------------------
 # Running → has_question (Interrupted detection)
