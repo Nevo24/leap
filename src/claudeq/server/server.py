@@ -324,16 +324,15 @@ class ClaudeQServer:
             if self.queue.is_empty or not self.state.is_ready(self.pty.is_alive()):
                 continue
 
-            message = self.queue.peek()
+            message = self.queue.pop()
             if not message:
                 continue
 
             try:
                 self._send_to_claude(message)
-                self.queue.pop()  # Only remove after successful send
                 self.queue.track_sent(message)
             except Exception:
-                pass  # Message stays in queue, will be retried next cycle
+                self.queue.requeue(message)
 
     def _title_keeper_loop(self) -> None:
         """Background thread to maintain terminal title."""
