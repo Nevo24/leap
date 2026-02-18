@@ -193,6 +193,52 @@ class TestPTYInterrupted:
         assert pty.tracker.current_state == 'has_question'
 
 
+class TestPTYResumeDetection:
+    """Resume detection: has_question/needs_permission → running."""
+
+    def test_tui_rendering_after_interrupted_stays_has_question(
+        self, pty: PTYFixture,
+    ) -> None:
+        """After 'Interrupted' → has_question, TUI status bar rendering
+        should NOT falsely trigger resume to running."""
+        pty.tracker.on_send()
+        assert pty.get_state() == 'running'
+
+        # "Interrupted" detected → has_question
+        pty.send_line('echo Interrupted')
+        pty.drain_to_tracker(timeout=1.0)
+        assert pty.tracker.current_state == 'has_question'
+
+        # Wait past 2s grace period
+        time.sleep(2.5)
+
+        # TUI-like status bar output (printable text after ANSI stripping)
+        pty.send_line(r'printf "\033[24;1H\033[KNevo.Mashiach 10%% Opus\n"')
+        pty.drain_to_tracker(timeout=1.0)
+
+        # Should stay has_question — no user input since entering wait
+        assert pty.tracker.current_state == 'has_question'
+
+    def test_resume_after_user_types(self, pty: PTYFixture) -> None:
+        """After has_question, user typing then output → running."""
+        pty.tracker.on_send()
+        pty.send_line('echo Interrupted')
+        pty.drain_to_tracker(timeout=1.0)
+        assert pty.tracker.current_state == 'has_question'
+
+        # Wait past grace period
+        time.sleep(2.5)
+
+        # User types (answers the question)
+        pty.tracker.on_input(b'y')
+
+        # Claude produces output
+        pty.send_line('printf "%0.sX" $(seq 1 100)')
+        pty.drain_to_tracker(timeout=1.0)
+
+        assert pty.tracker.current_state == 'running'
+
+
 class TestPTYFalseRunningRetrigger:
     """After Claude goes idle via signal, prompt/TUI rendering should
     not falsely re-trigger 'running'."""

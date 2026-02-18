@@ -411,6 +411,9 @@ class TestResumeDetection:
         t[0] = 1.0
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # User types 'y' to approve (AFTER entering waiting state)
+        t[0] = 3.0
+        tracker.on_input(b'y')
         # After 2s grace, printable output → running
         t[0] = 4.0
         tracker.on_output(b'Processing...')
@@ -423,7 +426,9 @@ class TestResumeDetection:
         t[0] = 1.0
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        # Output within 2s grace period → stays needs_permission
+        # User types, but output within 2s grace period → stays
+        t[0] = 1.5
+        tracker.on_input(b'y')
         t[0] = 2.0
         tracker.on_output(b'Prompt text rendering...')
         assert tracker.current_state == 'needs_permission'
@@ -435,9 +440,25 @@ class TestResumeDetection:
         t[0] = 1.0
         write_signal(tracker, 'has_question')
         assert tracker.get_state(pty_alive=True) == 'has_question'
-        # After grace, ANSI-only output → stays has_question
+        # User types, but only ANSI output → stays has_question
+        t[0] = 3.0
+        tracker.on_input(b'y')
         t[0] = 4.0
         tracker.on_output(b'\x1b[2J\x1b[H\r')
+        assert tracker.current_state == 'has_question'
+
+    def test_resume_blocked_without_user_input(self, tmp_path: Path) -> None:
+        """TUI status bar rendering after has_question should NOT
+        trigger resume (no user input since entering waiting state)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'has_question')
+        assert tracker.get_state(pty_alive=True) == 'has_question'
+        # After grace, printable output but NO user input → stays
+        t[0] = 4.0
+        tracker.on_output(b'Nevo.Mashiach 10% Opus 4.6 default')
         assert tracker.current_state == 'has_question'
 
 

@@ -278,10 +278,16 @@ class ClaudeStateTracker:
         # Uses elif so interruption detection above isn't immediately undone.
         # Grace period: ignore the first 2s of output after entering the
         # waiting state (prompt text / escape sequences may still render).
+        # Require user input AFTER entering the waiting state — prevents
+        # TUI status bar rendering from falsely triggering resume.
         elif self._state in ('needs_permission', 'has_question'):
             self._output_buf.clear()
             ws = self._waiting_since
-            if ws is not None and (self._clock() - ws) > 2.0:
+            if (
+                ws is not None
+                and (self._clock() - ws) > 2.0
+                and self._last_input_time > ws
+            ):
                 # Only treat as resume if the output has printable text
                 # beyond ANSI escape sequences — filters TUI cursor blinks
                 # and screen refreshes that arrive while Claude is idle.
