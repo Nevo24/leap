@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from claudeq.utils.constants import OUTPUT_SILENCE_TIMEOUT
 
@@ -42,16 +42,22 @@ class ClaudeStateTracker:
         rb'|\r'
     )
 
-    def __init__(self, signal_file: Path, auto_send_mode: str = 'pause') -> None:
+    def __init__(
+        self,
+        signal_file: Path,
+        auto_send_mode: str = 'pause',
+        clock: Optional[Callable[[], float]] = None,
+    ) -> None:
         self._signal_file = signal_file
         self._auto_send_mode = auto_send_mode
+        self._clock = clock or time.time
 
         self._state: str = 'idle'
         self._lock = threading.Lock()
         self._waiting_since: Optional[float] = None
         self._last_output_time: float = 0.0
         # Track user input to distinguish typing echo from Claude output.
-        self._last_input_time: float = time.time()
+        self._last_input_time: float = self._clock()
         # True after the first real user keystroke (prevents the startup
         # banner from falsely triggering idle → running).
         self._seen_user_input: bool = False
@@ -96,14 +102,14 @@ class ClaudeStateTracker:
                         new_state == 'idle'
                         and current == 'has_question'
                         and self._waiting_since is not None
-                        and (time.time() - self._waiting_since) < 5.0
+                        and (self._clock() - self._waiting_since) < 5.0
                     ):
                         pass
                     elif new_state in self._VALID_SIGNAL_STATES and new_state != current:
                         with self._lock:
                             self._state = new_state
                             if new_state in ('needs_permission', 'has_question'):
-                                self._waiting_since = time.time()
+                                self._waiting_since = self._clock()
                             else:
                                 self._waiting_since = None
                         self._idle_output_acc = 0
@@ -115,7 +121,7 @@ class ClaudeStateTracker:
             # Fallback: PTY silence timeout (handles interruptions,
             # missing hooks, or any case where the hook doesn't fire)
             if current == 'running' and self._last_output_time > 0:
-                silence = time.time() - self._last_output_time
+                silence = self._clock() - self._last_output_time
                 if silence > OUTPUT_SILENCE_TIMEOUT:
                     with self._lock:
                         self._state = 'idle'
@@ -160,7 +166,7 @@ class ClaudeStateTracker:
         if len(data) > 1 and data[0] == 0x1b:
             return
         self._seen_user_input = True
-        self._last_input_time = time.time()
+        self._last_input_time = self._clock()
         self._idle_output_acc = 0
 
     def on_send(self) -> None:
@@ -191,7 +197,7 @@ class ClaudeStateTracker:
         Args:
             data: Raw output bytes from the PTY.
         """
-        now = time.time()
+        now = self._clock()
         prev_output_time = self._last_output_time
         self._last_output_time = now
 
@@ -216,7 +222,7 @@ class ClaudeStateTracker:
                     self._idle_output_acc = 0
                     with self._lock:
                         self._state = 'has_question'
-                        self._waiting_since = time.time()
+                        self._waiting_since = self._clock()
                     return
             stripped = self._ANSI_RE.sub(b'', data).strip()
             if stripped:
@@ -248,7 +254,7 @@ class ClaudeStateTracker:
                 self._output_buf.clear()
                 with self._lock:
                     self._state = 'has_question'
-                    self._waiting_since = time.time()
+                    self._waiting_since = self._clock()
 
         # Detect resume after permission/question — new PTY output means
         # the user answered and Claude is processing again.  Delete the
@@ -259,7 +265,7 @@ class ClaudeStateTracker:
         elif self._state in ('needs_permission', 'has_question'):
             self._output_buf.clear()
             ws = self._waiting_since
-            if ws is not None and (time.time() - ws) > 2.0:
+            if ws is not None and (self._clock() - ws) > 2.0:
                 # Only treat as resume if the output has printable text
                 # beyond ANSI escape sequences — filters TUI cursor blinks
                 # and screen refreshes that arrive while Claude is idle.

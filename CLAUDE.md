@@ -97,6 +97,10 @@ src/
         ├── extension.js         # Terminal selector logic
         └── README.md            # Extension documentation
 
+tests/
+├── __init__.py
+└── test_state_tracker.py        # ClaudeStateTracker state machine tests
+
 assets/
 ├── claudeq-icon.png             # Source icon (1024x1024)
 └── claudeq-icon.icns            # macOS icon bundle
@@ -321,6 +325,17 @@ Listens on Unix socket for client messages
   1. Add the constant in `utils/constants.py` (next to `QUEUE_DIR`, `SOCKET_DIR`, `HISTORY_DIR`)
   2. Add a `.mkdir()` call in `ensure_storage_dirs()` in `utils/constants.py`
   3. Add the path to the `ensure-storage` target in `Makefile`
+
+## Testing
+
+```bash
+poetry run pytest tests/ -v     # Run all tests
+```
+
+- Tests use `pytest` (dev dependency, `poetry install --with dev`)
+- `ClaudeStateTracker` uses an injectable `clock` parameter — tests pass a fake clock (`lambda: t[0]`) for deterministic time control
+- Use `tmp_path` fixture for signal files
+- Test file naming: `tests/test_<module>.py`
 
 ## Code Conventions
 
