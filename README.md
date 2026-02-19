@@ -183,14 +183,15 @@ The monitor shows:
 - `/cq` command support — comment `/cq` on an MR thread to auto-send it to a CQ session
 - Dock badge notifications when sessions finish processing or MR status changes
 - **macOS banner notifications** — opt-in banners for MR changes, approvals, and session completions (requires enabling in macOS System Settings > Notifications > ClaudeQ Monitor)
-- **Settings** — configure default terminal (Terminal.app/iTerm2), repos directory, notifications, and clean up unused repos
+- **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, notifications, and clean up unused repos
 
-**Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2
+**Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2, Warp
 
 **Notes:**
 - **JetBrains IDEs**: Jumps to specific terminal tab automatically (requires Classic terminal + "Show application title" setting)
 - **VS Code**: Jumps to specific terminal tab automatically (auto-configured during installation)
 - **Terminal.app/iTerm2**: Jumps to specific tab automatically
+- **Warp**: Jumps to specific tab automatically (requires Accessibility permission — grant in System Settings > Privacy & Security > Accessibility)
 
 ## Example Workflow
 

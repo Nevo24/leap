@@ -23,7 +23,7 @@ OPTIONS = {
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '10.13',
     },
-    'packages': ['PyQt5', 'claudeq'],
+    'packages': ['PyQt5', 'claudeq', 'ApplicationServices'],
     'includes': ['PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets'],
 }
 

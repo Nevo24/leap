@@ -16,6 +16,8 @@ gnureadline = "^8.1.2"
 wcwidth = "^0.6.0"
 rich = "^14.3.2"
 pyobjc-framework-cocoa = "^12.1"
+pyobjc-framework-applicationservices = "^12.1"
+pyobjc-framework-quartz = "^12.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

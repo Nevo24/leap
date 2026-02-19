@@ -5,6 +5,7 @@ Handles navigating to terminal tabs in various IDEs.
 """
 
 import glob
+import logging
 import os
 import shutil
 import subprocess
@@ -14,6 +15,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 def _escape_groovy(s: str) -> str:
     """Escape a string for safe interpolation in a Groovy double-quoted string."""
@@ -563,108 +566,205 @@ def _close_iterm2(title_pattern: str) -> bool:
     return False
 
 
-def _run_applescript_in_process(script: str) -> bool:
-    """Run AppleScript in-process using NSAppleScript (PyObjC).
+_WARP_BUNDLE_ID = 'dev.warp.Warp-Stable'
 
-    This uses the calling app's Accessibility permission rather than
-    requiring osascript to have its own permission.  Falls back to
-    osascript if PyObjC is not available.
+
+def _write_warp_diagnostic(msg: str) -> None:
+    """Write a diagnostic line to .storage/warp_nav_diag.txt for debugging."""
+    try:
+        from claudeq.utils.constants import STORAGE_DIR
+        diag_file = STORAGE_DIR / 'warp_nav_diag.txt'
+        with open(diag_file, 'a') as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except (ImportError, OSError):
+        pass
+
+
+def _get_app_pid(bundle_id: str) -> Optional[int]:
+    """Get PID for a running app by bundle identifier.
+
+    Uses NSWorkspace iteration instead of
+    runningApplicationsWithBundleIdentifier_ because the latter can
+    return empty results when called from a background thread in a
+    py2app bundle.
     """
     try:
-        from Foundation import NSAppleScript
-        ns_script = NSAppleScript.alloc().initWithSource_(script)
-        result, error = ns_script.executeAndReturnError_(None)
-        if error:
-            return False
-        return result is not None and result.stringValue() == 'true'
+        import AppKit
+        workspace = AppKit.NSWorkspace.sharedWorkspace()
+        for app in workspace.runningApplications():
+            if app.bundleIdentifier() == bundle_id:
+                return app.processIdentifier()
     except ImportError:
-        pass
+        _write_warp_diagnostic("AppKit ImportError in _get_app_pid")
+    except Exception as exc:
+        _write_warp_diagnostic("_get_app_pid error: %s" % exc)
+    return None
 
-    # Fallback: use osascript subprocess
+
+def _check_accessibility_trusted() -> bool:
+    """Check if this process has Accessibility permission.
+
+    If not trusted, triggers the macOS system prompt to request permission.
+    This handles the case where the .app was rebuilt (changing its ad-hoc
+    code signature) and the old Accessibility entry is now stale.
+    """
     try:
-        result = subprocess.run(
-            ['osascript', '-e', script],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return result.returncode == 0 and 'true' in result.stdout
-    except (subprocess.SubprocessError, OSError):
+        from ApplicationServices import AXIsProcessTrusted
+        from CoreFoundation import kCFBooleanTrue
+    except ImportError:
+        _write_warp_diagnostic("FAIL: cannot import ApplicationServices or CoreFoundation")
+        return False
+
+    trusted = AXIsProcessTrusted()
+    _write_warp_diagnostic("AXIsProcessTrusted() = %s" % trusted)
+    if trusted:
+        return True
+
+    # Not trusted — trigger the system prompt so the user can re-authorize.
+    try:
+        from ApplicationServices import AXIsProcessTrustedWithOptions
+        options = {"AXTrustedCheckOptionPrompt": kCFBooleanTrue}
+        AXIsProcessTrustedWithOptions(options)
+    except (ImportError, Exception):
         pass
 
+    logger.warning("Accessibility permission not granted for this process. "
+                    "Re-add ClaudeQ Monitor in System Settings > Privacy & "
+                    "Security > Accessibility after rebuilding the app.")
     return False
 
 
-def _get_warp_process_name() -> str:
-    """Get Warp's actual process name in System Events.
+def _send_keystroke(keycode: int, cmd: bool = False, shift: bool = False) -> bool:
+    """Send a keystroke to the frontmost application using CGEvent."""
+    try:
+        from Quartz import (
+            CGEventCreateKeyboardEvent,
+            CGEventSetFlags,
+            CGEventPost,
+            kCGHIDEventTap,
+            kCGEventFlagMaskCommand,
+            kCGEventFlagMaskShift,
+        )
+    except ImportError:
+        return False
 
-    Warp's binary is 'stable' (at Warp.app/Contents/MacOS/stable),
-    so macOS sees the process as 'stable', not 'Warp'.
-    """
-    return 'stable'
+    flags = 0
+    if cmd:
+        flags |= kCGEventFlagMaskCommand
+    if shift:
+        flags |= kCGEventFlagMaskShift
+
+    key_down = CGEventCreateKeyboardEvent(None, keycode, True)
+    key_up = CGEventCreateKeyboardEvent(None, keycode, False)
+    CGEventSetFlags(key_down, flags)
+    CGEventSetFlags(key_up, flags)
+    CGEventPost(kCGHIDEventTap, key_down)
+    CGEventPost(kCGHIDEventTap, key_up)
+    return True
+
+
+def _send_cmd_w() -> bool:
+    """Send Cmd+W keystroke to close the active tab."""
+    return _send_keystroke(13, cmd=True)  # keycode 13 = 'w'
 
 
 def _navigate_warp(title_pattern: str) -> bool:
-    """Navigate to a Warp window whose title contains the pattern.
+    """Navigate to a Warp tab whose title contains the pattern.
 
-    Warp has no AppleScript dictionary, so we try System Events accessibility
-    first (requires Accessibility permission) to raise the exact window.
-    Falls back to simply activating Warp if permission is not granted.
+    Warp doesn't expose individual tabs in its accessibility tree, so
+    the window title only reflects the currently active tab.  Strategy:
+    1. Check all windows for a direct title match (active tab matches).
+    2. If not found, raise each window and cycle through its tabs with
+       Cmd+Shift+] until the title matches or we loop back to the start.
     """
-    proc = _get_warp_process_name()
-    escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
-    script = f'''
-    tell application "System Events"
-        if not (exists process "{proc}") then return "false"
-        tell process "{proc}"
-            repeat with w in every window
-                if name of w contains "{escaped}" then
-                    perform action "AXRaise" of w
-                    tell application "Warp" to activate
-                    return "true"
-                end if
-            end repeat
-        end tell
-    end tell
-    return "false"
-    '''
+    _write_warp_diagnostic("_navigate_warp called, pattern='%s'" % title_pattern)
+    pid = _get_app_pid(_WARP_BUNDLE_ID)
+    if pid is None:
+        _write_warp_diagnostic("Warp not running (bundle_id=%s)" % _WARP_BUNDLE_ID)
+        return False
 
-    if _run_applescript_in_process(script):
-        return True
+    try:
+        import AppKit
+        from ApplicationServices import (
+            AXUIElementCreateApplication,
+            AXUIElementCopyAttributeValue,
+            AXUIElementPerformAction,
+            kAXErrorSuccess,
+        )
+    except ImportError:
+        _write_warp_diagnostic("FAIL: ImportError for ApplicationServices")
+        return False
 
-    # Fallback: just activate Warp (no Accessibility permission needed).
-    # Cannot target a specific window, but at least brings Warp to front.
-    return _activate_warp()
+    if not _check_accessibility_trusted():
+        return False
+
+    app_ref = AXUIElementCreateApplication(pid)
+    err, windows = AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
+    if err != kAXErrorSuccess or not windows:
+        _write_warp_diagnostic("AXWindows query: error=%d, pid=%d" % (err, pid))
+        return False
+
+    ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+
+    def _get_title(window_ref: object) -> str:
+        e, t = AXUIElementCopyAttributeValue(window_ref, "AXTitle", None)
+        return str(t) if e == kAXErrorSuccess and t else ''
+
+    def _raise_and_activate(window_ref: object) -> None:
+        AXUIElementPerformAction(window_ref, "AXRaise")
+        if ns_app:
+            ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+
+    # Phase 1: quick scan — check if any window's active tab already matches
+    for window in windows:
+        if title_pattern in _get_title(window):
+            _raise_and_activate(window)
+            _write_warp_diagnostic("MATCH (phase 1): pattern='%s'" % title_pattern)
+            return True
+
+    # Phase 2: raise each window and cycle through its tabs
+    # Cmd+Shift+] = next tab in Warp  (keycode 30 = ']')
+    _write_warp_diagnostic("Phase 2: cycling tabs in %d window(s)" % len(windows))
+    for window in windows:
+        _raise_and_activate(window)
+        time.sleep(0.15)
+
+        initial_title = _get_title(window)
+        if not initial_title:
+            continue
+
+        for _ in range(20):  # safety cap
+            _send_keystroke(30, cmd=True, shift=True)  # Cmd+Shift+]
+            time.sleep(0.15)
+            current_title = _get_title(window)
+            if title_pattern in current_title:
+                _write_warp_diagnostic(
+                    "MATCH (phase 2): pattern='%s' in title='%s'"
+                    % (title_pattern, current_title))
+                return True
+            if current_title == initial_title:
+                break  # cycled back to start — tab not in this window
+
+    _write_warp_diagnostic("NO MATCH after cycling all windows")
+    # Phase 2 activated Warp to cycle tabs — switch back to the monitor
+    try:
+        import AppKit
+        AppKit.NSRunningApplication.currentApplication().activateWithOptions_(
+            AppKit.NSApplicationActivateIgnoringOtherApps)
+    except (ImportError, Exception):
+        pass
+    return False
 
 
 def _close_warp(title_pattern: str) -> bool:
-    """Close a Warp window whose title contains the pattern.
+    """Close a Warp tab whose title contains the pattern.
 
-    Uses System Events accessibility to find the matching window, raise it,
-    then send Cmd+W to close the active tab/window.
-    Requires Accessibility permission; returns False silently if not granted.
+    Navigates to the matching tab (cycling if needed), then sends Cmd+W.
     """
-    proc = _get_warp_process_name()
-    escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
-    script = f'''
-    tell application "System Events"
-        if not (exists process "{proc}") then return "false"
-        tell process "{proc}"
-            repeat with w in every window
-                if name of w contains "{escaped}" then
-                    perform action "AXRaise" of w
-                    tell application "Warp" to activate
-                    delay 0.2
-                    keystroke "w" using command down
-                    return "true"
-                end if
-            end repeat
-        end tell
-    end tell
-    return "false"
-    '''
-
-    return _run_applescript_in_process(script)
+    if _navigate_warp(title_pattern):
+        time.sleep(0.2)
+        return _send_cmd_w()
+    return False
 
 
 def _activate_warp() -> bool:

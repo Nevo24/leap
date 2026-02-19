@@ -59,31 +59,44 @@ class SettingsDialog(QDialog):
             self._terminal_combo.setCurrentText(current_terminal)
         grid.addWidget(self._terminal_combo, 0, 1)
 
+        # Warp accessibility hint (shown only when Warp is selected)
+        self._warp_hint = QLabel(
+            'Warp "jump to" requires Accessibility permission.\n'
+            'Grant in: System Settings > Privacy & Security > Accessibility\n'
+            '> enable "ClaudeQ Monitor" (or your IDE/terminal if running from source)'
+        )
+        self._warp_hint.setStyleSheet('color: grey; font-size: 11px;')
+        self._warp_hint.setWordWrap(True)
+        self._warp_hint.setVisible(self._terminal_combo.currentText() == 'Warp')
+        grid.addWidget(self._warp_hint, 1, 0, 1, 4)
+        self._terminal_combo.currentTextChanged.connect(
+            lambda text: self._warp_hint.setVisible(text == 'Warp'))
+
         # Repositories directory
-        grid.addWidget(QLabel('Clone to dir:'), 1, 0)
+        grid.addWidget(QLabel('Clone to dir:'), 2, 0)
         self._repos_dir_edit = QLineEdit()
         self._repos_dir_edit.setPlaceholderText(DEFAULT_REPOS_DIR)
         if current_repos_dir:
             self._repos_dir_edit.setText(current_repos_dir)
-        grid.addWidget(self._repos_dir_edit, 1, 1)
+        grid.addWidget(self._repos_dir_edit, 2, 1)
         browse_btn = QPushButton('Browse...')
         browse_btn.clicked.connect(self._browse_repos_dir)
-        grid.addWidget(browse_btn, 1, 2)
+        grid.addWidget(browse_btn, 2, 2)
         cleanup_btn = QPushButton('Clean')
         cleanup_btn.setToolTip('Delete cloned repos that have no running CQ server')
         cleanup_btn.clicked.connect(self._cleanup_repos)
-        grid.addWidget(cleanup_btn, 1, 3)
+        grid.addWidget(cleanup_btn, 2, 3)
 
         # Show tooltips
         self._tooltips_check = QCheckBox('Show hover explanations')
         self._tooltips_check.setChecked(show_tooltips)
-        grid.addWidget(self._tooltips_check, 2, 0, 1, 2)
+        grid.addWidget(self._tooltips_check, 3, 0, 1, 2)
 
         # Notifications
         notif_btn = QPushButton('Notifications...')
         notif_btn.setToolTip('Configure dock badge and banner notifications per event type')
         notif_btn.clicked.connect(self._open_notifications)
-        grid.addWidget(notif_btn, 3, 0)
+        grid.addWidget(notif_btn, 4, 0)
 
         layout.addLayout(grid)
 

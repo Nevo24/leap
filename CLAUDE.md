@@ -514,7 +514,7 @@ Implemented in `ClaudeQServer._validate_pinned_session()` (`server/server.py`), 
 
 Settings dialog (`monitor/settings_dialog.py`) accessible via the Settings button:
 
-- **Default terminal**: Terminal.app or iTerm2 — used when opening new CQ servers
+- **Default terminal**: Terminal.app, iTerm2, or Warp — used when opening new CQ servers. Warp navigation requires Accessibility permission (uses AXUIElement API + tab cycling via CGEvent keystrokes)
 - **Repositories dir**: Where ClaudeQ clones repos for MR rows (default: `/tmp/claudeq-repos`)
 - **Clean unused repos**: Deletes cloned repos that have no running CQ server (checks resolved paths against active sessions)
 

@@ -44,7 +44,8 @@ echo "$(PROMPT_PREFIX) Installing ClaudeQ Monitor.app to /Applications..."; \
 if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
 	sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
 fi; \
-sudo cp -R "$(REPO_PATH)/.dist/ClaudeQ Monitor.app" /Applications/
+sudo cp -R "$(REPO_PATH)/.dist/ClaudeQ Monitor.app" /Applications/; \
+tccutil reset Accessibility com.claudeq.monitor 2>/dev/null || true
 endef
 
 .PHONY: default
