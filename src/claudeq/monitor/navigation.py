@@ -9,7 +9,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +56,9 @@ def open_terminal_with_command(
         elif preferred_ide == 'Terminal.app':
             if _open_terminal_app_terminal(command):
                 return True
+        elif preferred_ide == 'Warp':
+            if _open_warp_terminal(command):
+                return True
 
     # Preferred IDE failed or unknown — try Terminal.app then iTerm2
     if _open_terminal_app_terminal(command):
@@ -95,6 +100,9 @@ def close_terminal_with_title(
     if _close_iterm2(title_pattern):
         return True
 
+    if _close_warp(title_pattern):
+        return True
+
     return False
 
 
@@ -134,6 +142,10 @@ def find_terminal_with_title(
 
     # Try iTerm2
     if _navigate_iterm2(title_pattern):
+        return True
+
+    # Try Warp
+    if _navigate_warp(title_pattern):
         return True
 
     return False
@@ -549,6 +561,161 @@ def _close_iterm2(title_pattern: str) -> bool:
         pass
 
     return False
+
+
+def _navigate_warp(title_pattern: str) -> bool:
+    """Navigate to a Warp window whose title contains the pattern.
+
+    Warp has no AppleScript dictionary, so we use the System Events
+    accessibility API to enumerate windows by title and raise the match.
+    """
+    escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
+    script = f'''
+    tell application "System Events"
+        if not (exists process "Warp") then return false
+        tell process "Warp"
+            repeat with w in every window
+                if name of w contains "{escaped}" then
+                    perform action "AXRaise" of w
+                    tell application "Warp" to activate
+                    return true
+                end if
+            end repeat
+        end tell
+    end tell
+    return false
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _close_warp(title_pattern: str) -> bool:
+    """Close a Warp window whose title contains the pattern.
+
+    Uses System Events accessibility to find the matching window, raise it,
+    then send Cmd+W to close the active tab/window.
+    """
+    escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
+    script = f'''
+    tell application "System Events"
+        if not (exists process "Warp") then return false
+        tell process "Warp"
+            repeat with w in every window
+                if name of w contains "{escaped}" then
+                    perform action "AXRaise" of w
+                    tell application "Warp" to activate
+                    delay 0.2
+                    keystroke "w" using command down
+                    return true
+                end if
+            end repeat
+        end tell
+    end tell
+    return false
+    '''
+
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _open_warp_terminal(command: str) -> bool:
+    """Open a new Warp window and run a command using Launch Configurations.
+
+    Creates a temporary YAML launch config in ~/.warp/launch_configurations/
+    and opens it via the warp:// URI scheme.  The temp file is removed after
+    Warp has had time to read it.
+    """
+    config_name = f"claudeq-{uuid.uuid4().hex[:8]}"
+    config_dir = Path.home() / ".warp" / "launch_configurations"
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+
+    config_path = config_dir / f"{config_name}.yaml"
+
+    # Extract cwd from "cd /path && ..." pattern, otherwise use home
+    cwd = str(Path.home())
+    if command.startswith('cd '):
+        # Parse: cd '/some/path' && rest  or  cd /some/path && rest
+        parts = command.split('&&', 1)
+        cd_part = parts[0].strip()
+        # Remove 'cd ' prefix and strip quotes
+        cd_path = cd_part[3:].strip().strip("'\"")
+        if cd_path:
+            cwd = cd_path
+
+    # Escape for YAML double-quoted strings
+    escaped_cmd = command.replace('\\', '\\\\').replace('"', '\\"')
+    escaped_cwd = cwd.replace('\\', '\\\\').replace('"', '\\"')
+
+    yaml_content = (
+        f'name: "{config_name}"\n'
+        f'windows:\n'
+        f'  - tabs:\n'
+        f'      - layout:\n'
+        f'          cwd: "{escaped_cwd}"\n'
+        f'          commands:\n'
+        f'            - exec: "{escaped_cmd}"\n'
+    )
+
+    try:
+        config_path.write_text(yaml_content, encoding='utf-8')
+        result = subprocess.run(
+            ['open', f'warp://launch/{config_name}'],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            _cleanup_warp_config(config_path)
+            return False
+        # Clean up after Warp has had time to read the config
+        _schedule_warp_config_cleanup(config_path)
+        return True
+    except (subprocess.SubprocessError, OSError):
+        _cleanup_warp_config(config_path)
+
+    return False
+
+
+def _cleanup_warp_config(path: Path) -> None:
+    """Remove a temporary Warp launch config file."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _schedule_warp_config_cleanup(path: Path) -> None:
+    """Schedule removal of a temporary Warp launch config after a delay."""
+
+    def _cleanup() -> None:
+        time.sleep(3)
+        _cleanup_warp_config(path)
+
+    t = threading.Thread(target=_cleanup, daemon=True)
+    t.start()
 
 
 def _open_jetbrains_terminal(

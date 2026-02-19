@@ -1,5 +1,6 @@
 """Settings dialog for ClaudeQ Monitor."""
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -14,10 +15,19 @@ from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
 DEFAULT_REPOS_DIR = '/tmp/claudeq-repos'
 
 
+def _detect_installed_terminals() -> list[str]:
+    """Return list of terminal apps installed on this machine."""
+    home = Path.home()
+    candidates = [
+        ('Terminal.app', [Path('/System/Applications/Utilities/Terminal.app')]),
+        ('iTerm2', [Path('/Applications/iTerm.app'), home / 'Applications' / 'iTerm.app']),
+        ('Warp', [Path('/Applications/Warp.app'), home / 'Applications' / 'Warp.app']),
+    ]
+    return [name for name, paths in candidates if any(p.is_dir() for p in paths)]
+
+
 class SettingsDialog(QDialog):
     """Dialog for configuring monitor preferences."""
-
-    _TERMINAL_CHOICES = ['Terminal.app', 'iTerm2']
 
     def __init__(
         self,
@@ -43,8 +53,9 @@ class SettingsDialog(QDialog):
         # Default terminal
         grid.addWidget(QLabel('Default terminal:'), 0, 0)
         self._terminal_combo = QComboBox()
-        self._terminal_combo.addItems(self._TERMINAL_CHOICES)
-        if current_terminal and current_terminal in self._TERMINAL_CHOICES:
+        self._installed_terminals = _detect_installed_terminals()
+        self._terminal_combo.addItems(self._installed_terminals)
+        if current_terminal and current_terminal in self._installed_terminals:
             self._terminal_combo.setCurrentText(current_terminal)
         grid.addWidget(self._terminal_combo, 0, 1)
 
