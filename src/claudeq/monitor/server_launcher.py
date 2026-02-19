@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -24,6 +25,18 @@ if TYPE_CHECKING:
     from claudeq.monitor.app import MonitorWindow
 
 logger = logging.getLogger(__name__)
+
+
+def _is_git_repo(path: Path) -> bool:
+    """Check if a directory is a valid git repository."""
+    try:
+        r = subprocess.run(
+            ['git', 'rev-parse', '--git-dir'],
+            capture_output=True, cwd=str(path), timeout=5,
+        )
+        return r.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
 
 
 class ServerLauncher:
@@ -85,8 +98,8 @@ class ServerLauncher:
                     # Path in use — clear it so _start_server_from_mr finds a free dir
                     pinned['project_path'] = ''
                     self._start_server_from_mr(tag, pinned)
-                elif not project_dir.is_dir():
-                    # Dir was deleted — clear path and re-clone
+                elif not project_dir.is_dir() or not _is_git_repo(project_dir):
+                    # Dir was deleted or isn't a valid git repo — clear and re-clone
                     pinned['project_path'] = ''
                     self._start_server_from_mr(tag, pinned)
                 else:
@@ -145,8 +158,8 @@ class ServerLauncher:
         for name in candidates:
             candidate = repos_dir / name
             resolved = str(candidate.resolve())
-            if not candidate.is_dir():
-                return candidate, True, in_use  # Doesn't exist — needs clone
+            if not candidate.is_dir() or not _is_git_repo(candidate):
+                return candidate, True, in_use  # Doesn't exist or not a valid git repo — needs clone
             if resolved not in active_paths:
                 return candidate, False, in_use  # Exists and no CQ server using it
             in_use.append(name)
@@ -184,6 +197,9 @@ class ServerLauncher:
 
             def _clone() -> None:
                 try:
+                    # Remove broken/non-git directory if it exists
+                    if project_dir.exists():
+                        shutil.rmtree(project_dir)
                     subprocess.run(
                         ['git', 'clone', clone_url, str(project_dir)],
                         check=True, capture_output=True, text=True, timeout=120,
