@@ -532,6 +532,15 @@ def main() -> None:
     app.setApplicationName('ClaudeQ Monitor')
     app.setStyle(PersistentTooltipStyle(app.style()))
 
+    # Force dark theme regardless of OS appearance
+    try:
+        from AppKit import NSAppearance, NSApplication
+        dark = NSAppearance.appearanceNamed_('NSAppearanceNameDarkAqua')
+        if dark:
+            NSApplication.sharedApplication().setAppearance_(dark)
+    except Exception:
+        pass
+
     # Set app icon for Dock and macOS notifications
     icon_path = find_icon()
     if icon_path:
