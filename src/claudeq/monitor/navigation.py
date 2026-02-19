@@ -811,7 +811,9 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     """Open a new tab in the frontmost Warp window and run a command.
 
     Uses Cmd+T to create the tab, waits for the shell to initialize by
-    polling the window title for a change, then pastes the command.
+    polling the window title for a change, dismisses Warp's "New terminal
+    session" overlay, then pastes the command.  Includes a retry loop to
+    handle timing variations in overlay appearance.
     Requires Accessibility permission.
     """
     try:
@@ -853,14 +855,9 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     while time.monotonic() < deadline:
         time.sleep(0.2)
         if _title() != old_title:
-            time.sleep(0.1)  # small extra settle time
             break
 
-    # Dismiss Warp's "New terminal session" overlay before typing
-    _send_keystroke(53)            # keycode 53 = Escape
-    time.sleep(0.3)
-
-    # Copy command to clipboard, paste it, and execute
+    # Copy command to clipboard (done once, reused across retries)
     try:
         proc = subprocess.run(
             ['pbcopy'], input=command.encode('utf-8'), timeout=2,
@@ -870,11 +867,26 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     except (subprocess.SubprocessError, OSError):
         return False
 
-    time.sleep(0.1)
-    _send_keystroke(9, cmd=True)   # keycode 9 = 'v' (Cmd+V paste)
-    time.sleep(0.15)
-    _send_keystroke(36)            # keycode 36 = Return
-    return True
+    # Warp shows a "New terminal session" overlay on new tabs that
+    # captures Enter.  The overlay can appear at varying times after
+    # the shell is ready.  Strategy: try Escape → paste → Enter, then
+    # check the title to verify the command ran.  If it didn't, retry.
+    for attempt in range(4):
+        # Wait progressively longer for the overlay to appear
+        time.sleep(0.3 if attempt == 0 else 0.8)
+        _send_keystroke(53)            # Escape (dismiss overlay)
+        time.sleep(0.2)
+        _send_keystroke(9, cmd=True)   # Cmd+V (paste, replaces any input)
+        time.sleep(0.15)
+        _send_keystroke(36)            # Return (execute)
+        time.sleep(0.5)
+
+        # Check if the command executed — cq sets the title to "cq-*"
+        current = _title()
+        if 'cq-' in current:
+            return True
+
+    return True  # Exhausted retries — command may still execute
 
 
 def _open_warp_via_launch_config(command: str) -> bool:
