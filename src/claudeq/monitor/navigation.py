@@ -634,7 +634,9 @@ def _check_accessibility_trusted() -> bool:
     return False
 
 
-def _send_keystroke(keycode: int, cmd: bool = False, shift: bool = False) -> bool:
+def _send_keystroke(
+    keycode: int, cmd: bool = False, shift: bool = False, ctrl: bool = False,
+) -> bool:
     """Send a keystroke to the frontmost application using CGEvent."""
     try:
         from Quartz import (
@@ -644,6 +646,7 @@ def _send_keystroke(keycode: int, cmd: bool = False, shift: bool = False) -> boo
             kCGHIDEventTap,
             kCGEventFlagMaskCommand,
             kCGEventFlagMaskShift,
+            kCGEventFlagMaskControl,
         )
     except ImportError:
         return False
@@ -653,6 +656,8 @@ def _send_keystroke(keycode: int, cmd: bool = False, shift: bool = False) -> boo
         flags |= kCGEventFlagMaskCommand
     if shift:
         flags |= kCGEventFlagMaskShift
+    if ctrl:
+        flags |= kCGEventFlagMaskControl
 
     key_down = CGEventCreateKeyboardEvent(None, keycode, True)
     key_up = CGEventCreateKeyboardEvent(None, keycode, False)
@@ -876,7 +881,9 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
         time.sleep(0.3 if attempt == 0 else 0.8)
         _send_keystroke(53)            # Escape (dismiss overlay)
         time.sleep(0.2)
-        _send_keystroke(9, cmd=True)   # Cmd+V (paste, replaces any input)
+        _send_keystroke(32, ctrl=True) # Ctrl+U (clear input line)
+        time.sleep(0.1)
+        _send_keystroke(9, cmd=True)   # Cmd+V (paste into clean input)
         time.sleep(0.15)
         _send_keystroke(36)            # Return (execute)
         time.sleep(0.5)
