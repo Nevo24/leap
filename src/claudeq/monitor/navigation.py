@@ -841,7 +841,7 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
 
     time.sleep(0.1)
     _send_keystroke(9, cmd=True)  # keycode 9 = 'v' (Cmd+V paste)
-    time.sleep(0.1)
+    time.sleep(0.4)               # Warp needs time to process the paste
     _send_keystroke(36)           # keycode 36 = Return
     return True
 
