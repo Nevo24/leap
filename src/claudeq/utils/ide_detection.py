@@ -37,6 +37,9 @@ def detect_ide() -> str:
     if term_program == 'Apple_Terminal':
         return 'Terminal.app'
 
+    if term_program == 'WarpTerminal':
+        return 'Warp'
+
     # Check for JetBrains IDE (only if TERM_PROGRAM didn't identify
     # a known terminal — avoids false positives from leaked env vars)
     if 'JetBrains' in terminal_emulator or 'jetbrains' in terminal_emulator.lower():
