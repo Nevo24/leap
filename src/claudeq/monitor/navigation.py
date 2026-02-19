@@ -810,24 +810,51 @@ def _open_warp_terminal(command: str) -> bool:
 def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     """Open a new tab in the frontmost Warp window and run a command.
 
-    Uses Cmd+T to create the tab and clipboard paste to enter the command.
+    Uses Cmd+T to create the tab, waits for the shell to initialize by
+    polling the window title for a change, then pastes the command.
     Requires Accessibility permission.
     """
     try:
         import AppKit
-        ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-        if not ns_app:
-            return False
-        ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+        from ApplicationServices import (
+            AXUIElementCreateApplication,
+            AXUIElementCopyAttributeValue,
+            kAXErrorSuccess,
+        )
     except ImportError:
         return False
 
+    ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    if not ns_app:
+        return False
+    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
     time.sleep(0.3)
+
+    # Get the frontmost window and its current title (e.g. "cq-server tag")
+    app_ref = AXUIElementCreateApplication(pid)
+    err, windows = AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
+    if err != kAXErrorSuccess or not windows:
+        return False
+
+    def _title() -> str:
+        e, t = AXUIElementCopyAttributeValue(windows[0], "AXTitle", None)
+        return str(t) if e == kAXErrorSuccess and t else ''
+
+    old_title = _title()
 
     # Cmd+T — new tab in the frontmost window
     if not _send_keystroke(17, cmd=True):  # keycode 17 = 't'
         return False
-    time.sleep(0.5)  # Wait for shell init in new tab
+
+    # Wait for the new tab's shell to initialize.  The window title will
+    # change from the server tab's title (e.g. "cq-server tag") to the
+    # new tab's default title (e.g. the cwd) once the shell is ready.
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        if _title() != old_title:
+            time.sleep(0.1)  # small extra settle time
+            break
 
     # Copy command to clipboard and paste it
     try:
@@ -841,7 +868,7 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
 
     time.sleep(0.1)
     _send_keystroke(9, cmd=True)  # keycode 9 = 'v' (Cmd+V paste)
-    time.sleep(0.4)               # Warp needs time to process the paste
+    time.sleep(0.15)
     _send_keystroke(36)           # keycode 36 = Return
     return True
 
