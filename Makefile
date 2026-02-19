@@ -60,9 +60,19 @@ install: .env install-core ensure-storage write-install-metadata configure-shell
 	@echo ""
 	@echo "Note: The venv is automatically used by claudeq commands."
 	@echo ""
-	@echo "Optional: To install the monitor GUI, run:"
-	@echo "  make install-monitor"
-	@echo ""
+	@printf "Would you like to install the Monitor GUI? [Y/n] "; \
+	read answer; \
+	case "$${answer}" in \
+		[nN]*) \
+			echo ""; \
+			echo "You can install it later with:"; \
+			echo "  make install-monitor"; \
+			echo ""; \
+			;; \
+		*) \
+			$(MAKE) install-monitor; \
+			;; \
+	esac
 
 .PHONY: install-core
 install-core:
