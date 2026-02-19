@@ -37,6 +37,11 @@ else
     exit 1
 fi
 
+# Run update if requested
+if [ "$1" = "--update" ]; then
+    exec make -C "$PROJECT_DIR" update
+fi
+
 # Show help if requested
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     cat << 'EOF'
@@ -47,6 +52,7 @@ USAGE:
     cq <tag> <message>           Send message to server
     cq <tag> [--flags]           Start server with flags (passed to Claude CLI)
     cq --help, -h                Show this help
+    cq --update                  Update ClaudeQ to latest version
 
 FLAGS (server only):
     Flags starting with -- are passed directly to Claude CLI when starting a server.
@@ -66,21 +72,6 @@ EXAMPLES:
 
     # Send message directly
     cq my-feature "What is this error?"
-
-CLIENT COMMANDS (when connected as interactive client):
-    !h or !help         Show help
-    <message>           Queue message (auto-sends when ready)
-    Ctrl+V              Paste clipboard image as [Image #N]
-    !d <msg>            Send directly (bypass queue)
-    !e <index>          Edit queued message by index
-    !l                  Show queue
-    !c                  Clear queue
-    !f                  Force-send next queued message
-    !x                  Exit client
-
-OTHER COMMANDS:
-    cq-mo               Launch monitor GUI
-    make run-cleanup-sessions   Remove dead sessions
 
 For more info: https://github.com/nevo24/claudeq
 EOF
