@@ -566,8 +566,9 @@ def _close_iterm2(title_pattern: str) -> bool:
 def _navigate_warp(title_pattern: str) -> bool:
     """Navigate to a Warp window whose title contains the pattern.
 
-    Warp has no AppleScript dictionary, so we use the System Events
-    accessibility API to enumerate windows by title and raise the match.
+    Warp has no AppleScript dictionary, so we try System Events accessibility
+    first (requires Accessibility permission) to raise the exact window.
+    Falls back to simply activating Warp if permission is not granted.
     """
     escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
@@ -593,11 +594,14 @@ def _navigate_warp(title_pattern: str) -> bool:
             text=True,
             timeout=10,
         )
-        return result.returncode == 0 and 'true' in result.stdout
+        if result.returncode == 0 and 'true' in result.stdout:
+            return True
     except (subprocess.SubprocessError, OSError):
         pass
 
-    return False
+    # Fallback: just activate Warp (no Accessibility permission needed).
+    # Cannot target a specific window, but at least brings Warp to front.
+    return _activate_warp()
 
 
 def _close_warp(title_pattern: str) -> bool:
@@ -605,6 +609,7 @@ def _close_warp(title_pattern: str) -> bool:
 
     Uses System Events accessibility to find the matching window, raise it,
     then send Cmd+W to close the active tab/window.
+    Requires Accessibility permission; returns False silently if not granted.
     """
     escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
@@ -633,6 +638,30 @@ def _close_warp(title_pattern: str) -> bool:
             timeout=10,
         )
         return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _activate_warp() -> bool:
+    """Bring Warp to front without Accessibility permission.
+
+    Cannot target a specific window — just activates the application.
+    Used as a fallback when Accessibility permission is not granted.
+    """
+    script = '''
+    tell application "Warp" to activate
+    return true
+    '''
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
         pass
 
