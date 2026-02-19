@@ -856,13 +856,10 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
             time.sleep(0.1)  # small extra settle time
             break
 
-    # Copy command (with trailing newline) to clipboard and paste it.
-    # The trailing newline causes the shell to execute the command
-    # immediately on paste, avoiding a separate Enter keystroke that
-    # can be lost due to timing.
+    # Copy command to clipboard and paste it
     try:
         proc = subprocess.run(
-            ['pbcopy'], input=(command + '\n').encode('utf-8'), timeout=2,
+            ['pbcopy'], input=command.encode('utf-8'), timeout=2,
         )
         if proc.returncode != 0:
             return False
@@ -870,7 +867,11 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
         return False
 
     time.sleep(0.1)
-    _send_keystroke(9, cmd=True)  # keycode 9 = 'v' (Cmd+V paste)
+    _send_keystroke(9, cmd=True)   # keycode 9 = 'v' (Cmd+V paste)
+    time.sleep(0.15)
+    _send_keystroke(53)            # keycode 53 = Escape (dismiss Warp overlay)
+    time.sleep(0.15)
+    _send_keystroke(36)            # keycode 36 = Return
     return True
 
 
