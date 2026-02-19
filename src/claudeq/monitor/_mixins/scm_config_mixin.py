@@ -107,8 +107,9 @@ class SCMConfigMixin(_Base):
 
         # Env var not set
         if not token:
+            display_name = f'${var_name}' if var_name else '(not configured)'
             self._disable_env_var_provider(config, save_fn, provider_name,
-                                           f'Environment variable ${var_name} is not set.')
+                                           f'Environment variable {display_name} is not set.')
             return None
 
         # Env var set — validate the token actually works

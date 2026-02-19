@@ -563,30 +563,24 @@ def _close_iterm2(title_pattern: str) -> bool:
     return False
 
 
-def _navigate_warp(title_pattern: str) -> bool:
-    """Navigate to a Warp window whose title contains the pattern.
+def _run_applescript_in_process(script: str) -> bool:
+    """Run AppleScript in-process using NSAppleScript (PyObjC).
 
-    Warp has no AppleScript dictionary, so we try System Events accessibility
-    first (requires Accessibility permission) to raise the exact window.
-    Falls back to simply activating Warp if permission is not granted.
+    This uses the calling app's Accessibility permission rather than
+    requiring osascript to have its own permission.  Falls back to
+    osascript if PyObjC is not available.
     """
-    escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
-    script = f'''
-    tell application "System Events"
-        if not (exists process "Warp") then return false
-        tell process "Warp"
-            repeat with w in every window
-                if name of w contains "{escaped}" then
-                    perform action "AXRaise" of w
-                    tell application "Warp" to activate
-                    return true
-                end if
-            end repeat
-        end tell
-    end tell
-    return false
-    '''
+    try:
+        from Foundation import NSAppleScript
+        ns_script = NSAppleScript.alloc().initWithSource_(script)
+        result, error = ns_script.executeAndReturnError_(None)
+        if error:
+            return False
+        return result is not None and result.stringValue() == 'true'
+    except ImportError:
+        pass
 
+    # Fallback: use osascript subprocess
     try:
         result = subprocess.run(
             ['osascript', '-e', script],
@@ -594,10 +588,49 @@ def _navigate_warp(title_pattern: str) -> bool:
             text=True,
             timeout=10,
         )
-        if result.returncode == 0 and 'true' in result.stdout:
-            return True
+        return result.returncode == 0 and 'true' in result.stdout
     except (subprocess.SubprocessError, OSError):
         pass
+
+    return False
+
+
+def _get_warp_process_name() -> str:
+    """Get Warp's actual process name in System Events.
+
+    Warp's binary is 'stable' (at Warp.app/Contents/MacOS/stable),
+    so macOS sees the process as 'stable', not 'Warp'.
+    """
+    return 'stable'
+
+
+def _navigate_warp(title_pattern: str) -> bool:
+    """Navigate to a Warp window whose title contains the pattern.
+
+    Warp has no AppleScript dictionary, so we try System Events accessibility
+    first (requires Accessibility permission) to raise the exact window.
+    Falls back to simply activating Warp if permission is not granted.
+    """
+    proc = _get_warp_process_name()
+    escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
+    script = f'''
+    tell application "System Events"
+        if not (exists process "{proc}") then return "false"
+        tell process "{proc}"
+            repeat with w in every window
+                if name of w contains "{escaped}" then
+                    perform action "AXRaise" of w
+                    tell application "Warp" to activate
+                    return "true"
+                end if
+            end repeat
+        end tell
+    end tell
+    return "false"
+    '''
+
+    if _run_applescript_in_process(script):
+        return True
 
     # Fallback: just activate Warp (no Accessibility permission needed).
     # Cannot target a specific window, but at least brings Warp to front.
@@ -611,37 +644,27 @@ def _close_warp(title_pattern: str) -> bool:
     then send Cmd+W to close the active tab/window.
     Requires Accessibility permission; returns False silently if not granted.
     """
+    proc = _get_warp_process_name()
     escaped = title_pattern.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
     tell application "System Events"
-        if not (exists process "Warp") then return false
-        tell process "Warp"
+        if not (exists process "{proc}") then return "false"
+        tell process "{proc}"
             repeat with w in every window
                 if name of w contains "{escaped}" then
                     perform action "AXRaise" of w
                     tell application "Warp" to activate
                     delay 0.2
                     keystroke "w" using command down
-                    return true
+                    return "true"
                 end if
             end repeat
         end tell
     end tell
-    return false
+    return "false"
     '''
 
-    try:
-        result = subprocess.run(
-            ['osascript', '-e', script],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return result.returncode == 0 and 'true' in result.stdout
-    except (subprocess.SubprocessError, OSError):
-        pass
-
-    return False
+    return _run_applescript_in_process(script)
 
 
 def _activate_warp() -> bool:
