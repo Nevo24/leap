@@ -202,9 +202,9 @@ class MonitorWindow(
         self.table.setColumnWidth(self.COL_DELETE, 30)
         header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
 
-        # Last column: Fixed prevents draggable right-edge handle;
-        # programmatic setColumnWidth() still works in resizeEvent.
-        header.setSectionResizeMode(self.COL_MR_BRANCH, QHeaderView.Fixed)
+        # Last column: Stretch fills remaining space and has no right-edge
+        # handle to drag, while still expanding with the branch name.
+        header.setSectionResizeMode(self.COL_MR_BRANCH, QHeaderView.Stretch)
 
         # Restore saved column widths or distribute equally
         # Reset saved widths when column layout changes
