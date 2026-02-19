@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from claudeq.monitor.mr_tracking.config import save_pinned_sessions
@@ -122,6 +123,9 @@ class ServerLauncher:
         )
         worker.finished.connect(worker.deleteLater)
         worker.start()
+        # Safety net: if the server hasn't appeared after 15s (e.g. validation
+        # error in the terminal), clear the "Starting..." guard.
+        QTimer.singleShot(15_000, lambda: self._cancel_start(tag))
 
     def _find_available_project_dir(
         self, repos_dir: Path, project_name: str,
@@ -202,6 +206,11 @@ class ServerLauncher:
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
         self._server_force_align(tag, pinned, project_dir, branch)
 
+    def _cancel_start(self, tag: str) -> None:
+        """Clear the starting guard so the button resets."""
+        self._w._starting_tags.discard(tag)
+        self._w._update_table()
+
     def _on_server_cloned(
         self, tag: str, pinned: dict[str, Any], project_dir: Path,
         branch: str, clone_ok: list, clone_err: list,
@@ -209,6 +218,7 @@ class ServerLauncher:
         """Handle clone completion for server start."""
         if not clone_ok[0]:
             QMessageBox.warning(self._w, 'Clone Failed', clone_err[0] or 'Unknown error.')
+            self._cancel_start(tag)
             return
         self._w._show_status(f"Cloned. Checking out branch '{branch}'...")
         self._server_force_align(tag, pinned, project_dir, branch)
@@ -309,6 +319,8 @@ class ServerLauncher:
                 )
                 if reply == QMessageBox.Yes:
                     self._server_finish(tag, pinned, project_dir)
+                else:
+                    self._cancel_start(tag)
             else:
                 reply = QMessageBox.question(
                     self._w, 'Fetch Failed',
@@ -319,6 +331,8 @@ class ServerLauncher:
                 )
                 if reply == QMessageBox.Yes:
                     self._server_finish(tag, pinned, project_dir)
+                else:
+                    self._cancel_start(tag)
             return
 
         if align_err[0]:
@@ -327,6 +341,7 @@ class ServerLauncher:
                 f"Could not sync '{project_dir.name}' to origin/{branch}:\n"
                 f"{align_err[0]}",
             )
+            self._cancel_start(tag)
             return
 
         self._server_finish(tag, pinned, project_dir)
