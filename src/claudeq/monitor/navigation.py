@@ -792,11 +792,66 @@ def _activate_warp() -> bool:
 
 
 def _open_warp_terminal(command: str) -> bool:
-    """Open a new Warp window and run a command using Launch Configurations.
+    """Open a new Warp tab and run a command.
+
+    If Warp is already running and Accessibility is granted, opens a new
+    tab in the frontmost Warp window using Cmd+T and pastes the command.
+    Otherwise falls back to Launch Configurations (creates a new window).
+    """
+    pid = _get_app_pid(_WARP_BUNDLE_ID)
+    if pid is not None and _check_accessibility_trusted():
+        if _open_warp_tab_with_keystroke(pid, command):
+            return True
+
+    # Warp not running or keystroke approach failed — use Launch Configuration
+    return _open_warp_via_launch_config(command)
+
+
+def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
+    """Open a new tab in the frontmost Warp window and run a command.
+
+    Uses Cmd+T to create the tab and clipboard paste to enter the command.
+    Requires Accessibility permission.
+    """
+    try:
+        import AppKit
+        ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        if not ns_app:
+            return False
+        ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+    except ImportError:
+        return False
+
+    time.sleep(0.3)
+
+    # Cmd+T — new tab in the frontmost window
+    if not _send_keystroke(17, cmd=True):  # keycode 17 = 't'
+        return False
+    time.sleep(0.5)  # Wait for shell init in new tab
+
+    # Copy command to clipboard and paste it
+    try:
+        proc = subprocess.run(
+            ['pbcopy'], input=command.encode('utf-8'), timeout=2,
+        )
+        if proc.returncode != 0:
+            return False
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+    time.sleep(0.1)
+    _send_keystroke(9, cmd=True)  # keycode 9 = 'v' (Cmd+V paste)
+    time.sleep(0.1)
+    _send_keystroke(36)           # keycode 36 = Return
+    return True
+
+
+def _open_warp_via_launch_config(command: str) -> bool:
+    """Open a new Warp window via Launch Configuration.
 
     Creates a temporary YAML launch config in ~/.warp/launch_configurations/
-    and opens it via the warp:// URI scheme.  The temp file is removed after
-    Warp has had time to read it.
+    and opens it via the warp:// URI scheme.  Used when Warp is not running
+    or Accessibility is unavailable.
     """
     config_name = f"claudeq-{uuid.uuid4().hex[:8]}"
     config_dir = Path.home() / ".warp" / "launch_configurations"
