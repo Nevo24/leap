@@ -157,33 +157,6 @@ class ClaudeQServer:
             self.pty.sendline(str(option_num))
             return {'status': 'sent'}
 
-        elif msg_type == 'custom_answer':
-            # Select "Type something." in a question dialog, then enter
-            # the user's free-form text.  Parses the rendered prompt
-            # output to find which option number it is.
-            prompt = self.state.get_prompt_output()
-            type_option = None
-            for line in prompt.split('\n'):
-                m = re.match(r'\s*(\d+)\.\s+Type something', line)
-                if m:
-                    type_option = m.group(1)
-                    break
-            if not type_option:
-                return {
-                    'status': 'error',
-                    'error': 'no "Type something" option found',
-                }
-            self.state.on_send()
-            # Step 1: Send digit to highlight the option (no CR yet).
-            self.pty.send(type_option)
-            time.sleep(0.3)
-            # Step 2: Confirm selection — opens the text input field.
-            self.pty.send('\r')
-            time.sleep(1.5)
-            # Step 3: Type the answer and submit.
-            self.pty.sendline(message)
-            return {'status': 'sent'}
-
         elif msg_type == 'status':
             state = self.state.get_state(self.pty.is_alive())
             return {

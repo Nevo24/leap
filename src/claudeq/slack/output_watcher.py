@@ -215,7 +215,7 @@ class OutputWatcher:
                 cleaned = self._strip_meta_options(prompt_output)
                 return (
                     f'{header}\n```\n{cleaned}\n```\n'
-                    '_Reply with a number or type your answer._'
+                    '_Reply with a number to select an option._'
                 )
             return (
                 f'{header}\n'
