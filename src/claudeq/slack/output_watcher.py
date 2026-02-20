@@ -75,6 +75,11 @@ class OutputWatcher:
             if not session_data.get('enabled', False):
                 continue
 
+            # Auto-create thread for newly enabled sessions
+            if not session_data.get('thread_ts'):
+                self._send_greeting(tag)
+                continue
+
             response_file = SOCKET_DIR / f"{tag}.last_response"
             if not response_file.exists():
                 continue
@@ -90,6 +95,29 @@ class OutputWatcher:
 
             self._last_seen_ts[tag] = ts
             self._post_output(tag, session_data, payload)
+
+    def _send_greeting(self, tag: str) -> None:
+        """Post a greeting message to create the Slack thread for a session.
+
+        Called once when a session is first enabled. The message is not sent
+        to the CQ server — it only creates the thread so the user can
+        reply from Slack immediately.
+
+        Args:
+            tag: Session tag.
+        """
+        text = (
+            f"*[{tag}]*\n"
+            ":large_green_circle: *Slack tracking enabled.*\n"
+            "Claude's output will appear in this thread.\n"
+            "Reply here to send messages to this session."
+        )
+        result_ts = self._post_fn(self._channel_id, text, None)
+        if result_ts:
+            sessions = load_slack_sessions()
+            if tag in sessions:
+                sessions[tag]['thread_ts'] = result_ts
+                save_slack_sessions(sessions)
 
     def _post_output(
         self,
