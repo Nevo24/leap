@@ -34,7 +34,7 @@ cat > "$TMPFILE"
 
 # Extract last assistant message from transcript and write signal file
 python3 -c "
-import json, sys
+import json, sys, os
 
 state = sys.argv[1]
 signal_file = sys.argv[2]
@@ -51,27 +51,46 @@ try:
     if notification_msg:
         signal['notification_message'] = notification_msg
 
+    # For Notification hooks (needs_permission/has_question), write the
+    # signal file immediately so the CQ server detects the state change
+    # without waiting for the slow transcript read.  The preceding Stop
+    # hook already captured the assistant response text.
+    if state != 'idle':
+        with open(signal_file, 'w') as f:
+            json.dump(signal, f)
+        # Still read transcript in the background to update the file,
+        # but don't block on it.
+
     transcript_path = hook_data.get('transcript_path', '')
 
     if transcript_path:
-        # Read the transcript JSONL and find the last assistant message
+        # Read the transcript from the END to find the last assistant
+        # message efficiently.  Seek backwards in chunks instead of
+        # reading the entire file from the start.
         last_msg = ''
-        with open(transcript_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get('type') == 'assistant':
-                        parts = []
-                        for c in entry.get('message', {}).get('content', []):
-                            if c.get('type') == 'text':
-                                parts.append(c['text'])
-                        if parts:
-                            last_msg = '\n'.join(parts)
-                except (json.JSONDecodeError, KeyError):
-                    continue
+        file_size = os.path.getsize(transcript_path)
+        chunk_size = 32768  # 32 KB — covers most assistant messages
+        with open(transcript_path, 'rb') as f:
+            start = max(0, file_size - chunk_size)
+            f.seek(start)
+            tail = f.read()
+        # Parse lines from the tail chunk
+        for raw_line in reversed(tail.split(b'\n')):
+            raw_line = raw_line.strip()
+            if not raw_line:
+                continue
+            try:
+                entry = json.loads(raw_line)
+                if entry.get('type') == 'assistant':
+                    parts = []
+                    for c in entry.get('message', {}).get('content', []):
+                        if c.get('type') == 'text':
+                            parts.append(c['text'])
+                    if parts:
+                        last_msg = '\n'.join(parts)
+                        break
+            except (json.JSONDecodeError, KeyError, ValueError):
+                continue
         if last_msg:
             signal['last_assistant_message'] = last_msg
 except Exception:

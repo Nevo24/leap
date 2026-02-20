@@ -7,6 +7,7 @@ Slack-enabled CQ sessions every 2 seconds.
 
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Slack message limit is ~4000 chars for best rendering
 _MAX_MESSAGE_LEN: int = 3900
-_POLL_INTERVAL: float = 2.0
+_POLL_INTERVAL: float = 0.5
 
 
 class OutputWatcher:
@@ -206,28 +207,49 @@ class OutputWatcher:
             return ':speech_balloon: *Claude is waiting for your input*'
         elif state == 'idle' and queue_has_next:
             return ':arrow_forward: _Auto-sending next message..._'
-        elif state == 'needs_permission':
-            header = ':warning: *Claude needs permission.*'
+        elif state in ('needs_permission', 'has_question'):
+            header = ':warning: *Claude Code needs your attention*'
             if notification_message:
                 header = f':warning: *{notification_message}*'
             if prompt_output:
-                return f'{header}\n```\n{prompt_output}\n```'
+                cleaned = self._strip_meta_options(prompt_output)
+                return (
+                    f'{header}\n```\n{cleaned}\n```\n'
+                    '_Reply with a number or type your answer._'
+                )
             return (
                 f'{header}\n'
                 'Reply with a number to select an option, '
                 'or check the terminal for details.'
             )
-        elif state == 'has_question':
-            header = ':question: *Claude is asking a question.*'
-            if notification_message:
-                header = f':question: *{notification_message}*'
-            if prompt_output:
-                return f'{header}\n```\n{prompt_output}\n```'
-            return (
-                f'{header}\n'
-                'Reply with your answer.'
-            )
         return ''
+
+    @staticmethod
+    def _strip_meta_options(prompt: str) -> str:
+        """Strip TUI meta-options from rendered prompt output.
+
+        Removes "Type something.", the separator line, "Chat about this",
+        and the "Enter to select" help line — these options don't work
+        via Slack's text-only interface.
+        """
+        lines: list[str] = []
+        for line in prompt.split('\n'):
+            s = line.strip()
+            if s and all(c in '─━' for c in s):
+                continue
+            if 'Chat about this' in s:
+                continue
+            if re.match(r'\d+\.\s+Type something', s):
+                continue
+            if s.startswith('Enter to select') or s.startswith('Esc to cancel'):
+                continue
+            if s.startswith('Tab/Arrow') or s.startswith('Tab to amend'):
+                continue
+            lines.append(line)
+        # Remove trailing blank lines left by stripping
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return '\n'.join(lines)
 
     @staticmethod
     def _split_output(output: str, footer: str) -> list[str]:

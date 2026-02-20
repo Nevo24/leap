@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+import pyte
+
 from claudeq.utils.constants import OUTPUT_SILENCE_TIMEOUT, STORAGE_DIR
 
 _log = logging.getLogger('cq.state')
@@ -356,12 +358,12 @@ class ClaudeStateTracker:
         # renderer splits "Interrupted" across chunk boundaries.
         if self._state == 'running':
             # Check the raw chunk BEFORE buffer trim — a large TUI redraw
-            # chunk can exceed 512 bytes with "Interrupted" near the start,
-            # causing it to be trimmed out of the rolling buffer.
+            # chunk can exceed the buffer cap with "Interrupted" near the
+            # start, causing it to be trimmed out of the rolling buffer.
             has_interrupted = b'Interrupted' in data
             self._output_buf.extend(data)
-            if len(self._output_buf) > 512:
-                self._output_buf = self._output_buf[-512:]
+            if len(self._output_buf) > 8192:
+                self._output_buf = self._output_buf[-8192:]
             if not has_interrupted:
                 has_interrupted = b'Interrupted' in self._output_buf
             # Log every chunk while running to diagnose detection failures
@@ -379,6 +381,27 @@ class ClaudeStateTracker:
                 with self._lock:
                     self._state = 'has_question'
                     self._waiting_since = self._clock()
+            else:
+                # Detect permission/question dialogs from PTY output.
+                # Claude Code's Notification hook fires ~15s late, but
+                # the dialog content is in the PTY output immediately.
+                # Check the compact (ANSI-stripped, space-removed) buffer
+                # for "Enter to select" + "Esc to cancel" — both present
+                # in all Ink option selector dialogs.
+                compact = self._ANSI_RE.sub(
+                    b'', bytes(self._output_buf),
+                ).replace(b' ', b'')
+                if b'Entertoselect' in compact and b'Esctocancel' in compact:
+                    _log.debug(
+                        'ON_OUTPUT running→needs_permission '
+                        '(dialog detected from PTY output)',
+                    )
+                    self._last_prompt_buf = bytes(self._output_buf)
+                    self._output_buf.clear()
+                    self._idle_output_acc = 0
+                    with self._lock:
+                        self._state = 'needs_permission'
+                        self._waiting_since = self._clock()
 
         # Detect resume after permission/question — new PTY output means
         # the user answered and Claude is processing again.  Delete the
@@ -450,11 +473,9 @@ class ClaudeStateTracker:
     def _render_screen(raw: bytes, rows: int = 50, cols: int = 200) -> str:
         """Render cursor-positioned PTY output into readable text.
 
-        Ink (React-based TUI) renders text using CSI cursor-positioning
-        sequences rather than simple newlines.  Stripping ANSI merges
-        words together.  This mini virtual terminal processes CUP, cursor
-        movement, erase, and printable text into a 2-D character grid,
-        then extracts readable lines.
+        Uses the ``pyte`` terminal emulator library to process raw PTY
+        bytes (ANSI/CSI escape sequences, cursor positioning, erases,
+        etc.) into a virtual screen, then extracts readable lines.
 
         Args:
             raw: Raw PTY output bytes (may contain ANSI/CSI sequences).
@@ -464,127 +485,25 @@ class ClaudeStateTracker:
         Returns:
             Cleaned multi-line text with proper spacing.
         """
+        screen = pyte.Screen(cols, rows)
+        stream = pyte.Stream(screen)
         text = raw.decode('utf-8', errors='replace')
+        stream.feed(text)
 
-        # Strip a leading partial CSI sequence left by buffer truncation.
-        # E.g. buffer trimmed mid-SGR: ";2;153;153;153m..." — the ESC [
-        # prefix was lost, so the params + final byte appear as text.
-        # Require at least one ';' to distinguish from regular text.
-        _csi_tail = re.match(r'[0-9;?]*[;?][0-9;?]*[A-Za-z]', text)
-        if _csi_tail:
-            text = text[_csi_tail.end():]
+        # Box-drawing characters used by Ink's TUI borders.
+        _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')
 
-        grid: list[list[str]] = [[' '] * cols for _ in range(rows)]
-        cr, cc = 0, 0  # cursor row, col
-
-        i = 0
-        n = len(text)
-        while i < n:
-            ch = text[i]
-            if ch == '\x1b' and i + 1 < n:
-                nch = text[i + 1]
-                if nch == '[':
-                    # CSI sequence: ESC [ params final_byte
-                    j = i + 2
-                    while j < n and (text[j].isdigit() or text[j] in ';?'):
-                        j += 1
-                    if j >= n:
-                        break
-                    params_s = text[i + 2:j]
-                    final = text[j]
-                    # Private-mode sequences (CSI ? ...) like ?25l
-                    # (hide cursor), ?2004h (bracketed paste) — skip.
-                    if params_s.startswith('?'):
-                        i = j + 1
-                        continue
-                    parts = (
-                        [int(p) if p else 0 for p in params_s.split(';')]
-                        if params_s else []
-                    )
-                    if final in ('H', 'f'):  # CUP
-                        cr = max(0, min(
-                            (parts[0] if parts else 1) - 1, rows - 1,
-                        ))
-                        cc = max(0, min(
-                            (parts[1] if len(parts) > 1 else 1) - 1,
-                            cols - 1,
-                        ))
-                    elif final == 'A':
-                        cr = max(0, cr - (parts[0] if parts else 1))
-                    elif final == 'B':
-                        cr = min(rows - 1, cr + (parts[0] if parts else 1))
-                    elif final == 'C':
-                        cc = min(cols - 1, cc + (parts[0] if parts else 1))
-                    elif final == 'D':
-                        cc = max(0, cc - (parts[0] if parts else 1))
-                    elif final == 'G':  # CHA
-                        cc = max(0, min(
-                            (parts[0] if parts else 1) - 1, cols - 1,
-                        ))
-                    elif final == 'K':  # EL
-                        mode = parts[0] if parts else 0
-                        if mode == 0:
-                            for c in range(cc, cols):
-                                grid[cr][c] = ' '
-                        elif mode == 1:
-                            for c in range(cc + 1):
-                                grid[cr][c] = ' '
-                        elif mode == 2:
-                            grid[cr] = [' '] * cols
-                    elif final == 'J':  # ED
-                        mode = parts[0] if parts else 0
-                        if mode == 0:
-                            for c in range(cc, cols):
-                                grid[cr][c] = ' '
-                            for r in range(cr + 1, rows):
-                                grid[r] = [' '] * cols
-                        elif mode == 1:
-                            for r in range(cr):
-                                grid[r] = [' '] * cols
-                            for c in range(cc + 1):
-                                grid[cr][c] = ' '
-                        elif mode in (2, 3):
-                            grid = [[' '] * cols for _ in range(rows)]
-                    # m (SGR), l, h, etc. — style/mode sequences, skip
-                    i = j + 1
-                    continue
-                elif nch == ']':
-                    # OSC: ESC ] ... BEL or ST
-                    j = i + 2
-                    while j < n and text[j] != '\x07':
-                        if (
-                            text[j] == '\x1b'
-                            and j + 1 < n
-                            and text[j + 1] == '\\'
-                        ):
-                            j += 1
-                            break
-                        j += 1
-                    i = j + 1
-                    continue
-                else:
-                    i += 2
-                    continue
-            elif ch == '\n':
-                cr = min(rows - 1, cr + 1)
-                cc = 0
-            elif ch == '\r':
-                cc = 0
-            elif ch == '\x08':
-                cc = max(0, cc - 1)
-            elif ord(ch) >= 0x20:
-                if cr < rows and cc < cols:
-                    grid[cr][cc] = ch
-                    cc += 1
-                    if cc >= cols:
-                        cc = 0
-                        cr = min(rows - 1, cr + 1)
-            i += 1
-
-        lines = [''.join(r).rstrip() for r in grid]
-        while lines and not lines[0]:
+        lines = [line.rstrip() for line in screen.display]
+        # Strip leading/trailing blank or purely decorative border lines.
+        while lines and (
+            not lines[0].strip()
+            or all(c in _box_chars | {' '} for c in lines[0])
+        ):
             lines.pop(0)
-        while lines and not lines[-1]:
+        while lines and (
+            not lines[-1].strip()
+            or all(c in _box_chars | {' '} for c in lines[-1])
+        ):
             lines.pop()
         return '\n'.join(lines)
 

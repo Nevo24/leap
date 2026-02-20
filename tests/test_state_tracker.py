@@ -297,14 +297,14 @@ class TestInterruptedDetection:
         tracker.on_output(b'rupted more text')
         assert tracker.current_state == 'has_question'
 
-    def test_output_buffer_capped_at_512(self, tmp_path: Path) -> None:
+    def test_output_buffer_capped_at_8192(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # Fill buffer with >512 bytes of non-matching data
-        tracker.on_output(b'X' * 600)
-        assert len(tracker._output_buf) <= 512
+        # Fill buffer with >8192 bytes of non-matching data
+        tracker.on_output(b'X' * 10000)
+        assert len(tracker._output_buf) <= 8192
 
     def test_interrupted_in_large_chunk_after_buffer_trim(
         self, tmp_path: Path,
@@ -751,6 +751,96 @@ class TestSignalFromIdle:
 # ---------------------------------------------------------------------------
 # cleanup
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# PTY dialog detection (running state)
+# ---------------------------------------------------------------------------
+
+class TestPTYDialogDetection:
+    """Detect permission/question dialogs from PTY output patterns."""
+
+    def test_dialog_detected_from_pty_output(self, tmp_path: Path) -> None:
+        """'Enter to select' + 'Esc to cancel' in running → needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate Ink TUI dialog output (plain text, no ANSI)
+        tracker.on_output(
+            b'Allow Claude to use Bash?\n'
+            b'1. Allow once\n'
+            b'2. Allow always\n'
+            b'3. Deny\n'
+            b'Enter to select \xc2\xb7 Esc to cancel\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+
+    def test_dialog_detected_with_ansi_sequences(self, tmp_path: Path) -> None:
+        """Dialog detection works with cursor-positioned Ink TUI output."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate Ink TUI with ANSI cursor positioning between words
+        tracker.on_output(
+            b'\x1b[3;1H Allow \x1b[3;8H once\n'
+            b'\x1b[5;1H Enter \x1b[5;8H to \x1b[5;12H select\n'
+            b'\x1b[6;1H Esc \x1b[6;6H to \x1b[6;10H cancel\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+
+    def test_dialog_seeds_prompt_buf(self, tmp_path: Path) -> None:
+        """Dialog detection copies output_buf to _last_prompt_buf."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(
+            b'Question here\n'
+            b'1. Option A\n'
+            b'Enter to select \xc2\xb7 Esc to cancel\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+        assert tracker._last_prompt_buf != b''
+        assert len(tracker._output_buf) == 0  # cleared after detection
+
+    def test_no_false_positive_with_only_enter_to_select(
+        self, tmp_path: Path,
+    ) -> None:
+        """Require BOTH patterns to avoid false positives."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'Enter to select something from the list')
+        assert tracker.current_state == 'running'
+
+    def test_dialog_split_across_chunks(self, tmp_path: Path) -> None:
+        """Dialog detected when patterns arrive in separate chunks."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'1. Option A\nEnter to select\n')
+        assert tracker.current_state == 'running'  # only one pattern
+        t[0] = 1.1
+        tracker.on_output(b'Esc to cancel\n')
+        assert tracker.current_state == 'needs_permission'
+
+    def test_interrupted_takes_priority_over_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        """If 'Interrupted' is in the same chunk, has_question wins."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(
+            b'Interrupted\n'
+            b'Enter to select \xc2\xb7 Esc to cancel\n'
+        )
+        assert tracker.current_state == 'has_question'
+
 
 class TestCleanup:
     def test_cleanup_deletes_signal_file(self, tmp_path: Path) -> None:

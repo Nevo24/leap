@@ -18,6 +18,7 @@ rich = "^14.3.2"
 pyobjc-framework-cocoa = "^12.1"
 pyobjc-framework-applicationservices = "^12.1"
 pyobjc-framework-quartz = "^12.1"
+pyte = "^0.8.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

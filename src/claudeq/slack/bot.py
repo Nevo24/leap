@@ -129,6 +129,13 @@ class SlackBot:
             self._react(event, 'inbox_tray')
         elif result == 'sent':
             self._react(event, 'zap')
+        elif result == 'type_text_instead':
+            self._post_message(
+                self._dm_channel_id,
+                ':pencil2: That option is "Type something." — '
+                'reply with your answer as text instead.',
+                thread_ts,
+            )
         elif result == 'invalid_permission':
             self._post_message(
                 self._dm_channel_id,

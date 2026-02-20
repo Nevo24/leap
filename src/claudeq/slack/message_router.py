@@ -47,26 +47,35 @@ class MessageRouter:
 
         claude_state = status.get('claude_state', 'idle')
 
-        if claude_state == 'needs_permission':
-            # Validate: only numbers (option selection) accepted
+        if claude_state in ('needs_permission', 'has_question'):
             normalized = text.strip()
-            if not normalized.isdigit():
+            if normalized.isdigit():
+                # Numeric answer — select the numbered option.
+                response = send_socket_request(
+                    socket_path,
+                    {'type': 'select_option', 'message': normalized},
+                )
+                # If the option was "Type something", server rejects it.
+                # Tell the user to type their answer as text.
+                if (
+                    response
+                    and response.get('status') == 'error'
+                    and 'type your answer' in response.get('error', '')
+                ):
+                    return 'type_text_instead'
+            else:
+                # Free-form text — select "Type something." option
+                # and enter the user's text.  Falls back to error if
+                # the dialog has no "Type something." option (e.g.
+                # a real permission prompt).
+                response = send_socket_request(
+                    socket_path,
+                    {'type': 'custom_answer', 'message': text},
+                )
+            if response and response.get('status') == 'sent':
+                return 'sent'
+            if response and response.get('status') == 'error':
                 return 'invalid_permission'
-            # Send directly to PTY (bypass queue)
-            response = send_socket_request(
-                socket_path, {'type': 'direct', 'message': normalized},
-            )
-            if response and response.get('status') == 'sent':
-                return 'sent'
-            return None
-
-        if claude_state == 'has_question':
-            # Free-form answer — send directly to PTY (bypass queue)
-            response = send_socket_request(
-                socket_path, {'type': 'direct', 'message': text},
-            )
-            if response and response.get('status') == 'sent':
-                return 'sent'
             return None
         else:
             # Queue the message
