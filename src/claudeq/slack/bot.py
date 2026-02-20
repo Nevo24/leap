@@ -132,7 +132,8 @@ class SlackBot:
         elif result == 'invalid_permission':
             self._post_message(
                 self._dm_channel_id,
-                ':no_entry: Reply `y` to approve or `n` to deny.',
+                ':no_entry: Reply with a number to select an option '
+                '(e.g. `1`, `2`, `3`).',
                 thread_ts,
             )
         elif result == 'offline':

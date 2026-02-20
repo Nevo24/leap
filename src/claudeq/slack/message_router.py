@@ -48,9 +48,9 @@ class MessageRouter:
         claude_state = status.get('claude_state', 'idle')
 
         if claude_state == 'needs_permission':
-            # Validate: only y/n accepted for permission prompts
-            normalized = text.strip().lower()
-            if normalized not in ('y', 'yes', 'n', 'no'):
+            # Validate: only numbers (option selection) accepted
+            normalized = text.strip()
+            if not normalized.isdigit():
                 return 'invalid_permission'
             # Send directly to PTY (bypass queue)
             response = send_socket_request(

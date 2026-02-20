@@ -64,8 +64,10 @@ class OutputCapture:
         if new_state not in ('idle', 'needs_permission', 'has_question'):
             return
 
-        # Read the response text from the signal file
-        output = self._read_last_message() or ''
+        # Read the response text and notification message from the signal file
+        signal_data = self._read_signal_data()
+        output = signal_data.get('output', '')
+        notification_message = signal_data.get('notification_message', '')
 
         # For idle, skip if no meaningful output
         if new_state == 'idle' and not output:
@@ -77,6 +79,7 @@ class OutputCapture:
             'tag': self._tag,
             'state': new_state,
             'queue_has_next': queue_has_next,
+            'notification_message': notification_message,
         }
         try:
             atomic_json_write(self._response_file, payload)
@@ -107,20 +110,27 @@ class OutputCapture:
 
     # -- Signal file reading -------------------------------------------------
 
-    def _read_last_message(self) -> Optional[str]:
-        """Read last_assistant_message from the signal file.
+    def _read_signal_data(self) -> dict[str, str]:
+        """Read assistant message and notification message from the signal file.
 
         Returns:
-            The assistant's response text, or None if unavailable.
+            Dict with ``output`` (assistant text) and
+            ``notification_message`` (hook notification text) keys.
         """
+        result: dict[str, str] = {'output': '', 'notification_message': ''}
         try:
             if not self._signal_file.exists():
-                return None
+                return result
             data = json.loads(self._signal_file.read_text())
             msg = data.get('last_assistant_message', '')
-            return msg.strip() if msg else None
+            if msg:
+                result['output'] = msg.strip()
+            notif = data.get('notification_message', '')
+            if notif:
+                result['notification_message'] = notif.strip()
         except (json.JSONDecodeError, OSError):
-            return None
+            pass
+        return result
 
     # -- Persistence ---------------------------------------------------------
 

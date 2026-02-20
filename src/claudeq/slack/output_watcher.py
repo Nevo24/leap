@@ -138,8 +138,10 @@ class OutputWatcher:
         state = payload.get('state', 'idle')
         queue_has_next = payload.get('queue_has_next', False)
 
+        notification_message = payload.get('notification_message', '')
+
         # Build footer based on state
-        footer = self._build_footer(state, queue_has_next)
+        footer = self._build_footer(state, queue_has_next, notification_message)
 
         thread_ts = session_data.get('thread_ts')
 
@@ -177,12 +179,19 @@ class OutputWatcher:
                     sessions[tag]['thread_ts'] = thread_ts
                     save_slack_sessions(sessions)
 
-    def _build_footer(self, state: str, queue_has_next: bool) -> str:
+    def _build_footer(
+        self,
+        state: str,
+        queue_has_next: bool,
+        notification_message: str = '',
+    ) -> str:
         """Build the footer text based on Claude's state.
 
         Args:
             state: Claude's current state.
             queue_has_next: Whether auto-send will send the next message.
+            notification_message: Notification text from the hook
+                (e.g. the permission question).
 
         Returns:
             Footer text string.
@@ -192,13 +201,20 @@ class OutputWatcher:
         elif state == 'idle' and queue_has_next:
             return ':arrow_forward: _Auto-sending next message..._'
         elif state == 'needs_permission':
+            header = ':warning: *Claude needs permission.*'
+            if notification_message:
+                header = f':warning: *{notification_message}*'
             return (
-                ':warning: *Claude needs permission.*\n'
-                'Reply `y` to approve or `n` to deny.'
+                f'{header}\n'
+                'Reply with a number to select an option, '
+                'or check the terminal for details.'
             )
         elif state == 'has_question':
+            header = ':question: *Claude is asking a question.*'
+            if notification_message:
+                header = f':question: *{notification_message}*'
             return (
-                ':question: *Claude is asking a question.*\n'
+                f'{header}\n'
                 'Reply with your answer.'
             )
         return ''

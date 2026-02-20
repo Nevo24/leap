@@ -46,6 +46,11 @@ try:
     with open(tmp_file) as f:
         hook_data = json.load(f)
 
+    # Capture the notification message (permission question / dialog text)
+    notification_msg = hook_data.get('message', '')
+    if notification_msg:
+        signal['notification_message'] = notification_msg
+
     transcript_path = hook_data.get('transcript_path', '')
 
     if transcript_path:
