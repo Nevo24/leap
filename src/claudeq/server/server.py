@@ -173,18 +173,18 @@ class ClaudeQServer:
                     'error': 'no "Type something" option found',
                 }
             self.state.on_send()
-            # Step 1: Send digit to highlight the option (no CR yet).
+            # Step 1: Send digit to navigate to "Type something."
             self.pty.send(type_option)
             time.sleep(0.5)
-            # Step 2: Confirm selection — opens the text input field.
-            self.pty.send('\r')
-            time.sleep(2.0)
-            # Step 3: Type the answer character-by-character (Ink raw
-            # mode may drop bulk writes), then submit.
+            # Step 2: Start typing directly — Ink switches to text
+            # input mode when you type on the "Type something." option
+            # (no Enter needed to "open" it).  Type char-by-char for
+            # Ink raw-mode compatibility.
             for ch in message:
                 self.pty.send(ch)
                 time.sleep(0.02)
             time.sleep(0.1)
+            # Step 3: Submit the text.
             self.pty.send('\r')
             return {'status': 'sent'}
 
