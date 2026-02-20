@@ -25,7 +25,7 @@ from claudeq.server.socket_handler import SocketHandler
 from claudeq.server.queue_manager import QueueManager
 from claudeq.server.metadata import SessionMetadata
 from claudeq.server.state_tracker import ClaudeStateTracker
-from claudeq.server.output_capture import OutputCapture
+from claudeq.slack.output_capture import OutputCapture
 from claudeq.server.validation import validate_pinned_session
 
 

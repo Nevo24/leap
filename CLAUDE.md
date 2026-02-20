@@ -45,8 +45,7 @@ src/
     │   ├── pty_handler.py       # Claude CLI PTY (pexpect)
     │   ├── socket_handler.py    # Unix socket server
     │   ├── queue_manager.py     # Message queue persistence
-    │   ├── metadata.py          # Session metadata (IDE, project, branch)
-    │   └── output_capture.py    # Slack output capture (reads hook response, writes .last_response)
+    │   └── metadata.py          # Session metadata (IDE, project, branch)
     │
     ├── client/                  # Interactive Client
     │   ├── client.py            # ClaudeQClient - main class
@@ -99,6 +98,7 @@ src/
     │   ├── __init__.py          # Package init
     │   ├── bot.py               # SlackBot main class (Socket Mode)
     │   ├── config.py            # Slack config + session persistence
+    │   ├── output_capture.py    # Capture hook response, write .last_response for Slack bot
     │   ├── output_watcher.py    # Poll .last_response files → post to Slack
     │   └── message_router.py    # Route Slack messages → CQ sessions
     │
@@ -152,7 +152,7 @@ assets/
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `is_valid_tag()` | `utils/constants.py` | Shared tag validation (alphanumeric + hyphens + underscores) |
 | `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
-| `OutputCapture` | `server/output_capture.py` | Read hook response from signal file, write .last_response for Slack |
+| `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response for Slack |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputWatcher` | `slack/output_watcher.py` | Poll .last_response files → post to Slack threads |
 | `MessageRouter` | `slack/message_router.py` | Route Slack thread replies → CQ sessions |
