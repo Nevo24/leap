@@ -92,6 +92,10 @@ class ClaudeStateTracker:
         # and Claude starts up, resume detection goes to 'idle' instead
         # of 'running' because there's no pending request to process.
         self._trust_dialog_phase: bool = False
+        # Snapshot of _output_buf captured just before clearing on
+        # needs_permission / has_question transitions.  Used by Slack
+        # integration to show the actual prompt text + numbered options.
+        self._last_prompt_buf: bytes = b''
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
@@ -156,6 +160,10 @@ class ClaudeStateTracker:
                     else:
                         self._waiting_since = None
                 self._idle_output_acc = 0
+                if new_state in ('needs_permission', 'has_question'):
+                    self._last_prompt_buf = bytes(self._output_buf)
+                else:
+                    self._last_prompt_buf = b''
                 self._output_buf.clear()
                 if new_state == 'idle':
                     self._idle_since = self._clock()
@@ -233,6 +241,7 @@ class ClaudeStateTracker:
             self._waiting_since = None
         self._output_buf.clear()
         self._idle_output_acc = 0
+        self._last_prompt_buf = b''
 
         try:
             self._signal_file.unlink(missing_ok=True)
@@ -264,8 +273,8 @@ class ClaudeStateTracker:
             # Buffer all idle output for pattern detection (trust dialog
             # at startup, Interrupted during Escape race).
             self._output_buf.extend(data)
-            if len(self._output_buf) > 2048:
-                self._output_buf = self._output_buf[-2048:]
+            if len(self._output_buf) > 16384:
+                self._output_buf = self._output_buf[-16384:]
 
             # Detect startup prompts (workspace trust dialog) from PTY
             # output.  These appear before Claude Code's hooks are active,
@@ -381,6 +390,11 @@ class ClaudeStateTracker:
         # TUI status bar rendering from falsely triggering resume.
         elif self._state in ('needs_permission', 'has_question'):
             self._output_buf.clear()
+            # Continue accumulating prompt output for Slack rendering.
+            # The dialog may still be rendering after the state transition.
+            self._last_prompt_buf += data
+            if len(self._last_prompt_buf) > 16384:
+                self._last_prompt_buf = self._last_prompt_buf[-16384:]
             ws = self._waiting_since
             if (
                 ws is not None
@@ -406,6 +420,7 @@ class ClaudeStateTracker:
                             self._waiting_since = None
                         self._idle_since = self._clock()
                         self._idle_output_acc = 0
+                        self._last_prompt_buf = b''
                         return
 
                     _log.debug(
@@ -415,10 +430,163 @@ class ClaudeStateTracker:
                     with self._lock:
                         self._state = 'running'
                         self._waiting_since = None
+                    self._last_prompt_buf = b''
                     try:
                         self._signal_file.unlink(missing_ok=True)
                     except OSError:
                         pass
+
+    def get_prompt_output(self) -> str:
+        """Return PTY output from the last permission/question prompt.
+
+        Processes the raw PTY bytes through a minimal virtual terminal
+        to properly handle Ink TUI cursor-positioning layout.
+        """
+        if not self._last_prompt_buf:
+            return ''
+        return self._render_screen(self._last_prompt_buf)
+
+    @staticmethod
+    def _render_screen(raw: bytes, rows: int = 50, cols: int = 200) -> str:
+        """Render cursor-positioned PTY output into readable text.
+
+        Ink (React-based TUI) renders text using CSI cursor-positioning
+        sequences rather than simple newlines.  Stripping ANSI merges
+        words together.  This mini virtual terminal processes CUP, cursor
+        movement, erase, and printable text into a 2-D character grid,
+        then extracts readable lines.
+
+        Args:
+            raw: Raw PTY output bytes (may contain ANSI/CSI sequences).
+            rows: Virtual screen height.
+            cols: Virtual screen width.
+
+        Returns:
+            Cleaned multi-line text with proper spacing.
+        """
+        text = raw.decode('utf-8', errors='replace')
+
+        # Strip a leading partial CSI sequence left by buffer truncation.
+        # E.g. buffer trimmed mid-SGR: ";2;153;153;153m..." — the ESC [
+        # prefix was lost, so the params + final byte appear as text.
+        # Require at least one ';' to distinguish from regular text.
+        _csi_tail = re.match(r'[0-9;?]*[;?][0-9;?]*[A-Za-z]', text)
+        if _csi_tail:
+            text = text[_csi_tail.end():]
+
+        grid: list[list[str]] = [[' '] * cols for _ in range(rows)]
+        cr, cc = 0, 0  # cursor row, col
+
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+            if ch == '\x1b' and i + 1 < n:
+                nch = text[i + 1]
+                if nch == '[':
+                    # CSI sequence: ESC [ params final_byte
+                    j = i + 2
+                    while j < n and (text[j].isdigit() or text[j] in ';?'):
+                        j += 1
+                    if j >= n:
+                        break
+                    params_s = text[i + 2:j]
+                    final = text[j]
+                    # Private-mode sequences (CSI ? ...) like ?25l
+                    # (hide cursor), ?2004h (bracketed paste) — skip.
+                    if params_s.startswith('?'):
+                        i = j + 1
+                        continue
+                    parts = (
+                        [int(p) if p else 0 for p in params_s.split(';')]
+                        if params_s else []
+                    )
+                    if final in ('H', 'f'):  # CUP
+                        cr = max(0, min(
+                            (parts[0] if parts else 1) - 1, rows - 1,
+                        ))
+                        cc = max(0, min(
+                            (parts[1] if len(parts) > 1 else 1) - 1,
+                            cols - 1,
+                        ))
+                    elif final == 'A':
+                        cr = max(0, cr - (parts[0] if parts else 1))
+                    elif final == 'B':
+                        cr = min(rows - 1, cr + (parts[0] if parts else 1))
+                    elif final == 'C':
+                        cc = min(cols - 1, cc + (parts[0] if parts else 1))
+                    elif final == 'D':
+                        cc = max(0, cc - (parts[0] if parts else 1))
+                    elif final == 'G':  # CHA
+                        cc = max(0, min(
+                            (parts[0] if parts else 1) - 1, cols - 1,
+                        ))
+                    elif final == 'K':  # EL
+                        mode = parts[0] if parts else 0
+                        if mode == 0:
+                            for c in range(cc, cols):
+                                grid[cr][c] = ' '
+                        elif mode == 1:
+                            for c in range(cc + 1):
+                                grid[cr][c] = ' '
+                        elif mode == 2:
+                            grid[cr] = [' '] * cols
+                    elif final == 'J':  # ED
+                        mode = parts[0] if parts else 0
+                        if mode == 0:
+                            for c in range(cc, cols):
+                                grid[cr][c] = ' '
+                            for r in range(cr + 1, rows):
+                                grid[r] = [' '] * cols
+                        elif mode == 1:
+                            for r in range(cr):
+                                grid[r] = [' '] * cols
+                            for c in range(cc + 1):
+                                grid[cr][c] = ' '
+                        elif mode in (2, 3):
+                            grid = [[' '] * cols for _ in range(rows)]
+                    # m (SGR), l, h, etc. — style/mode sequences, skip
+                    i = j + 1
+                    continue
+                elif nch == ']':
+                    # OSC: ESC ] ... BEL or ST
+                    j = i + 2
+                    while j < n and text[j] != '\x07':
+                        if (
+                            text[j] == '\x1b'
+                            and j + 1 < n
+                            and text[j + 1] == '\\'
+                        ):
+                            j += 1
+                            break
+                        j += 1
+                    i = j + 1
+                    continue
+                else:
+                    i += 2
+                    continue
+            elif ch == '\n':
+                cr = min(rows - 1, cr + 1)
+                cc = 0
+            elif ch == '\r':
+                cc = 0
+            elif ch == '\x08':
+                cc = max(0, cc - 1)
+            elif ord(ch) >= 0x20:
+                if cr < rows and cc < cols:
+                    grid[cr][cc] = ch
+                    cc += 1
+                    if cc >= cols:
+                        cc = 0
+                        cr = min(rows - 1, cr + 1)
+            i += 1
+
+        lines = [''.join(r).rstrip() for r in grid]
+        while lines and not lines[0]:
+            lines.pop(0)
+        while lines and not lines[-1]:
+            lines.pop()
+        return '\n'.join(lines)
 
     def _read_signal_state(self) -> Optional[str]:
         """Read the state from the signal file.

@@ -45,6 +45,7 @@ class OutputCapture:
         new_state: str,
         prev_state: str,
         queue_has_next: bool,
+        prompt_output: str = '',
     ) -> None:
         """Write a .last_response file when Claude finishes a turn.
 
@@ -56,6 +57,9 @@ class OutputCapture:
             prev_state: The state Claude was in before the transition.
             queue_has_next: Whether the auto-sender will pick up the
                 next queued message.
+            prompt_output: ANSI-stripped PTY output from the permission
+                or question prompt (includes the question text and
+                numbered options).
         """
         if not self._enabled:
             return
@@ -80,6 +84,7 @@ class OutputCapture:
             'state': new_state,
             'queue_has_next': queue_has_next,
             'notification_message': notification_message,
+            'prompt_output': prompt_output,
         }
         try:
             atomic_json_write(self._response_file, payload)

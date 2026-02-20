@@ -139,9 +139,12 @@ class OutputWatcher:
         queue_has_next = payload.get('queue_has_next', False)
 
         notification_message = payload.get('notification_message', '')
+        prompt_output = payload.get('prompt_output', '')
 
         # Build footer based on state
-        footer = self._build_footer(state, queue_has_next, notification_message)
+        footer = self._build_footer(
+            state, queue_has_next, notification_message, prompt_output,
+        )
 
         thread_ts = session_data.get('thread_ts')
 
@@ -184,6 +187,7 @@ class OutputWatcher:
         state: str,
         queue_has_next: bool,
         notification_message: str = '',
+        prompt_output: str = '',
     ) -> str:
         """Build the footer text based on Claude's state.
 
@@ -192,6 +196,8 @@ class OutputWatcher:
             queue_has_next: Whether auto-send will send the next message.
             notification_message: Notification text from the hook
                 (e.g. the permission question).
+            prompt_output: ANSI-stripped PTY output showing the actual
+                prompt text and numbered options.
 
         Returns:
             Footer text string.
@@ -204,6 +210,8 @@ class OutputWatcher:
             header = ':warning: *Claude needs permission.*'
             if notification_message:
                 header = f':warning: *{notification_message}*'
+            if prompt_output:
+                return f'{header}\n```\n{prompt_output}\n```'
             return (
                 f'{header}\n'
                 'Reply with a number to select an option, '
@@ -213,6 +221,8 @@ class OutputWatcher:
             header = ':question: *Claude is asking a question.*'
             if notification_message:
                 header = f':question: *{notification_message}*'
+            if prompt_output:
+                return f'{header}\n```\n{prompt_output}\n```'
             return (
                 f'{header}\n'
                 'Reply with your answer.'

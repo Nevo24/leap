@@ -327,6 +327,11 @@ class ClaudeQServer:
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
         prev_state = 'idle'
+        # Delayed write for prompt states: wait for TUI to finish rendering
+        # before capturing prompt output for Slack.
+        prompt_write_due: float = 0.0
+        prompt_prev_state: str = ''
+        prompt_queue_has_next: bool = False
         while self.running:
             time.sleep(POLL_INTERVAL)
 
@@ -334,15 +339,35 @@ class ClaudeQServer:
 
             # Detect state transitions for Slack output capture
             if current_state != prev_state:
+                # Cancel any pending prompt write on state change
+                prompt_write_due = 0.0
                 queue_has_next = (
                     not self.queue.is_empty
                     and current_state == 'idle'
                     and self.state.auto_send_mode in ('pause', 'always')
                 )
-                self.output_capture.on_state_change(
-                    current_state, prev_state, queue_has_next,
-                )
+                if current_state in ('needs_permission', 'has_question'):
+                    # Delay writing: let PTY output accumulate so the
+                    # full permission dialog / question is captured.
+                    prompt_write_due = time.time() + 1.5
+                    prompt_prev_state = prev_state
+                    prompt_queue_has_next = queue_has_next
+                else:
+                    self.output_capture.on_state_change(
+                        current_state, prev_state, queue_has_next,
+                    )
                 prev_state = current_state
+
+            # Delayed prompt output write
+            if prompt_write_due and time.time() >= prompt_write_due:
+                cs = self.state.current_state
+                if cs in ('needs_permission', 'has_question'):
+                    prompt_output = self.state.get_prompt_output()
+                    self.output_capture.on_state_change(
+                        cs, prompt_prev_state,
+                        prompt_queue_has_next, prompt_output,
+                    )
+                prompt_write_due = 0.0
 
             if self.queue.is_empty or not self.state.is_ready(self.pty.is_alive()):
                 continue
