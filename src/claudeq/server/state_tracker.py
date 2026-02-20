@@ -93,6 +93,15 @@ class ClaudeStateTracker:
         # of 'running' because there's no pending request to process.
         self._trust_dialog_phase: bool = False
 
+        # Delete any stale signal file from a previous server (e.g. after
+        # SIGKILL).  Since get_state() now reads the signal file even while
+        # idle, a leftover needs_permission/has_question would cause a false
+        # transition on the first poll.
+        try:
+            self._signal_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
         _setup_debug_log()
         _log.debug('INIT state=idle signal_file=%s', signal_file)
 
@@ -116,60 +125,56 @@ class ClaudeStateTracker:
         with self._lock:
             current = self._state
 
-        if current != 'idle':
-            # Check signal file for hook-written state transitions
-            try:
-                if self._signal_file.exists():
-                    raw = self._signal_file.read_text().strip()
-                    data = json.loads(raw)
-                    new_state = data.get('state', '')
-                    # Stop hook fires on Escape too, writing "idle",
-                    # but Claude is actually prompting "What should
-                    # Claude do instead?" — keep has_question.
-                    if (
-                        new_state == 'idle'
-                        and current == 'has_question'
-                        and self._waiting_since is not None
-                        and (self._clock() - self._waiting_since) < 5.0
-                    ):
-                        _log.debug(
-                            'GET_STATE signal=idle but protecting has_question '
-                            '(%.1fs since wait)',
-                            self._clock() - self._waiting_since,
-                        )
-                    elif new_state in self._VALID_SIGNAL_STATES and new_state != current:
-                        _log.debug(
-                            'GET_STATE signal transition %s→%s',
-                            current, new_state,
-                        )
-                        with self._lock:
-                            self._state = new_state
-                            if new_state in ('needs_permission', 'has_question'):
-                                self._waiting_since = self._clock()
-                            else:
-                                self._waiting_since = None
-                        self._idle_output_acc = 0
-                        self._output_buf.clear()
-                        if new_state == 'idle':
-                            self._idle_since = self._clock()
-                        return new_state
-            except (json.JSONDecodeError, OSError):
-                pass
-
-            # Fallback: PTY silence timeout (handles interruptions,
-            # missing hooks, or any case where the hook doesn't fire)
-            if current == 'running' and self._last_output_time > 0:
-                silence = self._clock() - self._last_output_time
-                if silence > OUTPUT_SILENCE_TIMEOUT:
-                    _log.debug(
-                        'GET_STATE silence timeout %.1fs → idle', silence,
-                    )
-                    with self._lock:
-                        self._state = 'idle'
+        # Check signal file for hook-written state transitions.
+        # Always read regardless of current state — a Notification hook
+        # can write needs_permission/has_question while idle.
+        new_state = self._read_signal_state()
+        if new_state and new_state != current:
+            # Stop hook fires on Escape too, writing "idle",
+            # but Claude is actually prompting "What should
+            # Claude do instead?" — keep has_question.
+            if (
+                new_state == 'idle'
+                and current == 'has_question'
+                and self._waiting_since is not None
+                and (self._clock() - self._waiting_since) < 5.0
+            ):
+                _log.debug(
+                    'GET_STATE signal=idle but protecting has_question '
+                    '(%.1fs since wait)',
+                    self._clock() - self._waiting_since,
+                )
+            else:
+                _log.debug(
+                    'GET_STATE signal transition %s→%s',
+                    current, new_state,
+                )
+                with self._lock:
+                    self._state = new_state
+                    if new_state in ('needs_permission', 'has_question'):
+                        self._waiting_since = self._clock()
+                    else:
                         self._waiting_since = None
-                    self._idle_output_acc = 0
+                self._idle_output_acc = 0
+                self._output_buf.clear()
+                if new_state == 'idle':
                     self._idle_since = self._clock()
-                    return 'idle'
+                return new_state
+
+        # Fallback: PTY silence timeout (handles interruptions,
+        # missing hooks, or any case where the hook doesn't fire)
+        if current == 'running' and self._last_output_time > 0:
+            silence = self._clock() - self._last_output_time
+            if silence > OUTPUT_SILENCE_TIMEOUT:
+                _log.debug(
+                    'GET_STATE silence timeout %.1fs → idle', silence,
+                )
+                with self._lock:
+                    self._state = 'idle'
+                    self._waiting_since = None
+                self._idle_output_acc = 0
+                self._idle_since = self._clock()
+                return 'idle'
 
         return current
 
@@ -414,6 +419,25 @@ class ClaudeStateTracker:
                         self._signal_file.unlink(missing_ok=True)
                     except OSError:
                         pass
+
+    def _read_signal_state(self) -> Optional[str]:
+        """Read the state from the signal file.
+
+        Returns:
+            A valid signal state string, or None if the file is missing,
+            unreadable, or contains an unknown state.
+        """
+        try:
+            if not self._signal_file.exists():
+                return None
+            raw = self._signal_file.read_text().strip()
+            data = json.loads(raw)
+            state = data.get('state', '')
+            if state in self._VALID_SIGNAL_STATES:
+                return state
+            return None
+        except (json.JSONDecodeError, OSError):
+            return None
 
     @property
     def current_state(self) -> str:

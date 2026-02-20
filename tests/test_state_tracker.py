@@ -672,6 +672,83 @@ class TestTrustDialog:
 
 
 # ---------------------------------------------------------------------------
+# Signal from idle (idle → needs_permission/has_question via signal file)
+# ---------------------------------------------------------------------------
+
+class TestSignalFromIdle:
+    """Tests for the fix: signal file must be read even when current state
+    is idle, so that Notification hooks writing needs_permission/has_question
+    trigger a proper state transition."""
+
+    def test_signal_from_idle_to_needs_permission(self, tmp_path: Path) -> None:
+        """idle + signal=needs_permission → needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Hook writes needs_permission while idle
+        t[0] = 1.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_signal_from_idle_to_has_question(self, tmp_path: Path) -> None:
+        """idle + signal=has_question → has_question."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        t[0] = 1.0
+        write_signal(tracker, 'has_question')
+        assert tracker.get_state(pty_alive=True) == 'has_question'
+
+    def test_signal_from_idle_to_idle_is_noop(self, tmp_path: Path) -> None:
+        """idle + signal=idle → stays idle (no transition)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # _waiting_since should remain None (no transition occurred)
+        assert tracker._waiting_since is None
+
+    def test_signal_from_idle_sets_waiting_since(self, tmp_path: Path) -> None:
+        """Transition from idle sets _waiting_since for timeout tracking."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        assert tracker._waiting_since is None
+        t[0] = 3.0
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)
+        assert tracker._waiting_since == 3.0
+
+    def test_signal_from_idle_clears_output_acc(self, tmp_path: Path) -> None:
+        """Transition from idle resets output accumulator and buffer."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Accumulate some output
+        tracker._idle_output_acc = 150
+        tracker._output_buf.extend(b'some data')
+        t[0] = 1.0
+        write_signal(tracker, 'has_question')
+        tracker.get_state(pty_alive=True)
+        assert tracker._idle_output_acc == 0
+        assert len(tracker._output_buf) == 0
+
+    def test_stale_signal_file_deleted_on_init(self, tmp_path: Path) -> None:
+        """A stale signal file from a SIGKILL'd server must not cause a
+        false transition when the new tracker starts."""
+        t = [0.0]
+        signal_file = tmp_path / "test.signal"
+        # Simulate stale signal left by a killed server
+        signal_file.write_text(json.dumps({"state": "needs_permission"}))
+        assert signal_file.exists()
+        # New tracker deletes it on init
+        tracker = ClaudeStateTracker(
+            signal_file=signal_file, clock=lambda: t[0],
+        )
+        assert not signal_file.exists()
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+
+# ---------------------------------------------------------------------------
 # cleanup
 # ---------------------------------------------------------------------------
 

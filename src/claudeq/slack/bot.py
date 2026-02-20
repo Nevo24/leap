@@ -129,6 +129,12 @@ class SlackBot:
             self._react(event, 'inbox_tray')
         elif result == 'sent':
             self._react(event, 'zap')
+        elif result == 'invalid_permission':
+            self._post_message(
+                self._dm_channel_id,
+                ':no_entry: Reply `y` to approve or `n` to deny.',
+                thread_ts,
+            )
         elif result == 'offline':
             self._post_message(
                 self._dm_channel_id,

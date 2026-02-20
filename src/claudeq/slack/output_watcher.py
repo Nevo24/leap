@@ -115,6 +115,20 @@ class OutputWatcher:
 
         thread_ts = session_data.get('thread_ts')
 
+        # Skip code block wrapper when output is empty (e.g. permission/
+        # question prompts that have no assistant message yet).
+        if not output:
+            text = f"*[{tag}]*\n{footer}" if footer else f"*[{tag}]*"
+            result_ts = self._post_fn(self._channel_id, text, thread_ts)
+
+            if thread_ts is None and result_ts:
+                thread_ts = result_ts
+                sessions = load_slack_sessions()
+                if tag in sessions:
+                    sessions[tag]['thread_ts'] = thread_ts
+                    save_slack_sessions(sessions)
+            return
+
         # Split long output into multiple messages
         chunks = self._split_output(output, footer)
 

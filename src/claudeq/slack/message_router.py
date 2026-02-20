@@ -47,8 +47,21 @@ class MessageRouter:
 
         claude_state = status.get('claude_state', 'idle')
 
-        if claude_state in ('needs_permission', 'has_question'):
+        if claude_state == 'needs_permission':
+            # Validate: only y/n accepted for permission prompts
+            normalized = text.strip().lower()
+            if normalized not in ('y', 'yes', 'n', 'no'):
+                return 'invalid_permission'
             # Send directly to PTY (bypass queue)
+            response = send_socket_request(
+                socket_path, {'type': 'direct', 'message': normalized},
+            )
+            if response and response.get('status') == 'sent':
+                return 'sent'
+            return None
+
+        if claude_state == 'has_question':
+            # Free-form answer — send directly to PTY (bypass queue)
             response = send_socket_request(
                 socket_path, {'type': 'direct', 'message': text},
             )

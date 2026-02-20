@@ -65,8 +65,10 @@ class OutputCapture:
             return
 
         # Read the response text from the signal file
-        output = self._read_last_message()
-        if not output:
+        output = self._read_last_message() or ''
+
+        # For idle, skip if no meaningful output
+        if new_state == 'idle' and not output:
             return
 
         payload = {
