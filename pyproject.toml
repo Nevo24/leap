@@ -28,11 +28,19 @@ python-gitlab = "^8.0.0"
 PyGithub = "^2.0"
 py2app = "^0.28"
 
+[tool.poetry.group.slack]
+optional = true
+
+[tool.poetry.group.slack.dependencies]
+slack-bolt = "^1.18"
+slack-sdk = "^3.27"
+
 [tool.poetry.scripts]
 cq = "claudeq.main:main"
 cq-server = "claudeq.server.server:main"
 cq-client = "claudeq.client.client:main"
 cq-monitor = "claudeq.monitor.app:main"
+cq-slack = "claudeq.slack.bot:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

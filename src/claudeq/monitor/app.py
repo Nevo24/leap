@@ -70,8 +70,9 @@ class MonitorWindow(
     COL_STATUS = 5
     COL_QUEUE = 6
     COL_CLIENT = 7
-    COL_MR = 8
-    COL_MR_BRANCH = 9
+    COL_SLACK = 8
+    COL_MR = 9
+    COL_MR_BRANCH = 10
 
     def __init__(self) -> None:
         """Initialize the monitor window."""
@@ -166,10 +167,10 @@ class MonitorWindow(
         self.table.setHorizontalHeader(SeparatorHeaderView(Qt.Horizontal, self.table))
         self.table.setItemDelegate(SeparatorDelegate(self.table))
         self.table.setShowGrid(False)
-        self.table.setColumnCount(10)
+        self.table.setColumnCount(11)
         self.table.setHorizontalHeaderLabels([
             '', 'Tag', 'Project', 'Server', 'Server Branch', 'Status', 'Queue',
-            'Client', 'MR', 'MR Branch',
+            'Client', 'Slack', 'MR', 'MR Branch',
         ])
 
         # Column header tooltips
@@ -181,6 +182,7 @@ class MonitorWindow(
             self.COL_STATUS: 'Whether Claude is busy processing or idle',
             self.COL_QUEUE: 'Number of messages waiting in the queue',
             self.COL_CLIENT: 'CQ client process (green = connected)',
+            self.COL_SLACK: 'Slack integration (output to DM thread)',
             self.COL_MR: 'Merge/pull request tracking status',
             self.COL_MR_BRANCH: 'MR/PR source branch',
         }

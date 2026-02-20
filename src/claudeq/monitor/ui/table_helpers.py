@@ -30,9 +30,9 @@ APPLY_MR_BTN = 'Apply to MR threads && Close'
 APPLY_QUICK_MSG_BTN = 'Apply to Quick message && Close'
 
 # Column group boundaries for vertical separators.
-# Groups: [Tag, Project] | [Server, ServerBranch, Status, Queue] | [Client] | [MR, MRBranch]
-GROUP_BOUNDARY_COLS = frozenset({0, 2, 6, 7})   # Solid white (between groups)
-INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 8})    # Semi-transparent white (within groups)
+# Groups: [X, Tag, Project] | [Server, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]
+GROUP_BOUNDARY_COLS = frozenset({0, 2, 6, 7, 8})   # Solid white (between groups)
+INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 9})       # Semi-transparent white (within groups)
 
 BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
 BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)

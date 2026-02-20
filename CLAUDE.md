@@ -23,7 +23,9 @@ src/
 │   ├── claudeq-server.py        # Thin launcher → ClaudeQServer
 │   ├── claudeq-client.py        # Thin launcher → ClaudeQClient
 │   ├── claudeq-monitor.py       # Thin launcher → MonitorWindow
+│   ├── claudeq-slack.py         # Thin launcher → SlackBot
 │   ├── claudeq_monitor_launcher.py  # py2app entry point
+│   ├── setup-slack-app.sh       # Interactive Slack app setup wizard
 │   ├── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
 │   ├── configure_claude_hooks.py    # Merge ClaudeQ hooks into ~/.claude/settings.json
 │   └── claudeq-hook.sh             # Claude Code hook script (writes state to signal file)
@@ -43,7 +45,8 @@ src/
     │   ├── pty_handler.py       # Claude CLI PTY (pexpect)
     │   ├── socket_handler.py    # Unix socket server
     │   ├── queue_manager.py     # Message queue persistence
-    │   └── metadata.py          # Session metadata (IDE, project, branch)
+    │   ├── metadata.py          # Session metadata (IDE, project, branch)
+    │   └── output_capture.py    # Slack output capture (reads hook response, writes .last_response)
     │
     ├── client/                  # Interactive Client
     │   ├── client.py            # ClaudeQClient - main class
@@ -91,6 +94,13 @@ src/
     │   │   └── cq_command.py    # /cq command data model + formatting
     │   └── resources/
     │       └── activate_terminal.groovy  # JetBrains script
+    │
+    ├── slack/                   # Slack Integration
+    │   ├── __init__.py          # Package init
+    │   ├── bot.py               # SlackBot main class (Socket Mode)
+    │   ├── config.py            # Slack config + session persistence
+    │   ├── output_watcher.py    # Poll .last_response files → post to Slack
+    │   └── message_router.py    # Route Slack messages → CQ sessions
     │
     └── vscode-extension/        # VS Code Extension
         ├── package.json         # Extension metadata
@@ -142,6 +152,12 @@ assets/
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `is_valid_tag()` | `utils/constants.py` | Shared tag validation (alphanumeric + hyphens + underscores) |
 | `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
+| `OutputCapture` | `server/output_capture.py` | Read hook response from signal file, write .last_response for Slack |
+| `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
+| `OutputWatcher` | `slack/output_watcher.py` | Poll .last_response files → post to Slack threads |
+| `MessageRouter` | `slack/message_router.py` | Route Slack thread replies → CQ sessions |
+| `load_slack_config()` | `slack/config.py` | Load Slack app tokens and config |
+| `is_slack_installed()` | `slack/config.py` | Check if Slack app has been configured |
 
 ## Runtime Data Files
 
@@ -163,6 +179,9 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Quick message template selection | `.storage/cq_selected_direct_template` |
 | Template presets | `.storage/cq_templates.json` |
 | Signal file | `.storage/sockets/<tag>.signal` |
+| Last response (Slack) | `.storage/sockets/<tag>.last_response` |
+| Slack config | `.storage/slack/config.json` |
+| Slack sessions | `.storage/slack/sessions.json` |
 
 ## File Cleanup & Lifecycle
 
@@ -261,6 +280,7 @@ Load these messages? [Y/n/d] (Y=load, n=discard, d=show full):
 | `!c` or `!clear` | Clear queue |
 | `!f` or `!force` | Force-send next queued message |
 | `!autosend` or `!as` | Toggle auto-send mode (pause/always) |
+| `!slack` or `!slack on/off` | Show status or toggle Slack for this session |
 | `!x` or `!quit` (`Ctrl+D`) | Exit client |
 
 ### Message Editing
@@ -520,6 +540,48 @@ Settings dialog (`monitor/settings_dialog.py`) accessible via the Settings butto
 
 Settings persisted in `.storage/monitor_prefs.json`.
 
+## Slack Integration
+
+Optional Slack app that enables bidirectional communication between Slack and CQ sessions. When enabled, Claude's output is posted to the user's Slack DM (in a per-session thread), and the user can reply from Slack to send messages back.
+
+### Setup
+
+```bash
+make install-slack-app   # Install deps + guided setup wizard
+cq --slack                 # Start the bot daemon
+```
+
+The setup wizard creates a Slack app via App Manifest (pre-fills everything), collects tokens, and saves to `.storage/slack/config.json`.
+
+### Architecture
+
+- **Separate daemon** (`cq --slack`): Single long-running process handles Slack Socket Mode + watches all sessions
+- **Thread per session**: Each Slack-enabled session gets its own thread in the user's DM
+- **Output capture**: Hook script reads `last_assistant_message` from Claude Code's transcript JSONL on Stop/Notification events, writes it to the signal file. `OutputCapture` reads the signal file on state transitions and writes `.last_response` files for the Slack bot.
+- **Smart routing**: Replies route based on Claude's state (queue for idle, direct-to-PTY for permissions/questions)
+
+### Data Flow
+
+**Output to Slack:**
+```
+Claude finishes → hook fires → reads transcript JSONL → writes last_assistant_message to signal file
+    → server detects state transition → OutputCapture reads signal file → writes .last_response
+    → OutputWatcher polls .last_response → posts to Slack DM thread
+```
+
+**Slack to CQ:**
+```
+User replies in Slack thread → Socket Mode event
+    → MessageRouter looks up tag from thread_ts
+    → checks session state → sends queue or direct message via socket
+```
+
+### Dependencies
+
+- `slack-bolt` and `slack-sdk` (optional poetry group `slack`)
+- Slack app requires Socket Mode (outbound WebSocket, no public URL)
+- Bot scopes: `chat:write`, `chat:write.customize`, `im:history`, `im:read`, `im:write`, `reactions:write`
+
 ## IDE Setup
 
 ### JetBrains (PyCharm, IntelliJ, etc.)
@@ -560,6 +622,7 @@ killall Dock
 ```bash
 make install           # Install core + configure shell
 make install-monitor   # Build and install GUI app
+make install-slack-app # Install Slack integration + setup wizard
 make run-monitor       # Run monitor from source (no build needed)
 make update            # Update to latest version (git pull + rebuild)
 make update-deps       # Update Python dependencies only

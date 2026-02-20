@@ -143,6 +143,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
         queue_size = status_response.get('queue_size', 0)
         claude_state = status_response.get('claude_state', 'idle')
         auto_send_mode = status_response.get('auto_send_mode', 'pause')
+        slack_enabled = status_response.get('slack_enabled', False)
 
 
         # Load metadata
@@ -198,6 +199,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'server_pid': server_pid,
             'client_pid': client_pid,
             'has_client': has_client,
+            'slack_enabled': slack_enabled,
         })
 
     return sorted(sessions, key=lambda x: x['tag'])

@@ -85,7 +85,8 @@ ensure-storage:
 	@mkdir -p "$(REPO_PATH)/.storage" \
 		"$(REPO_PATH)/.storage/sockets" \
 		"$(REPO_PATH)/.storage/queues" \
-		"$(REPO_PATH)/.storage/history"
+		"$(REPO_PATH)/.storage/history" \
+		"$(REPO_PATH)/.storage/slack"
 
 .PHONY: write-install-metadata
 write-install-metadata: ensure-storage
@@ -111,6 +112,14 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "  • Applications: Double-click ClaudeQ Monitor.app"
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
+
+.PHONY: install-slack-app
+install-slack-app: .env ensure-storage write-install-metadata
+	@echo "$(PROMPT_PREFIX) Installing Slack integration dependencies..."
+	@poetry install --no-root --with slack
+	@mkdir -p "$(REPO_PATH)/.storage/slack"
+	@chmod +x $(SCRIPTS_DIR)/setup-slack-app.sh
+	@$(SCRIPTS_DIR)/setup-slack-app.sh "$(REPO_PATH)"
 
 .PHONY: run-monitor
 run-monitor:

@@ -42,6 +42,13 @@ if [ "$1" = "--update" ]; then
     exec make -C "$PROJECT_DIR" update
 fi
 
+# Run Slack bot if requested
+if [ "$1" = "--slack" ]; then
+    shift
+    PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
+        exec "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/claudeq-slack.py" "$@"
+fi
+
 # Show help if requested
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     cat << 'EOF'
@@ -53,6 +60,7 @@ USAGE:
     cq <tag> [--flags]           Start server with flags (passed to Claude CLI)
     cq --help, -h                Show this help
     cq --update                  Update ClaudeQ to latest version
+    cq --slack                   Start the Slack bot daemon
 
 FLAGS (server only):
     Flags starting with -- are passed directly to Claude CLI when starting a server.
@@ -72,6 +80,9 @@ EXAMPLES:
 
     # Send message directly
     cq my-feature "What is this error?"
+
+    # Start Slack bot daemon
+    cq --slack
 
 For more info: https://github.com/nevo24/claudeq
 EOF

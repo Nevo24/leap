@@ -56,6 +56,7 @@ STORAGE_DIR: Final[Path] = _find_project_root() / ".storage"
 QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"
 SOCKET_DIR: Final[Path] = STORAGE_DIR / "sockets"
 HISTORY_DIR: Final[Path] = STORAGE_DIR / "history"
+SLACK_DIR: Final[Path] = STORAGE_DIR / "slack"
 
 # Settings file
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
@@ -108,6 +109,7 @@ def ensure_storage_dirs() -> None:
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     SOCKET_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    SLACK_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def atomic_json_write(path: Path, data: Any, **json_kwargs: Any) -> None:

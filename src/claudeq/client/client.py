@@ -15,7 +15,7 @@ import time
 from typing import Optional
 
 from claudeq.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR,
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR,
     ensure_storage_dirs, load_settings, save_settings,
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
@@ -465,6 +465,7 @@ class ClaudeQClient:
             ("\U0001F4DD", "!e <index> or !edit <index>",     "Edit queued message by index"),
             ("\U0001F9F9", "!c or !clear",                    "Clear queue"),
             ("\U0001F525", "!f or !force",                    "Force-send next queued message"),
+            ("\U0001F4F1", "!slack on/off",                   "Toggle Slack for this session"),
             ("\U0001F44B", "!x or !quit (Ctrl+D)",            "Exit client"),
         ]
 
@@ -575,6 +576,53 @@ class ClaudeQClient:
         else:
             print("\u2717 Failed to set auto-send mode\n")
 
+    def _is_slack_installed(self) -> bool:
+        """Check if the Slack app has been configured."""
+        return (SLACK_DIR / "config.json").exists()
+
+    def _handle_slack_command(self, line: str) -> None:
+        """Handle !slack command to show status or toggle Slack integration.
+
+        Args:
+            line: Full input line starting with !slack.
+        """
+        if not self._is_slack_installed():
+            print("Slack app not installed. Run: make install-slack-app\n")
+            return
+
+        parts = line.lower().split(None, 1)
+        if len(parts) < 2:
+            # Show current Slack status
+            response = self.socket.get_status(silent=True)
+            if response:
+                enabled = response.get('slack_enabled', False)
+                status = "on" if enabled else "off"
+                print(f"\nSlack integration: {status}")
+                print("Usage: !slack on/off\n")
+            else:
+                print("Could not get server status\n")
+            return
+
+        toggle = parts[1].strip()
+        if toggle in ('on', 'true', '1', 'yes'):
+            response = self.socket._send_request({
+                'type': 'set_slack', 'enabled': True,
+            })
+            if response and response.get('status') == 'ok':
+                print("Slack integration enabled for this session\n")
+            else:
+                print("Failed to enable Slack integration\n")
+        elif toggle in ('off', 'false', '0', 'no'):
+            response = self.socket._send_request({
+                'type': 'set_slack', 'enabled': False,
+            })
+            if response and response.get('status') == 'ok':
+                print("Slack integration disabled for this session\n")
+            else:
+                print("Failed to disable Slack integration\n")
+        else:
+            print("Invalid option. Use: !slack on/off\n")
+
     def _handle_edit_command(self, line: str) -> None:
         """
         Handle !e / !edit command.
@@ -666,6 +714,14 @@ class ClaudeQClient:
             return True
         if line_lower.startswith('!autosend ') or line_lower.startswith('!as '):
             self._handle_auto_send_mode(line_lower)
+            return True
+
+        # !slack
+        if line_lower == '!slack':
+            self._handle_slack_command(line)
+            return True
+        if line_lower.startswith('!slack '):
+            self._handle_slack_command(line)
             return True
 
         # !x / !quit / !exit

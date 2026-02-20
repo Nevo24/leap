@@ -145,6 +145,7 @@ All commands are **case-insensitive**.
 | 🖼 `Ctrl+V` | Paste clipboard image as `[Image #N]` |
 | 🔄 `!autosend pause/always` or `!as` | Toggle auto-send mode |
 | 🔔 `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
+| 📱 `!slack on/off` | Toggle Slack for this session |
 
 ### 💡 IDE Configuration
 
@@ -192,6 +193,23 @@ The monitor shows:
 - **VS Code**: Jumps to specific terminal tab automatically (auto-configured during installation)
 - **Terminal.app/iTerm2**: Jumps to specific tab automatically
 - **Warp**: Jumps to specific tab automatically (requires Accessibility permission — grant in System Settings > Privacy & Security > Accessibility)
+
+## Slack Integration (Optional)
+
+Enable bidirectional communication between Slack and CQ sessions. Claude's output is posted to your Slack DM, and you can reply from Slack to send messages back.
+
+```bash
+# Install Slack integration
+make install-slack-app
+
+# Start the bot
+cq --slack
+
+# Enable for a session (from the client)
+!slack on
+```
+
+The setup wizard guides you through creating a Slack app and collecting tokens. Output appears in per-session threads in your DM with the bot.
 
 ## Example Workflow
 
@@ -319,6 +337,7 @@ Commands available after installation:
 ```bash
 cq <tag>           # Start server or connect client
 cq-cleanup         # Remove dead sessions (or: cqc)
+cq --slack         # Start Slack bot daemon
 ```
 
 For installation and maintenance commands, see [Make Commands Reference](#make-commands-reference) above.
@@ -351,6 +370,7 @@ All available Make commands for managing ClaudeQ:
 |---------|-------------|-------------|
 | `make install` | Install ClaudeQ core | First-time setup after cloning |
 | `make install-monitor` | Build and install monitor GUI | Add GUI app after core install |
+| `make install-slack-app` | Install Slack integration | Add Slack bidirectional messaging |
 | `make update` | Update to latest version | Pull new code + rebuild everything |
 | `make update-deps` | Update Python packages only | Update dependencies without git pull |
 

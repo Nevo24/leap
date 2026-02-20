@@ -25,6 +25,7 @@ from claudeq.server.socket_handler import SocketHandler
 from claudeq.server.queue_manager import QueueManager
 from claudeq.server.metadata import SessionMetadata
 from claudeq.server.state_tracker import ClaudeStateTracker
+from claudeq.server.output_capture import OutputCapture
 from claudeq.server.validation import validate_pinned_session
 
 
@@ -91,6 +92,7 @@ class ClaudeQServer:
             signal_file=SOCKET_DIR / f"{tag}.signal",
             auto_send_mode=load_settings().get('auto_send_mode', 'pause'),
         )
+        self.output_capture = OutputCapture(tag)
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -142,8 +144,14 @@ class ClaudeQServer:
                 'ready': self.state.is_ready(self.pty.is_alive()),
                 'claude_state': state,
                 'auto_send_mode': self.state.auto_send_mode,
-                'claude_running': self.pty.is_alive()
+                'claude_running': self.pty.is_alive(),
+                'slack_enabled': self.output_capture.is_enabled(),
             }
+
+        elif msg_type == 'set_slack':
+            enabled = msg.get('enabled', False)
+            self.output_capture.set_enabled(enabled)
+            return {'status': 'ok', 'slack_enabled': enabled}
 
         elif msg_type == 'force_send':
             message = self.queue.pop()
@@ -318,8 +326,23 @@ class ClaudeQServer:
 
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
+        prev_state = 'idle'
         while self.running:
             time.sleep(POLL_INTERVAL)
+
+            current_state = self.state.get_state(self.pty.is_alive())
+
+            # Detect state transitions for Slack output capture
+            if current_state != prev_state:
+                queue_has_next = (
+                    not self.queue.is_empty
+                    and current_state == 'idle'
+                    and self.state.auto_send_mode in ('pause', 'always')
+                )
+                self.output_capture.on_state_change(
+                    current_state, prev_state, queue_has_next,
+                )
+                prev_state = current_state
 
             if self.queue.is_empty or not self.state.is_ready(self.pty.is_alive()):
                 continue
@@ -498,6 +521,7 @@ class ClaudeQServer:
         self.metadata.cleanup()
         self.pty.terminate()
         self.state.cleanup()
+        self.output_capture.cleanup()
         # Remove queue file if empty (no pending messages).
         # Hold the queue lock so no message can be added between the
         # emptiness check and the unlink.

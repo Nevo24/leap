@@ -412,6 +412,64 @@ class TableBuilderMixin(_Base):
                     self._cache_cell(tag, 'client', cli_state,
                                      row, self.COL_CLIENT)
 
+                # ── Slack column ──────────────────────────────────
+                slack_enabled = session.get('slack_enabled', False)
+                slack_installed = self._is_slack_installed()
+                slack_state = (is_dead, slack_installed, slack_enabled)
+                if not self._cell_cached(tag, 'slack', slack_state,
+                                         row, self.COL_SLACK):
+                    if not slack_installed:
+                        slack_btn = QPushButton('Slack')
+                        slack_btn.setEnabled(False)
+                        slack_btn.setToolTip(
+                            'Install Slack app first (make install-slack-app)')
+                        self._set_cell_widget(row, self.COL_SLACK, slack_btn)
+                    elif is_dead:
+                        slack_btn = QPushButton('Slack')
+                        slack_btn.setEnabled(False)
+                        slack_btn.setToolTip('Start server first')
+                        self._set_cell_widget(row, self.COL_SLACK, slack_btn)
+                    elif slack_enabled:
+                        slack_container = QWidget()
+                        slack_layout = QHBoxLayout(slack_container)
+                        slack_layout.setContentsMargins(0, 0, 0, 0)
+                        slack_layout.setSpacing(2)
+
+                        slack_x = QPushButton('X')
+                        slack_x.setFixedSize(24, slack_x.sizeHint().height())
+                        slack_x.setStyleSheet(
+                            'QPushButton { color: #999; font-size: 11px; '
+                            'padding: 0; }'
+                            'QPushButton:hover { color: #ff4444; '
+                            'font-weight: bold; }'
+                        )
+                        slack_x.setToolTip(f'Disconnect Slack for {tag}')
+                        slack_x.clicked.connect(
+                            lambda checked, t=tag:
+                                self._toggle_slack(t, False)
+                        )
+                        slack_layout.addWidget(slack_x, 0, Qt.AlignVCenter)
+
+                        slack_lbl = QLabel('Slack')
+                        slack_lbl.setStyleSheet(
+                            'QLabel { color: #00ff00; }')
+                        slack_lbl.setToolTip(
+                            f'Slack enabled for {tag}')
+                        slack_layout.addWidget(slack_lbl)
+                        self._set_cell_widget(
+                            row, self.COL_SLACK, slack_container)
+                    else:
+                        slack_btn = QPushButton('Connect')
+                        slack_btn.setToolTip(
+                            f'Enable Slack integration for {tag}')
+                        slack_btn.clicked.connect(
+                            lambda checked, t=tag:
+                                self._toggle_slack(t, True)
+                        )
+                        self._set_cell_widget(row, self.COL_SLACK, slack_btn)
+                    self._cache_cell(tag, 'slack', slack_state,
+                                     row, self.COL_SLACK)
+
                 # ── MR column: "Track MR" → "Checking..." → tracked
                 if tag in self._checking_tags:
                     mr_state = ('checking',)
@@ -911,6 +969,27 @@ class TableBuilderMixin(_Base):
         """Sync the tooltip app with the current preference."""
         if hasattr(self, '_tooltip_app'):
             self._tooltip_app.tooltips_enabled = self._prefs.get('show_tooltips', True)
+
+    def _is_slack_installed(self) -> bool:
+        """Check if the Slack app config file exists."""
+        from claudeq.slack.config import is_slack_installed
+        return is_slack_installed()
+
+    def _toggle_slack(self, tag: str, enabled: bool) -> None:
+        """Send set_slack to the CQ server to enable/disable Slack."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'set_slack', 'enabled': enabled},
+        )
+        if response and response.get('status') == 'ok':
+            # Invalidate cache so next refresh rebuilds
+            self._cell_cache.pop((tag, 'slack'), None)
+            action = 'enabled' if enabled else 'disabled'
+            self._show_status(f'Slack {action} for {tag}')
+        else:
+            self._show_status(f'Failed to toggle Slack for {tag}')
 
     def _check_row_hover(self) -> None:
         """Poll cursor position to track which table row is hovered."""
