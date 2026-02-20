@@ -215,7 +215,7 @@ class OutputWatcher:
                 cleaned = self._strip_meta_options(prompt_output)
                 return (
                     f'{header}\n```\n{cleaned}\n```\n'
-                    '_Reply with a number to select an option._'
+                    '_Reply with a number or type your answer._'
                 )
             return (
                 f'{header}\n'
@@ -239,8 +239,7 @@ class OutputWatcher:
                 continue
             if 'Chat about this' in s:
                 continue
-            if re.match(r'\d+\.\s+Type something', s):
-                continue
+            # Keep "Type something" visible — Slack users can select it
             if s.startswith('Enter to select') or s.startswith('Esc to cancel'):
                 continue
             if s.startswith('Tab/Arrow') or s.startswith('Tab to amend'):

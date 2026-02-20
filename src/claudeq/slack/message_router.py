@@ -49,20 +49,29 @@ class MessageRouter:
 
         if claude_state in ('needs_permission', 'has_question'):
             normalized = text.strip()
-            if not normalized.isdigit():
-                return 'invalid_permission'
-            response = send_socket_request(
-                socket_path,
-                {'type': 'select_option', 'message': normalized},
-            )
-            if response and response.get('status') == 'sent':
-                return 'sent'
-            if response and response.get('status') == 'error':
-                error = response.get('error', '')
-                if 'type your answer' in error:
-                    return 'type_text_instead'
-                return 'invalid_permission'
-            return None
+            if normalized.isdigit():
+                response = send_socket_request(
+                    socket_path,
+                    {'type': 'select_option', 'message': normalized},
+                )
+                if response and response.get('status') == 'sent':
+                    return 'sent'
+                if response and response.get('status') == 'error':
+                    if 'type your answer' in response.get('error', ''):
+                        return 'type_text_instead'
+                    return 'invalid_permission'
+                return None
+            else:
+                # Free-form text — select "Type something." and enter it.
+                response = send_socket_request(
+                    socket_path,
+                    {'type': 'custom_answer', 'message': text},
+                )
+                if response and response.get('status') == 'sent':
+                    return 'sent'
+                if response and response.get('status') == 'error':
+                    return 'invalid_permission'
+                return None
         else:
             # Queue the message
             response = send_socket_request(
