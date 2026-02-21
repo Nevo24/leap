@@ -45,8 +45,20 @@ fi
 # Run Slack bot if requested
 if [ "$1" = "--slack" ]; then
     shift
+    # Set terminal tab name
+    echo -ne "\033]0;cq slack-bot\007"
+    # Single-instance lock (atomic mkdir, same pattern as server lock)
+    SLACK_LOCK_DIR="$STORAGE_DIR/slack/slack-bot.lock"
+    mkdir -p "$STORAGE_DIR/slack"
+    if ! mkdir "$SLACK_LOCK_DIR" 2>/dev/null; then
+        echo "❌ Slack bot is already running in another terminal." >&2
+        exit 1
+    fi
+    # No exec — keep the shell alive so the trap can clean up the lock dir
+    trap 'rmdir "$SLACK_LOCK_DIR" 2>/dev/null' EXIT INT TERM
     PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
-        exec "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/claudeq-slack.py" "$@"
+        "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/claudeq-slack.py" "$@"
+    exit $?
 fi
 
 # Show help if requested
@@ -186,6 +198,14 @@ cleanup_dead_sockets() {
             fi
             rmdir "$lock_dir" 2>/dev/null
         done
+    fi
+
+    # Orphaned Slack bot lock (no slack bot process running)
+    local slack_lock="$STORAGE_DIR/slack/slack-bot.lock"
+    if [ -d "$slack_lock" ]; then
+        if ! ps aux | grep "claudeq-slack.py" | grep -v grep > /dev/null 2>&1; then
+            rmdir "$slack_lock" 2>/dev/null
+        fi
     fi
 }
 

@@ -72,6 +72,16 @@ if [ -d "$SOCKET_DIR" ]; then
     done
 fi
 
+# Orphaned Slack bot lock (no slack bot process running)
+SLACK_LOCK="$STORAGE_DIR/slack/slack-bot.lock"
+if [ -d "$SLACK_LOCK" ]; then
+    if ! ps aux | grep "claudeq-slack.py" | grep -v grep > /dev/null 2>&1; then
+        echo "  Removing orphaned Slack bot lock"
+        rmdir "$SLACK_LOCK" 2>/dev/null
+        ((removed_count++))
+    fi
+fi
+
 echo ""
 if [ $removed_count -eq 0 ]; then
     echo "✓ No dead sessions found"
