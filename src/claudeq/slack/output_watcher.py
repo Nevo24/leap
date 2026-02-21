@@ -102,7 +102,8 @@ class OutputWatcher:
 
         Called once when a session is first enabled. The message is not sent
         to the CQ server — it only creates the thread so the user can
-        reply from Slack immediately.
+        reply from Slack immediately. Also posts the last Claude message
+        (if any) so the user has context for what they're replying to.
 
         Args:
             tag: Session tag.
@@ -119,6 +120,81 @@ class OutputWatcher:
             if tag in sessions:
                 sessions[tag]['thread_ts'] = result_ts
                 save_slack_sessions(sessions)
+
+            # Post the last Claude message / permission request for context
+            context = self._read_last_context(tag)
+            last_msg = context.get('output', '')
+            state = context.get('state', 'idle')
+            notification_message = context.get('notification_message', '')
+            prompt_output = context.get('prompt_output', '')
+
+            if last_msg:
+                chunks = self._split_output(last_msg, '')
+                for chunk in chunks:
+                    self._post_fn(
+                        self._channel_id,
+                        f"*[{tag}]* _Last message:_\n```\n{chunk}\n```",
+                        result_ts,
+                    )
+
+            if state in ('needs_permission', 'has_question'):
+                footer = self._build_footer(
+                    state, False, notification_message, prompt_output,
+                )
+                if footer:
+                    self._post_fn(
+                        self._channel_id,
+                        f"*[{tag}]*\n{footer}",
+                        result_ts,
+                    )
+
+    @staticmethod
+    def _read_last_context(tag: str) -> dict[str, str]:
+        """Read the last session context from signal and last_response files.
+
+        Combines data from the signal file (state, assistant message) and
+        the last_response file (prompt_output for permission/question dialogs).
+
+        Args:
+            tag: Session tag.
+
+        Returns:
+            Dict with ``output``, ``state``, ``notification_message``,
+            and ``prompt_output`` keys.
+        """
+        result: dict[str, str] = {
+            'output': '', 'state': 'idle',
+            'notification_message': '', 'prompt_output': '',
+        }
+
+        # Read state and assistant message from signal file
+        signal_file = SOCKET_DIR / f"{tag}.signal"
+        try:
+            if signal_file.exists():
+                data = json.loads(signal_file.read_text())
+                msg = data.get('last_assistant_message', '').strip()
+                if msg:
+                    result['output'] = msg
+                result['state'] = data.get('state', 'idle')
+                notif = data.get('notification_message', '').strip()
+                if notif:
+                    result['notification_message'] = notif
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        # Read prompt_output from last_response file (has the actual
+        # permission/question dialog text captured from the PTY)
+        response_file = SOCKET_DIR / f"{tag}.last_response"
+        try:
+            if response_file.exists():
+                payload = json.loads(response_file.read_text())
+                prompt = payload.get('prompt_output', '').strip()
+                if prompt:
+                    result['prompt_output'] = prompt
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        return result
 
     def _post_output(
         self,
