@@ -91,6 +91,46 @@ class OutputCapture:
         except OSError:
             pass
 
+    def write_current_state(
+        self,
+        current_state: str,
+        queue_has_next: bool,
+        prompt_output: str = '',
+    ) -> None:
+        """Write a .last_response snapshot of the current state.
+
+        Unlike ``on_state_change``, this does not require a state transition.
+        Used when Slack is enabled mid-session so the watcher can post
+        the current context immediately.
+
+        Args:
+            current_state: The current Claude state.
+            queue_has_next: Whether the auto-sender has a queued message.
+            prompt_output: ANSI-stripped PTY prompt text (for permissions).
+        """
+        if not self._enabled:
+            return
+        if current_state not in ('idle', 'needs_permission', 'has_question'):
+            return
+
+        signal_data = self._read_signal_data()
+        output = signal_data.get('output', '')
+        notification_message = signal_data.get('notification_message', '')
+
+        payload = {
+            'timestamp': time.time(),
+            'output': output,
+            'tag': self._tag,
+            'state': current_state,
+            'queue_has_next': queue_has_next,
+            'notification_message': notification_message,
+            'prompt_output': prompt_output,
+        }
+        try:
+            atomic_json_write(self._response_file, payload)
+        except OSError:
+            pass
+
     def is_enabled(self) -> bool:
         """Return whether output capture is enabled for this session."""
         return self._enabled

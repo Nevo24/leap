@@ -217,6 +217,13 @@ class ClaudeQServer:
         elif msg_type == 'set_slack':
             enabled = msg.get('enabled', False)
             self.output_capture.set_enabled(enabled)
+            if enabled:
+                # Write current state so the Slack watcher can post context
+                current_state = self.state.current_state
+                prompt_output = self.state.get_prompt_output()
+                self.output_capture.write_current_state(
+                    current_state, not self.queue.is_empty, prompt_output,
+                )
             return {'status': 'ok', 'slack_enabled': enabled}
 
         elif msg_type == 'force_send':
