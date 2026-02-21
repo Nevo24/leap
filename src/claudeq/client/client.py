@@ -473,15 +473,13 @@ class ClaudeQClient:
         print()
         print("  \U0001F5BC  Ctrl+V pastes clipboard image as [Image #N]")
         print()
-        print("  \U0001F916 Auto-queue: Server handles auto-sending")
-        print()
         # Fetch current auto-send mode from server
         response = self.socket.get_status(silent=True)
         as_mode = response.get('auto_send_mode', 'pause') if response else 'pause'
         as_label = 'pause' if as_mode == 'pause' else 'always'
         notif_label = 'on' if self.show_auto_sent_notifications else 'off'
 
-        print(f"  \U0001F504 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
+        print(f"  \U0001F916 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
         print(f"  \U0001F514 Auto-sent notifications: !auto-sent on/off  (or !asm)  [current: {notif_label}]")
         print()
         slack_enabled = response.get('slack_enabled', False) if response else False

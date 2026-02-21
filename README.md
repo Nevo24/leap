@@ -143,7 +143,7 @@ All commands are **case-insensitive**.
 | Command | Description |
 |---------|-------------|
 | 🖼 `Ctrl+V` | Paste clipboard image as `[Image #N]` |
-| 🔄 `!autosend pause/always` or `!as` | Toggle auto-send mode |
+| 🤖 `!autosend pause/always` or `!as` | Toggle auto-send mode |
 | 🔔 `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
 | 📱 `!slack on/off` | Toggle Slack for this session |
 
