@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import webbrowser
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt5 import sip
@@ -450,18 +453,21 @@ class TableBuilderMixin(_Base):
                         )
                         slack_layout.addWidget(slack_x, 0, Qt.AlignVCenter)
 
-                        slack_lbl = QLabel('Slack')
-                        slack_lbl.setStyleSheet(
-                            'QLabel { color: #00ff00; }')
-                        slack_lbl.setToolTip(
-                            f'Slack enabled for {tag}')
-                        slack_layout.addStretch()
-                        slack_layout.addWidget(slack_lbl)
-                        slack_layout.addStretch()
+                        slack_btn = QPushButton('Slack')
+                        slack_btn.setStyleSheet(
+                            'QPushButton { color: #00ff00; } '
+                            'QToolTip { color: #e0e0e0; }')
+                        slack_btn.setToolTip(
+                            f'Open Slack thread for {tag}')
+                        slack_btn.clicked.connect(
+                            lambda checked, t=tag:
+                                self._open_slack_thread(t)
+                        )
+                        slack_layout.addWidget(slack_btn)
                         self._set_cell_widget(
                             row, self.COL_SLACK, slack_container)
                     else:
-                        slack_btn = QPushButton('Connect')
+                        slack_btn = QPushButton('Slack')
                         slack_btn.setToolTip(
                             f'Enable Slack integration for {tag}')
                         slack_btn.clicked.connect(
@@ -998,6 +1004,59 @@ class TableBuilderMixin(_Base):
             self._show_status(f'Slack {action} for {tag}')
         else:
             self._show_status(f'Failed to toggle Slack for {tag}')
+
+    def _open_slack_thread(self, tag: str) -> None:
+        """Open the Slack thread for a session in the Slack app or browser.
+
+        Prefers the native Slack app via ``slack://channel`` deep link.
+        Falls back to the web client URL when the app is not installed.
+        """
+        from claudeq.slack.config import (
+            load_slack_config, load_slack_sessions, resolve_team_id,
+        )
+
+        config = load_slack_config()
+        channel_id = config.get('dm_channel_id', '')
+
+        if not channel_id:
+            self._show_status('Slack not configured (missing dm_channel_id)')
+            return
+
+        team_id = resolve_team_id()
+        sessions = load_slack_sessions()
+        thread_ts = sessions.get(tag, {}).get('thread_ts', '')
+
+        # Try native Slack app first
+        slack_app_installed = any(
+            p.is_dir() for p in (
+                Path('/Applications/Slack.app'),
+                Path.home() / 'Applications' / 'Slack.app',
+            )
+        )
+
+        if slack_app_installed and team_id:
+            deep = f'slack://channel?team={team_id}&id={channel_id}'
+            if thread_ts:
+                # Thread-level: use message permalink format
+                ts_no_dot = thread_ts.replace('.', '')
+                deep = (f'slack://channel?team={team_id}'
+                        f'&id={channel_id}&message={ts_no_dot}')
+            subprocess.Popen(
+                ['open', deep],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
+        # Fallback: open in browser
+        if team_id:
+            url = f'https://app.slack.com/client/{team_id}/{channel_id}'
+            if thread_ts:
+                url += f'/thread/{channel_id}-{thread_ts}'
+        else:
+            url = f'https://app.slack.com/client/{channel_id}'
+
+        webbrowser.open(url)
 
     def _check_row_hover(self) -> None:
         """Poll cursor position to track which table row is hovered."""

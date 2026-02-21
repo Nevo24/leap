@@ -7,6 +7,7 @@ Slack-enabled CQ sessions every 2 seconds.
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -97,6 +98,28 @@ class OutputWatcher:
             self._last_seen_ts[tag] = ts
             self._post_output(tag, session_data, payload)
 
+    @staticmethod
+    def _build_header(tag: str) -> str:
+        """Build the thread header with tag, project, and branch from metadata.
+
+        Args:
+            tag: Session tag.
+
+        Returns:
+            Formatted header string.
+        """
+        meta_file = SOCKET_DIR / f"{tag}.meta"
+        project = 'N/A'
+        branch = 'N/A'
+        try:
+            if meta_file.exists():
+                data = json.loads(meta_file.read_text())
+                project = os.path.basename(data.get('project_path', '')) or 'N/A'
+                branch = data.get('branch', '') or 'N/A'
+        except (json.JSONDecodeError, OSError):
+            pass
+        return f"*[tag: {tag}, project: {project}, branch: {branch}]*"
+
     def _send_greeting(self, tag: str) -> None:
         """Post a greeting message to create the Slack thread for a session.
 
@@ -108,8 +131,9 @@ class OutputWatcher:
         Args:
             tag: Session tag.
         """
+        header = self._build_header(tag)
         text = (
-            f"*[{tag}]*\n"
+            f"{header}\n"
             ":large_green_circle: *Slack tracking enabled.*\n"
             "Claude's output will appear in this thread.\n"
             "Reply here to send messages to this session."

@@ -299,12 +299,12 @@ class SCMConfigMixin(_Base):
         self.slack_bot_btn.setVisible(True)
         self.slack_bot_btn.setEnabled(True)
         if self._is_slack_bot_running():
-            self.slack_bot_btn.setText('Slack Bot')
+            self.slack_bot_btn.setText('Slack Bot Running')
             self.slack_bot_btn.setStyleSheet(
                 'QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
             self.slack_bot_btn.setToolTip('Slack bot is running — click to stop')
         else:
-            self.slack_bot_btn.setText('Slack Bot')
+            self.slack_bot_btn.setText('Run Slack Bot')
             self.slack_bot_btn.setStyleSheet('')
             self.slack_bot_btn.setToolTip('Click to start the Slack bot daemon')
 

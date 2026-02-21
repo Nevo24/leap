@@ -215,10 +215,11 @@ from slack_sdk import WebClient
 client = WebClient(token='$BOT_TOKEN')
 try:
     resp = client.auth_test()
+    team_id = resp.get('team_id', '')
     # Open DM channel with the actual user (not the bot)
     dm = client.conversations_open(users=['$SLACK_USER_ID'])
     channel_id = dm['channel']['id']
-    print(json.dumps({'ok': True, 'channel_id': channel_id}))
+    print(json.dumps({'ok': True, 'channel_id': channel_id, 'team_id': team_id}))
 except Exception as e:
     print(json.dumps({'ok': False, 'error': str(e)}))
 " 2>&1)
@@ -234,10 +235,12 @@ fi
 
 USER_ID="$SLACK_USER_ID"
 CHANNEL_ID=$(echo "$VALIDATION" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['channel_id'])")
+TEAM_ID=$(echo "$VALIDATION" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('team_id', ''))")
 
 echo -e "${GREEN}✓ Bot token valid${NC}"
 echo "  User ID: $USER_ID"
 echo "  DM Channel: $CHANNEL_ID"
+echo "  Team ID: $TEAM_ID"
 
 # ── Step 6: Save config ──────────────────────────────────────────
 
@@ -248,7 +251,8 @@ cat > "$CONFIG_FILE" << EOF
   "bot_token": "$BOT_TOKEN",
   "app_token": "$APP_TOKEN",
   "user_id": "$USER_ID",
-  "dm_channel_id": "$CHANNEL_ID"
+  "dm_channel_id": "$CHANNEL_ID",
+  "team_id": "$TEAM_ID"
 }
 EOF
 

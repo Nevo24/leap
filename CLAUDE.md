@@ -158,6 +158,7 @@ assets/
 | `MessageRouter` | `slack/message_router.py` | Route Slack thread replies → CQ sessions |
 | `load_slack_config()` | `slack/config.py` | Load Slack app tokens and config |
 | `is_slack_installed()` | `slack/config.py` | Check if Slack app has been configured |
+| `resolve_team_id()` | `slack/config.py` | Resolve Slack team ID from API if missing, cache to config |
 
 ## Runtime Data Files
 
@@ -553,7 +554,7 @@ cq --slack                 # Start the bot daemon (terminal)
 
 The setup wizard creates a Slack app via App Manifest (pre-fills everything), collects tokens, and saves to `.storage/slack/config.json`.
 
-The bot can also be started/stopped from the monitor's **Slack Bot** button (bottom bar, next to GitHub). The button turns green when the bot is running (detected via lock directory). If `slack_bot_enabled` is True in monitor prefs, the bot auto-starts when the monitor opens. Right-click the button to jump to the terminal when the bot was started externally.
+The bot can also be started/stopped from the monitor's **Slack Bot** button (bottom bar, next to GitHub). Shows "Run Slack Bot" when off, "Slack Bot Running" (green) when active. If `slack_bot_enabled` is True in monitor prefs, the bot auto-starts when the monitor opens. Right-click the button to jump to the terminal when the bot was started externally.
 
 ### Architecture
 

@@ -6,10 +6,13 @@ in ``.storage/slack/``.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
 from claudeq.utils.constants import SLACK_DIR, atomic_json_write
+
+logger = logging.getLogger(__name__)
 
 _CONFIG_FILE: Path = SLACK_DIR / "config.json"
 _SESSIONS_FILE: Path = SLACK_DIR / "sessions.json"
@@ -65,3 +68,36 @@ def save_slack_sessions(sessions: dict[str, dict[str, Any]]) -> None:
         sessions: Mapping of tag → session data.
     """
     atomic_json_write(_SESSIONS_FILE, sessions)
+
+
+def resolve_team_id() -> str:
+    """Return the Slack team (workspace) ID, resolving from API if needed.
+
+    If ``team_id`` is already in the config, returns it immediately.
+    Otherwise calls ``auth.test()`` with the bot token, persists the
+    result, and returns it.  Returns empty string on failure.
+    """
+    config = load_slack_config()
+    if not config:
+        return ''
+
+    team_id = config.get('team_id', '')
+    if team_id:
+        return team_id
+
+    bot_token = config.get('bot_token', '')
+    if not bot_token:
+        return ''
+
+    try:
+        from slack_sdk import WebClient
+        client = WebClient(token=bot_token)
+        resp = client.auth_test()
+        team_id = resp.get('team_id', '')
+        if team_id:
+            config['team_id'] = team_id
+            save_slack_config(config)
+        return team_id
+    except Exception:
+        logger.debug('Failed to resolve team_id from auth.test()', exc_info=True)
+        return ''
