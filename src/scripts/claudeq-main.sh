@@ -84,7 +84,11 @@ USAGE:
     cq <tag> [--flags]           Start server with flags (passed to Claude CLI)
     cq --help, -h                Show this help
     cq --update                  Update ClaudeQ to latest version
-    cq --slack                   Start the Slack bot daemon
+EOF
+    if [ -f "$STORAGE_DIR/slack/config.json" ]; then
+        echo "    cq --slack                   Start the Slack bot daemon"
+    fi
+    cat << 'EOF'
 
 FLAGS (server only):
     Flags starting with -- are passed directly to Claude CLI when starting a server.
@@ -104,9 +108,15 @@ EXAMPLES:
 
     # Send message directly
     cq my-feature "What is this error?"
+EOF
+    if [ -f "$STORAGE_DIR/slack/config.json" ]; then
+        cat << 'EOF'
 
     # Start Slack bot daemon
     cq --slack
+EOF
+    fi
+    cat << 'EOF'
 
 For more info: https://github.com/nevo24/claudeq
 EOF
