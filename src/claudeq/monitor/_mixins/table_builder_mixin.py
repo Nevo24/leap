@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QAction, QApplication, QHBoxLayout, QLabel, QMenu,
-    QPushButton, QTableWidgetItem, QWidget,
+    QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
@@ -418,7 +418,9 @@ class TableBuilderMixin(_Base):
                 # ── Slack column ──────────────────────────────────
                 slack_enabled = session.get('slack_enabled', False)
                 slack_installed = self._is_slack_installed()
-                slack_state = (is_dead, slack_installed, slack_enabled)
+                bot_running = self._is_slack_bot_running()
+                slack_state = (is_dead, slack_installed, bot_running,
+                               slack_enabled)
                 if not self._cell_cached(tag, 'slack', slack_state,
                                          row, self.COL_SLACK):
                     if not slack_installed:
@@ -431,6 +433,18 @@ class TableBuilderMixin(_Base):
                         slack_btn = QPushButton('Slack')
                         slack_btn.setEnabled(False)
                         slack_btn.setToolTip('Start server first')
+                        self._set_cell_widget(row, self.COL_SLACK, slack_btn)
+                    elif not bot_running:
+                        # Bot not running — grey button, prompt to start bot
+                        slack_btn = QPushButton('Slack')
+                        tip = ('Slack bot is not running — will reconnect '
+                               'when started' if slack_enabled
+                               else 'Start the Slack bot first')
+                        slack_btn.setToolTip(tip)
+                        slack_btn.clicked.connect(
+                            lambda checked:
+                                self._show_slack_bot_not_running()
+                        )
                         self._set_cell_widget(row, self.COL_SLACK, slack_btn)
                     elif slack_enabled:
                         slack_container = QWidget()
@@ -721,6 +735,7 @@ class TableBuilderMixin(_Base):
             self.table.setColumnHidden(self.COL_SLACK, not slack_now)
         self._update_table()
         self._update_slack_bot_button()
+        self._check_slack_bot_transition()
         notif_prefs = get_notification_prefs(self._prefs)
         dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
         events = self._dock_badge.update_sessions(
@@ -988,6 +1003,35 @@ class TableBuilderMixin(_Base):
         """Check if the Slack app config file exists."""
         from claudeq.slack.config import is_slack_installed
         return is_slack_installed()
+
+    def _show_slack_bot_not_running(self) -> None:
+        """Show an informational popup when the Slack bot is not running."""
+        QMessageBox.information(
+            self, 'No Slack Bot Running',
+            'Start the Slack bot using the Slack Bot button in the toolbar,\n'
+            'or run  cq --slack  in a terminal.',
+        )
+
+    def _check_slack_bot_transition(self) -> None:
+        """Detect Slack bot start/stop transitions and show status messages."""
+        bot_running = self._is_slack_bot_running()
+        was_running = self._slack_bot_was_running
+        if bot_running == was_running:
+            return
+        self._slack_bot_was_running = bot_running
+
+        slack_sessions = [
+            s for s in self.sessions
+            if s.get('slack_enabled') and not s.get('is_dead', True)
+        ]
+        count = len(slack_sessions)
+
+        if not bot_running and count:
+            self._show_status(
+                f'Slack bot stopped — {count} session(s) disconnected')
+        elif bot_running and count:
+            self._show_status(
+                f'Slack bot reconnected — {count} session(s) restored')
 
     def _toggle_slack(self, tag: str, enabled: bool) -> None:
         """Send set_slack to the CQ server to enable/disable Slack."""

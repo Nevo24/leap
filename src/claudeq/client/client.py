@@ -15,7 +15,7 @@ import time
 from typing import Optional
 
 from claudeq.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR,
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR, SLACK_BOT_LOCK,
     ensure_storage_dirs, load_settings, save_settings,
 )
 from claudeq.utils.terminal import set_terminal_title, print_banner
@@ -245,6 +245,7 @@ class ClaudeQClient:
         last_recently_sent: list[str] = []
         last_queue_contents: list[str] = []
         poll_count = 0
+        last_bot_running: Optional[bool] = None
 
         while self.running:
             time.sleep(0.3)
@@ -258,6 +259,23 @@ class ClaudeQClient:
             new_size = response.get('queue_size', 0)
             recently_sent = response.get('recently_sent', [])
             queue_contents = response.get('queue_contents', [])
+
+            # Detect Slack bot start/stop transitions
+            slack_enabled = response.get('slack_enabled', False)
+            if slack_enabled:
+                bot_running = SLACK_BOT_LOCK.is_dir()
+                if last_bot_running is not None and bot_running != last_bot_running:
+                    if not bot_running:
+                        print("\n⚠ Slack bot stopped — integration paused "
+                              "for this session", flush=True)
+                        print("  (will reconnect automatically "
+                              "when the bot starts)", flush=True)
+                    else:
+                        print("\n✓ Slack bot reconnected — integration "
+                              "resumed for this session", flush=True)
+                last_bot_running = bot_running
+            else:
+                last_bot_running = None
 
             # Detect externally added messages (e.g. from GitLab via monitor)
             if poll_count > 1 and self.show_auto_sent_notifications:
@@ -484,7 +502,11 @@ class ClaudeQClient:
         if self._is_slack_installed():
             print()
             slack_enabled = response.get('slack_enabled', False) if response else False
-            slack_label = 'on' if slack_enabled else 'off'
+            bot_running = SLACK_BOT_LOCK.is_dir()
+            if not bot_running:
+                slack_label = 'bot not running'
+            else:
+                slack_label = 'on' if slack_enabled else 'off'
             print(f"  \U0001F4EC Slack integration: !slack on/off                       [current: {slack_label}]")
         print()
         print("=" * 80)
@@ -593,14 +615,23 @@ class ClaudeQClient:
             print("Slack app not installed. Run: make install-slack-app\n")
             return
 
+        bot_running = SLACK_BOT_LOCK.is_dir()
+
         parts = line.lower().split(None, 1)
         if len(parts) < 2:
             # Show current Slack status
             response = self.socket.get_status(silent=True)
             if response:
                 enabled = response.get('slack_enabled', False)
-                status = "on" if enabled else "off"
-                print(f"\nSlack integration: {status}")
+                if not bot_running:
+                    print("\nSlack bot is not running.")
+                    print("Start it from the monitor or run: cq --slack")
+                    if enabled:
+                        print("(Session will reconnect automatically "
+                              "when the bot starts)")
+                else:
+                    status = "on" if enabled else "off"
+                    print(f"\nSlack integration: {status}")
                 print("Usage: !slack on/off\n")
             else:
                 print("Could not get server status\n")
@@ -608,6 +639,10 @@ class ClaudeQClient:
 
         toggle = parts[1].strip()
         if toggle in ('on', 'true', '1', 'yes'):
+            if not bot_running:
+                print("Slack bot is not running. "
+                      "Start it from the monitor or run: cq --slack\n")
+                return
             response = self.socket._send_request({
                 'type': 'set_slack', 'enabled': True,
             })

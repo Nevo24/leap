@@ -108,6 +108,7 @@ class MonitorWindow(
         self._status_log = StatusLog()
         self._server_launcher = ServerLauncher(self)
         self._slack_bot_process: Optional[QProcess] = None
+        self._slack_bot_was_running: bool = self._is_slack_bot_running()
 
         # User notification tracking state
         raw_seen = load_notification_seen()
@@ -543,7 +544,9 @@ class MonitorWindow(
         # Terminate Slack bot if we started it
         if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
             self._slack_bot_process.terminate()
-            self._slack_bot_process.waitForFinished(3000)
+            if not self._slack_bot_process.waitForFinished(500):
+                self._slack_bot_process.kill()
+                self._slack_bot_process.waitForFinished(2000)
 
         # Accept the close event, then hard-exit.  os._exit() skips atexit
         # handlers and thread joins — the only reliable way to exit when

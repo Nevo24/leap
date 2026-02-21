@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import subprocess
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
@@ -360,8 +361,12 @@ class SCMConfigMixin(_Base):
         from claudeq.monitor.navigation import close_terminal_with_title
 
         if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
-            # We started it via QProcess — no terminal tab to close
+            # We started it via QProcess — no terminal tab to close.
+            # terminate() sends SIGTERM which doesn't reliably kill
+            # slack-bolt (blocks on Event().wait()), so follow up with kill().
             self._slack_bot_process.terminate()
+            if not self._slack_bot_process.waitForFinished(500):
+                self._slack_bot_process.kill()
         else:
             default_term = self._prefs.get('default_terminal')
 
@@ -392,8 +397,15 @@ class SCMConfigMixin(_Base):
 
     @staticmethod
     def _kill_slack_bot_processes() -> None:
-        """Kill the Slack bot bash wrapper and Python child processes."""
-        # Kill both the bash wrapper and the Python child
+        """Kill the Slack bot bash wrapper and Python child processes.
+
+        SIGTERM alone doesn't work reliably on the Python Slack bot because
+        slack-bolt's SocketModeHandler blocks on ``threading.Event().wait()``
+        which is not interrupted by signals on macOS.  We therefore collect
+        all matching PIDs, send SIGTERM, wait briefly, then SIGKILL any
+        survivors.
+        """
+        pids: list[int] = []
         for pattern in ['claudeq-main.sh --slack', 'claudeq-slack.py']:
             try:
                 result = subprocess.run(
@@ -402,10 +414,31 @@ class SCMConfigMixin(_Base):
                 for pid_str in result.stdout.strip().split('\n'):
                     if pid_str:
                         try:
-                            os.kill(int(pid_str), signal.SIGTERM)
-                        except (ProcessLookupError, ValueError):
+                            pids.append(int(pid_str))
+                        except ValueError:
                             pass
             except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        if not pids:
+            return
+
+        # Try graceful shutdown first
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+        # Give processes a moment to exit
+        time.sleep(0.3)
+
+        # Force-kill any survivors (SIGTERM doesn't interrupt
+        # slack-bolt's blocking Event().wait() on macOS)
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
                 pass
 
     def _on_slack_bot_finished(self) -> None:
