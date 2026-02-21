@@ -121,6 +121,9 @@ def read_client_pid(tag: str) -> Optional[int]:
     return None
 
 
+_last_good_status: dict[str, dict[str, Any]] = {}
+
+
 def get_active_sessions() -> list[dict[str, Any]]:
     """
     Get list of active ClaudeQ sessions.
@@ -133,18 +136,26 @@ def get_active_sessions() -> list[dict[str, Any]]:
     if not SOCKET_DIR.exists():
         return sessions
 
+    current_tags: set[str] = set()
+
     for socket_file in SOCKET_DIR.glob("*.sock"):
         tag = socket_file.stem
+        current_tags.add(tag)
         status_response = query_server_status(socket_file)
 
-        if not status_response:
+        if status_response:
+            _last_good_status[tag] = status_response
+        elif tag in _last_good_status:
+            # Server busy — reuse last known good status so the row
+            # doesn't flicker/disappear for one refresh cycle.
+            status_response = _last_good_status[tag]
+        else:
             continue
 
         queue_size = status_response.get('queue_size', 0)
         claude_state = status_response.get('claude_state', 'idle')
         auto_send_mode = status_response.get('auto_send_mode', 'pause')
         slack_enabled = status_response.get('slack_enabled', False)
-
 
         # Load metadata
         metadata = load_session_metadata(tag)
@@ -201,6 +212,11 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'has_client': has_client,
             'slack_enabled': slack_enabled,
         })
+
+    # Evict stale cache entries for sockets that no longer exist
+    stale = [t for t in _last_good_status if t not in current_tags]
+    for t in stale:
+        _last_good_status.pop(t, None)
 
     return sorted(sessions, key=lambda x: x['tag'])
 
