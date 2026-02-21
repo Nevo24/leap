@@ -706,6 +706,11 @@ class TableBuilderMixin(_Base):
     def _on_sessions_refreshed(self, sessions: list) -> None:
         """Handle background session refresh result."""
         self.sessions = self._merge_sessions(sessions)
+        # Dynamically show/hide Slack column if install state changed
+        slack_now = self._is_slack_installed()
+        if slack_now != self._slack_available:
+            self._slack_available = slack_now
+            self.table.setColumnHidden(self.COL_SLACK, not slack_now)
         self._update_table()
         self._update_slack_bot_button()
         notif_prefs = get_notification_prefs(self._prefs)

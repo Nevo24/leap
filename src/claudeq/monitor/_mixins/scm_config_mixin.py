@@ -293,12 +293,10 @@ class SCMConfigMixin(_Base):
     def _update_slack_bot_button(self) -> None:
         """Sync the Slack Bot button appearance with actual bot state."""
         if not is_slack_installed():
-            self.slack_bot_btn.setEnabled(False)
-            self.slack_bot_btn.setText('Slack Bot')
-            self.slack_bot_btn.setToolTip('Run make install-slack-app to configure')
-            self.slack_bot_btn.setStyleSheet('')
+            self.slack_bot_btn.setVisible(False)
             return
 
+        self.slack_bot_btn.setVisible(True)
         self.slack_bot_btn.setEnabled(True)
         if self._is_slack_bot_running():
             self.slack_bot_btn.setText('Slack Bot')

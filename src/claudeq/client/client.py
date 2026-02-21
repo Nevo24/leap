@@ -481,10 +481,12 @@ class ClaudeQClient:
 
         print(f"  \U0001F916 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
         print(f"  \U0001F514 Auto-sent notifications: !auto-sent on/off  (or !asm)  [current: {notif_label}]")
+        if self._is_slack_installed():
+            print()
+            slack_enabled = response.get('slack_enabled', False) if response else False
+            slack_label = 'on' if slack_enabled else 'off'
+            print(f"  \U0001F4EC Slack integration: !slack on/off                       [current: {slack_label}]")
         print()
-        slack_enabled = response.get('slack_enabled', False) if response else False
-        slack_label = 'on' if slack_enabled else 'off'
-        print(f"  \U0001F4EC Slack integration: !slack on/off                       [current: {slack_label}]")
         print("=" * 80)
         print()
 

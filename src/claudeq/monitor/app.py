@@ -40,6 +40,7 @@ from claudeq.monitor.ui.table_helpers import (
 )
 from claudeq.monitor.ui.ui_widgets import PulsingLabel, IndicatorLabel
 
+from claudeq.slack.config import is_slack_installed
 from claudeq.monitor._mixins.scm_config_mixin import SCMConfigMixin
 from claudeq.monitor._mixins.session_mixin import SessionMixin
 from claudeq.monitor._mixins.mr_tracking_mixin import MRTrackingMixin
@@ -209,6 +210,11 @@ class MonitorWindow(
         self.table.setColumnWidth(self.COL_DELETE, 30)
         header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
 
+        # Hide Slack column when Slack app is not installed
+        self._slack_available = is_slack_installed()
+        if not self._slack_available:
+            self.table.setColumnHidden(self.COL_SLACK, True)
+
         # Last column: Stretch fills remaining space and has no right-edge
         # handle to drag, while still expanding with the branch name.
         header.setSectionResizeMode(self.COL_MR_BRANCH, QHeaderView.Stretch)
@@ -333,6 +339,7 @@ class MonitorWindow(
         self.slack_bot_btn.setContextMenuPolicy(Qt.CustomContextMenu)
         self.slack_bot_btn.customContextMenuRequested.connect(
             self._slack_bot_context_menu)
+        self.slack_bot_btn.setVisible(self._slack_available)
         bottom_layout.addWidget(self.slack_bot_btn)
 
         layout.addLayout(bottom_layout)
