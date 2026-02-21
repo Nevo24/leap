@@ -9,7 +9,7 @@ the Slack bot polls.
 
 import json
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from claudeq.utils.constants import SLACK_DIR, SOCKET_DIR, atomic_json_write
 
@@ -192,7 +192,7 @@ class OutputCapture:
     def _save_enabled(self) -> None:
         """Persist enabled state to sessions.json."""
         try:
-            data: dict = {}
+            data: dict[str, Any] = {}
             if self._sessions_file.exists():
                 data = json.loads(self._sessions_file.read_text())
             if self._tag not in data:

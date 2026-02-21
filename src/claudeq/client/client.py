@@ -35,7 +35,7 @@ class ClaudeQClient:
     Interactive client for sending messages to a ClaudeQ server session.
     """
 
-    def __init__(self, tag: str):
+    def __init__(self, tag: str) -> None:
         """
         Initialize ClaudeQ client.
 
@@ -201,10 +201,12 @@ class ClaudeQClient:
 
         # Check if this image is identical to one we already saved
         try:
-            new_hash = hashlib.md5(open(image_path, 'rb').read()).hexdigest()
+            with open(image_path, 'rb') as f:
+                new_hash = hashlib.md5(f.read()).hexdigest()
             for placeholder, existing_path in self._image_placeholders.items():
                 try:
-                    existing_hash = hashlib.md5(open(existing_path, 'rb').read()).hexdigest()
+                    with open(existing_path, 'rb') as f:
+                        existing_hash = hashlib.md5(f.read()).hexdigest()
                     if new_hash == existing_hash:
                         # Same image — discard duplicate temp file, reuse placeholder
                         os.unlink(image_path)
@@ -285,9 +287,9 @@ class ClaudeQClient:
                     if entry_id and entry_id not in last_ids:
                         # Extract message body after the ID tag
                         msg_body = entry.split('> ', 1)[1] if '> ' in entry else entry
-                        if msg_body.startswith('[gitlab] '):
-                            preview = msg_body[9:69] + '...' if len(msg_body) > 78 else msg_body[9:]
-                            print(f"\n📩 GitLab review queued: {preview}", flush=True)
+                        if msg_body.startswith('[scm] '):
+                            preview = msg_body[6:66] + '...' if len(msg_body) > 72 else msg_body[6:]
+                            print(f"\n📩 SCM review queued: {preview}", flush=True)
                             print(f"   ({new_size} in queue)", flush=True)
 
             # Detect newly sent messages

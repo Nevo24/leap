@@ -1,12 +1,43 @@
 """Lightweight socket sender for queuing messages to CQ sessions."""
 
 import logging
+from typing import Optional
 
 from claudeq.utils.constants import SOCKET_DIR
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.mr_tracking.config import load_cq_template
 
 logger = logging.getLogger(__name__)
+
+
+def _send_to_socket(
+    tag: str,
+    msg_type: str,
+    message: str,
+    success_statuses: tuple[str, ...] = ('ok', 'queued'),
+) -> bool:
+    """Send a message to a CQ session socket and check the result.
+
+    Args:
+        tag: Session tag name.
+        msg_type: Socket message type ('queue' or 'direct').
+        message: Message body.
+        success_statuses: Response status values considered successful.
+
+    Returns:
+        True on success, False on failure.
+    """
+    socket_path = SOCKET_DIR / f"{tag}.sock"
+    if not socket_path.exists():
+        logger.warning("Socket not found for session: %s", tag)
+        return False
+
+    result = send_socket_request(socket_path, {'type': msg_type, 'message': message})
+    if result is None:
+        logger.error("Failed to send to session %s", tag)
+        return False
+
+    return result.get('status') in success_statuses
 
 
 def send_to_cq_session(tag: str, message: str) -> bool:
@@ -22,23 +53,11 @@ def send_to_cq_session(tag: str, message: str) -> bool:
     Returns:
         True on success, False on failure.
     """
-    socket_path = SOCKET_DIR / f"{tag}.sock"
-    if not socket_path.exists():
-        logger.warning("Socket not found for session: %s", tag)
-        return False
-
     template = load_cq_template()
     if template:
         message = template + '\n' + message
 
-    result = send_socket_request(
-        socket_path, {'type': 'queue', 'message': '[gitlab] ' + message}
-    )
-    if result is None:
-        logger.error("Failed to send to session %s", tag)
-        return False
-
-    return result.get('status') in ('ok', 'queued')
+    return _send_to_socket(tag, 'queue', '[scm] ' + message)
 
 
 def send_to_cq_session_raw(tag: str, message: str) -> bool:
@@ -51,19 +70,7 @@ def send_to_cq_session_raw(tag: str, message: str) -> bool:
     Returns:
         True on success, False on failure.
     """
-    socket_path = SOCKET_DIR / f"{tag}.sock"
-    if not socket_path.exists():
-        logger.warning("Socket not found for session: %s", tag)
-        return False
-
-    result = send_socket_request(
-        socket_path, {'type': 'queue', 'message': message}
-    )
-    if result is None:
-        logger.error("Failed to send to session %s", tag)
-        return False
-
-    return result.get('status') in ('ok', 'queued')
+    return _send_to_socket(tag, 'queue', message)
 
 
 def send_to_cq_session_direct(tag: str, message: str) -> bool:
@@ -79,16 +86,4 @@ def send_to_cq_session_direct(tag: str, message: str) -> bool:
     Returns:
         True on success, False on failure.
     """
-    socket_path = SOCKET_DIR / f"{tag}.sock"
-    if not socket_path.exists():
-        logger.warning("Socket not found for session: %s", tag)
-        return False
-
-    result = send_socket_request(
-        socket_path, {'type': 'direct', 'message': message}
-    )
-    if result is None:
-        logger.error("Failed to send directly to session %s", tag)
-        return False
-
-    return result.get('status') == 'sent'
+    return _send_to_socket(tag, 'direct', message, success_statuses=('sent',))

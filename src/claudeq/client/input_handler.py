@@ -31,7 +31,7 @@ class InputHandler:
         history_file: Path,
         prompt_getter: Callable[[], str],
         on_paste_image: Optional[Callable[[], Optional[str]]] = None,
-    ):
+    ) -> None:
         """
         Initialize input handler.
 

@@ -6,16 +6,23 @@ server's current state, and sends the message as either a queue
 message (idle) or a direct PTY input (needs_permission / has_question).
 """
 
-from pathlib import Path
-from typing import Optional
+import time
+from typing import Any, Optional
 
 from claudeq.utils.constants import SOCKET_DIR
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.slack.config import load_slack_sessions
 
+# Cache sessions for up to 5 seconds to avoid reading disk on every message
+_SESSIONS_CACHE_TTL: float = 5.0
+
 
 class MessageRouter:
     """Routes incoming Slack messages to the correct CQ session."""
+
+    def __init__(self) -> None:
+        self._sessions_cache: Optional[dict[str, Any]] = None
+        self._sessions_cache_ts: float = 0.0
 
     def route_message(self, thread_ts: str, text: str) -> Optional[str]:
         """Route a Slack thread reply to the matching CQ session.
@@ -81,6 +88,15 @@ class MessageRouter:
                 return 'queued'
             return None
 
+    def _get_sessions(self) -> dict[str, Any]:
+        """Return cached sessions, refreshing from disk if stale."""
+        now = time.monotonic()
+        if (self._sessions_cache is None
+                or now - self._sessions_cache_ts > _SESSIONS_CACHE_TTL):
+            self._sessions_cache = load_slack_sessions()
+            self._sessions_cache_ts = now
+        return self._sessions_cache
+
     def _find_tag_for_thread(self, thread_ts: str) -> Optional[str]:
         """Look up the CQ session tag for a Slack thread.
 
@@ -90,7 +106,7 @@ class MessageRouter:
         Returns:
             Session tag, or None if not found.
         """
-        sessions = load_slack_sessions()
+        sessions = self._get_sessions()
         for tag, data in sessions.items():
             if data.get('thread_ts') == thread_ts:
                 return tag

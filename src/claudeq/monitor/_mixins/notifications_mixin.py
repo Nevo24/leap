@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 
 from claudeq.monitor.mr_tracking.base import UserNotification
 from claudeq.monitor.mr_tracking.config import (
-    get_notification_prefs, load_github_config, load_gitlab_config,
+    get_dock_enabled, load_github_config, load_gitlab_config,
     save_github_config, save_gitlab_config, save_notification_seen,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType
@@ -167,8 +167,7 @@ class NotificationsMixin(_Base):
             self._log_notification_event(ev)
 
         # Update dock badge
-        notif_prefs = get_notification_prefs(self._prefs)
-        dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
+        dock_enabled = get_dock_enabled(self._prefs)
         self._dock_badge.count_user_notification_events(
             all_events, self.isActiveWindow(), dock_enabled,
         )

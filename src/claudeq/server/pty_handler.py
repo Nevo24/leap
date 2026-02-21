@@ -23,7 +23,7 @@ class PTYHandler:
         flags: Optional[list[str]] = None,
         tag: Optional[str] = None,
         signal_dir: Optional[Path] = None,
-    ):
+    ) -> None:
         """
         Initialize PTY handler.
 

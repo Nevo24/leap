@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class SessionMetadata:
     """Manages session metadata for a ClaudeQ server instance."""
 
-    def __init__(self, tag: str, socket_dir: Path):
+    def __init__(self, tag: str, socket_dir: Path) -> None:
         """
         Initialize session metadata manager.
 

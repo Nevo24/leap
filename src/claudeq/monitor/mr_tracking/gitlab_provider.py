@@ -94,11 +94,20 @@ class GitLabProvider(SCMProvider):
         mr_url = mr.web_url
         mr_title = mr.title
 
+        # Fetch the full MR object once (used for approvals + discussions)
+        try:
+            mr_full = project.mergerequests.get(mr_iid)
+        except Exception:
+            logger.debug("Failed to fetch full MR !%s", mr_iid, exc_info=True)
+            return MRStatus(
+                state=MRState.ALL_RESPONDED,
+                mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
+            )
+
         # Check approval status
         approved = False
         approved_by: list[str] = []
         try:
-            mr_full = project.mergerequests.get(mr_iid)
             approvals = mr_full.approvals.get()
             approved = getattr(approvals, 'approved', False)
             for entry in getattr(approvals, 'approved_by', []):
@@ -130,7 +139,6 @@ class GitLabProvider(SCMProvider):
 
         # Fetch discussions to count unresponded threads
         try:
-            mr_full = project.mergerequests.get(mr_iid)
             discussions = mr_full.discussions.list(get_all=True)
         except Exception:
             logger.debug("Failed to fetch discussions for MR !%s", mr_iid)

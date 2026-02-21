@@ -43,9 +43,11 @@ class ClaudeStateTracker:
     cases where hooks don't fire (e.g. user interrupts with Ctrl+C).
 
     Thread safety: ``_state`` and ``_waiting_since`` are protected by
-    ``_lock``.  ``_last_output_time`` is lock-free (single writer from
-    the output filter; stale reads are acceptable for the silence
-    timeout heuristic).
+    ``_lock``.  ``_output_buf`` and ``_last_prompt_buf`` are protected
+    by ``_buf_lock`` for compound read+clear operations.
+    ``_last_output_time`` is lock-free (single writer from the output
+    filter; stale reads are acceptable for the silence timeout
+    heuristic).
     """
 
     _VALID_SIGNAL_STATES = frozenset({'idle', 'needs_permission', 'has_question'})
@@ -72,6 +74,7 @@ class ClaudeStateTracker:
 
         self._state: str = 'idle'
         self._lock = threading.Lock()
+        self._buf_lock = threading.Lock()
         self._waiting_since: Optional[float] = None
         self._last_output_time: float = 0.0
         # Track user input to distinguish typing echo from Claude output.
@@ -162,11 +165,12 @@ class ClaudeStateTracker:
                     else:
                         self._waiting_since = None
                 self._idle_output_acc = 0
-                if new_state in ('needs_permission', 'has_question'):
-                    self._last_prompt_buf = bytes(self._output_buf)
-                else:
-                    self._last_prompt_buf = b''
-                self._output_buf.clear()
+                with self._buf_lock:
+                    if new_state in ('needs_permission', 'has_question'):
+                        self._last_prompt_buf = bytes(self._output_buf)
+                    else:
+                        self._last_prompt_buf = b''
+                    self._output_buf.clear()
                 if new_state == 'idle':
                     self._idle_since = self._clock()
                 return new_state
@@ -241,9 +245,10 @@ class ClaudeStateTracker:
         with self._lock:
             self._state = 'running'
             self._waiting_since = None
-        self._output_buf.clear()
+        with self._buf_lock:
+            self._output_buf.clear()
+            self._last_prompt_buf = b''
         self._idle_output_acc = 0
-        self._last_prompt_buf = b''
 
         try:
             self._signal_file.unlink(missing_ok=True)
@@ -466,9 +471,11 @@ class ClaudeStateTracker:
         Processes the raw PTY bytes through a minimal virtual terminal
         to properly handle Ink TUI cursor-positioning layout.
         """
-        if not self._last_prompt_buf:
+        with self._buf_lock:
+            buf = self._last_prompt_buf
+        if not buf:
             return ''
-        return self._render_screen(self._last_prompt_buf)
+        return self._render_screen(buf)
 
     @staticmethod
     def _render_screen(raw: bytes, rows: int = 50, cols: int = 200) -> str:

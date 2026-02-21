@@ -29,6 +29,19 @@ QUICK_MSG_SEND_TO_QUEUE = 'Send quick message to queue'
 APPLY_MR_BTN = 'Apply to MR threads && Close'
 APPLY_QUICK_MSG_BTN = 'Apply to Quick message && Close'
 
+# Max characters shown in template combo items before truncation with ellipsis
+MAX_COMBO_DISPLAY = 40
+
+# Reusable stylesheet constants for cell buttons
+CLOSE_BTN_STYLE = (
+    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+)
+ACTIVE_BTN_STYLE = (
+    'QPushButton { color: #00ff00; } '
+    'QToolTip { color: #e0e0e0; }'
+)
+
 # Column group boundaries for vertical separators.
 # Groups: [X, Tag, Project] | [Server, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]
 GROUP_BOUNDARY_COLS = frozenset({0, 2, 6, 7, 8})   # Solid white (between groups)

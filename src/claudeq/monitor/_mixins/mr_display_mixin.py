@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 from PyQt5 import sip
 
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
-from claudeq.monitor.mr_tracking.config import get_notification_prefs
+from claudeq.monitor.mr_tracking.config import get_dock_enabled, get_notification_prefs
 from claudeq.monitor.ui.dock_badge import NotificationEvent, NotificationType
 from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.monitor_utils import find_icon
@@ -133,8 +133,7 @@ class MRDisplayMixin(_Base):
 
     def _update_dock_badge(self) -> None:
         """Update the dock badge with number of MRs changed since last window focus."""
-        notif_prefs = get_notification_prefs(self._prefs)
-        dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
+        dock_enabled = get_dock_enabled(self._prefs)
         events = self._dock_badge.update(
             self._mr_statuses, self.isActiveWindow(), dock_enabled,
         )

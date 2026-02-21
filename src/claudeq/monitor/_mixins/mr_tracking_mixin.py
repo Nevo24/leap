@@ -378,6 +378,14 @@ class MRTrackingMixin(_Base):
     #  Thread sending
     # ------------------------------------------------------------------
 
+    def _is_send_in_progress(self) -> bool:
+        """Check if any thread-send worker is currently running."""
+        return (
+            (self._collect_threads_worker is not None and self._collect_threads_worker.isRunning())
+            or (self._send_threads_worker is not None and self._send_threads_worker.isRunning())
+            or (self._send_combined_worker is not None and self._send_combined_worker.isRunning())
+        )
+
     def _send_all_threads_to_cq(self, tag: str) -> None:
         """Send all unresponded MR threads to the CQ session (non-blocking).
 
@@ -387,10 +395,7 @@ class MRTrackingMixin(_Base):
         if not self._scm_providers:
             return
 
-        # Guard against concurrent runs
-        if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
-           (self._send_threads_worker and self._send_threads_worker.isRunning()) or \
-           (self._send_combined_worker and self._send_combined_worker.isRunning()):
+        if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
                 'Already sending threads — please wait.'
@@ -413,12 +418,16 @@ class MRTrackingMixin(_Base):
         self._collect_threads_worker.configure(
             project_path, self._scm_providers, self.sessions
         )
+        self._combined_send = False
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
         self._collect_threads_worker.start()
 
     def _on_threads_collected(self, commands: list, matching_tags: list) -> None:
-        """Handle Phase 1 completion: show dialog if needed, then launch Phase 2."""
+        """Handle Phase 1 completion: show dialog if needed, then launch Phase 2.
+
+        Uses ``_combined_send`` flag to decide which Phase 2 worker to launch.
+        """
         provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
 
         if not commands or not provider:
@@ -456,12 +465,20 @@ class MRTrackingMixin(_Base):
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
         # Launch Phase 2 — send + acknowledge in background
-        self._send_threads_worker = SendThreadsWorker(self)
-        self._send_threads_worker.configure(provider, commands, matched_tag)
-        self._send_threads_worker.finished.connect(self._on_send_threads_finished)
-        self._send_threads_worker.error.connect(self._on_send_threads_error)
-        self._send_threads_worker.ack_failed.connect(self._on_cq_ack_failed)
-        self._send_threads_worker.start()
+        if self._combined_send:
+            self._send_combined_worker = SendThreadsCombinedWorker(self)
+            self._send_combined_worker.configure(provider, commands, matched_tag)
+            self._send_combined_worker.finished.connect(self._on_send_combined_finished)
+            self._send_combined_worker.error.connect(self._on_send_threads_error)
+            self._send_combined_worker.ack_failed.connect(self._on_cq_ack_failed)
+            self._send_combined_worker.start()
+        else:
+            self._send_threads_worker = SendThreadsWorker(self)
+            self._send_threads_worker.configure(provider, commands, matched_tag)
+            self._send_threads_worker.finished.connect(self._on_send_threads_finished)
+            self._send_threads_worker.error.connect(self._on_send_threads_error)
+            self._send_threads_worker.ack_failed.connect(self._on_cq_ack_failed)
+            self._send_threads_worker.start()
 
     def _on_send_threads_finished(self, sent_count: int, matched_tag: str) -> None:
         """Handle Phase 2 completion."""
@@ -527,10 +544,7 @@ class MRTrackingMixin(_Base):
         if not self._scm_providers:
             return
 
-        # Guard against concurrent runs
-        if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
-           (self._send_threads_worker and self._send_threads_worker.isRunning()) or \
-           (self._send_combined_worker and self._send_combined_worker.isRunning()):
+        if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
                 'Already sending threads — please wait.'
@@ -547,61 +561,16 @@ class MRTrackingMixin(_Base):
 
         # Launch Phase 1 — collection runs in background
         self._cq_only_collect = False
+        self._combined_send = True
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
             project_path, self._scm_providers, self.sessions
         )
-        self._collect_threads_worker.collected.connect(self._on_threads_collected_combined)
+        self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
         self._collect_threads_worker.start()
-
-    def _on_threads_collected_combined(self, commands: list, matching_tags: list) -> None:
-        """Handle Phase 1 completion for combined send."""
-        provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
-
-        if not commands or not provider:
-            self._set_busy(False)
-            QApplication.restoreOverrideCursor()
-            QMessageBox.information(
-                self, 'No Threads',
-                "No threads with '/cq' comment found." if self._cq_only_collect
-                else 'No unresponded threads found.'
-            )
-            return
-
-        if not matching_tags:
-            self._set_busy(False)
-            QApplication.restoreOverrideCursor()
-            QMessageBox.warning(
-                self, 'No Session',
-                'No matching CQ session found for this project.'
-            )
-            return
-
-        if len(matching_tags) == 1:
-            matched_tag = matching_tags[0]
-        else:
-            self._set_busy(False)
-            QApplication.restoreOverrideCursor()
-            matched_tag, ok = QInputDialog.getItem(
-                self, 'Select Session',
-                'Multiple sessions found.\nPick one:',
-                matching_tags, 0, False
-            )
-            if not ok:
-                return
-            self._set_busy(True)
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-
-        # Launch Phase 2 — send combined message
-        self._send_combined_worker = SendThreadsCombinedWorker(self)
-        self._send_combined_worker.configure(provider, commands, matched_tag)
-        self._send_combined_worker.finished.connect(self._on_send_combined_finished)
-        self._send_combined_worker.error.connect(self._on_send_threads_error)
-        self._send_combined_worker.ack_failed.connect(self._on_cq_ack_failed)
-        self._send_combined_worker.start()
 
     def _on_send_combined_finished(self, thread_count: int, matched_tag: str) -> None:
         """Handle combined send completion."""
@@ -634,10 +603,7 @@ class MRTrackingMixin(_Base):
         if not self._scm_providers:
             return
 
-        # Guard against concurrent runs
-        if (self._collect_threads_worker and self._collect_threads_worker.isRunning()) or \
-           (self._send_threads_worker and self._send_threads_worker.isRunning()) or \
-           (self._send_combined_worker and self._send_combined_worker.isRunning()):
+        if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
                 'Already sending threads — please wait.'
@@ -653,16 +619,14 @@ class MRTrackingMixin(_Base):
             return
 
         self._cq_only_collect = True
+        self._combined_send = combined
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
             project_path, self._scm_providers, self.sessions, cq_only=True
         )
-        if combined:
-            self._collect_threads_worker.collected.connect(self._on_threads_collected_combined)
-        else:
-            self._collect_threads_worker.collected.connect(self._on_threads_collected)
+        self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
         self._collect_threads_worker.start()
 

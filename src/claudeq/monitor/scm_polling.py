@@ -336,8 +336,8 @@ class CollectThreadsWorker(QThread):
             self.error.emit("Failed to collect threads.")
 
 
-class SendThreadsWorker(QThread):
-    """Phase 2: Send pre-collected commands to CQ and acknowledge on SCM."""
+class _BaseSendWorker(QThread):
+    """Base class for Phase 2 workers that send commands to CQ and ack on SCM."""
 
     finished = pyqtSignal(int, str)  # (sent_count, matched_tag)
     error = pyqtSignal(str)  # error_message
@@ -359,6 +359,20 @@ class SendThreadsWorker(QThread):
         self._commands = list(commands)
         self._matched_tag = matched_tag
 
+    def _ack_commands(self, commands: list[Any]) -> bool:
+        """Acknowledge commands on the SCM provider. Returns True if all succeeded."""
+        ok = True
+        for cmd in commands:
+            if not self._provider.acknowledge_cq_command(
+                cmd.project_path, cmd.mr_iid, cmd.discussion_id
+            ):
+                ok = False
+        return ok
+
+
+class SendThreadsWorker(_BaseSendWorker):
+    """Phase 2: Send pre-collected commands to CQ one-by-one and acknowledge on SCM."""
+
     def run(self) -> None:
         if not self._provider:
             return
@@ -369,10 +383,9 @@ class SendThreadsWorker(QThread):
                 message = format_cq_message(cmd)
                 sent = send_to_cq_session(self._matched_tag, message)
                 if sent:
-                    acked = self._provider.acknowledge_cq_command(
+                    if not self._provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                    )
-                    if not acked:
+                    ):
                         ack_ok = False
                     sent_count += 1
                 else:
@@ -386,28 +399,8 @@ class SendThreadsWorker(QThread):
             self.error.emit("Failed to send threads.")
 
 
-class SendThreadsCombinedWorker(QThread):
+class SendThreadsCombinedWorker(_BaseSendWorker):
     """Send all collected threads as a single concatenated message to CQ."""
-
-    finished = pyqtSignal(int, str)  # (thread_count, matched_tag)
-    error = pyqtSignal(str)  # error_message
-    ack_failed = pyqtSignal()  # /cq ack post failed
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._provider: Optional[SCMProvider] = None
-        self._commands: list[Any] = []
-        self._matched_tag: str = ''
-
-    def configure(
-        self,
-        provider: SCMProvider,
-        commands: list[Any],
-        matched_tag: str,
-    ) -> None:
-        self._provider = provider
-        self._commands = list(commands)
-        self._matched_tag = matched_tag
 
     def run(self) -> None:
         if not self._provider:
@@ -423,14 +416,7 @@ class SendThreadsCombinedWorker(QThread):
             combined = "\n".join(parts)
             sent = send_to_cq_session(self._matched_tag, combined)
             if sent:
-                # Acknowledge all threads
-                ack_ok = True
-                for cmd in self._commands:
-                    acked = self._provider.acknowledge_cq_command(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
-                    )
-                    if not acked:
-                        ack_ok = False
+                ack_ok = self._ack_commands(self._commands)
                 self.finished.emit(len(self._commands), self._matched_tag)
                 if not ack_ok:
                     self.ack_failed.emit()

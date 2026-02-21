@@ -142,7 +142,7 @@ def atomic_json_write(path: Path, data: Any, **json_kwargs: Any) -> None:
         raise
 
 
-def get_default_settings() -> dict:
+def get_default_settings() -> dict[str, Any]:
     """
     Get default settings for ClaudeQ.
 
@@ -156,7 +156,7 @@ def get_default_settings() -> dict:
     }
 
 
-def load_settings() -> dict:
+def load_settings() -> dict[str, Any]:
     """
     Load settings from JSON file with defaults.
 
@@ -175,7 +175,7 @@ def load_settings() -> dict:
     return defaults
 
 
-def save_settings(settings: dict) -> None:
+def save_settings(settings: dict[str, Any]) -> None:
     """
     Save settings to JSON file.
 

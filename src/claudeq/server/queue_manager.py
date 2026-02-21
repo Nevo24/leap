@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class QueueManager:
     """Manages the message queue for a ClaudeQ server."""
 
-    def __init__(self, queue_file: Path, max_recently_sent: int = 20):
+    def __init__(self, queue_file: Path, max_recently_sent: int = 20) -> None:
         """
         Initialize queue manager.
 
@@ -229,3 +229,16 @@ class QueueManager:
         with self._lock:
             self.queue.clear()
             self.save()
+
+    def delete_file_if_empty(self) -> None:
+        """Delete the queue file if the queue is empty.
+
+        Holds the internal lock so no message can be added between the
+        emptiness check and the unlink.
+        """
+        with self._lock:
+            if not self.queue and self.queue_file.exists():
+                try:
+                    self.queue_file.unlink()
+                except OSError:
+                    pass

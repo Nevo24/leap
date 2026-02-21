@@ -27,8 +27,8 @@ def send_socket_request(
     Returns:
         Parsed JSON response dictionary, or None on any error.
     """
+    client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        client_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client_socket.settimeout(timeout)
         client_socket.connect(str(socket_path))
 
@@ -40,8 +40,9 @@ def send_socket_request(
             if not chunk:
                 break
             chunks.append(chunk)
-        client_socket.close()
 
         return json.loads(b''.join(chunks).decode('utf-8'))
     except (socket.error, json.JSONDecodeError, OSError):
         return None
+    finally:
+        client_socket.close()

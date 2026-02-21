@@ -44,7 +44,7 @@ class ClaudeQServer:
         rb'\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)'
     )
 
-    def __init__(self, tag: str, flags: Optional[list[str]] = None):
+    def __init__(self, tag: str, flags: Optional[list[str]] = None) -> None:
         """
         Initialize ClaudeQ server.
 
@@ -452,7 +452,8 @@ class ClaudeQServer:
             try:
                 self._send_to_claude(message)
                 self.queue.track_sent(message)
-            except Exception:
+            except Exception as e:
+                print(f"Error sending to Claude, requeuing: {e}", file=sys.stderr, flush=True)
                 self.queue.requeue(message)
 
     def _title_keeper_loop(self) -> None:
@@ -621,14 +622,7 @@ class ClaudeQServer:
         self.state.cleanup()
         self.output_capture.cleanup()
         # Remove queue file if empty (no pending messages).
-        # Hold the queue lock so no message can be added between the
-        # emptiness check and the unlink.
-        with self.queue._lock:
-            if not self.queue.queue and self.queue_file.exists():
-                try:
-                    self.queue_file.unlink()
-                except OSError:
-                    pass
+        self.queue.delete_file_if_empty()
 
 
 def main() -> None:

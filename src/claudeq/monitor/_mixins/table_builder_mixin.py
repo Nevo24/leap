@@ -6,11 +6,11 @@ import logging
 import subprocess
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QHBoxLayout, QLabel, QMenu,
+    QAction, QApplication, QComboBox, QHBoxLayout, QLabel, QMenu,
     QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
@@ -18,19 +18,19 @@ from PyQt5.QtGui import QColor
 
 from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
-    get_notification_prefs, load_cq_direct_template, load_saved_templates,
-    load_selected_direct_template_name, load_selected_template_name,
-    save_monitor_prefs, save_selected_direct_template_name,
-    save_selected_template_name,
+    get_dock_enabled, get_notification_prefs, load_cq_direct_template,
+    load_saved_templates, load_selected_direct_template_name,
+    load_selected_template_name, save_monitor_prefs,
+    save_selected_direct_template_name, save_selected_template_name,
 )
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.scm_polling import SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
-    GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
-    MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_DIRECTLY, QUICK_MSG_SEND_TO_QUEUE,
-    QUICK_MSG_TEMPLATE_TOOLTIP,
+    ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
+    MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_DIRECTLY,
+    QUICK_MSG_SEND_TO_QUEUE, QUICK_MSG_TEMPLATE_TOOLTIP,
 )
 
 if TYPE_CHECKING:
@@ -216,10 +216,7 @@ class TableBuilderMixin(_Base):
                     del_layout.setSpacing(0)
                     del_btn = QPushButton('X')
                     del_btn.setFixedSize(24, del_btn.sizeHint().height())
-                    del_btn.setStyleSheet(
-                        'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                        'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                    )
+                    del_btn.setStyleSheet(CLOSE_BTN_STYLE)
                     del_btn.setToolTip(f'Remove row for {tag}')
                     del_btn.clicked.connect(
                         lambda checked, t=tag: self._delete_row(t)
@@ -312,10 +309,7 @@ class TableBuilderMixin(_Base):
                     if not is_dead:
                         server_x = QPushButton('X')
                         server_x.setFixedSize(24, server_x.sizeHint().height())
-                        server_x.setStyleSheet(
-                            'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                            'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                        )
+                        server_x.setStyleSheet(CLOSE_BTN_STYLE)
                         server_x.setToolTip(f'Close server {tag}')
                         server_x.clicked.connect(
                             lambda checked, t=tag, spid=server_pid:
@@ -347,9 +341,7 @@ class TableBuilderMixin(_Base):
                             )
                         else:
                             server_btn = QPushButton('Server')
-                            server_btn.setStyleSheet(
-                                'QPushButton { color: #00ff00; } '
-                                'QToolTip { color: #e0e0e0; }')
+                            server_btn.setStyleSheet(ACTIVE_BTN_STYLE)
                             server_btn.setToolTip(
                                 f'Jump to server terminal for {tag}')
                         server_btn.clicked.connect(
@@ -380,10 +372,7 @@ class TableBuilderMixin(_Base):
                     if has_client:
                         client_x = QPushButton('X')
                         client_x.setFixedSize(24, client_x.sizeHint().height())
-                        client_x.setStyleSheet(
-                            'QPushButton { color: #999; font-size: 11px; padding: 0; }'
-                            'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-                        )
+                        client_x.setStyleSheet(CLOSE_BTN_STYLE)
                         client_x.setToolTip(f'Close client {tag}')
                         client_x.clicked.connect(
                             lambda checked, t=tag, pid=client_pid:
@@ -397,9 +386,7 @@ class TableBuilderMixin(_Base):
                         client_btn.setToolTip('No client connected')
                     else:
                         if has_client:
-                            client_btn.setStyleSheet(
-                                'QPushButton { color: #00ff00; } '
-                                'QToolTip { color: #e0e0e0; }')
+                            client_btn.setStyleSheet(ACTIVE_BTN_STYLE)
                             client_btn.setToolTip(
                                 f'Jump to client terminal for {tag}')
                         else:
@@ -454,12 +441,7 @@ class TableBuilderMixin(_Base):
 
                         slack_x = QPushButton('X')
                         slack_x.setFixedSize(24, slack_x.sizeHint().height())
-                        slack_x.setStyleSheet(
-                            'QPushButton { color: #999; font-size: 11px; '
-                            'padding: 0; }'
-                            'QPushButton:hover { color: #ff4444; '
-                            'font-weight: bold; }'
-                        )
+                        slack_x.setStyleSheet(CLOSE_BTN_STYLE)
                         slack_x.setToolTip(f'Disconnect Slack for {tag}')
                         slack_x.clicked.connect(
                             lambda checked, t=tag:
@@ -468,9 +450,7 @@ class TableBuilderMixin(_Base):
                         slack_layout.addWidget(slack_x, 0, Qt.AlignVCenter)
 
                         slack_btn = QPushButton('Slack')
-                        slack_btn.setStyleSheet(
-                            'QPushButton { color: #00ff00; } '
-                            'QToolTip { color: #e0e0e0; }')
+                        slack_btn.setStyleSheet(ACTIVE_BTN_STYLE)
                         slack_btn.setToolTip(
                             f'Open Slack thread for {tag}')
                         slack_btn.clicked.connect(
@@ -554,12 +534,7 @@ class TableBuilderMixin(_Base):
 
                         mr_x = QPushButton('X')
                         mr_x.setFixedSize(24, mr_x.sizeHint().height())
-                        mr_x.setStyleSheet(
-                            'QPushButton { color: #999; font-size: 11px; '
-                            'padding: 0; }'
-                            'QPushButton:hover { color: #ff4444; '
-                            'font-weight: bold; }'
-                        )
+                        mr_x.setStyleSheet(CLOSE_BTN_STYLE)
                         mr_x.setToolTip(f'Stop tracking MR for {tag}')
                         mr_x.clicked.connect(
                             lambda checked, t=tag: self._stop_tracking(t)
@@ -650,12 +625,7 @@ class TableBuilderMixin(_Base):
 
                             mr_br_x = QPushButton('X')
                             mr_br_x.setFixedSize(24, mr_br_x.sizeHint().height())
-                            mr_br_x.setStyleSheet(
-                                'QPushButton { color: #999; font-size: 11px; '
-                                'padding: 0; }'
-                                'QPushButton:hover { color: #ff4444; '
-                                'font-weight: bold; }'
-                            )
+                            mr_br_x.setStyleSheet(CLOSE_BTN_STYLE)
                             mr_br_x.setToolTip(
                                 f'Clear pinned MR data for {tag}')
                             mr_br_x.clicked.connect(
@@ -743,8 +713,7 @@ class TableBuilderMixin(_Base):
         self._update_table()
         self._update_slack_bot_button()
         self._check_slack_bot_transition()
-        notif_prefs = get_notification_prefs(self._prefs)
-        dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
+        dock_enabled = get_dock_enabled(self._prefs)
         events = self._dock_badge.update_sessions(
             sessions, self.isActiveWindow(), dock_enabled,
         )
@@ -910,96 +879,99 @@ class TableBuilderMixin(_Base):
         self._populate_template_combo()
         self._populate_direct_template_combo()
 
-    def _populate_template_combo(self) -> None:
-        """Reload template combo items from saved presets and selection."""
-        max_display = 40
-        combo = self.template_combo
+    # -- Template combo helpers (shared logic for MR and direct combos) ----
+
+    @staticmethod
+    def _populate_combo(
+        combo: 'QComboBox',
+        load_selected_fn: 'Callable[[], str]',
+        default_tooltip: str,
+    ) -> None:
+        """Populate a template combo from saved presets.
+
+        Args:
+            combo: The QComboBox to populate.
+            load_selected_fn: Function returning the currently selected name.
+            default_tooltip: Tooltip when no truncated name is active.
+        """
         combo.blockSignals(True)
         combo.clear()
         combo.addItem('(None)')
         for name in sorted(load_saved_templates().keys()):
-            if len(name) > max_display:
-                combo.addItem(name[:max_display] + '\u2026')
+            if len(name) > MAX_COMBO_DISPLAY:
+                combo.addItem(name[:MAX_COMBO_DISPLAY] + '\u2026')
                 combo.setItemData(combo.count() - 1, name, Qt.UserRole)
             else:
                 combo.addItem(name)
-        selected = load_selected_template_name()
-        if selected and len(selected) > max_display:
-            display = selected[:max_display] + '\u2026'
+        selected = load_selected_fn()
+        if selected and len(selected) > MAX_COMBO_DISPLAY:
+            display = selected[:MAX_COMBO_DISPLAY] + '\u2026'
             idx = combo.findText(display)
         else:
             idx = combo.findText(selected) if selected else 0
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
-        self._update_template_combo_tooltip()
+        TableBuilderMixin._update_combo_tooltip(combo, default_tooltip)
+
+    @staticmethod
+    def _on_combo_changed(
+        combo: 'QComboBox',
+        save_fn: 'Callable[[str], None]',
+        default_tooltip: str,
+    ) -> None:
+        """Handle a template combo selection change.
+
+        Args:
+            combo: The QComboBox that changed.
+            save_fn: Function to persist the selected name.
+            default_tooltip: Tooltip when no truncated name is active.
+        """
+        text = combo.currentText()
+        if text == '(None)':
+            save_fn('')
+            TableBuilderMixin._update_combo_tooltip(combo, default_tooltip)
+            return
+        idx = combo.currentIndex()
+        full_name = combo.itemData(idx, Qt.UserRole)
+        save_fn(full_name if full_name else text)
+        TableBuilderMixin._update_combo_tooltip(combo, default_tooltip)
+
+    @staticmethod
+    def _update_combo_tooltip(combo: 'QComboBox', default_tooltip: str) -> None:
+        """Set combo tooltip to the full name when truncated, else default."""
+        idx = combo.currentIndex()
+        full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
+        combo.setToolTip(full_name if full_name else default_tooltip)
+
+    # -- Public combo wrappers (called by app and signals) ----------------
+
+    def _populate_template_combo(self) -> None:
+        """Reload template combo items from saved presets and selection."""
+        self._populate_combo(
+            self.template_combo, load_selected_template_name,
+            MR_TEMPLATE_TOOLTIP,
+        )
 
     def _on_template_combo_changed(self) -> None:
         """Handle template combo selection change."""
-        text = self.template_combo.currentText()
-        if text == '(None)':
-            save_selected_template_name('')
-            self._update_template_combo_tooltip()
-            return
-        # Resolve truncated display name back to full name via UserRole
-        idx = self.template_combo.currentIndex()
-        full_name = self.template_combo.itemData(idx, Qt.UserRole)
-        save_selected_template_name(full_name if full_name else text)
-        self._update_template_combo_tooltip()
-
-    def _update_template_combo_tooltip(self) -> None:
-        """Set combo tooltip to the full template name when truncated."""
-        combo = self.template_combo
-        idx = combo.currentIndex()
-        full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
-        if full_name:
-            combo.setToolTip(full_name)
-        else:
-            combo.setToolTip(MR_TEMPLATE_TOOLTIP)
+        self._on_combo_changed(
+            self.template_combo, save_selected_template_name,
+            MR_TEMPLATE_TOOLTIP,
+        )
 
     def _populate_direct_template_combo(self) -> None:
         """Reload direct template combo items from saved presets and selection."""
-        max_display = 40
-        combo = self.direct_template_combo
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem('(None)')
-        for name in sorted(load_saved_templates().keys()):
-            if len(name) > max_display:
-                combo.addItem(name[:max_display] + '\u2026')
-                combo.setItemData(combo.count() - 1, name, Qt.UserRole)
-            else:
-                combo.addItem(name)
-        selected = load_selected_direct_template_name()
-        if selected and len(selected) > max_display:
-            display = selected[:max_display] + '\u2026'
-            idx = combo.findText(display)
-        else:
-            idx = combo.findText(selected) if selected else 0
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.blockSignals(False)
-        self._update_direct_template_combo_tooltip()
+        self._populate_combo(
+            self.direct_template_combo, load_selected_direct_template_name,
+            QUICK_MSG_TEMPLATE_TOOLTIP,
+        )
 
     def _on_direct_template_combo_changed(self) -> None:
         """Handle direct template combo selection change."""
-        text = self.direct_template_combo.currentText()
-        if text == '(None)':
-            save_selected_direct_template_name('')
-            self._update_direct_template_combo_tooltip()
-            return
-        idx = self.direct_template_combo.currentIndex()
-        full_name = self.direct_template_combo.itemData(idx, Qt.UserRole)
-        save_selected_direct_template_name(full_name if full_name else text)
-        self._update_direct_template_combo_tooltip()
-
-    def _update_direct_template_combo_tooltip(self) -> None:
-        """Set combo tooltip to the full template name when truncated."""
-        combo = self.direct_template_combo
-        idx = combo.currentIndex()
-        full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
-        if full_name:
-            combo.setToolTip(full_name)
-        else:
-            combo.setToolTip(QUICK_MSG_TEMPLATE_TOOLTIP)
+        self._on_combo_changed(
+            self.direct_template_combo, save_selected_direct_template_name,
+            QUICK_MSG_TEMPLATE_TOOLTIP,
+        )
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""

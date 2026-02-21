@@ -61,6 +61,21 @@ def get_notification_prefs(prefs: dict[str, Any]) -> dict[str, dict[str, bool]]:
     return merged
 
 
+def get_dock_enabled(prefs: dict[str, Any]) -> dict[str, bool]:
+    """Return a flat dict mapping notification type to dock-enabled flag.
+
+    Convenience wrapper around ``get_notification_prefs`` used by the
+    dock badge and banner notification callers.
+
+    Args:
+        prefs: The full monitor prefs dict.
+
+    Returns:
+        Dict mapping notification type key to bool (dock enabled).
+    """
+    return {k: v['dock'] for k, v in get_notification_prefs(prefs).items()}
+
+
 def load_notification_seen() -> dict[str, list[str]]:
     """Load the set of seen notification IDs per SCM type.
 

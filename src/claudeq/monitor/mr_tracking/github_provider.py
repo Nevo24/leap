@@ -86,15 +86,13 @@ class GitHubProvider(SCMProvider):
             return MRStatus(state=MRState.NO_MR)
 
         try:
-            pulls = list(repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}'))
+            pulls = repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}')
+            if pulls.totalCount == 0:
+                return MRStatus(state=MRState.NO_MR)
+            pr = pulls[0]
         except Exception:
             logger.debug("Failed to list PRs for %s branch %s", project_path, branch)
             return MRStatus(state=MRState.NO_MR)
-
-        if not pulls:
-            return MRStatus(state=MRState.NO_MR)
-
-        pr = pulls[0]
         pr_number = pr.number
         pr_url = pr.html_url
         pr_title = pr.title

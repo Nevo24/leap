@@ -18,9 +18,62 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# JetBrains IDE names used across navigation functions
+_JETBRAINS_IDE_NAMES: list[str] = [
+    'PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
+    'RubyMine', 'CLion', 'DataGrip', 'JetBrains',
+]
+
+# Maps IDE display names to their CLI command names
+_IDE_CMD_MAP: dict[str, str] = {
+    'PyCharm': 'pycharm',
+    'IntelliJ IDEA': 'idea',
+    'GoLand': 'goland',
+    'WebStorm': 'webstorm',
+    'PhpStorm': 'phpstorm',
+}
+
+# Glob patterns for JetBrains .app bundles in /Applications
+_JETBRAINS_APP_PATTERNS: list[str] = [
+    'IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
+    'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
+    'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app',
+]
+
+
+def _jetbrains_env() -> dict[str, str]:
+    """Build an env dict with JetBrains CLI tools on PATH."""
+    env = os.environ.copy()
+    jetbrains_paths: list[str] = []
+    for pattern in _JETBRAINS_APP_PATTERNS:
+        for app in glob.glob(f'/Applications/{pattern}'):
+            jetbrains_paths.append(f'{app}/Contents/MacOS')
+    if jetbrains_paths:
+        env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+    return env
+
+
+def _vscode_env_and_path() -> tuple[dict[str, str], Optional[str]]:
+    """Build an env dict with VS Code CLI on PATH and return the code binary path."""
+    env = os.environ.copy()
+    extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
+    current_path = env.get('PATH', '')
+    for p in extra_paths:
+        if p not in current_path and os.path.exists(p):
+            env['PATH'] = f"{p}:{current_path}"
+            current_path = env['PATH']
+    code_path = shutil.which('code', path=env.get('PATH'))
+    return env, code_path
+
+
 def _escape_groovy(s: str) -> str:
     """Escape a string for safe interpolation in a Groovy double-quoted string."""
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
+
+
+def _escape_applescript(s: str) -> str:
+    """Escape a string for safe interpolation in an AppleScript double-quoted string."""
+    return s.replace('\\', '\\\\').replace('"', '\\"')
 
 
 def open_terminal_with_command(
@@ -45,9 +98,7 @@ def open_terminal_with_command(
     if preferred_ide:
         # Try the specific IDE first. If it fails, fall through to generic
         # fallback so that a terminal always opens somewhere.
-        jetbrains_ides = ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
-                          'RubyMine', 'CLion', 'DataGrip', 'JetBrains']
-        if any(ide in preferred_ide for ide in jetbrains_ides):
+        if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
             if _open_jetbrains_terminal(preferred_ide, project_path, command):
                 return True
         elif 'VS Code' in preferred_ide:
@@ -87,9 +138,7 @@ def close_terminal_with_title(
     Returns:
         True if terminal was found and closed.
     """
-    jetbrains_ides = ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
-                      'RubyMine', 'CLion', 'DataGrip', 'JetBrains']
-    if preferred_ide and any(ide in preferred_ide for ide in jetbrains_ides):
+    if preferred_ide and any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
         if _close_jetbrains(preferred_ide, project_path, terminal_title):
             return True
 
@@ -128,9 +177,7 @@ def find_terminal_with_title(
         True if terminal was found and focused.
     """
     # Try JetBrains IDEs first
-    jetbrains_ides = ['PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
-                      'RubyMine', 'CLion', 'DataGrip', 'JetBrains']
-    if preferred_ide and any(ide in preferred_ide for ide in jetbrains_ides):
+    if preferred_ide and any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
         if _navigate_jetbrains(preferred_ide, project_path, terminal_title):
             return True
 
@@ -173,15 +220,7 @@ def _navigate_jetbrains(
     if not groovy_script.exists():
         return False
 
-    ide_cmd_map = {
-        'PyCharm': 'pycharm',
-        'IntelliJ IDEA': 'idea',
-        'GoLand': 'goland',
-        'WebStorm': 'webstorm',
-        'PhpStorm': 'phpstorm',
-    }
-
-    ide_cmd = ide_cmd_map.get(ide)
+    ide_cmd = _IDE_CMD_MAP.get(ide)
     if not ide_cmd:
         return False
 
@@ -207,18 +246,7 @@ def _navigate_jetbrains(
             tmp_script_path = tmp.name
 
         try:
-            # Expand PATH to include JetBrains CLI tools
-            env = os.environ.copy()
-            jetbrains_paths = []
-
-            for pattern in ['IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
-                           'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
-                           'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app']:
-                for app in glob.glob(f'/Applications/{pattern}'):
-                    jetbrains_paths.append(f'{app}/Contents/MacOS')
-
-            if jetbrains_paths:
-                env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+            env = _jetbrains_env()
 
             # First, open/focus the project if we have a project path
             if project_path:
@@ -253,16 +281,7 @@ def _navigate_jetbrains(
 def _navigate_vscode(project_path: Optional[str], terminal_name: str) -> bool:
     """Navigate to VS Code window and select terminal tab by name."""
     try:
-        # Expand PATH to include common locations
-        env = os.environ.copy()
-        extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
-        current_path = env.get('PATH', '')
-        for path in extra_paths:
-            if path not in current_path and os.path.exists(path):
-                env['PATH'] = f"{path}:{current_path}"
-                current_path = env['PATH']
-
-        code_path = shutil.which('code', path=env.get('PATH'))
+        env, code_path = _vscode_env_and_path()
         if not code_path:
             return False
 
@@ -297,12 +316,13 @@ def _navigate_vscode(project_path: Optional[str], terminal_name: str) -> bool:
 
 def _navigate_terminal_app(title_pattern: str) -> bool:
     """Navigate to terminal in Terminal.app."""
+    safe_pattern = _escape_applescript(title_pattern)
     script = f'''
     tell application "Terminal"
         repeat with w in windows
             repeat with t from 1 to count of tabs of w
                 set tabName to custom title of tab t of w
-                if tabName contains "{title_pattern}" then
+                if tabName contains "{safe_pattern}" then
                     set frontmost of w to true
                     set selected of tab t of w to true
                     activate
@@ -330,12 +350,13 @@ def _navigate_terminal_app(title_pattern: str) -> bool:
 
 def _navigate_iterm2(title_pattern: str) -> bool:
     """Navigate to terminal in iTerm2."""
+    safe_pattern = _escape_applescript(title_pattern)
     script = f'''
     tell application "iTerm"
         repeat with w in windows
             repeat with t in tabs of w
                 repeat with s in sessions of t
-                    if name of s contains "{title_pattern}" then
+                    if name of s contains "{safe_pattern}" then
                         select w
                         select t
                         select s
@@ -372,15 +393,7 @@ def _close_jetbrains(
     if not terminal_title:
         return False
 
-    ide_cmd_map = {
-        'PyCharm': 'pycharm',
-        'IntelliJ IDEA': 'idea',
-        'GoLand': 'goland',
-        'WebStorm': 'webstorm',
-        'PhpStorm': 'phpstorm',
-    }
-
-    ide_cmd = ide_cmd_map.get(ide)
+    ide_cmd = _IDE_CMD_MAP.get(ide)
     if not ide_cmd:
         return False
 
@@ -423,15 +436,7 @@ IDE.application.invokeLater {{
 '''
 
     try:
-        env = os.environ.copy()
-        jetbrains_paths = []
-        for pattern in ['IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
-                        'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
-                        'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app']:
-            for app in glob.glob(f'/Applications/{pattern}'):
-                jetbrains_paths.append(f'{app}/Contents/MacOS')
-        if jetbrains_paths:
-            env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+        env = _jetbrains_env()
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
             tmp.write(groovy_script)
@@ -459,15 +464,7 @@ IDE.application.invokeLater {{
 def _close_vscode(project_path: Optional[str], terminal_name: str) -> bool:
     """Close a terminal tab in VS Code by writing a close request file."""
     try:
-        env = os.environ.copy()
-        extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
-        current_path = env.get('PATH', '')
-        for p in extra_paths:
-            if p not in current_path and os.path.exists(p):
-                env['PATH'] = f"{p}:{current_path}"
-                current_path = env['PATH']
-
-        code_path = shutil.which('code', path=env.get('PATH'))
+        env, code_path = _vscode_env_and_path()
         if not code_path:
             return False
 
@@ -493,13 +490,14 @@ def _close_vscode(project_path: Optional[str], terminal_name: str) -> bool:
 
 def _close_terminal_app(title_pattern: str) -> bool:
     """Close a terminal tab in Terminal.app."""
+    safe_pattern = _escape_applescript(title_pattern)
     script = f'''
     tell application "Terminal"
         repeat with w in windows
             set tabCount to count of tabs of w
             repeat with t from 1 to tabCount
                 set tabName to custom title of tab t of w
-                if tabName contains "{title_pattern}" then
+                if tabName contains "{safe_pattern}" then
                     if tabCount is 1 then
                         close w
                     else
@@ -536,6 +534,7 @@ def _close_terminal_app(title_pattern: str) -> bool:
 
 def _close_iterm2(title_pattern: str) -> bool:
     """Close all iTerm2 sessions whose name contains the pattern."""
+    safe_pattern = _escape_applescript(title_pattern)
     script = f'''
     tell application "iTerm"
         set found to false
@@ -545,7 +544,7 @@ def _close_iterm2(title_pattern: str) -> bool:
         repeat with w in windows
             repeat with t in tabs of w
                 repeat with s in sessions of t
-                    if name of s contains "{title_pattern}" then
+                    if name of s contains "{safe_pattern}" then
                         set end of toClose to s
                     end if
                 end repeat
@@ -988,15 +987,7 @@ def _open_jetbrains_terminal(
     command: str
 ) -> bool:
     """Open a new terminal tab in JetBrains IDE and run a command."""
-    ide_cmd_map = {
-        'PyCharm': 'pycharm',
-        'IntelliJ IDEA': 'idea',
-        'GoLand': 'goland',
-        'WebStorm': 'webstorm',
-        'PhpStorm': 'phpstorm',
-    }
-
-    ide_cmd = ide_cmd_map.get(ide)
+    ide_cmd = _IDE_CMD_MAP.get(ide)
     if not ide_cmd:
         return False
 
@@ -1037,15 +1028,7 @@ IDE.application.invokeLater {{
 '''
 
     try:
-        env = os.environ.copy()
-        jetbrains_paths = []
-        for pattern in ['IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
-                        'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
-                        'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app']:
-            for app in glob.glob(f'/Applications/{pattern}'):
-                jetbrains_paths.append(f'{app}/Contents/MacOS')
-        if jetbrains_paths:
-            env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
+        env = _jetbrains_env()
 
         if project_path:
             subprocess.run(
@@ -1137,15 +1120,7 @@ def _open_iterm2_terminal(command: str) -> bool:
 def _open_vscode_terminal(project_path: Optional[str], command: str) -> bool:
     """Open a new VS Code terminal tab and run a command."""
     try:
-        env = os.environ.copy()
-        extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
-        current_path = env.get('PATH', '')
-        for p in extra_paths:
-            if p not in current_path and os.path.exists(p):
-                env['PATH'] = f"{p}:{current_path}"
-                current_path = env['PATH']
-
-        code_path = shutil.which('code', path=env.get('PATH'))
+        env, code_path = _vscode_env_and_path()
         if not code_path:
             return False
 

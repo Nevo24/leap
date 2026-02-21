@@ -11,7 +11,7 @@ Usage:
 
 import logging
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 try:
     from slack_bolt import App
@@ -89,7 +89,7 @@ class SlackBot:
         finally:
             self._watcher.stop()
 
-    def _handle_message(self, event: dict, say: object) -> None:
+    def _handle_message(self, event: dict[str, Any], say: object) -> None:
         """Handle incoming DM messages from the user.
 
         Only processes messages that:
@@ -187,7 +187,7 @@ class SlackBot:
             logger.exception('Failed to post Slack message')
             return None
 
-    def _react(self, event: dict, emoji: str) -> None:
+    def _react(self, event: dict[str, Any], emoji: str) -> None:
         """Add an emoji reaction to a message.
 
         Args:

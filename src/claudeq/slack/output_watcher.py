@@ -8,7 +8,6 @@ Slack-enabled CQ sessions every 2 seconds.
 import json
 import logging
 import os
-import re
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -21,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Slack message limit is ~4000 chars for best rendering
 _MAX_MESSAGE_LEN: int = 3900
 _POLL_INTERVAL: float = 0.5
+_SESSIONS_CACHE_TTL: float = 5.0
 
 
 class OutputWatcher:
@@ -44,6 +44,9 @@ class OutputWatcher:
         self._thread: Optional[threading.Thread] = None
         # Track last-seen timestamp per tag to avoid re-posting
         self._last_seen_ts: dict[str, float] = {}
+        # Cache sessions to avoid reading disk every poll cycle
+        self._sessions_cache: Optional[dict[str, Any]] = None
+        self._sessions_cache_ts: float = 0.0
 
     def start(self) -> None:
         """Start the background polling thread."""
@@ -69,9 +72,22 @@ class OutputWatcher:
                 logger.exception('Error in output watcher poll')
             time.sleep(_POLL_INTERVAL)
 
+    def _get_sessions(self) -> dict[str, Any]:
+        """Return cached sessions, refreshing from disk if stale."""
+        now = time.monotonic()
+        if (self._sessions_cache is None
+                or now - self._sessions_cache_ts > _SESSIONS_CACHE_TTL):
+            self._sessions_cache = load_slack_sessions()
+            self._sessions_cache_ts = now
+        return self._sessions_cache
+
+    def _invalidate_sessions_cache(self) -> None:
+        """Force the next _get_sessions() call to re-read from disk."""
+        self._sessions_cache = None
+
     def _poll_once(self) -> None:
         """Check each enabled session for a new .last_response file."""
-        sessions = load_slack_sessions()
+        sessions = self._get_sessions()
 
         for tag, session_data in sessions.items():
             if not session_data.get('enabled', False):
@@ -144,6 +160,7 @@ class OutputWatcher:
             if tag in sessions:
                 sessions[tag]['thread_ts'] = result_ts
                 save_slack_sessions(sessions)
+                self._invalidate_sessions_cache()
 
             # Post the last Claude message / permission request for context
             context = self._read_last_context(tag)
@@ -261,6 +278,7 @@ class OutputWatcher:
                 if tag in sessions:
                     sessions[tag]['thread_ts'] = thread_ts
                     save_slack_sessions(sessions)
+                    self._invalidate_sessions_cache()
             return
 
         # Split long output into multiple messages
@@ -282,6 +300,7 @@ class OutputWatcher:
                 if tag in sessions:
                     sessions[tag]['thread_ts'] = thread_ts
                     save_slack_sessions(sessions)
+                    self._invalidate_sessions_cache()
 
     def _build_footer(
         self,

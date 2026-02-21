@@ -90,6 +90,7 @@ class MonitorWindow(
         self._send_threads_worker: Optional[SendThreadsWorker] = None
         self._send_combined_worker: Optional[SendThreadsCombinedWorker] = None
         self._cq_only_collect: bool = False
+        self._combined_send: bool = False
         self._refresh_worker: Optional[SessionRefreshWorker] = None
         self._scm_polling = False
         self._scm_poll_started_at: float = 0.0

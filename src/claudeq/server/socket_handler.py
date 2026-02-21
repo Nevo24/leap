@@ -9,7 +9,7 @@ import socket
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
 MAX_MESSAGE_SIZE = 1_048_576  # 1 MB
@@ -22,7 +22,7 @@ class SocketHandler:
         self,
         socket_path: Path,
         message_handler: Callable[[dict[str, Any]], dict[str, Any]]
-    ):
+    ) -> None:
         """
         Initialize socket handler.
 
