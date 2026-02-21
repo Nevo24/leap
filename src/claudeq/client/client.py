@@ -465,7 +465,6 @@ class ClaudeQClient:
             ("\U0001F4DD", "!e <index> or !edit <index>",     "Edit queued message by index"),
             ("\U0001F9F9", "!c or !clear",                    "Clear queue"),
             ("\U0001F525", "!f or !force",                    "Force-send next queued message"),
-            ("\U0001F4F1", "!slack on/off",                   "Toggle Slack for this session"),
             ("\U0001F44B", "!x or !quit (Ctrl+D)",            "Exit client"),
         ]
 
@@ -484,6 +483,10 @@ class ClaudeQClient:
 
         print(f"  \U0001F504 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
         print(f"  \U0001F514 Auto-sent notifications: !auto-sent on/off  (or !asm)  [current: {notif_label}]")
+        print()
+        slack_enabled = response.get('slack_enabled', False) if response else False
+        slack_label = 'on' if slack_enabled else 'off'
+        print(f"  \U0001F4EC Slack integration: !slack on/off                       [current: {slack_label}]")
         print("=" * 80)
         print()
 
