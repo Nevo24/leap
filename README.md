@@ -202,14 +202,15 @@ Enable bidirectional communication between Slack and CQ sessions. Claude's outpu
 # Install Slack integration
 make install-slack-app
 
-# Start the bot
-cq --slack
+# Start the bot (terminal or monitor)
+cq --slack              # From terminal
+                        # Or click "Slack Bot" in the monitor bottom bar
 
 # Enable for a session (from the client)
 !slack on
 ```
 
-The setup wizard guides you through creating a Slack app and collecting tokens. Output appears in per-session threads in your DM with the bot.
+The setup wizard guides you through creating a Slack app and collecting tokens. Output appears in per-session threads in your DM with the bot. The monitor's Slack Bot button shows green when the bot is running and auto-starts it on launch if previously enabled.
 
 ## Example Workflow
 

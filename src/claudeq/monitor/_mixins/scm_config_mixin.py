@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import os
+import signal
+import subprocess
 from typing import TYPE_CHECKING, Any, Optional
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
+from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 
 from claudeq.monitor.mr_tracking.base import SCMProvider
 from claudeq.monitor.mr_tracking.config import (
@@ -14,7 +17,8 @@ from claudeq.monitor.mr_tracking.config import (
     save_github_config, save_gitlab_config, save_monitor_prefs,
 )
 from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
-from claudeq.utils.constants import SCM_POLL_INTERVAL
+from claudeq.slack.config import is_slack_installed
+from claudeq.utils.constants import SCM_POLL_INTERVAL, SLACK_BOT_LOCK, STORAGE_DIR
 
 if TYPE_CHECKING:
     from claudeq.monitor.app import MonitorWindow
@@ -276,3 +280,159 @@ class SCMConfigMixin(_Base):
         """Toggle auto /cq command fetching and persist."""
         self._prefs['auto_fetch_cq'] = state == Qt.Checked
         save_monitor_prefs(self._prefs)
+
+    # ------------------------------------------------------------------
+    #  Slack bot management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_slack_bot_running() -> bool:
+        """Check if the Slack bot lock directory exists (bot is running)."""
+        return SLACK_BOT_LOCK.is_dir()
+
+    def _update_slack_bot_button(self) -> None:
+        """Sync the Slack Bot button appearance with actual bot state."""
+        if not is_slack_installed():
+            self.slack_bot_btn.setEnabled(False)
+            self.slack_bot_btn.setText('Slack Bot')
+            self.slack_bot_btn.setToolTip('Run make install-slack-app to configure')
+            self.slack_bot_btn.setStyleSheet('')
+            return
+
+        self.slack_bot_btn.setEnabled(True)
+        if self._is_slack_bot_running():
+            self.slack_bot_btn.setText('Slack Bot')
+            self.slack_bot_btn.setStyleSheet(
+                'QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
+            self.slack_bot_btn.setToolTip('Slack bot is running — click to stop')
+        else:
+            self.slack_bot_btn.setText('Slack Bot')
+            self.slack_bot_btn.setStyleSheet('')
+            self.slack_bot_btn.setToolTip('Click to start the Slack bot daemon')
+
+    def _toggle_slack_bot(self) -> None:
+        """Start or stop the Slack bot."""
+        if self._is_slack_bot_running():
+            self._stop_slack_bot()
+        else:
+            self._start_slack_bot()
+
+    def _start_slack_bot(self, silent: bool = False) -> None:
+        """Launch the Slack bot as a QProcess.
+
+        Args:
+            silent: If True, suppress the status bar message (used for auto-start).
+        """
+        if self._is_slack_bot_running():
+            return
+
+        project_dir = STORAGE_DIR.parent
+        script = str(project_dir / 'src' / 'scripts' / 'claudeq-main.sh')
+
+        process = QProcess(self)
+        process.setProgram('/bin/bash')
+        process.setArguments([script, '--slack'])
+
+        # Inherit current environment (includes PATH, HOME, etc.)
+        env = QProcessEnvironment.systemEnvironment()
+        process.setProcessEnvironment(env)
+
+        process.finished.connect(self._on_slack_bot_finished)
+        process.start()
+
+        self._slack_bot_process = process
+        self._prefs['slack_bot_enabled'] = True
+        save_monitor_prefs(self._prefs)
+        self._update_slack_bot_button()
+
+        if not silent:
+            self._show_status('Slack bot started')
+
+    def _stop_slack_bot(self) -> None:
+        """Stop the Slack bot — via QProcess, terminal close, or direct kill."""
+        stopped = False
+
+        if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
+            # We started it — terminate the QProcess (sends SIGTERM to bash,
+            # which triggers the trap handler to clean up the lock dir)
+            self._slack_bot_process.terminate()
+            stopped = True
+        else:
+            # Try closing the terminal tab first
+            from claudeq.monitor.navigation import close_terminal_with_title
+            default_term = self._prefs.get('default_terminal')
+            stopped = close_terminal_with_title('cq slack-bot',
+                                                preferred_ide=default_term)
+
+        if not stopped:
+            # Fallback: find and kill the actual claudeq-slack.py process
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-f', 'claudeq-slack.py'],
+                    capture_output=True, text=True, timeout=5)
+                pids = result.stdout.strip().split('\n')
+                pids = [p for p in pids if p]
+                if pids:
+                    for pid in pids:
+                        try:
+                            os.kill(int(pid), signal.SIGTERM)
+                        except (ProcessLookupError, ValueError):
+                            pass
+                    stopped = True
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        if not stopped:
+            # Last resort: stale lock dir with no process — clean it up
+            if SLACK_BOT_LOCK.is_dir():
+                try:
+                    SLACK_BOT_LOCK.rmdir()
+                    stopped = True
+                except OSError:
+                    pass
+
+        if not stopped:
+            QMessageBox.warning(
+                self, 'Slack Bot',
+                'Could not stop the Slack bot.\n'
+                'You may need to stop it manually.')
+            return
+
+        self._prefs['slack_bot_enabled'] = False
+        save_monitor_prefs(self._prefs)
+        self._update_slack_bot_button()
+        self._show_status('Slack bot stopped')
+
+    def _on_slack_bot_finished(self) -> None:
+        """Clean up after the Slack bot QProcess exits."""
+        if self._slack_bot_process:
+            self._slack_bot_process.deleteLater()
+            self._slack_bot_process = None
+        self._update_slack_bot_button()
+
+    def _slack_bot_context_menu(self, pos: Any) -> None:
+        """Show right-click context menu on the Slack Bot button."""
+        if not self._is_slack_bot_running():
+            return
+
+        menu = QMenu(self)
+
+        jump_action = QAction('Jump to terminal', self)
+        # Only enable if the bot is running in a terminal (not our QProcess)
+        running_in_terminal = (
+            self._slack_bot_process is None
+            or self._slack_bot_process.state() == QProcess.NotRunning
+        )
+        jump_action.setEnabled(running_in_terminal)
+        jump_action.triggered.connect(self._jump_to_slack_bot_terminal)
+        menu.addAction(jump_action)
+
+        menu.exec_(self.slack_bot_btn.mapToGlobal(pos))
+
+    def _jump_to_slack_bot_terminal(self) -> None:
+        """Focus the terminal running the Slack bot."""
+        from claudeq.monitor.navigation import find_terminal_with_title
+        default_term = self._prefs.get('default_terminal')
+        if not find_terminal_with_title('cq slack-bot',
+                                        preferred_ide=default_term):
+            self._show_status('Could not find Slack bot terminal')

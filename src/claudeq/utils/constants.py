@@ -57,6 +57,7 @@ QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"
 SOCKET_DIR: Final[Path] = STORAGE_DIR / "sockets"
 HISTORY_DIR: Final[Path] = STORAGE_DIR / "history"
 SLACK_DIR: Final[Path] = STORAGE_DIR / "slack"
+SLACK_BOT_LOCK: Final[Path] = SLACK_DIR / "slack-bot.lock"
 
 # Settings file
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"

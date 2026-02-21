@@ -548,10 +548,12 @@ Optional Slack app that enables bidirectional communication between Slack and CQ
 
 ```bash
 make install-slack-app   # Install deps + guided setup wizard
-cq --slack                 # Start the bot daemon
+cq --slack                 # Start the bot daemon (terminal)
 ```
 
 The setup wizard creates a Slack app via App Manifest (pre-fills everything), collects tokens, and saves to `.storage/slack/config.json`.
+
+The bot can also be started/stopped from the monitor's **Slack Bot** button (bottom bar, next to GitHub). The button turns green when the bot is running (detected via lock directory). If `slack_bot_enabled` is True in monitor prefs, the bot auto-starts when the monitor opens. Right-click the button to jump to the terminal when the bot was started externally.
 
 ### Architecture
 

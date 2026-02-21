@@ -707,6 +707,7 @@ class TableBuilderMixin(_Base):
         """Handle background session refresh result."""
         self.sessions = self._merge_sessions(sessions)
         self._update_table()
+        self._update_slack_bot_button()
         notif_prefs = get_notification_prefs(self._prefs)
         dock_enabled = {k: v['dock'] for k, v in notif_prefs.items()}
         events = self._dock_badge.update_sessions(

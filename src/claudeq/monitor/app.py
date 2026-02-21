@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QPushButton,
     QCheckBox, QHeaderView, QMessageBox, QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QTimer, Qt
+from PyQt5.QtCore import QEvent, QProcess, QTimer, Qt
 from PyQt5.QtGui import QCursor, QIcon, QCloseEvent, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
@@ -106,6 +106,7 @@ class MonitorWindow(
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
         self._status_log = StatusLog()
         self._server_launcher = ServerLauncher(self)
+        self._slack_bot_process: Optional[QProcess] = None
 
         # User notification tracking state
         raw_seen = load_notification_seen()
@@ -130,6 +131,10 @@ class MonitorWindow(
         self._init_scm_providers()
         self._auto_track_mr_pinned()
         self._maybe_start_notification_poll()
+
+        # Auto-start Slack bot if it was enabled and isn't already running
+        if self._prefs.get('slack_bot_enabled') and not self._is_slack_bot_running():
+            self._start_slack_bot(silent=True)
 
         # Always start auto-refresh
         self.timer.start(1000)
@@ -321,6 +326,14 @@ class MonitorWindow(
         self.github_btn.setToolTip('Configure GitHub connection for PR tracking')
         self.github_btn.clicked.connect(self._open_github_setup)
         bottom_layout.addWidget(self.github_btn)
+
+        self.slack_bot_btn = QPushButton('Slack Bot')
+        self.slack_bot_btn.setToolTip('Start/stop the Slack bot daemon')
+        self.slack_bot_btn.clicked.connect(self._toggle_slack_bot)
+        self.slack_bot_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.slack_bot_btn.customContextMenuRequested.connect(
+            self._slack_bot_context_menu)
+        bottom_layout.addWidget(self.slack_bot_btn)
 
         layout.addLayout(bottom_layout)
 
@@ -519,6 +532,11 @@ class MonitorWindow(
             save_monitor_prefs(self._prefs)
         except Exception:
             logger.debug("Failed to save monitor prefs on close", exc_info=True)
+
+        # Terminate Slack bot if we started it
+        if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
+            self._slack_bot_process.terminate()
+            self._slack_bot_process.waitForFinished(3000)
 
         # Accept the close event, then hard-exit.  os._exit() skips atexit
         # handlers and thread joins — the only reliable way to exit when
