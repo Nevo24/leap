@@ -51,11 +51,23 @@ if [ "$1" = "--slack" ]; then
     SLACK_LOCK_DIR="$STORAGE_DIR/slack/slack-bot.lock"
     mkdir -p "$STORAGE_DIR/slack"
     if ! mkdir "$SLACK_LOCK_DIR" 2>/dev/null; then
-        echo "❌ Slack bot is already running in another terminal." >&2
+        # Check who started it
+        if [ -f "$SLACK_LOCK_DIR/source" ]; then
+            SOURCE=$(cat "$SLACK_LOCK_DIR/source" 2>/dev/null)
+        else
+            SOURCE="another terminal"
+        fi
+        if [ "$SOURCE" = "monitor" ]; then
+            echo "❌ Slack bot is already running from the ClaudeQ Monitor." >&2
+        else
+            echo "❌ Slack bot is already running in another terminal." >&2
+        fi
         exit 1
     fi
+    # Mark who started the bot
+    echo "terminal" > "$SLACK_LOCK_DIR/source"
     # No exec — keep the shell alive so the trap can clean up the lock dir
-    trap 'rmdir "$SLACK_LOCK_DIR" 2>/dev/null' EXIT INT TERM
+    trap 'rm -f "$SLACK_LOCK_DIR/source"; rmdir "$SLACK_LOCK_DIR" 2>/dev/null' EXIT INT TERM
     PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
         "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/claudeq-slack.py" "$@"
     exit $?

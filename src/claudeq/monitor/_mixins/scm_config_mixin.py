@@ -337,6 +337,14 @@ class SCMConfigMixin(_Base):
 
         process.finished.connect(self._on_slack_bot_finished)
         process.start()
+        process.waitForStarted(3000)
+
+        # Mark the lock as monitor-started so the CLI can report it
+        source_file = SLACK_BOT_LOCK / 'source'
+        try:
+            source_file.write_text('monitor')
+        except OSError:
+            pass
 
         self._slack_bot_process = process
         self._prefs['slack_bot_enabled'] = True
@@ -379,6 +387,7 @@ class SCMConfigMixin(_Base):
 
         # Always remove lock dir immediately so the button updates right away
         try:
+            (SLACK_BOT_LOCK / 'source').unlink(missing_ok=True)
             SLACK_BOT_LOCK.rmdir()
         except OSError:
             pass
