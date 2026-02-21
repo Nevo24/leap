@@ -298,6 +298,7 @@ class ClaudeStateTracker:
                     _log.debug(
                         'ON_OUTPUT idle→needs_permission (trust dialog)',
                     )
+                    self._last_prompt_buf = bytes(self._output_buf)
                     self._output_buf.clear()
                     self._idle_output_acc = 0
                     self._trust_dialog_phase = True
