@@ -156,10 +156,15 @@ class ClaudeQServer:
                         }
                     if label.startswith('Chat about this'):
                         # "Chat about this" is below the separator —
-                        # number shortcuts don't work.  Send Escape
-                        # which has the same effect (exit dialog, chat).
+                        # number shortcuts don't work.  Navigate with
+                        # individual arrow-down keys (one at a time
+                        # with delays so Ink processes each one).
                         self.state.on_send()
-                        self.pty.send('\x1b')
+                        for _ in range(option_num - 1):
+                            self.pty.send('\x1b[B')
+                            time.sleep(0.1)
+                        time.sleep(0.2)
+                        self.pty.send('\r')
                         return {'status': 'sent'}
             self.state.on_send()
             self.pty.sendline(str(option_num))
