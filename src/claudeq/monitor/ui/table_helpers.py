@@ -91,6 +91,38 @@ class TooltipApp(QApplication):
                                     )
                     return True
 
+                # Cell widget inside a table — check if the underlying
+                # item has a tooltip (e.g. elided branch text).
+                table_view = None
+                ancestor = parent
+                while ancestor is not None:
+                    if isinstance(ancestor, QAbstractItemView):
+                        table_view = ancestor
+                        break
+                    ancestor = ancestor.parent()
+                if table_view is not None:
+                    viewport = table_view.viewport()
+                    pos = widget.mapTo(viewport, event.pos())
+                    index = table_view.indexAt(pos)
+                    if index.isValid():
+                        display = index.data(Qt.DisplayRole)
+                        tip = index.data(Qt.ToolTipRole)
+                        if not display and tip:
+                            # Only show if the text is actually truncated.
+                            # Use the widget's own width (not the full cell)
+                            # since cell widgets share space with buttons.
+                            fm = widget.fontMetrics()
+                            text_w = fm.horizontalAdvance(tip)
+                            if text_w > widget.width():
+                                from PyQt5.QtWidgets import QToolTip as _QToolTip
+                                _QToolTip.showText(
+                                    event.globalPos(), tip, widget,
+                                    table_view.visualRect(index),
+                                    2_147_483_647,
+                                )
+                                return True
+                    # Fall through to normal widget tooltip handling
+
                 # Always show full-name tooltip on truncated template combo items
                 from PyQt5.QtWidgets import QComboBox
                 combo = widget if isinstance(widget, QComboBox) else None

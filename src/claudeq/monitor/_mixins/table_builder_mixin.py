@@ -26,7 +26,7 @@ from claudeq.monitor.mr_tracking.config import (
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.scm_polling import SessionRefreshWorker
-from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
+from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
     GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
     MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_DIRECTLY, QUICK_MSG_SEND_TO_QUEUE,
@@ -665,15 +665,22 @@ class TableBuilderMixin(_Base):
                             mr_br_layout.addWidget(
                                 mr_br_x, 0, Qt.AlignVCenter)
 
-                            mr_br_label = QLabel(mr_branch)
+                            mr_br_label = ElidedLabel(mr_branch)
+                            mr_br_label.setAlignment(Qt.AlignCenter)
                             mr_br_label.setToolTip(mr_branch)
                             mr_br_layout.addWidget(mr_br_label, 1)
 
-                            # Clear underlying item text so it doesn't
-                            # render through behind the widget.
+                            # Ensure a table item exists with the tooltip
+                            # so the cell-widget tooltip path can find it.
+                            # Clear display text so it doesn't render
+                            # through behind the widget.
                             item = self.table.item(row, self.COL_MR_BRANCH)
-                            if item:
-                                item.setText('')
+                            if not item:
+                                item = QTableWidgetItem('')
+                                self.table.setItem(
+                                    row, self.COL_MR_BRANCH, item)
+                            item.setText('')
+                            item.setToolTip(mr_branch)
                             self._set_cell_widget(
                                 row, self.COL_MR_BRANCH, mr_br_container)
                             self._cache_cell(

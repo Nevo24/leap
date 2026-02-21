@@ -6,7 +6,28 @@ from typing import Optional
 
 from PyQt5.QtWidgets import QAction, QLabel, QMenu, QWidget
 from PyQt5.QtCore import QPoint, QTimer, Qt
-from PyQt5.QtGui import QCursor, QMouseEvent
+from PyQt5.QtGui import QCursor, QMouseEvent, QPainter
+
+
+class ElidedLabel(QLabel):
+    """QLabel that elides text with '...' when it doesn't fit."""
+
+    def __init__(self, text: str = '', parent: Optional[QWidget] = None) -> None:
+        super().__init__(text, parent)
+        self._full_text: str = text
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        super().setText(text)
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        metrics = self.fontMetrics()
+        elided = metrics.elidedText(
+            self._full_text, Qt.ElideRight, self.width())
+        painter.setPen(self.palette().windowText().color())
+        painter.drawText(self.rect(), self.alignment(), elided)
 
 
 class IndicatorPopup(QLabel):
