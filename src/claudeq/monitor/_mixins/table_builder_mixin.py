@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and template editor."""
 
-    _CENTER_COLS = frozenset({5, 6})  # COL_STATUS, COL_QUEUE
+    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10})  # All data columns
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
         """Set a cell widget wrapped in a hover-aware container.
@@ -455,7 +455,9 @@ class TableBuilderMixin(_Base):
                             'QLabel { color: #00ff00; }')
                         slack_lbl.setToolTip(
                             f'Slack enabled for {tag}')
+                        slack_layout.addStretch()
                         slack_layout.addWidget(slack_lbl)
+                        slack_layout.addStretch()
                         self._set_cell_widget(
                             row, self.COL_SLACK, slack_container)
                     else:
