@@ -143,16 +143,24 @@ class ClaudeQServer:
                 return {'status': 'error', 'error': 'invalid option number'}
             if option_num < 1:
                 return {'status': 'error', 'error': 'option must be >= 1'}
-            # Reject "Type something." — selecting it without text causes
-            # "User declined".  Slack users should type free text instead.
+            # Check for special options that need different PTY handling.
             prompt = self.state.get_prompt_output()
             for line in prompt.split('\n'):
-                m = re.match(r'\s*(\d+)\.\s+Type something', line)
+                m = re.match(r'\s*(\d+)\.\s+(.+)', line)
                 if m and int(m.group(1)) == option_num:
-                    return {
-                        'status': 'error',
-                        'error': 'type your answer as text instead',
-                    }
+                    label = m.group(2).strip()
+                    if label.startswith('Type something'):
+                        return {
+                            'status': 'error',
+                            'error': 'type your answer as text instead',
+                        }
+                    if label.startswith('Chat about this'):
+                        # "Chat about this" is below the separator —
+                        # number shortcuts don't work.  Send Escape
+                        # which has the same effect (exit dialog, chat).
+                        self.state.on_send()
+                        self.pty.send('\x1b')
+                        return {'status': 'sent'}
             self.state.on_send()
             self.pty.sendline(str(option_num))
             return {'status': 'sent'}

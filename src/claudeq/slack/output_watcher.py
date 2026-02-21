@@ -226,20 +226,17 @@ class OutputWatcher:
 
     @staticmethod
     def _strip_meta_options(prompt: str) -> str:
-        """Strip TUI meta-options from rendered prompt output.
+        """Strip TUI navigation hints from rendered prompt output.
 
-        Removes "Type something.", the separator line, "Chat about this",
-        and the "Enter to select" help line — these options don't work
-        via Slack's text-only interface.
+        Removes the separator line and "Enter to select" help text.
+        Keeps all selectable options visible (including "Type something"
+        and "Chat about this").
         """
         lines: list[str] = []
         for line in prompt.split('\n'):
             s = line.strip()
             if s and all(c in '─━' for c in s):
                 continue
-            if 'Chat about this' in s:
-                continue
-            # Keep "Type something" visible — Slack users can select it
             if s.startswith('Enter to select') or s.startswith('Esc to cancel'):
                 continue
             if s.startswith('Tab/Arrow') or s.startswith('Tab to amend'):
