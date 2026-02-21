@@ -458,10 +458,16 @@ uninstall:
 	@poetry env remove --all 2>/dev/null || true
 	@echo "$(GREEN)✓ Removed Poetry venv$(NC)"
 	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
-	@rm -rf .storage
-	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
-	@rm -rf build .dist
-	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
+	@HAD_SLACK=0; [ -f ".storage/slack/config.json" ] && HAD_SLACK=1; \
+	rm -rf .storage; \
+	rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache; \
+	rm -rf build .dist; \
+	echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"; \
+	if [ "$$HAD_SLACK" = "1" ]; then \
+		echo ""; \
+		echo "$(YELLOW)⚠ Slack app still exists on Slack's side$(NC)"; \
+		echo "  To remove: visit https://api.slack.com/apps and delete the ClaudeQ app"; \
+	fi
 	@echo "$(PROMPT_PREFIX) Removing ClaudeQ Monitor.app from /Applications..."
 	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
 		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
