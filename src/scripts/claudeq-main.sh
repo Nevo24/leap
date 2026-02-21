@@ -64,8 +64,8 @@ if [ "$1" = "--slack" ]; then
         fi
         exit 1
     fi
-    # Mark who started the bot
-    echo "terminal" > "$SLACK_LOCK_DIR/source"
+    # Mark who started the bot (monitor sets CQ_SLACK_SOURCE env var)
+    echo "${CQ_SLACK_SOURCE:-terminal}" > "$SLACK_LOCK_DIR/source"
     # No exec — keep the shell alive so the trap can clean up the lock dir
     trap 'rm -f "$SLACK_LOCK_DIR/source"; rmdir "$SLACK_LOCK_DIR" 2>/dev/null' EXIT INT TERM
     PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
