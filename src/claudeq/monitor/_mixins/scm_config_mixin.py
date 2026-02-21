@@ -349,57 +349,37 @@ class SCMConfigMixin(_Base):
             self._show_status('Slack bot started')
 
     def _stop_slack_bot(self) -> None:
-        """Stop the Slack bot — via QProcess, terminal close, or direct kill."""
-        stopped = False
+        """Stop the Slack bot — via QProcess, terminal close, or direct kill.
+
+        When the bot runs in a terminal we must both kill the process AND
+        close the terminal tab.  Strategy:
+        1. Try closing the terminal tab (kills the process too).
+        2. Kill any surviving processes (bash wrapper + Python child).
+        3. If step 1 failed, try closing the terminal tab again (now dead).
+        4. Clean up the lock directory.
+        """
+        from claudeq.monitor.navigation import close_terminal_with_title
 
         if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
-            # We started it — terminate the QProcess (sends SIGTERM to bash,
-            # which triggers the trap handler to clean up the lock dir)
+            # We started it via QProcess — no terminal tab to close
             self._slack_bot_process.terminate()
-            stopped = True
         else:
-            # Try closing the terminal tab first
-            from claudeq.monitor.navigation import close_terminal_with_title
             default_term = self._prefs.get('default_terminal')
-            stopped = close_terminal_with_title('cq slack-bot',
-                                                preferred_ide=default_term)
 
-        if not stopped:
-            # Fallback: find and kill the actual claudeq-slack.py process
-            try:
-                result = subprocess.run(
-                    ['pgrep', '-f', 'claudeq-slack.py'],
-                    capture_output=True, text=True, timeout=5)
-                pids = result.stdout.strip().split('\n')
-                pids = [p for p in pids if p]
-                if pids:
-                    for pid in pids:
-                        try:
-                            os.kill(int(pid), signal.SIGTERM)
-                        except (ProcessLookupError, ValueError):
-                            pass
-                    stopped = True
-            except (subprocess.TimeoutExpired, OSError):
-                pass
+            # Step 1: try closing the terminal tab (this also kills the process)
+            tab_closed = close_terminal_with_title('cq slack-bot',
+                                                   preferred_ide=default_term)
 
-        if not stopped:
-            # Last resort: stale lock dir with no process — clean it up
-            if SLACK_BOT_LOCK.is_dir():
-                try:
-                    SLACK_BOT_LOCK.rmdir()
-                    stopped = True
-                except OSError:
-                    pass
+            # Step 2: kill any surviving processes (bash wrapper + Python child)
+            self._kill_slack_bot_processes()
 
-        if not stopped:
-            QMessageBox.warning(
-                self, 'Slack Bot',
-                'Could not stop the Slack bot.\n'
-                'You may need to stop it manually.')
-            return
+            # Step 3: if the tab wasn't closed in step 1, try again now that
+            # the process is dead (tab title may still match)
+            if not tab_closed:
+                close_terminal_with_title('cq slack-bot',
+                                          preferred_ide=default_term)
 
-        # Remove lock dir immediately so the button updates right away.
-        # The bash trap will also try rmdir — harmless double-remove.
+        # Always remove lock dir immediately so the button updates right away
         try:
             SLACK_BOT_LOCK.rmdir()
         except OSError:
@@ -409,6 +389,24 @@ class SCMConfigMixin(_Base):
         save_monitor_prefs(self._prefs)
         self._update_slack_bot_button()
         self._show_status('Slack bot stopped')
+
+    @staticmethod
+    def _kill_slack_bot_processes() -> None:
+        """Kill the Slack bot bash wrapper and Python child processes."""
+        # Kill both the bash wrapper and the Python child
+        for pattern in ['claudeq-main.sh --slack', 'claudeq-slack.py']:
+            try:
+                result = subprocess.run(
+                    ['pgrep', '-f', pattern],
+                    capture_output=True, text=True, timeout=5)
+                for pid_str in result.stdout.strip().split('\n'):
+                    if pid_str:
+                        try:
+                            os.kill(int(pid_str), signal.SIGTERM)
+                        except (ProcessLookupError, ValueError):
+                            pass
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
     def _on_slack_bot_finished(self) -> None:
         """Clean up after the Slack bot QProcess exits."""
