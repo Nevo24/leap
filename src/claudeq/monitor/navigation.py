@@ -535,21 +535,28 @@ def _close_terminal_app(title_pattern: str) -> bool:
 
 
 def _close_iterm2(title_pattern: str) -> bool:
-    """Close a terminal tab/session in iTerm2."""
+    """Close all iTerm2 sessions whose name contains the pattern."""
     script = f'''
     tell application "iTerm"
+        set found to false
+        -- Collect matching session IDs first, then close (avoids
+        -- mutating the list while iterating).
+        set toClose to {{}}
         repeat with w in windows
             repeat with t in tabs of w
                 repeat with s in sessions of t
                     if name of s contains "{title_pattern}" then
-                        close s
-                        return true
+                        set end of toClose to s
                     end if
                 end repeat
             end repeat
         end repeat
+        repeat with s in toClose
+            close s
+            set found to true
+        end repeat
+        return found
     end tell
-    return false
     '''
 
     try:
