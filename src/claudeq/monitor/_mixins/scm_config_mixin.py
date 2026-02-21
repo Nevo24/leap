@@ -398,6 +398,13 @@ class SCMConfigMixin(_Base):
                 'You may need to stop it manually.')
             return
 
+        # Remove lock dir immediately so the button updates right away.
+        # The bash trap will also try rmdir — harmless double-remove.
+        try:
+            SLACK_BOT_LOCK.rmdir()
+        except OSError:
+            pass
+
         self._prefs['slack_bot_enabled'] = False
         save_monitor_prefs(self._prefs)
         self._update_slack_bot_button()
