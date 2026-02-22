@@ -398,9 +398,11 @@ class MonitorWindow(
             e = entries[-1]
             ts = time.strftime('%H:%M:%S', time.localtime(e.timestamp))
             if e.url:
+                msg_style = (' style="color: cyan;"'
+                             if '[Notification]' in e.message else '')
                 self._log_label.setText(
-                    f'[{ts}] {e.message} '
-                    f'<a href="{e.url}" style="color: cyan;">(link)</a>'
+                    f'<span{msg_style}>[{ts}] {e.message}</span> '
+                    f'<a href="{e.url}" style="color: #5B9BD5;">(link)</a>'
                 )
             else:
                 self._log_label.setText(f'[{ts}] {e.message}')

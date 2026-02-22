@@ -41,6 +41,15 @@ class StatusLog:
         self._entries.clear()
 
 
+_ERROR_KEYWORDS = ('error', 'failed', 'fail', 'disabled')
+
+
+def _is_error_message(msg: str) -> bool:
+    """Return True if the message looks like an error/failure."""
+    lower = msg.lower()
+    return any(kw in lower for kw in _ERROR_KEYWORDS)
+
+
 class StatusLogDialog(QDialog):
     """Dialog showing all past status messages with timestamps."""
 
@@ -60,16 +69,17 @@ class StatusLogDialog(QDialog):
             for entry in entries:
                 ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
                 msg = html.escape(entry.message)
-                # Color [Notification] prefix in light pink
+                # Color [Notification] messages in cyan, errors in red
                 if msg.startswith('[Notification]'):
-                    prefix = '<span style="color: #FFB6C1;">[Notification]</span>'
-                    msg = prefix + msg[len('[Notification]'):]
+                    msg = f'<span style="color: cyan;">{msg}</span>'
+                elif _is_error_message(msg):
+                    msg = f'<span style="color: #FFB6C1;">{msg}</span>'
                 line = f'[{ts}] {msg}'
                 if entry.url:
                     escaped_url = html.escape(entry.url)
                     line += (
                         f' <a href="{escaped_url}" '
-                        f'style="color: cyan;">(link)</a>'
+                        f'style="color: #5B9BD5;">(link)</a>'
                     )
                 html_lines.append(line)
             text_edit.setHtml(
