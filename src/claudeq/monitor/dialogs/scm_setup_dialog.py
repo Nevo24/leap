@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL
+from claudeq.monitor.mr_tracking.base import ConnectionTestResult
 from claudeq.monitor.scm_polling import TestConnectionWorker
 
 
@@ -22,7 +23,7 @@ class SCMSetupDialog(QDialog):
         - _url_placeholder() -> str
         - _token_label() -> str
         - _token_placeholder() -> str
-        - _do_test_connection(url, token) -> tuple[bool, str]
+        - _do_test_connection(url, token) -> ConnectionTestResult
         - _load_config() -> Optional[dict]
         - _save_config(config) -> None
         - _config_url_key() -> str
@@ -63,8 +64,8 @@ class SCMSetupDialog(QDialog):
         """Return the placeholder text for the token input."""
 
     @abstractmethod
-    def _do_test_connection(self, url: str, token: str) -> tuple[bool, str]:
-        """Test the connection and return (success, username_or_error)."""
+    def _do_test_connection(self, url: str, token: str) -> ConnectionTestResult:
+        """Test the connection and return a ConnectionTestResult."""
 
     @abstractmethod
     def _load_config(self) -> Optional[dict[str, Any]]:
@@ -152,6 +153,13 @@ class SCMSetupDialog(QDialog):
         # Status label
         self.status_label = QLabel('')
         layout.addWidget(self.status_label)
+
+        # Warnings label (shown when token has limited permissions)
+        self.warnings_label = QLabel('')
+        self.warnings_label.setWordWrap(True)
+        self.warnings_label.setStyleSheet('color: orange; font-size: 12px;')
+        self.warnings_label.setVisible(False)
+        layout.addWidget(self.warnings_label)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -274,19 +282,25 @@ class SCMSetupDialog(QDialog):
         self._test_worker.finished.connect(self._test_worker.deleteLater)
         self._test_worker.start()
 
-    def _on_test_result(self, success: bool, result: str) -> None:
+    def _on_test_result(self, result: ConnectionTestResult) -> None:
         """Handle background connection test result."""
         self.test_btn.setEnabled(True)
-        if success:
-            self._verified_username = result
-            self.status_label.setText(f'Connected as: {result}')
+        if result.success:
+            self._verified_username = result.username
+            self.status_label.setText(f'Connected as: {result.username}')
             self.status_label.setStyleSheet('color: green;')
             self.save_btn.setEnabled(True)
+            if result.warnings:
+                self.warnings_label.setText('\n'.join(result.warnings))
+                self.warnings_label.setVisible(True)
+            else:
+                self.warnings_label.setVisible(False)
         else:
             self._verified_username = None
-            self.status_label.setText(f'Failed: {result}')
+            self.status_label.setText(f'Failed: {result.username}')
             self.status_label.setStyleSheet('color: red;')
             self.save_btn.setEnabled(False)
+            self.warnings_label.setVisible(False)
 
     def _save(self) -> None:
         url = self.url_input.text().strip() or self._url_default()

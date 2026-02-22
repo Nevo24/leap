@@ -137,6 +137,10 @@ assets/
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking + user notifications (Todos) |
 | `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
 | `UserNotification` | `monitor/mr_tracking/base.py` | Dataclass for SCM user notifications (GitLab Todos / GitHub notifications) |
+| `ConnectionTestResult` | `monitor/mr_tracking/base.py` | Dataclass for connection test results with permission warnings |
+| `_verify_github_server()` | `monitor/dialogs/github_setup_dialog.py` | Verify server is GitHub via /meta endpoint (cross-provider guard) |
+| `_check_gitlab_scopes()` | `monitor/dialogs/gitlab_setup_dialog.py` | Check GitLab token scopes, return permission warnings |
+| `_check_github_scopes()` | `monitor/dialogs/github_setup_dialog.py` | Check GitHub token scopes via X-OAuth-Scopes header |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `NotificationType` | `monitor/ui/dock_badge.py` | Enum of notification event types |
 | `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |

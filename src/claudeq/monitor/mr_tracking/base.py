@@ -49,6 +49,14 @@ class UserNotification:
     created_at: Optional[str] = None
 
 
+@dataclass
+class ConnectionTestResult:
+    """Result of a connection test with permission details."""
+    success: bool
+    username: str  # username on success, error message on failure
+    warnings: list[str]  # permission warnings (empty = all permissions present)
+
+
 class SCMProvider(ABC):
     """Abstract base class for SCM providers (GitLab, GitHub, etc.)."""
 

@@ -8,7 +8,9 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from claudeq.utils.constants import SCM_MAX_CONCURRENT_POLLS
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus, SCMProvider, UserNotification
+from claudeq.monitor.mr_tracking.base import (
+    ConnectionTestResult, MRState, MRStatus, SCMProvider, UserNotification,
+)
 from claudeq.monitor.mr_tracking.cq_command import format_cq_message
 from claudeq.monitor.mr_tracking.config import load_gitlab_config
 from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
@@ -448,7 +450,7 @@ class SessionRefreshWorker(QThread):
 class TestConnectionWorker(QThread):
     """Background worker for testing SCM connection (avoids blocking setup dialog)."""
 
-    result_ready = pyqtSignal(bool, str)  # (success, username_or_error)
+    result_ready = pyqtSignal(object)  # ConnectionTestResult
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -458,7 +460,7 @@ class TestConnectionWorker(QThread):
 
     def configure(
         self,
-        test_func: Callable[[str, str], tuple[bool, str]],
+        test_func: Callable[[str, str], ConnectionTestResult],
         url: str,
         token: str,
     ) -> None:
@@ -470,11 +472,13 @@ class TestConnectionWorker(QThread):
         if not self._test_func:
             return
         try:
-            success, result = self._test_func(self._url, self._token)
-            self.result_ready.emit(success, result)
+            result = self._test_func(self._url, self._token)
+            self.result_ready.emit(result)
         except Exception as e:
             logger.debug("Error testing connection", exc_info=True)
-            self.result_ready.emit(False, str(e))
+            self.result_ready.emit(ConnectionTestResult(
+                success=False, username=str(e), warnings=[],
+            ))
 
 
 class BackgroundCallWorker(QThread):

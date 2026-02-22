@@ -130,27 +130,53 @@ class SCMConfigMixin(_Base):
     @staticmethod
     def _test_env_var_token(provider_name: str, config: dict[str, Any],
                             token: str) -> tuple[bool, str]:
-        """Quick auth check for a resolved env var token."""
+        """Quick auth check for a resolved env var token.
+
+        Also checks token scopes and logs any permission warnings.
+        """
+        if provider_name == 'GitLab' and token.startswith(('ghp_', 'github_pat_')):
+            return False, 'Token appears to be a GitHub token, not a GitLab token.'
+        if provider_name == 'GitHub' and token.startswith('glpat-'):
+            return False, 'Token appears to be a GitLab token, not a GitHub token.'
         try:
             if provider_name == 'GitLab':
                 import gitlab
+                from claudeq.monitor.dialogs.gitlab_setup_dialog import _check_gitlab_scopes
                 gl = gitlab.Gitlab(
                     config.get('gitlab_url', 'https://gitlab.com'),
                     private_token=token, timeout=10)
                 gl.auth()
-                return True, gl.user.username
+                username = gl.user.username
+                if not username or not hasattr(gl.user, 'state'):
+                    return False, 'Server does not appear to be GitLab.'
+                warnings = _check_gitlab_scopes(gl)
+                for w in warnings:
+                    logger.warning("GitLab token: %s", w)
+                return True, username
             elif provider_name == 'GitHub':
                 from github import Github
+                from claudeq.monitor.dialogs.github_setup_dialog import (
+                    _check_github_scopes, _verify_github_server,
+                )
                 base_url = config.get('github_url', '')
                 if base_url:
                     stripped = base_url.lower().rstrip('/')
                     if stripped in ('https://github.com', 'http://github.com'):
                         base_url = ''
+                base = (base_url or 'https://api.github.com').rstrip('/')
+                if not _verify_github_server(base, token):
+                    return False, 'Server does not appear to be GitHub.'
                 if base_url:
                     gh = Github(login_or_token=token, base_url=base_url, timeout=10)
                 else:
                     gh = Github(login_or_token=token, timeout=10)
-                return True, gh.get_user().login
+                username = gh.get_user().login
+                if not username:
+                    return False, 'Could not determine GitHub username.'
+                warnings = _check_github_scopes(gh)
+                for w in warnings:
+                    logger.warning("GitHub token: %s", w)
+                return True, username
         except Exception as e:
             return False, str(e)
         return False, 'Unknown provider'
