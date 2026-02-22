@@ -198,6 +198,16 @@ update:
 		echo ""; \
 		echo "  Monitor not installed. To install it, run: make install-monitor"; \
 	fi
+	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
+		echo ""; \
+		echo "$(PROMPT_PREFIX) Detected Slack integration"; \
+		echo "$(PROMPT_PREFIX) Updating Slack dependencies..."; \
+		poetry install --no-root --with slack; \
+		echo "$(GREEN)✓ Slack updated$(NC)"; \
+	else \
+		echo ""; \
+		echo "  Slack not installed. To install it, run: make install-slack-app"; \
+	fi
 	@echo ""
 	@echo "$(PROMPT_PREFIX) Updating IDE configurations..."
 	@$(MAKE) .configure-vscode
@@ -230,6 +240,9 @@ update:
 	echo "  • Core code and dependencies updated"; \
 	if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
 		echo "  • Monitor app rebuilt"; \
+	fi; \
+	if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
+		echo "  • Slack dependencies updated"; \
 	fi; \
 	echo "  • IDE configurations refreshed"; \
 	echo ""; \
