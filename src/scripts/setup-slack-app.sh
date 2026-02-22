@@ -22,6 +22,26 @@ echo "╔═══════════════════════�
 echo "║     ClaudeQ Slack App Setup Wizard    ║"
 echo "╚═══════════════════════════════════════╝"
 echo ""
+
+# Check if Slack is already configured
+if [ -f "$CONFIG_FILE" ]; then
+    echo -e "${GREEN}Slack integration is already configured.${NC}"
+    echo ""
+    read -p "Reconfigure from scratch? [y/N] " RECONFIG
+    case "$RECONFIG" in
+        [yY]*)
+            echo ""
+            echo "Continuing with fresh setup..."
+            echo ""
+            ;;
+        *)
+            echo ""
+            echo -e "${GREEN}Keeping existing configuration.${NC}"
+            exit 0
+            ;;
+    esac
+fi
+
 echo -e "${YELLOW}IMPORTANT: Use a personal Slack workspace, not a company one.${NC}"
 echo -e "${YELLOW}Company workspaces often require admin approval to install apps.${NC}"
 echo ""

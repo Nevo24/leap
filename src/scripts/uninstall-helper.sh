@@ -38,10 +38,10 @@ remove_shell_config() {
     fi
 
     echo -e "${YELLOW}⚠ ClaudeQ configuration found in $RC_FILE${NC}"
-    read -p "  Remove shell configuration? (Y/n) " -n 1 -r REPLY
+    read -p "  Remove shell configuration? (y/N) " -n 1 -r REPLY
     echo
 
-    if [ -z "$REPLY" ] || [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
+    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
         # Backup
         cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
 

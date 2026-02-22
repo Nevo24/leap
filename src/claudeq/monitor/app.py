@@ -435,7 +435,7 @@ class MonitorWindow(
         self.move(x, y)
 
     def _apply_equal_column_widths(self) -> None:
-        """Distribute column widths equally across resizable columns."""
+        """Distribute column widths equally across visible resizable columns."""
         col_count = self.table.columnCount()
         if col_count <= 0:
             return
@@ -445,11 +445,13 @@ class MonitorWindow(
             viewport_w = (self.geometry().width() or 1150) - 50
         delete_w = self.table.columnWidth(self.COL_DELETE)
         available = viewport_w - delete_w
-        resizable = col_count - 1  # exclude COL_DELETE
-        col_width = available // max(resizable, 1)
-        for col in range(col_count):
-            if col == self.COL_DELETE:
-                continue
+        # Only count visible, non-fixed columns (skip hidden like Slack)
+        visible_cols = [
+            col for col in range(col_count)
+            if col != self.COL_DELETE and not self.table.isColumnHidden(col)
+        ]
+        col_width = available // max(len(visible_cols), 1)
+        for col in visible_cols:
             self.table.setColumnWidth(col, col_width)
 
     def _reset_window_size(self) -> None:
@@ -471,10 +473,12 @@ class MonitorWindow(
             return
         col_count = self.table.columnCount()
         delete_w = self.table.columnWidth(self.COL_DELETE)
-        resizable_total = sum(
-            self.table.columnWidth(col)
-            for col in range(col_count) if col != self.COL_DELETE
-        )
+        # Only scale visible columns (skip hidden like Slack)
+        resizable_cols = [
+            c for c in range(col_count)
+            if c != self.COL_DELETE and not self.table.isColumnHidden(c)
+        ]
+        resizable_total = sum(self.table.columnWidth(c) for c in resizable_cols)
         if resizable_total <= 0:
             return
         available = viewport_w - delete_w
@@ -482,7 +486,6 @@ class MonitorWindow(
         # proportions so every column shifts evenly, even for tiny changes.
         cumulative_old = 0
         used = 0
-        resizable_cols = [c for c in range(col_count) if c != self.COL_DELETE]
         for col in resizable_cols:
             cumulative_old += self.table.columnWidth(col)
             target = round(available * cumulative_old / resizable_total)
@@ -590,8 +593,16 @@ def main() -> None:
     window.show()
 
     # Enable proportional column scaling after the window is fully shown
-    # and all initial resize events have settled.
-    QTimer.singleShot(0, lambda: setattr(window, '_ui_ready', True))
+    # and all initial resize events have settled.  Re-apply equal widths
+    # when no saved prefs exist — the viewport is now accurately sized.
+    def _finalize_ui() -> None:
+        saved_widths = window._prefs.get('column_widths')
+        col_count = window.table.columnCount()
+        if not saved_widths or len(saved_widths) != col_count:
+            window._apply_equal_column_widths()
+        window._ui_ready = True
+
+    QTimer.singleShot(0, _finalize_ui)
 
     # ── Ctrl+C handling ──────────────────────────────────────────────
     # Reclaim the terminal foreground process group so SIGINT from
