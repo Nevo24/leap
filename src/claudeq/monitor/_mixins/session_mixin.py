@@ -151,10 +151,21 @@ class SessionMixin(_Base):
         title_pattern = f"cq-{session_type} {tag}"
 
         if not session_exists(tag, session_type):
+            # Debug: show exactly what path was checked
+            from claudeq.utils.constants import SOCKET_DIR
+            ext = 'client.lock' if session_type == 'client' else 'sock'
+            check_path = SOCKET_DIR / f"{tag}.{ext}"
+            import os
+            dir_contents = ', '.join(sorted(os.listdir(str(SOCKET_DIR)))) if SOCKET_DIR.is_dir() else '<dir missing>'
             reply = QMessageBox.question(
                 self,
                 f'{session_type.capitalize()} Not Found',
                 f'{session_type.capitalize()} not found for: {tag}\n\n'
+                f'DEBUG:\n'
+                f'  Path checked: {check_path}\n'
+                f'  Path exists: {check_path.exists()}\n'
+                f'  SOCKET_DIR: {SOCKET_DIR}\n'
+                f'  Dir contents: {dir_contents}\n\n'
                 f'Open a new {session_type}?',
                 QMessageBox.Yes | QMessageBox.No
             )
