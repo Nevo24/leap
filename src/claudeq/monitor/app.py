@@ -217,9 +217,8 @@ class MonitorWindow(
         if not self._slack_available:
             self.table.setColumnHidden(self.COL_SLACK, True)
 
-        # Last column: Stretch fills remaining space and has no right-edge
-        # handle to drag, while still expanding with the branch name.
-        header.setSectionResizeMode(self.COL_MR_BRANCH, QHeaderView.Stretch)
+        # Last column: keep Interactive (same as all others) so that
+        # resizeEvent scales every column proportionally on window resize.
 
         # Restore saved column widths or distribute equally
         # Reset saved widths when column layout changes
