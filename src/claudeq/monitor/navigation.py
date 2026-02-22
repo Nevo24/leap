@@ -129,29 +129,39 @@ def close_terminal_with_title(
     """
     Close terminal window/tab with matching title.
 
+    Tries the preferred IDE/terminal first, then falls back to others.
+
     Args:
         title_pattern: Pattern to match in terminal title.
-        preferred_ide: Preferred IDE to try first.
+        preferred_ide: IDE or terminal app to try first (from session metadata).
         project_path: Project path for IDE navigation.
         terminal_title: Exact terminal title to match.
 
     Returns:
         True if terminal was found and closed.
     """
-    if preferred_ide and any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
-        if _close_jetbrains(preferred_ide, project_path, terminal_title):
-            return True
+    if preferred_ide:
+        if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
+            if _close_jetbrains(preferred_ide, project_path, terminal_title):
+                return True
+        elif 'VS Code' in preferred_ide:
+            if _close_vscode(project_path, terminal_title or title_pattern):
+                return True
+        elif preferred_ide == 'Warp':
+            if _close_warp(title_pattern):
+                return True
+        elif preferred_ide == 'iTerm2':
+            if _close_iterm2(title_pattern):
+                return True
+        elif preferred_ide == 'Terminal.app':
+            if _close_terminal_app(title_pattern):
+                return True
 
-    if preferred_ide and 'VS Code' in preferred_ide:
-        if _close_vscode(project_path, terminal_title or title_pattern):
-            return True
-
+    # Preferred IDE failed or unknown — try all standalone terminals
     if _close_terminal_app(title_pattern):
         return True
-
     if _close_iterm2(title_pattern):
         return True
-
     if _close_warp(title_pattern):
         return True
 
@@ -167,34 +177,39 @@ def find_terminal_with_title(
     """
     Find and focus terminal window/tab with matching title.
 
+    Tries the preferred IDE/terminal first, then falls back to others.
+
     Args:
         title_pattern: Pattern to match in terminal title.
-        preferred_ide: Preferred IDE to try first.
+        preferred_ide: IDE or terminal app to try first (from session metadata).
         project_path: Project path for IDE navigation.
         terminal_title: Exact terminal title to match.
 
     Returns:
         True if terminal was found and focused.
     """
-    # Try JetBrains IDEs first
-    if preferred_ide and any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
-        if _navigate_jetbrains(preferred_ide, project_path, terminal_title):
-            return True
+    if preferred_ide:
+        if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
+            if _navigate_jetbrains(preferred_ide, project_path, terminal_title):
+                return True
+        elif 'VS Code' in preferred_ide:
+            if _navigate_vscode(project_path, terminal_title or title_pattern):
+                return True
+        elif preferred_ide == 'Warp':
+            if _navigate_warp(title_pattern):
+                return True
+        elif preferred_ide == 'iTerm2':
+            if _navigate_iterm2(title_pattern):
+                return True
+        elif preferred_ide == 'Terminal.app':
+            if _navigate_terminal_app(title_pattern):
+                return True
 
-    # Try VS Code
-    if preferred_ide and 'VS Code' in preferred_ide:
-        if _navigate_vscode(project_path, terminal_title or title_pattern):
-            return True
-
-    # Try Terminal.app
+    # Preferred IDE failed or unknown — try all standalone terminals
     if _navigate_terminal_app(title_pattern):
         return True
-
-    # Try iTerm2
     if _navigate_iterm2(title_pattern):
         return True
-
-    # Try Warp
     if _navigate_warp(title_pattern):
         return True
 

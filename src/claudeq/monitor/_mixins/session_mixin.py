@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 from pathlib import Path
@@ -20,6 +21,8 @@ from claudeq.monitor.monitor_utils import _remove_client_lock
 from claudeq.monitor.navigation import (
     close_terminal_with_title, find_terminal_with_title, open_terminal_with_command,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from claudeq.monitor.app import MonitorWindow
@@ -151,6 +154,22 @@ class SessionMixin(_Base):
         title_pattern = f"cq-{session_type} {tag}"
 
         if not session_exists(tag, session_type):
+            ext = 'client.lock' if session_type == 'client' else 'sock'
+            check_path = SOCKET_DIR / f"{tag}.{ext}"
+            try:
+                dir_contents = sorted(os.listdir(str(SOCKET_DIR)))
+            except OSError:
+                dir_contents = ['<dir missing>']
+            logger.error(
+                "Session not found: tag=%s type=%s path=%s exists=%s "
+                "socket_dir=%s dir_contents=%s",
+                tag, session_type, check_path, check_path.exists(),
+                SOCKET_DIR, dir_contents,
+            )
+            self._show_status(
+                f"Session not found: {session_type} '{tag}' "
+                f"(checked {check_path}, dir has {len(dir_contents)} files)"
+            )
             reply = QMessageBox.question(
                 self,
                 f'{session_type.capitalize()} Not Found',
@@ -191,6 +210,18 @@ class SessionMixin(_Base):
         def _on_done() -> None:
             if result_holder[0]:
                 return  # Successfully focused
+
+            # Terminal not found — log details for diagnosing navigation issues
+            logger.error(
+                "Terminal navigation failed: tag=%s type=%s preferred_ide=%s "
+                "title_pattern=%s project_path=%s",
+                _tag, _session_type, _preferred_ide, _title_pattern,
+                _project_path,
+            )
+            self._show_status(
+                f"Navigation failed for {_session_type} '{_tag}' "
+                f"(ide={_preferred_ide}, pattern='{_title_pattern}')"
+            )
 
             # Terminal not found — show dialog on main thread
             if _session_type == 'client' and is_client_lock_held(_tag):
