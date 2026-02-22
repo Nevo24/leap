@@ -590,17 +590,6 @@ def _close_iterm2(title_pattern: str) -> bool:
 _WARP_BUNDLE_ID = 'dev.warp.Warp-Stable'
 
 
-def _write_warp_diagnostic(msg: str) -> None:
-    """Write a diagnostic line to .storage/warp_nav_diag.txt for debugging."""
-    try:
-        from claudeq.utils.constants import STORAGE_DIR
-        diag_file = STORAGE_DIR / 'warp_nav_diag.txt'
-        with open(diag_file, 'a') as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-    except (ImportError, OSError):
-        pass
-
-
 def _get_app_pid(bundle_id: str) -> Optional[int]:
     """Get PID for a running app by bundle identifier.
 
@@ -616,9 +605,9 @@ def _get_app_pid(bundle_id: str) -> Optional[int]:
             if app.bundleIdentifier() == bundle_id:
                 return app.processIdentifier()
     except ImportError:
-        _write_warp_diagnostic("AppKit ImportError in _get_app_pid")
+        logger.debug("AppKit ImportError in _get_app_pid")
     except Exception as exc:
-        _write_warp_diagnostic("_get_app_pid error: %s" % exc)
+        logger.debug("_get_app_pid error: %s", exc)
     return None
 
 
@@ -633,11 +622,10 @@ def _check_accessibility_trusted() -> bool:
         from ApplicationServices import AXIsProcessTrusted
         from CoreFoundation import kCFBooleanTrue
     except ImportError:
-        _write_warp_diagnostic("FAIL: cannot import ApplicationServices or CoreFoundation")
+        logger.debug("Cannot import ApplicationServices or CoreFoundation")
         return False
 
     trusted = AXIsProcessTrusted()
-    _write_warp_diagnostic("AXIsProcessTrusted() = %s" % trusted)
     if trusted:
         return True
 
@@ -703,10 +691,8 @@ def _navigate_warp(title_pattern: str) -> bool:
     2. If not found, raise each window and cycle through its tabs with
        Cmd+Shift+] until the title matches or we loop back to the start.
     """
-    _write_warp_diagnostic("_navigate_warp called, pattern='%s'" % title_pattern)
     pid = _get_app_pid(_WARP_BUNDLE_ID)
     if pid is None:
-        _write_warp_diagnostic("Warp not running (bundle_id=%s)" % _WARP_BUNDLE_ID)
         return False
 
     try:
@@ -718,7 +704,6 @@ def _navigate_warp(title_pattern: str) -> bool:
             kAXErrorSuccess,
         )
     except ImportError:
-        _write_warp_diagnostic("FAIL: ImportError for ApplicationServices")
         return False
 
     if not _check_accessibility_trusted():
@@ -727,7 +712,6 @@ def _navigate_warp(title_pattern: str) -> bool:
     app_ref = AXUIElementCreateApplication(pid)
     err, windows = AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
     if err != kAXErrorSuccess or not windows:
-        _write_warp_diagnostic("AXWindows query: error=%d, pid=%d" % (err, pid))
         return False
 
     ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
@@ -745,12 +729,10 @@ def _navigate_warp(title_pattern: str) -> bool:
     for window in windows:
         if title_pattern in _get_title(window):
             _raise_and_activate(window)
-            _write_warp_diagnostic("MATCH (phase 1): pattern='%s'" % title_pattern)
             return True
 
     # Phase 2: raise each window and cycle through its tabs
     # Cmd+Shift+] = next tab in Warp  (keycode 30 = ']')
-    _write_warp_diagnostic("Phase 2: cycling tabs in %d window(s)" % len(windows))
     for window in windows:
         _raise_and_activate(window)
         time.sleep(0.15)
@@ -764,14 +746,10 @@ def _navigate_warp(title_pattern: str) -> bool:
             time.sleep(0.15)
             current_title = _get_title(window)
             if title_pattern in current_title:
-                _write_warp_diagnostic(
-                    "MATCH (phase 2): pattern='%s' in title='%s'"
-                    % (title_pattern, current_title))
                 return True
             if current_title == initial_title:
                 break  # cycled back to start — tab not in this window
 
-    _write_warp_diagnostic("NO MATCH after cycling all windows")
     # Phase 2 activated Warp to cycle tabs — switch back to the monitor
     try:
         import AppKit
