@@ -264,6 +264,17 @@ class TableBuilderMixin(_Base):
                         item.setForeground(color)
                     elif item:
                         item.setForeground(QColor(255, 255, 255))
+                    state_explanations = {
+                        'idle': 'Claude is waiting for input — will accept next queued message',
+                        'running': 'Claude is actively processing a request',
+                        'needs_permission': 'Claude needs your permission',
+                        'has_question': 'Claude is asking a clarifying question',
+                        'interrupted': 'Claude was interrupted — will accept next queued message',
+                    }
+                    if self._prefs.get('show_tooltips', True):
+                        explanation = state_explanations.get(claude_state, '')
+                        if explanation and item:
+                            item.setToolTip(explanation)
 
                     # Queue column with right-click context menu
                     auto_send_mode = session.get('auto_send_mode', 'pause')
