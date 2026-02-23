@@ -71,7 +71,8 @@ class StatusLogDialog(QDialog):
                 msg = html.escape(entry.message)
                 # Color [Notification] messages in cyan, errors in red
                 if msg.startswith('[Notification]'):
-                    msg = f'<span style="color: cyan;">{msg}</span>'
+                    rest = msg[len('[Notification]'):]
+                    msg = f'<span style="color: cyan;">[Notification]</span>{rest}'
                 elif _is_error_message(msg):
                     msg = f'<span style="color: #FFB6C1;">{msg}</span>'
                 line = f'[{ts}] {msg}'
