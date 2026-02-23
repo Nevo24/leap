@@ -255,6 +255,7 @@ class TableBuilderMixin(_Base):
                         'running': ('\u25cf Running', QColor(76, 175, 80)),
                         'needs_permission': ('\u25b2 Permission', QColor(255, 152, 0)),
                         'has_question': ('\u25c6 Question', QColor(100, 181, 246)),
+                        'interrupted': ('\u25c7 Interrupted', QColor(255, 213, 79)),
                     }
                     text, color = state_display.get(claude_state, (claude_state, None))
                     self._set_cell_text(row, self.COL_STATUS, text)

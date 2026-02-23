@@ -447,11 +447,12 @@ The monitor has two notification channels, independently configurable per event 
 | `session_completed` | Running→Idle (busy for at least 1.5s) | `"Claude finished processing"` |
 | `session_needs_permission` | Running→Needs Permission | `"Claude needs permission to use a tool"` |
 | `session_has_question` | Running→Has Question | `"Claude is asking you a question"` |
+| `session_interrupted` | Running→Interrupted | `"Claude was interrupted"` |
 | `review_requested` | User requested to review an MR/PR | `"Review requested on MR !42 'Fix auth' by John"` |
 | `assigned` | User assigned to an MR/PR | `"You are assigned to MR !42 'Fix auth'"` |
 | `mentioned` | User mentioned in a discussion | `"You were mentioned in thread on MR !42"` |
 
-The first six types come from session tracking. The last three come from user-level SCM notifications (GitLab Todos / GitHub notifications) — these fire regardless of whether the MR is tracked in ClaudeQ.
+The first seven types come from session tracking. The last three come from user-level SCM notifications (GitLab Todos / GitHub notifications) — these fire regardless of whether the MR is tracked in ClaudeQ.
 
 Dock badge counts sum into a single number. Focusing the monitor window resets all counts.
 

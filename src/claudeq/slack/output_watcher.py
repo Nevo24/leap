@@ -178,7 +178,7 @@ class OutputWatcher:
                         result_ts,
                     )
 
-            if state in ('needs_permission', 'has_question'):
+            if state in ('needs_permission', 'has_question', 'interrupted'):
                 footer = self._build_footer(
                     state, False, notification_message, prompt_output,
                 )
@@ -326,7 +326,7 @@ class OutputWatcher:
             return ':speech_balloon: *Claude is waiting for your input*'
         elif state == 'idle' and queue_has_next:
             return ':arrow_forward: _Auto-sending next message..._'
-        elif state in ('needs_permission', 'has_question'):
+        elif state in ('needs_permission', 'has_question', 'interrupted'):
             header = ':warning: *Claude Code needs your attention*'
             if notification_message:
                 header = f':warning: *{notification_message}*'

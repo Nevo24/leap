@@ -180,6 +180,8 @@ class MRDisplayMixin(_Base):
             return (tag, 'Claude needs permission to use a tool')
         elif event.type == NotificationType.SESSION_HAS_QUESTION:
             return (tag, 'Claude is asking you a question')
+        elif event.type == NotificationType.SESSION_INTERRUPTED:
+            return (tag, 'Claude was interrupted')
         elif event.type == NotificationType.REVIEW_REQUESTED:
             title = event.notification_title or ''
             project = event.project_name or ''

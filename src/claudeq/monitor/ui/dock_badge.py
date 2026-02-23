@@ -25,6 +25,7 @@ class NotificationType(Enum):
     SESSION_COMPLETED = 'session_completed'
     SESSION_NEEDS_PERMISSION = 'session_needs_permission'
     SESSION_HAS_QUESTION = 'session_has_question'
+    SESSION_INTERRUPTED = 'session_interrupted'
     REVIEW_REQUESTED = 'review_requested'
     ASSIGNED = 'assigned'
     MENTIONED = 'mentioned'
@@ -187,6 +188,7 @@ class DockBadge:
             'idle': NotificationType.SESSION_COMPLETED,
             'needs_permission': NotificationType.SESSION_NEEDS_PERMISSION,
             'has_question': NotificationType.SESSION_HAS_QUESTION,
+            'interrupted': NotificationType.SESSION_INTERRUPTED,
         }
 
         for tag, state in current.items():

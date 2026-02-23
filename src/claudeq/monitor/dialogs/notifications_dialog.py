@@ -16,6 +16,7 @@ _TYPE_LABELS = {
     'session_completed': 'Claude finished processing',
     'session_needs_permission': 'Claude needs permission',
     'session_has_question': 'Claude has a question',
+    'session_interrupted': 'Claude was interrupted',
     'review_requested': 'Review requested',
     'assigned': 'Assigned to you',
     'mentioned': 'Mentioned',
@@ -25,7 +26,7 @@ _TYPE_LABELS = {
 _SECTIONS: list[tuple[str, list[str]]] = [
     ('MR / Session Tracking', [
         'mr_unresponded', 'mr_all_responded', 'mr_approved', 'session_completed',
-        'session_needs_permission', 'session_has_question',
+        'session_needs_permission', 'session_has_question', 'session_interrupted',
     ]),
     ('GitLab / GitHub Notifications', [
         'review_requested', 'assigned', 'mentioned',

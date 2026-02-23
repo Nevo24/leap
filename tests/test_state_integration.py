@@ -246,7 +246,7 @@ class TestPTYInterrupted:
     """'Interrupted' detection through real PTY output."""
 
     def test_interrupted_in_running_state(self, pty: PTYFixture) -> None:
-        """'Interrupted' in PTY output while running → has_question."""
+        """'Interrupted' in PTY output while running → interrupted."""
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
@@ -254,7 +254,7 @@ class TestPTYInterrupted:
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
 
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'
 
     def test_interrupted_lost_in_large_tui_redraw(self, pty: PTYFixture) -> None:
         """BUG REPRO: Claude TUI redraws the full screen after Escape.
@@ -289,7 +289,7 @@ class TestPTYInterrupted:
         chunk += b'\x1b[1;1H' * 100
 
         pty.tracker.on_output(chunk)
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'
 
     def test_interrupted_with_surrounding_ansi(self, pty: PTYFixture) -> None:
         """'Interrupted' detected even with ANSI codes around it."""
@@ -299,24 +299,24 @@ class TestPTYInterrupted:
         pty.send_line(r'printf "\033[31mInterrupted\033[0m\n"')
         pty.drain_to_tracker(timeout=1.0)
 
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'
 
 
 class TestPTYResumeDetection:
     """Resume detection: has_question/needs_permission → running."""
 
-    def test_tui_rendering_after_interrupted_stays_has_question(
+    def test_tui_rendering_after_interrupted_stays_interrupted(
         self, pty: PTYFixture,
     ) -> None:
-        """After 'Interrupted' → has_question, TUI status bar rendering
+        """After 'Interrupted' → interrupted, TUI status bar rendering
         should NOT falsely trigger resume to running."""
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
-        # "Interrupted" detected → has_question
+        # "Interrupted" detected → interrupted
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'
 
         # Wait past 2s grace period
         time.sleep(2.5)
@@ -325,15 +325,15 @@ class TestPTYResumeDetection:
         pty.send_line(r'printf "\033[24;1H\033[KNevo.Mashiach 10%% Opus\n"')
         pty.drain_to_tracker(timeout=1.0)
 
-        # Should stay has_question — no user input since entering wait
-        assert pty.tracker.current_state == 'has_question'
+        # Should stay interrupted — no user input since entering wait
+        assert pty.tracker.current_state == 'interrupted'
 
     def test_resume_after_user_types(self, pty: PTYFixture) -> None:
-        """After has_question, user typing then output → running."""
+        """After interrupted, user typing then output → running."""
         pty.tracker.on_send()
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'
 
         # Wait past grace period
         time.sleep(2.5)
@@ -402,7 +402,7 @@ class TestPTYEscapeRace:
 
     def test_escape_race_detected(self, pty: PTYFixture) -> None:
         """Signal file says idle, then PTY outputs 'Interrupted' →
-        should detect has_question via the Escape race path."""
+        should detect interrupted via the Escape race path."""
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
@@ -417,11 +417,11 @@ class TestPTYEscapeRace:
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
 
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'
 
     def test_escape_after_false_idle(self, pty: PTYFixture) -> None:
         """The user's reported scenario: type → running → idle signal →
-        press Escape → should get has_question if Interrupted appears."""
+        press Escape → should get interrupted if Interrupted appears."""
         # User types → running (via accumulation)
         pty.send_input(b'h')
         pty.send_input(b'\n')
@@ -441,4 +441,4 @@ class TestPTYEscapeRace:
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
 
-        assert pty.tracker.current_state == 'has_question'
+        assert pty.tracker.current_state == 'interrupted'

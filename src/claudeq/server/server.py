@@ -416,10 +416,10 @@ class ClaudeQServer:
                 prompt_write_due = 0.0
                 queue_has_next = (
                     not self.queue.is_empty
-                    and current_state == 'idle'
+                    and current_state in ('idle', 'interrupted')
                     and self.state.auto_send_mode in ('pause', 'always')
                 )
-                if current_state in ('needs_permission', 'has_question'):
+                if current_state in ('needs_permission', 'has_question', 'interrupted'):
                     # Delay writing: let PTY output accumulate so the
                     # full permission dialog / question is captured.
                     prompt_write_due = time.time() + 0.2
@@ -434,7 +434,7 @@ class ClaudeQServer:
             # Delayed prompt output write
             if prompt_write_due and time.time() >= prompt_write_due:
                 cs = self.state.current_state
-                if cs in ('needs_permission', 'has_question'):
+                if cs in ('needs_permission', 'has_question', 'interrupted'):
                     prompt_output = self.state.get_prompt_output()
                     self.output_capture.on_state_change(
                         cs, prompt_prev_state,

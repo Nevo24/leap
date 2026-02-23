@@ -2,8 +2,8 @@
 Claude state tracking for ClaudeQ server.
 
 Encapsulates the state machine that detects Claude's current state
-(idle, running, needs_permission, has_question) using hook-based
-signal files with a PTY silence fallback.
+(idle, running, needs_permission, has_question, interrupted) using
+hook-based signal files with a PTY silence fallback.
 """
 
 import json
@@ -123,7 +123,8 @@ class ClaudeStateTracker:
             pty_alive: Whether the PTY child process is still running.
 
         Returns:
-            One of: 'idle', 'running', 'needs_permission', 'has_question'.
+            One of: 'idle', 'running', 'needs_permission',
+            'has_question', 'interrupted'.
         """
         if not pty_alive:
             with self._lock:
@@ -141,16 +142,30 @@ class ClaudeStateTracker:
         if new_state and new_state != current:
             # Stop hook fires on Escape too, writing "idle",
             # but Claude is actually prompting "What should
-            # Claude do instead?" — keep has_question.
+            # Claude do instead?" — keep has_question/interrupted.
             if (
                 new_state == 'idle'
-                and current == 'has_question'
+                and current in ('has_question', 'interrupted')
                 and self._waiting_since is not None
                 and (self._clock() - self._waiting_since) < 5.0
             ):
                 _log.debug(
-                    'GET_STATE signal=idle but protecting has_question '
+                    'GET_STATE signal=idle but protecting %s '
                     '(%.1fs since wait)',
+                    current, self._clock() - self._waiting_since,
+                )
+            # Notification hook fires for the interrupt dialog
+            # ("What should Claude do instead?"), writing
+            # has_question — protect interrupted from this.
+            elif (
+                new_state == 'has_question'
+                and current == 'interrupted'
+                and self._waiting_since is not None
+                and (self._clock() - self._waiting_since) < 5.0
+            ):
+                _log.debug(
+                    'GET_STATE signal=has_question but protecting '
+                    'interrupted (%.1fs since wait)',
                     self._clock() - self._waiting_since,
                 )
             else:
@@ -207,8 +222,8 @@ class ClaudeStateTracker:
         state = self.get_state(pty_alive)
         if self._auto_send_mode == 'always':
             return state != 'running'
-        # 'pause' mode (default)
-        return state == 'idle'
+        # 'pause' mode (default): also auto-send on interrupted
+        return state in ('idle', 'interrupted')
 
     def on_input(self, data: bytes) -> None:
         """Called when the user types in the server terminal.
@@ -260,8 +275,8 @@ class ClaudeStateTracker:
 
         Updates the last-output timestamp, detects state transitions:
         - idle → running: sustained printable output without recent input
-        - running → has_question: "Interrupted" text detected
-        - needs_permission/has_question → running: printable output resume
+        - running → interrupted: "Interrupted" text detected
+        - needs_permission/has_question/interrupted → running: printable output resume
 
         Args:
             data: Raw output bytes from the PTY.
@@ -321,12 +336,12 @@ class ClaudeStateTracker:
                 has_interrupted = b'Interrupted' in data
                 if has_interrupted or b'Interrupted' in self._output_buf:
                     _log.debug(
-                        'ON_OUTPUT idle→has_question (Escape race detected)',
+                        'ON_OUTPUT idle→interrupted (Escape race detected)',
                     )
                     self._output_buf.clear()
                     self._idle_output_acc = 0
                     with self._lock:
-                        self._state = 'has_question'
+                        self._state = 'interrupted'
                         self._waiting_since = self._clock()
                     return
             if not self._seen_user_input:
@@ -382,10 +397,10 @@ class ClaudeStateTracker:
                     has_interrupted, stripped_preview[:80],
                 )
             if has_interrupted:
-                _log.debug('ON_OUTPUT running→has_question (Interrupted)')
+                _log.debug('ON_OUTPUT running→interrupted (Interrupted)')
                 self._output_buf.clear()
                 with self._lock:
-                    self._state = 'has_question'
+                    self._state = 'interrupted'
                     self._waiting_since = self._clock()
             else:
                 # Detect permission/question dialogs from PTY output.
@@ -417,7 +432,7 @@ class ClaudeStateTracker:
         # waiting state (prompt text / escape sequences may still render).
         # Require user input AFTER entering the waiting state — prevents
         # TUI status bar rendering from falsely triggering resume.
-        elif self._state in ('needs_permission', 'has_question'):
+        elif self._state in ('needs_permission', 'has_question', 'interrupted'):
             self._output_buf.clear()
             # Continue accumulating prompt output for Slack rendering.
             # The dialog may still be rendering after the state transition.

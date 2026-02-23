@@ -284,7 +284,7 @@ class TestInterruptedDetection:
         tracker.on_send()
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'interrupted'
 
     def test_interrupted_split_across_chunks(self, tmp_path: Path) -> None:
         t = [0.0]
@@ -295,7 +295,7 @@ class TestInterruptedDetection:
         assert tracker.current_state == 'running'
         t[0] = 1.1
         tracker.on_output(b'rupted more text')
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'interrupted'
 
     def test_output_buffer_capped_at_8192(self, tmp_path: Path) -> None:
         t = [0.0]
@@ -325,7 +325,7 @@ class TestInterruptedDetection:
         chunk += b'B' * 600  # status bar / prompt rendering
         t[0] = 1.1
         tracker.on_output(chunk)
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'interrupted'
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +334,7 @@ class TestInterruptedDetection:
 
 class TestEscapeRace:
     def test_escape_race_interrupted_in_idle(self, tmp_path: Path) -> None:
-        """Stop hook writes idle, then PTY outputs 'Interrupted' → has_question."""
+        """Stop hook writes idle, then PTY outputs 'Interrupted' → interrupted."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         # Simulate: server was running, hook wrote idle, user pressed Escape
@@ -348,7 +348,7 @@ class TestEscapeRace:
         # PTY outputs "Interrupted" within 3s of input
         t[0] = 2.0
         tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'interrupted'
 
     def test_escape_race_after_signal_idle_transition(self, tmp_path: Path) -> None:
         """Escape race detection must work even when the running→idle
@@ -370,7 +370,7 @@ class TestEscapeRace:
         # PTY outputs "Interrupted" shortly after
         t[0] = 5.2
         tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'interrupted'
 
     def test_escape_race_only_within_3s_of_input(self, tmp_path: Path) -> None:
         """'Interrupted' in idle state ignored if >3s after input."""
@@ -414,6 +414,30 @@ class TestStopHookRace:
         t[0] = 1.0
         write_signal(tracker, 'has_question')
         assert tracker.get_state(pty_alive=True) == 'has_question'
+        # After 5s grace, idle signal is honored
+        t[0] = 7.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_interrupted_protected_from_idle_signal_within_5s(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        # Immediately write idle signal — within 5s grace
+        t[0] = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_interrupted_yields_to_idle_signal_after_5s(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
         # After 5s grace, idle signal is honored
         t[0] = 7.0
         write_signal(tracker, 'idle')
@@ -830,7 +854,7 @@ class TestPTYDialogDetection:
     def test_interrupted_takes_priority_over_dialog(
         self, tmp_path: Path,
     ) -> None:
-        """If 'Interrupted' is in the same chunk, has_question wins."""
+        """If 'Interrupted' is in the same chunk, interrupted wins."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -839,7 +863,7 @@ class TestPTYDialogDetection:
             b'Interrupted\n'
             b'Enter to select \xc2\xb7 Esc to cancel\n'
         )
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'interrupted'
 
 
 class TestCleanup:
@@ -856,3 +880,60 @@ class TestCleanup:
         tracker = make_tracker(tmp_path, t)
         assert not tracker._signal_file.exists()
         tracker.cleanup()  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Interrupted state specific behavior
+# ---------------------------------------------------------------------------
+
+class TestInterruptedState:
+    def test_interrupted_auto_sends_in_pause_mode(self, tmp_path: Path) -> None:
+        """Interrupted state should auto-send even in pause mode."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, auto_send_mode='pause')
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.current_state == 'interrupted'
+        assert tracker.is_ready(pty_alive=True)
+
+    def test_interrupted_protected_from_has_question_signal(self, tmp_path: Path) -> None:
+        """Notification hook fires has_question for the interrupt dialog —
+        interrupted state should be protected for 5s."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.current_state == 'interrupted'
+        # Notification hook writes has_question within 5s
+        t[0] = 2.0
+        write_signal(tracker, 'has_question')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_interrupted_protected_from_idle_signal(self, tmp_path: Path) -> None:
+        """Stop hook writes idle on Escape — interrupted should be
+        protected for 5s."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.current_state == 'interrupted'
+        # Stop hook writes idle within 5s
+        t[0] = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_interrupted_yields_to_has_question_after_5s(self, tmp_path: Path) -> None:
+        """After 5s grace, a has_question signal should be honored."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.current_state == 'interrupted'
+        # After 5s grace, has_question signal is honored
+        t[0] = 7.0
+        write_signal(tracker, 'has_question')
+        assert tracker.get_state(pty_alive=True) == 'has_question'

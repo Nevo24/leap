@@ -54,7 +54,7 @@ class MessageRouter:
 
         claude_state = status.get('claude_state', 'idle')
 
-        if claude_state in ('needs_permission', 'has_question'):
+        if claude_state in ('needs_permission', 'has_question', 'interrupted'):
             normalized = text.strip()
             if normalized.isdigit():
                 response = send_socket_request(
