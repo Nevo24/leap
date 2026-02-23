@@ -61,6 +61,19 @@ install: .env install-core ensure-storage write-install-metadata configure-shell
 	@echo ""
 	@echo "Note: The venv is automatically used by claudeq commands."
 	@echo ""
+	@printf "Would you like to install the Monitor GUI? [Y/n] "; \
+	read answer; \
+	case "$${answer}" in \
+		[nN]*) \
+			echo ""; \
+			echo "You can install it later with:"; \
+			echo "  make install-monitor"; \
+			echo ""; \
+			;; \
+		*) \
+			$(MAKE) install-monitor; \
+			;; \
+	esac
 	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
 		echo "$(GREEN)✓ Slack integration already configured$(NC)"; \
 		echo ""; \
@@ -79,19 +92,6 @@ install: .env install-core ensure-storage write-install-metadata configure-shell
 				;; \
 		esac; \
 	fi
-	@printf "Would you like to install the Monitor GUI? [Y/n] "; \
-	read answer; \
-	case "$${answer}" in \
-		[nN]*) \
-			echo ""; \
-			echo "You can install it later with:"; \
-			echo "  make install-monitor"; \
-			echo ""; \
-			;; \
-		*) \
-			$(MAKE) install-monitor; \
-			;; \
-	esac
 
 .PHONY: install-core
 install-core:
@@ -118,26 +118,6 @@ write-install-metadata: ensure-storage
 install-monitor: .env ensure-storage write-install-metadata
 	@echo "$(PROMPT_PREFIX) Installing monitor dependencies..."
 	@poetry install --no-root --with monitor
-	@# Ask about Slack BEFORE building the .app so Slack deps get bundled
-	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
-		echo "$(GREEN)✓ Slack integration already configured$(NC)"; \
-		echo "$(PROMPT_PREFIX) Including Slack dependencies in monitor build..."; \
-		poetry install --no-root --with slack; \
-	else \
-		printf "Would you like to install the Slack integration? [y/N] "; \
-		read answer; \
-		case "$${answer}" in \
-			[yY]*) \
-				$(MAKE) install-slack-app; \
-				;; \
-			*) \
-				echo ""; \
-				echo "You can install it later with:"; \
-				echo "  make install-slack-app"; \
-				echo ""; \
-				;; \
-		esac; \
-	fi
 	@$(BUILD_MONITOR_APP)
 	@if [ ! -f "$(REPO_PATH)/.storage/cq_contexts.json" ]; then \
 		echo '{"default": "Please try to solve all the issues that are discussed in the following threads:"}' \
