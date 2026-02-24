@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from PyQt5.QtWidgets import QApplication, QInputDialog, QMessageBox
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCursor
+from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
 from claudeq.utils.constants import is_valid_tag
+from claudeq.monitor.dialogs.add_local_dialog import AddLocalDialog
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import (
     load_gitlab_config, load_pinned_sessions, save_monitor_prefs,
     save_pinned_sessions,
 )
-from claudeq.monitor.mr_tracking.git_utils import SCMType, get_git_remote_info, parse_mr_url
+from claudeq.monitor.mr_tracking.git_utils import (
+    ParsedProjectUrl, SCMType, get_git_remote_info, parse_mr_url,
+    parse_project_url,
+)
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker,
     SCMPollerWorker, SendThreadsCombinedWorker, SendThreadsWorker,
@@ -638,23 +644,24 @@ class MRTrackingMixin(_Base):
         self._collect_threads_worker.start()
 
     # ------------------------------------------------------------------
-    #  Add row from MR/PR URL
+    #  Add row from Git URL, MR/PR URL, or local path
     # ------------------------------------------------------------------
 
-    def _add_row(self) -> None:
-        """Add a monitored row from an MR/PR URL (no git operations)."""
-        if not self._scm_providers:
-            QMessageBox.information(
-                self, 'No SCM Connected',
-                'Connect to GitLab or GitHub first using the buttons at the bottom.',
-            )
-            return
+    def _add_row_menu(self) -> None:
+        """Show a menu to choose how to add a new row."""
+        menu = QMenu(self)
+        menu.addAction('From Git URL...', self._add_row_from_git)
+        menu.addAction('From Local Path...', self._add_row_from_local)
+        menu.exec_(QCursor.pos())
 
+    def _add_row_from_git(self) -> None:
+        """Add a row from a Git URL (MR/PR URL or plain project URL)."""
+        gitlab_config = load_gitlab_config()
         prev_url = ''
         while True:
             dlg = QInputDialog(self)
-            dlg.setWindowTitle('Add from MR')
-            dlg.setLabelText('MR / PR URL:')
+            dlg.setWindowTitle('Add from Git URL')
+            dlg.setLabelText('Git URL (MR/PR URL or project URL):')
             dlg.setTextValue(prev_url)
             dlg.resize(800, dlg.sizeHint().height())
             ok = dlg.exec_() == QInputDialog.Accepted
@@ -663,22 +670,45 @@ class MRTrackingMixin(_Base):
                 return
             prev_url = url.strip()
 
-            gitlab_config = load_gitlab_config()
-            parsed = parse_mr_url(prev_url, gitlab_config)
-            if not parsed:
-                QMessageBox.warning(self, 'Invalid URL', 'Could not parse the MR/PR URL.')
-                continue
+            # Try MR/PR URL first
+            parsed_mr = parse_mr_url(prev_url, gitlab_config)
+            if parsed_mr:
+                provider = self._scm_providers.get(parsed_mr.scm_type.value)
+                if not provider:
+                    if not self._scm_providers:
+                        QMessageBox.information(
+                            self, 'No SCM Connected',
+                            'Connect to GitLab or GitHub first using '
+                            'the buttons at the bottom.',
+                        )
+                    else:
+                        QMessageBox.warning(
+                            self, 'No Provider',
+                            f'No connected provider for {parsed_mr.scm_type.value}.',
+                        )
+                    continue
+                self._add_row_from_mr_url(parsed_mr, provider)
+                return
 
-            provider = self._scm_providers.get(parsed.scm_type.value)
-            if not provider:
-                QMessageBox.warning(
-                    self, 'No Provider',
-                    f'No connected provider for {parsed.scm_type.value}.',
-                )
-                continue
-            break
+            # Try plain project URL
+            parsed_proj = parse_project_url(prev_url, gitlab_config)
+            if parsed_proj:
+                self._add_row_from_project_url(parsed_proj)
+                return
 
-        # Fetch MR details in the background
+            QMessageBox.warning(
+                self, 'Invalid URL',
+                'Could not parse the URL.\n\n'
+                'Supported formats:\n'
+                '  MR:  https://gitlab.com/group/project/-/merge_requests/42\n'
+                '  PR:  https://github.com/owner/repo/pull/42\n'
+                '  Git: https://host/group/project\n'
+                '  SSH: git@host:group/project.git',
+            )
+            continue
+
+    def _add_row_from_mr_url(self, parsed: Any, provider: Any) -> None:
+        """Fetch MR details in background, then ask for tag (MR flow)."""
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         result_holder: list[Optional[Any]] = [None]
@@ -687,13 +717,13 @@ class MRTrackingMixin(_Base):
             result_holder[0] = provider.get_mr_details(parsed.project_path, parsed.mr_iid)
 
         worker = BackgroundCallWorker(_fetch, self)
-        worker.finished.connect(lambda: self._on_add_row_details(
+        worker.finished.connect(lambda: self._on_add_row_mr_details(
             parsed, result_holder,
         ))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _on_add_row_details(self, parsed: Any, result_holder: list) -> None:
+    def _on_add_row_mr_details(self, parsed: Any, result_holder: list) -> None:
         """Handle MR details fetched — ask for tag and pin the row."""
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
@@ -713,36 +743,12 @@ class MRTrackingMixin(_Base):
             )
             return
 
-        prev_tag = ''
-        while True:
-            dlg = QInputDialog(self)
-            dlg.setWindowTitle('Session Tag')
-            dlg.setLabelText(
-                f"MR: {details.mr_title}\nBranch: {details.source_branch}\n\n"
-                f"Tag for this CQ session:"
-            )
-            dlg.setTextValue(prev_tag)
-            ok = dlg.exec_() == QInputDialog.Accepted
-            tag = dlg.textValue()
-            if not ok or not tag.strip():
-                return
-            tag = tag.strip()
-            prev_tag = tag
-
-            if not is_valid_tag(tag):
-                QMessageBox.warning(
-                    self, 'Invalid Tag',
-                    'Tag must contain only letters, numbers, hyphens, and underscores.',
-                )
-                continue
-
-            if tag in self._pinned_sessions:
-                QMessageBox.information(
-                    self, 'Already Added',
-                    f"A row with tag '{tag}' already exists.",
-                )
-                continue
-            break
+        tag = self._ask_tag([
+            f"MR: {details.mr_title}",
+            f"Branch: {details.source_branch}",
+        ])
+        if not tag:
+            return
 
         # Pin the session with remote info and auto-start MR tracking
         self._pinned_sessions[tag] = {
@@ -759,11 +765,153 @@ class MRTrackingMixin(_Base):
         save_pinned_sessions(self._pinned_sessions)
         self._show_status(f"Added row '{tag}' from MR: {details.source_branch}")
 
-        # Refresh table to show the new row
+        self._refresh_and_show_row(tag)
+        self._start_tracking(tag)
+
+    def _add_row_from_project_url(self, parsed: ParsedProjectUrl) -> None:
+        """Add a row from a plain project URL (clone + open server)."""
+        project_name = parsed.project_path.rsplit('/', 1)[-1]
+        tag = self._ask_tag([
+            f"Project: {parsed.project_path}",
+            f"Host: {parsed.host_url}",
+        ])
+        if not tag:
+            return
+
+        self._pinned_sessions[tag] = {
+            'tag': tag,
+            'remote_project_path': parsed.project_path,
+            'host_url': parsed.host_url,
+            'scm_type': parsed.scm_type.value,
+            'branch': '',
+            'project_path': '',
+            'ide': '',
+        }
+        save_pinned_sessions(self._pinned_sessions)
+        self._show_status(f"Added row '{tag}' from project: {project_name}")
+
+        self._refresh_and_show_row(tag)
+        self._start_server(tag)
+
+    def _add_row_from_local(self) -> None:
+        """Add a row from a local directory path."""
+        dlg = AddLocalDialog(self)
+        if dlg.exec_() != AddLocalDialog.Accepted:
+            return
+
+        local_path = dlg.selected_path()
+        if not local_path:
+            QMessageBox.warning(self, 'No Path', 'No path was entered.')
+            return
+
+        path = Path(local_path)
+        if not path.is_dir():
+            QMessageBox.warning(self, 'Not a Directory', f"'{local_path}' is not a directory.")
+            return
+
+        if dlg.is_clone_mode():
+            # Clone mode: need git remote info to clone from
+            remote_info = get_git_remote_info(str(path))
+            if not remote_info:
+                QMessageBox.warning(
+                    self, 'No Git Remote',
+                    'Could not determine Git remote info from this directory.\n'
+                    'Make sure it is a Git repository with a remote.',
+                )
+                return
+
+            tag = self._ask_tag([
+                f"Project: {remote_info.project_path}",
+                f"From: {local_path}",
+                "Mode: Clone to repos dir",
+            ])
+            if not tag:
+                return
+
+            self._pinned_sessions[tag] = {
+                'tag': tag,
+                'remote_project_path': remote_info.project_path,
+                'host_url': remote_info.host_url,
+                'scm_type': remote_info.scm_type.value,
+                'branch': '',
+                'project_path': '',
+                'ide': '',
+            }
+            save_pinned_sessions(self._pinned_sessions)
+            self._show_status(f"Added row '{tag}' (clone from {remote_info.project_path})")
+
+            self._refresh_and_show_row(tag)
+            self._start_server(tag)
+        else:
+            # Open directly mode
+            tag = self._ask_tag([
+                f"Path: {local_path}",
+                "Mode: Open directly",
+            ])
+            if not tag:
+                return
+
+            self._pinned_sessions[tag] = {
+                'tag': tag,
+                'project_path': str(path),
+                'ide': '',
+            }
+            save_pinned_sessions(self._pinned_sessions)
+            self._show_status(f"Added row '{tag}' from local path: {path.name}")
+
+            self._refresh_and_show_row(tag)
+            self._start_server(tag)
+
+    # ------------------------------------------------------------------
+    #  Shared helpers for add-row flows
+    # ------------------------------------------------------------------
+
+    def _ask_tag(self, context_lines: list[str]) -> Optional[str]:
+        """Ask user for a session tag with validation loop.
+
+        Args:
+            context_lines: Lines to display above the tag prompt.
+
+        Returns:
+            The validated tag, or None if cancelled.
+        """
+        context = '\n'.join(context_lines)
+        prev_tag = ''
+        while True:
+            dlg = QInputDialog(self)
+            dlg.setWindowTitle('Session Tag')
+            dlg.setLabelText(f"{context}\n\nTag for this CQ session:")
+            dlg.setTextValue(prev_tag)
+            ok = dlg.exec_() == QInputDialog.Accepted
+            tag = dlg.textValue()
+            if not ok or not tag.strip():
+                return None
+            tag = tag.strip()
+            prev_tag = tag
+
+            if not is_valid_tag(tag):
+                QMessageBox.warning(
+                    self, 'Invalid Tag',
+                    'Tag must contain only letters, numbers, hyphens, and underscores.',
+                )
+                continue
+
+            if tag in self._pinned_sessions:
+                QMessageBox.information(
+                    self, 'Already Added',
+                    f"A row with tag '{tag}' already exists.",
+                )
+                continue
+            return tag
+
+    def _refresh_and_show_row(self, tag: str) -> None:
+        """Refresh sessions and table to show a newly added row."""
         self.sessions = self._merge_sessions(
             [s for s in self.sessions if s.get('server_pid') is not None]
         )
         self._update_table()
 
-        # Auto-start MR tracking for rows added via "+"
-        self._start_tracking(tag)
+    def _start_server(self, tag: str) -> None:
+        """Start a server for a newly added row."""
+        self._starting_tags.add(tag)
+        self._server_launcher.start_server(tag)

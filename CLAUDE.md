@@ -76,7 +76,8 @@ src/
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
-    │   │   └── scm_template_dialog.py # Template editor dialog (named presets)
+    │   │   ├── scm_template_dialog.py # Template editor dialog (named presets)
+    │   │   └── add_local_dialog.py    # Add session from local path dialog
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -156,6 +157,8 @@ assets/
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `is_valid_tag()` | `utils/constants.py` | Shared tag validation (alphanumeric + hyphens + underscores) |
 | `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
+| `parse_project_url()` | `monitor/mr_tracking/git_utils.py` | Parse plain Git project URLs (HTTPS/SSH) |
+| `AddLocalDialog` | `monitor/dialogs/add_local_dialog.py` | Add session from local path dialog |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response for Slack |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputWatcher` | `slack/output_watcher.py` | Poll .last_response files → post to Slack threads |
@@ -474,17 +477,22 @@ Monitor rows persist across server/client lifecycle and monitor restarts via `pi
 - **Delete button**: Each row has a delete (X) button in the leftmost column (replacing row indices). Always prompts for confirmation. If processes are running, warns they will be closed
 - **`_deleted_tags` set**: Prevents auto-refresh from re-pinning rows that were just deleted
 
-### Add Row from MR/PR URL
+### Add Row (+ Button)
 
-The "+" button adds a monitored row from a GitLab/GitHub MR URL:
+The "+" button shows a menu with two options:
 
-1. User pastes MR/PR URL → `parse_mr_url()` extracts SCM type, project path, MR number
-2. Fetches MR details via `get_mr_details()` (branch name, title)
-3. Asks user for a CQ session tag (validated by `is_valid_tag()`)
-4. Pins the row with remote MR info and auto-starts MR tracking
-5. MR column shows tracking status immediately, MR Branch shows the MR source branch
+**From Git URL...** — accepts MR/PR URLs and plain project URLs:
+- MR/PR URL (e.g., `https://gitlab.com/group/project/-/merge_requests/42`) → `parse_mr_url()` extracts SCM type, project path, MR number → fetches MR details → asks for tag → pins row with MR info → auto-starts MR tracking
+- Plain project URL (e.g., `https://gitlab.com/group/project` or `git@host:group/project.git`) → `parse_project_url()` extracts host and project path → asks for tag → pins row with `remote_project_path` and `branch=''` → clones to repos dir → starts server
+- No SCM provider required for plain project URLs (token injected if available, plain clone works for public repos)
 
-Input validation loops: invalid tag or duplicate tag loops back to the input dialog instead of stopping the flow.
+**From Local Path...** — opens `AddLocalDialog` with two modes:
+- **Clone to repos dir** (default): reads `git remote.origin.url` from the directory → pins row with `remote_project_path` and `branch=''` → clones to repos dir → starts server
+- **Open directly**: pins row with `project_path` only (no `remote_project_path`) → starts server at that directory
+
+**Project-URL rows** have `remote_project_path` set but `branch=''` — `ServerLauncher` skips force-align when branch is empty. **Open-directly rows** have only `project_path` (no `remote_project_path`) — behave like auto-pinned rows.
+
+Input validation loops: invalid tag or duplicate tag loops back to the input dialog. Shared `_ask_tag()` helper handles the validation loop for all flows.
 
 ### Column Layout
 

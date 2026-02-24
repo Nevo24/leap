@@ -33,6 +33,14 @@ class ParsedMRUrl:
     mr_iid: int
 
 
+@dataclass
+class ParsedProjectUrl:
+    """Parsed project URL information (no MR/PR number)."""
+    scm_type: SCMType
+    host_url: str
+    project_path: str
+
+
 def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Optional[ParsedMRUrl]:
     """Parse a GitLab MR or GitHub PR URL.
 
@@ -161,3 +169,64 @@ def get_git_remote_info(cwd: str) -> Optional[GitRemoteInfo]:
 
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         return None
+
+
+# Known path suffixes on GitLab/GitHub that follow the project path
+_PROJECT_URL_SUFFIXES = re.compile(
+    r'(?:/-/(?:tree|blob|merge_requests|issues|pipelines|commits|branches|tags|settings)(?:/.*)?'
+    r'|/(?:tree|blob|pull|issues|actions|commits|branches|tags|settings)(?:/.*)?'
+    r')$'
+)
+
+
+def parse_project_url(
+    url: str, gitlab_config: Optional[dict[str, Any]] = None,
+) -> Optional[ParsedProjectUrl]:
+    """Parse a plain Git project URL (HTTPS or SSH).
+
+    Supported formats:
+        HTTPS: https://host/group/project[.git]
+        HTTPS with path suffixes: https://host/group/project/-/tree/main
+        SSH: git@host:group/project[.git]
+
+    Args:
+        url: The project URL.
+        gitlab_config: Optional GitLab config dict for custom host detection.
+
+    Returns:
+        ParsedProjectUrl or None if the URL cannot be parsed.
+    """
+    url = url.strip()
+
+    # SSH: git@host:group/project[.git]
+    m = re.match(r'git@([^:]+):(.+?)(?:\.git)?$', url)
+    if m:
+        host_url = f"https://{m.group(1)}"
+        project_path = m.group(2).rstrip('/')
+        if '/' not in project_path:
+            return None
+        return ParsedProjectUrl(
+            scm_type=detect_scm_type(host_url, gitlab_config),
+            host_url=host_url,
+            project_path=project_path,
+        )
+
+    # HTTPS: https://host/group/project[.git][/-/tree/...]
+    m = re.match(r'https?://([^/]+)/(.+?)(?:\.git)?/?$', url)
+    if not m:
+        return None
+
+    host_url = f"https://{m.group(1)}"
+    raw_path = m.group(2).rstrip('/')
+
+    # Strip known path suffixes (e.g. /-/tree/main, /pull/42)
+    project_path = _PROJECT_URL_SUFFIXES.sub('', raw_path).rstrip('/')
+
+    if '/' not in project_path:
+        return None
+
+    return ParsedProjectUrl(
+        scm_type=detect_scm_type(host_url, gitlab_config),
+        host_url=host_url,
+        project_path=project_path,
+    )

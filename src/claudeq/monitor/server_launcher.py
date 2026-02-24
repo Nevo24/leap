@@ -223,7 +223,11 @@ class ServerLauncher:
             w.start()
             return
 
-        # Project exists and no CQ server using it — force-align to remote
+        # Project exists and no CQ server using it
+        if not branch:
+            # Project-URL row (no specific branch) — skip force-align
+            self._server_finish(tag, pinned, project_dir)
+            return
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
         self._server_force_align(tag, pinned, project_dir, branch)
 
@@ -241,6 +245,10 @@ class ServerLauncher:
             QMessageBox.warning(self._w, 'Clone Failed', clone_err[0] or 'Unknown error.')
             self._cancel_start(tag)
             return
+        if not branch:
+            # Project-URL row (no specific branch) — skip force-align
+            self._server_finish(tag, pinned, project_dir)
+            return
         self._w._show_status(f"Cloned. Checking out branch '{branch}'...")
         self._server_force_align(tag, pinned, project_dir, branch)
 
@@ -252,6 +260,10 @@ class ServerLauncher:
         These are managed clones in repos_dir, not user workspaces — local
         changes are always discarded in favour of the remote state.
         """
+        if not branch:
+            # Project-URL row (no specific branch) — skip force-align
+            self._server_finish(tag, pinned, project_dir)
+            return
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
         fetch_err: list[str] = ['']
         align_err: list[str] = ['']
