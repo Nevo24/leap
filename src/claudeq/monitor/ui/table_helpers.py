@@ -111,7 +111,7 @@ class TooltipApp(QApplication):
             if index.isValid():
                 tip = index.data(Qt.ToolTipRole)
                 display = index.data(Qt.DisplayRole)
-                if tip and str(tip) not in ('', 'N/A'):
+                if tip and str(tip) != '':
                     show = False
                     if display and str(tip) != str(display):
                         # Explanatory tooltip (differs from display)
@@ -138,7 +138,7 @@ class TooltipApp(QApplication):
                 if index.isValid():
                     tip = index.data(Qt.ToolTipRole)
                     display = index.data(Qt.DisplayRole)
-                    if tip and str(tip) not in ('', 'N/A'):
+                    if tip and str(tip) != '':
                         show = False
                         if display and str(tip) != str(display):
                             show = self.tooltips_enabled
