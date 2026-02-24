@@ -110,12 +110,23 @@ class TooltipApp(QApplication):
             index = parent.indexAt(event.pos())
             if index.isValid():
                 tip = index.data(Qt.ToolTipRole)
+                display = index.data(Qt.DisplayRole)
                 if tip and str(tip) not in ('', 'N/A'):
-                    _QToolTip.showText(
-                        event.globalPos(), str(tip), widget,
-                        parent.visualRect(index),
-                        2_147_483_647,
-                    )
+                    show = False
+                    if display and str(tip) != str(display):
+                        # Explanatory tooltip (differs from display)
+                        show = self.tooltips_enabled
+                    elif display:
+                        # Same text — only show when truncated
+                        col_w = parent.columnWidth(index.column())
+                        text_w = parent.fontMetrics().horizontalAdvance(str(display))
+                        show = text_w > col_w - 16
+                    if show:
+                        _QToolTip.showText(
+                            event.globalPos(), str(tip), widget,
+                            parent.visualRect(index),
+                            2_147_483_647,
+                        )
             return True
 
         # --- obj IS the QAbstractItemView itself (not its viewport) ---
@@ -126,12 +137,21 @@ class TooltipApp(QApplication):
                 index = widget.indexAt(pos)
                 if index.isValid():
                     tip = index.data(Qt.ToolTipRole)
+                    display = index.data(Qt.DisplayRole)
                     if tip and str(tip) not in ('', 'N/A'):
-                        _QToolTip.showText(
-                            event.globalPos(), str(tip), vp,
-                            widget.visualRect(index),
-                            2_147_483_647,
-                        )
+                        show = False
+                        if display and str(tip) != str(display):
+                            show = self.tooltips_enabled
+                        elif display:
+                            col_w = widget.columnWidth(index.column())
+                            text_w = widget.fontMetrics().horizontalAdvance(str(display))
+                            show = text_w > col_w - 16
+                        if show:
+                            _QToolTip.showText(
+                                event.globalPos(), str(tip), vp,
+                                widget.visualRect(index),
+                                2_147_483_647,
+                            )
             return True
 
         # Cell widget inside a table — check if the underlying
