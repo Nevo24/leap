@@ -168,7 +168,7 @@ class SessionMixin(_Base):
                 dir_contents = sorted(os.listdir(str(SOCKET_DIR)))
             except OSError:
                 dir_contents = ['<dir missing>']
-            logger.error(
+            logger.debug(
                 "Session not found: tag=%s type=%s path=%s exists=%s "
                 "socket_dir=%s dir_contents=%s",
                 tag, session_type, check_path, check_path.exists(),
