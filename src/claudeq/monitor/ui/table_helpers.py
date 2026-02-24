@@ -119,29 +119,13 @@ class TooltipApp(QApplication):
             if index.isValid():
                 display = index.data(Qt.DisplayRole)
                 tip = index.data(Qt.ToolTipRole)
-                if display and tip:
-                    # Explanatory tooltip (differs from display) —
-                    # show if tooltips enabled, regardless of truncation
-                    if str(tip) != str(display):
-                        if self.tooltips_enabled:
-                            from PyQt5.QtWidgets import QToolTip as _QToolTip
-                            _QToolTip.showText(
-                                event.globalPos(), tip, widget,
-                                parent.visualRect(index),
-                                2_147_483_647,
-                            )
-                        return True
-                    # Same text — only show when truncated
-                    fm = widget.fontMetrics()
-                    text_w = fm.horizontalAdvance(str(display))
-                    cell_w = parent.visualRect(index).width()
-                    if text_w > cell_w - 10:
-                        from PyQt5.QtWidgets import QToolTip as _QToolTip
-                        _QToolTip.showText(
-                            event.globalPos(), tip, widget,
-                            parent.visualRect(index),
-                            2_147_483_647,
-                        )
+                if tip and str(tip) not in ('', 'N/A'):
+                    from PyQt5.QtWidgets import QToolTip as _QToolTip
+                    _QToolTip.showText(
+                        event.globalPos(), str(tip), widget,
+                        parent.visualRect(index),
+                        2_147_483_647,
+                    )
             return True
 
         # Cell widget inside a table — check if the underlying
