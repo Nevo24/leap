@@ -552,6 +552,11 @@ class GitLabProvider(SCMProvider):
             target_url = getattr(todo, 'target_url', '')
             project = getattr(todo, 'project', {}) or {}
             author = getattr(todo, 'author', {}) or {}
+            author_name = author.get('username', '')
+
+            # Skip self-actions (e.g. assigning yourself to an MR)
+            if author_name and author_name == self._username:
+                continue
 
             notifications.append(UserNotification(
                 id=str(todo.id),
@@ -560,7 +565,7 @@ class GitLabProvider(SCMProvider):
                 title=title,
                 target_url=target_url,
                 project_name=project.get('path_with_namespace', ''),
-                author=author.get('username', ''),
+                author=author_name,
                 created_at=getattr(todo, 'created_at', ''),
             ))
         return notifications
