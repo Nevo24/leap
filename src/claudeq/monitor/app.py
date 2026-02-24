@@ -565,6 +565,8 @@ class MonitorWindow(
 
 def main() -> None:
     """Main entry point for ClaudeQ Monitor."""
+    import faulthandler
+    faulthandler.enable()
     load_shell_env()
     app = TooltipApp(sys.argv)
     app.setApplicationName('ClaudeQ Monitor')

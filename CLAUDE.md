@@ -468,9 +468,9 @@ Monitor rows persist across server/client lifecycle and monitor restarts via `pi
 - **Row survival rule**: A row must have a running server OR active MR tracking. Dead rows without MR tracking are auto-removed on the next refresh cycle
 - **Track MR enrichment**: When "Track MR" finds an MR on an auto-pinned row, the pinned session is enriched with `remote_project_path`, `host_url`, `scm_type`, `branch`, `mr_title`, `mr_url`, `mr_tracked` — making the row survive server death
 - **MR auto-reconnect on startup**: When the monitor restarts, it silently re-connects MR tracking for rows that had `mr_tracked: True` when the monitor last ran. Popups are suppressed. If reconnection fails (no MR found or API error) and no server is running, the row is silently removed
-- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue/Server Branch but preserves Project info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers force-align (fetch + hard reset to remote). Track MR button is disabled on dead rows
+- **Dead rows**: A row whose CQ server is no longer running. Shows N/A for Status/Queue/Server Branch but preserves Project info. The Server button offers to (re)start the server. For MR-pinned dead rows, starting the server triggers force-align (fetch + hard reset to remote). Track MR button is enabled on MR-pinned dead rows (they already have the remote info); disabled on non-MR-pinned dead rows (need a server to discover git remote)
 - **Close server prompt**: If a session has no MR tracking, closing the server warns the user the row will be removed and offers to close the client too
-- **Stop MR tracking prompt**: If the server is dead, stopping MR tracking warns the user the row will be removed and offers to close the client too
+- **Stop MR tracking prompt**: If the server is dead and the row is NOT MR-pinned, stopping MR tracking warns the user the row will be removed. MR-pinned rows survive without active tracking (they retain `remote_project_path`)
 - **Delete button**: Each row has a delete (X) button in the leftmost column (replacing row indices). Always prompts for confirmation. If processes are running, warns they will be closed
 - **`_deleted_tags` set**: Prevents auto-refresh from re-pinning rows that were just deleted
 
@@ -490,6 +490,7 @@ Input validation loops: invalid tag or duplicate tag loops back to the input dia
 
 Columns are grouped: **[X, Tag, Project]** | **[Server, Server Branch, Status, Queue]** | **[Client]** | **[MR, MR Branch]**. Solid white vertical lines separate groups; semi-transparent white lines separate columns within a group. The X column contains the delete button (no row indices). Close (X) buttons for Server, Client, and MR appear on the left side of their respective cells.
 
+- **Project**: Shows the git project name from `remote.origin.url` (e.g., `claudeq`). For dead MR-pinned rows, derived from `remote_project_path`. `N/A` if no git remote or no server.
 - **Server Branch**: Always shows the live git branch the server is running on. For dead rows, shows the last known branch.
 - **MR Branch**: Shows the MR's source branch when MR tracking is active. When MR-pinned but untracked, shows the stored branch with an X button to clear pinned MR data (so "Track MR" falls back to the server's live git branch). "N/A" for non-MR-pinned untracked rows.
 - **Track MR button**: Shown in the MR column only when not tracked. When tracked, MR column shows status and MR Branch shows the source branch. Clicking the MR X button restores the Track MR button.

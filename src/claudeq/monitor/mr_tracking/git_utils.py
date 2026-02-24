@@ -136,10 +136,14 @@ def get_git_remote_info(cwd: str) -> Optional[GitRemoteInfo]:
             host_url = f"https://{ssh_match.group(1)}"
             project_path = ssh_match.group(2)
         else:
-            # HTTPS format: https://gitlab.com/user/project.git
+            # HTTPS format: https://[user:pass@]host/project.git
             https_match = re.match(r'https://([^/]+)/(.+?)(?:\.git)?$', remote_url)
             if https_match:
-                host_url = f"https://{https_match.group(1)}"
+                host = https_match.group(1)
+                # Strip credentials (user:pass@) if present
+                if '@' in host:
+                    host = host.rsplit('@', 1)[-1]
+                host_url = f"https://{host}"
                 project_path = https_match.group(2)
 
         if not project_path or not host_url:

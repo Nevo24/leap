@@ -136,10 +136,15 @@ class MRTrackingMixin(_Base):
             _skip_prompt: If True, skip the confirmation prompt for dead rows
                 (used when called from _remove_pinned_session which has its own).
         """
-        # If server is dead, warn that stopping tracking will remove the row
+        # If server is dead and row is NOT MR-pinned, warn that stopping
+        # tracking will remove the row.  MR-pinned rows survive without
+        # active tracking (they still have remote_project_path).
         if not _skip_prompt:
             session = next((s for s in self.sessions if s['tag'] == tag), None)
-            if session and session.get('server_pid') is None:
+            pin = self._pinned_sessions.get(tag, {})
+            is_mr_pinned = bool(pin.get('remote_project_path'))
+            if (session and session.get('server_pid') is None
+                    and not is_mr_pinned):
                 reply = QMessageBox.question(
                     self, 'Stop MR Tracking',
                     f"The server for '{tag}' is not running.\n"
@@ -166,10 +171,12 @@ class MRTrackingMixin(_Base):
             pin['mr_tracked'] = False
             save_pinned_sessions(self._pinned_sessions)
 
-        # If server is dead, remove the row entirely
+        # If server is dead and not MR-pinned, remove the row entirely
         session = next((s for s in self.sessions if s['tag'] == tag), None)
         is_dead = session and session.get('server_pid') is None
-        if is_dead and not _skip_prompt:
+        pin = self._pinned_sessions.get(tag, {})
+        is_mr_pinned = bool(pin.get('remote_project_path'))
+        if is_dead and not _skip_prompt and not is_mr_pinned:
             # Offer to close the client too
             if session and session.get('has_client', False):
                 client_reply = QMessageBox.question(

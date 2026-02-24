@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import quote
 
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QMessageBox
@@ -62,18 +63,25 @@ class ServerLauncher:
 
     def _build_clone_url(self, host_url: str, remote_project: str, scm_type: str) -> str:
         """Build clone URL, injecting SCM token for authentication if available."""
-        base_url = f"{host_url}/{remote_project}.git"
-        token = self._get_scm_token(scm_type)
-        if not token or not host_url.startswith('http'):
-            return base_url
-        # Inject token: https://host → https://user:token@host
-        scheme_end = host_url.index('://') + 3
+        # Strip any existing credentials from host_url (may be leftover from
+        # a previous run that contaminated pinned session data).
+        scheme_end = host_url.index('://') + 3 if '://' in host_url else 0
         scheme = host_url[:scheme_end]
-        host = host_url[scheme_end:]
+        rest = host_url[scheme_end:]
+        # Remove user:pass@ prefix if present
+        if '@' in rest:
+            rest = rest.rsplit('@', 1)[-1]
+        clean_host_url = f"{scheme}{rest}"
+
+        base_url = f"{clean_host_url}/{remote_project}.git"
+        token = self._get_scm_token(scm_type)
+        if not token or not clean_host_url.startswith('http'):
+            return base_url
+        encoded_token = quote(token, safe='')
         if scm_type == 'github':
-            return f"{scheme}x-access-token:{token}@{host}/{remote_project}.git"
+            return f"{scheme}x-access-token:{encoded_token}@{rest}/{remote_project}.git"
         # GitLab uses oauth2 as the username
-        return f"{scheme}oauth2:{token}@{host}/{remote_project}.git"
+        return f"{scheme}oauth2:{encoded_token}@{rest}/{remote_project}.git"
 
     def start_server(self, tag: str) -> None:
         """Start a new server for a pinned (dead) row.

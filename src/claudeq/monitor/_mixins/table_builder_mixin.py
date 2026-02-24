@@ -239,7 +239,11 @@ class TableBuilderMixin(_Base):
                     mr_branch = 'N/A'
 
                 if is_dead:
-                    self._set_cell_text(row, self.COL_PROJECT, session['project'])
+                    remote_path = pinned_data.get('remote_project_path', '')
+                    dead_project = (remote_path.rsplit('/', 1)[-1]
+                                    if remote_path
+                                    else 'N/A')
+                    self._set_cell_text(row, self.COL_PROJECT, dead_project)
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
@@ -600,23 +604,26 @@ class TableBuilderMixin(_Base):
 
                 else:
                     # Not tracked — "Track MR" button
-                    mr_state = ('untracked', is_dead)
+                    mr_state = ('untracked', is_dead,
+                                    bool(pinned_data.get('remote_project_path')))
                     if not self._cell_cached(tag, 'mr', mr_state,
                                              row, self.COL_MR):
                         if self.table.columnSpan(row, self.COL_MR) > 1:
                             self.table.setSpan(row, self.COL_MR, 1, 1)
+                        is_mr_pinned_row = bool(
+                            pinned_data.get('remote_project_path'))
                         track_btn = QPushButton('Track MR')
-                        track_btn.setToolTip(
-                            'Start a server first to discover MR from branch'
-                            if is_dead
-                            else f'Start tracking MR/PR for {tag}'
-                        )
+                        if is_dead and not is_mr_pinned_row:
+                            track_btn.setToolTip(
+                                'Start a server first to discover MR from branch')
+                            track_btn.setEnabled(False)
+                        else:
+                            track_btn.setToolTip(
+                                f'Start tracking MR/PR for {tag}')
                         track_btn.setStyleSheet('font-size: 11px;')
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
                         )
-                        if is_dead:
-                            track_btn.setEnabled(False)
                         self._set_cell_widget(row, self.COL_MR, track_btn)
                         self._cache_cell(tag, 'mr', mr_state,
                                          row, self.COL_MR)

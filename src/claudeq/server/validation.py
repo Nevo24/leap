@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 
 def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[str]:
@@ -66,9 +67,10 @@ def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[
     scheme_end = host_url.index('://') + 3
     scheme = host_url[:scheme_end]
     host = host_url[scheme_end:]
+    encoded_token = quote(token, safe='')
     if scm_type == 'github':
-        return f"{scheme}x-access-token:{token}@{host}/{project}.git"
-    return f"{scheme}oauth2:{token}@{host}/{project}.git"
+        return f"{scheme}x-access-token:{encoded_token}@{host}/{project}.git"
+    return f"{scheme}oauth2:{encoded_token}@{host}/{project}.git"
 
 
 def validate_pinned_session(tag: str, storage_dir: Path) -> None:

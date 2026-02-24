@@ -6,6 +6,7 @@ column-group boundary constants extracted from app.py.
 
 from typing import Any
 
+import sip
 from PyQt5.QtWidgets import (
     QApplication, QHeaderView, QProxyStyle, QStyle, QStyledItemDelegate,
     QWidget,
@@ -77,105 +78,137 @@ class TooltipApp(QApplication):
     def __init__(self, argv: list) -> None:
         super().__init__(argv)
         self.tooltips_enabled: bool = True
+        self._in_notify: bool = False
 
     def notify(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.ToolTip:
-            widget = obj if isinstance(obj, QWidget) else None
-            if widget:
-                # Always show cell tooltips in table views (truncated text)
-                from PyQt5.QtWidgets import QAbstractItemView
-                parent = widget.parent()
-                if isinstance(parent, QAbstractItemView):
-                    index = parent.indexAt(event.pos())
-                    if index.isValid():
-                        display = index.data(Qt.DisplayRole)
-                        tip = index.data(Qt.ToolTipRole)
-                        if display and tip:
-                            # Explanatory tooltip (differs from display) —
-                            # show if tooltips enabled, regardless of truncation
-                            if str(tip) != str(display):
-                                if self.tooltips_enabled:
-                                    from PyQt5.QtWidgets import QToolTip as _QToolTip
-                                    _QToolTip.showText(
-                                        event.globalPos(), tip, widget,
-                                        parent.visualRect(index),
-                                        2_147_483_647,
-                                    )
-                                return True
-                            # Same text — only show when truncated
-                            fm = widget.fontMetrics()
-                            text_w = fm.horizontalAdvance(str(display))
-                            cell_w = parent.visualRect(index).width()
-                            if text_w > cell_w - 10:
-                                from PyQt5.QtWidgets import QToolTip as _QToolTip
-                                _QToolTip.showText(
-                                    event.globalPos(), tip, widget,
-                                    parent.visualRect(index),
-                                    2_147_483_647,
-                                )
-                    return True
+            # Suppress tooltip events that fire re-entrantly during
+            # super().notify() — the target widget may already be deleted
+            # by Qt's C++ side (invisible to sip.isdeleted).
+            if self._in_notify:
+                return True
+            try:
+                return self._handle_tooltip(obj, event)
+            except RuntimeError:
+                return True
+        if sip.isdeleted(obj):
+            return True
+        self._in_notify = True
+        try:
+            return super().notify(obj, event)
+        except RuntimeError:
+            return True
+        finally:
+            self._in_notify = False
 
-                # Cell widget inside a table — check if the underlying
-                # item has a tooltip (e.g. elided branch text).
-                table_view = None
-                ancestor = parent
-                while ancestor is not None:
-                    if isinstance(ancestor, QAbstractItemView):
-                        table_view = ancestor
-                        break
-                    ancestor = ancestor.parent()
-                if table_view is not None:
-                    viewport = table_view.viewport()
-                    pos = widget.mapTo(viewport, event.pos())
-                    index = table_view.indexAt(pos)
-                    if index.isValid():
-                        display = index.data(Qt.DisplayRole)
-                        tip = index.data(Qt.ToolTipRole)
-                        if not display and tip:
-                            # Only show if the text is actually truncated.
-                            # Use the widget's own width (not the full cell)
-                            # since cell widgets share space with buttons.
-                            fm = widget.fontMetrics()
-                            text_w = fm.horizontalAdvance(tip)
-                            if text_w > widget.width():
-                                from PyQt5.QtWidgets import QToolTip as _QToolTip
-                                _QToolTip.showText(
-                                    event.globalPos(), tip, widget,
-                                    table_view.visualRect(index),
-                                    2_147_483_647,
-                                )
-                                return True
-                    # Fall through to normal widget tooltip handling
+    def _handle_tooltip(self, obj: QObject, event: QEvent) -> bool:
+        """Handle tooltip events, returning True to consume the event."""
+        if sip.isdeleted(obj):
+            return True
+        widget = obj if isinstance(obj, QWidget) else None
+        if not widget:
+            return False
 
-                # Always show full-name tooltip on truncated template combo items
-                from PyQt5.QtWidgets import QComboBox
-                combo = widget if isinstance(widget, QComboBox) else None
-                if combo is None and isinstance(parent, QComboBox):
-                    combo = parent
-                if combo is not None and combo.objectName() in (
-                    'template_combo', 'direct_template_combo',
-                ):
-                    idx = combo.currentIndex()
-                    full_name = combo.itemData(idx, Qt.UserRole)
-                    if full_name:
+        from PyQt5.QtWidgets import QAbstractItemView
+        parent = widget.parent()
+        if sip.isdeleted(parent) if parent is not None else False:
+            return True
+
+        if isinstance(parent, QAbstractItemView):
+            index = parent.indexAt(event.pos())
+            if index.isValid():
+                display = index.data(Qt.DisplayRole)
+                tip = index.data(Qt.ToolTipRole)
+                if display and tip:
+                    # Explanatory tooltip (differs from display) —
+                    # show if tooltips enabled, regardless of truncation
+                    if str(tip) != str(display):
+                        if self.tooltips_enabled:
+                            from PyQt5.QtWidgets import QToolTip as _QToolTip
+                            _QToolTip.showText(
+                                event.globalPos(), tip, widget,
+                                parent.visualRect(index),
+                                2_147_483_647,
+                            )
+                        return True
+                    # Same text — only show when truncated
+                    fm = widget.fontMetrics()
+                    text_w = fm.horizontalAdvance(str(display))
+                    cell_w = parent.visualRect(index).width()
+                    if text_w > cell_w - 10:
                         from PyQt5.QtWidgets import QToolTip as _QToolTip
                         _QToolTip.showText(
-                            event.globalPos(), full_name, combo,
-                            combo.rect(), 2_147_483_647,
+                            event.globalPos(), tip, widget,
+                            parent.visualRect(index),
+                            2_147_483_647,
+                        )
+            return True
+
+        # Cell widget inside a table — check if the underlying
+        # item has a tooltip (e.g. elided branch text).
+        table_view = None
+        ancestor = parent
+        while ancestor is not None:
+            if sip.isdeleted(ancestor):
+                return True
+            if isinstance(ancestor, QAbstractItemView):
+                table_view = ancestor
+                break
+            ancestor = ancestor.parent()
+        if table_view is not None:
+            viewport = table_view.viewport()
+            if sip.isdeleted(viewport):
+                return True
+            pos = widget.mapTo(viewport, event.pos())
+            index = table_view.indexAt(pos)
+            if index.isValid():
+                display = index.data(Qt.DisplayRole)
+                tip = index.data(Qt.ToolTipRole)
+                if not display and tip:
+                    # Only show if the text is actually truncated.
+                    # Use the widget's own width (not the full cell)
+                    # since cell widgets share space with buttons.
+                    fm = widget.fontMetrics()
+                    text_w = fm.horizontalAdvance(tip)
+                    if text_w > widget.width():
+                        from PyQt5.QtWidgets import QToolTip as _QToolTip
+                        _QToolTip.showText(
+                            event.globalPos(), tip, widget,
+                            table_view.visualRect(index),
+                            2_147_483_647,
                         )
                         return True
-                    # Not truncated — fall through to normal tooltips_enabled check
+            # Fall through to normal widget tooltip handling
 
-                if not self.tooltips_enabled:
-                    return True  # Suppress
-                if widget.toolTip():
-                    from PyQt5.QtWidgets import QToolTip as _QToolTip
-                    _QToolTip.showText(
-                        event.globalPos(), widget.toolTip(), widget,
-                        widget.rect(), 2_147_483_647,
-                    )
-                    return True
-        return super().notify(obj, event)
+        # Always show full-name tooltip on truncated template combo items
+        from PyQt5.QtWidgets import QComboBox
+        combo = widget if isinstance(widget, QComboBox) else None
+        if combo is None and isinstance(parent, QComboBox):
+            combo = parent
+        if combo is not None and combo.objectName() in (
+            'template_combo', 'direct_template_combo',
+        ):
+            idx = combo.currentIndex()
+            full_name = combo.itemData(idx, Qt.UserRole)
+            if full_name:
+                from PyQt5.QtWidgets import QToolTip as _QToolTip
+                _QToolTip.showText(
+                    event.globalPos(), full_name, combo,
+                    combo.rect(), 2_147_483_647,
+                )
+                return True
+            # Not truncated — fall through to normal tooltips_enabled check
+
+        if not self.tooltips_enabled:
+            return True  # Suppress
+        if widget.toolTip():
+            from PyQt5.QtWidgets import QToolTip as _QToolTip
+            _QToolTip.showText(
+                event.globalPos(), widget.toolTip(), widget,
+                widget.rect(), 2_147_483_647,
+            )
+            return True
+        return False
 
 
 class SeparatorDelegate(QStyledItemDelegate):

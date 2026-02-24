@@ -7,6 +7,8 @@ Discovers and tracks active ClaudeQ sessions.
 import fcntl
 import json
 import os
+import re
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -121,6 +123,32 @@ def read_client_pid(tag: str) -> Optional[int]:
     return None
 
 
+def _get_git_project_name(cwd: str) -> Optional[str]:
+    """Extract the git project name from the remote origin URL.
+
+    Args:
+        cwd: Working directory to run git in.
+
+    Returns:
+        Project name (e.g. 'claudeq') or None if not a git repo / no remote.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'config', '--get', 'remote.origin.url'],
+            capture_output=True, text=True, cwd=cwd, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        remote_url = result.stdout.strip()
+        # SSH: git@host:user/project.git  or  HTTPS: https://host/user/project.git
+        m = re.match(r'(?:git@[^:]+:|https?://[^/]+/)(.+?)(?:\.git)?$', remote_url)
+        if m:
+            return m.group(1).rsplit('/', 1)[-1]
+    except Exception:
+        pass
+    return None
+
+
 _last_good_status: dict[str, dict[str, Any]] = {}
 
 
@@ -167,7 +195,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
         if metadata:
             project_path = metadata.get('project_path', '')
             if project_path:
-                project_name = os.path.basename(project_path)
+                project_name = _get_git_project_name(project_path)
             branch_name = (
                 get_git_branch(project_path) if project_path
                 else metadata.get('branch')
