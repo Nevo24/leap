@@ -646,6 +646,21 @@ def _check_accessibility_trusted() -> bool:
     return False
 
 
+def _ensure_app_focused(ns_app: Any) -> bool:
+    """Activate an app and wait until it is actually frontmost (up to 2s).
+
+    ``activateWithOptions_`` is asynchronous — this helper polls
+    ``isActive`` so that subsequent CGEvent keystrokes hit the right app.
+    """
+    import AppKit
+    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+    for _ in range(20):
+        if ns_app.isActive():
+            return True
+        time.sleep(0.1)
+    return ns_app.isActive()
+
+
 def _send_keystroke(
     keycode: int, cmd: bool = False, shift: bool = False, ctrl: bool = False,
 ) -> bool:
@@ -862,7 +877,7 @@ def _type_command_in_warp(pid: int, command: str) -> bool:
     ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     if not ns_app:
         return False
-    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+    _ensure_app_focused(ns_app)
 
     # Wait for Warp's window to appear (just launched, may take a moment)
     app_ref = AXUIElementCreateApplication(pid)
@@ -890,12 +905,13 @@ def _type_command_in_warp(pid: int, command: str) -> bool:
         return False
 
     # Re-focus Warp (user may have switched away during the wait)
-    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-    time.sleep(0.2)
+    if not _ensure_app_focused(ns_app):
+        return False
 
     # Dismiss overlay and paste command (same retry logic as tab approach)
     for attempt in range(4):
         time.sleep(0.3 if attempt == 0 else 0.8)
+        _ensure_app_focused(ns_app)    # Re-focus before each retry too
         _send_keystroke(53)            # Escape (dismiss overlay)
         time.sleep(0.2)
         _send_keystroke(32, ctrl=True)  # Ctrl+U (clear input line)
@@ -938,8 +954,7 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     if not ns_app:
         return False
-    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-    time.sleep(0.3)
+    _ensure_app_focused(ns_app)
 
     # Get the frontmost window and its current title (e.g. "cq-server tag")
     app_ref = AXUIElementCreateApplication(pid)
@@ -977,8 +992,8 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
         return False
 
     # Re-focus Warp (user may have switched away during the wait)
-    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-    time.sleep(0.2)
+    if not _ensure_app_focused(ns_app):
+        return False
 
     # Warp shows a "New terminal session" overlay on new tabs that
     # captures Enter.  The overlay can appear at varying times after
@@ -987,6 +1002,7 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     for attempt in range(4):
         # Wait progressively longer for the overlay to appear
         time.sleep(0.3 if attempt == 0 else 0.8)
+        _ensure_app_focused(ns_app)    # Re-focus before each retry too
         _send_keystroke(53)            # Escape (dismiss overlay)
         time.sleep(0.2)
         _send_keystroke(32, ctrl=True) # Ctrl+U (clear input line)
