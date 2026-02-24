@@ -95,6 +95,7 @@ def open_terminal_with_command(
     Returns:
         True if a new terminal was opened successfully.
     """
+    logger.info("open_terminal_with_command: preferred_ide=%r", preferred_ide)
     if preferred_ide:
         # Try the specific IDE first. If it fails, fall through to generic
         # fallback so that a terminal always opens somewhere.
@@ -107,14 +108,18 @@ def open_terminal_with_command(
         elif preferred_ide == 'iTerm2':
             if _open_iterm2_terminal(command):
                 return True
+            logger.warning("iTerm2 open failed, falling back")
         elif preferred_ide == 'Terminal.app':
             if _open_terminal_app_terminal(command):
                 return True
+            logger.warning("Terminal.app open failed, falling back")
         elif preferred_ide == 'Warp':
             if _open_warp_terminal(command):
                 return True
+            logger.warning("Warp open failed, falling back")
 
     # Preferred IDE failed or unknown — try Terminal.app then iTerm2
+    logger.info("Falling back to Terminal.app then iTerm2")
     if _open_terminal_app_terminal(command):
         return True
     return _open_iterm2_terminal(command)
@@ -1081,15 +1086,23 @@ def _open_terminal_app_terminal(command: str) -> bool:
 
 
 def _open_iterm2_terminal(command: str) -> bool:
-    """Open a new iTerm2 tab and run a command."""
+    """Open a new iTerm2 tab and run a command.
+
+    Creates a new window if none exists, otherwise opens a new tab
+    in the current window.
+    """
     escaped = command.replace('\\', '\\\\').replace('"', '\\"')
     script = f'''
     tell application "iTerm"
-        tell current window
-            create tab with default profile
-            tell current session
-                write text "{escaped}"
+        if (count of windows) = 0 then
+            create window with default profile
+        else
+            tell current window
+                create tab with default profile
             end tell
+        end if
+        tell current session of current window
+            write text "{escaped}"
         end tell
         activate
     end tell
@@ -1103,6 +1116,8 @@ def _open_iterm2_terminal(command: str) -> bool:
             text=True,
             timeout=10
         )
+        if result.returncode != 0:
+            logger.debug("iTerm2 AppleScript failed: %s", result.stderr.strip())
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
         pass

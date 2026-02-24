@@ -117,17 +117,14 @@ class ServerLauncher:
                     self._server_force_align(tag, pinned, project_dir, branch)
             return
 
-        # Auto-pinned row — open directly
-        preferred_ide: Optional[str] = None
-        project_path: Optional[str] = None
-
+        # Auto-pinned row — open directly in the default terminal from settings
+        preferred_ide = self._w._prefs.get('default_terminal')
         session = next((s for s in self._w.sessions if s['tag'] == tag), None)
-        if session and session.get('has_client'):
-            preferred_ide = session.get('ide') or pinned.get('ide')
-            project_path = session.get('project_path') or pinned.get('project_path')
-        else:
-            preferred_ide = self._w._prefs.get('default_terminal')
-            project_path = pinned.get('project_path') or None
+        project_path: Optional[str] = (
+            (session.get('project_path') if session else None)
+            or pinned.get('project_path')
+            or None
+        )
 
         self._open_cq_in_terminal(tag, preferred_ide, project_path)
 
@@ -135,6 +132,8 @@ class ServerLauncher:
         self, tag: str, preferred_ide: Optional[str], project_path: Optional[str],
     ) -> None:
         """Open a CQ server in a terminal at the given project path."""
+        logger.info("Opening CQ '%s': preferred_ide=%r, project_path=%r",
+                     tag, preferred_ide, project_path)
         cmd = f"cd {shlex.quote(project_path)} && claudeq {shlex.quote(tag)}" if project_path else f"claudeq {shlex.quote(tag)}"
         worker = BackgroundCallWorker(
             lambda: open_terminal_with_command(

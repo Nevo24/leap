@@ -147,9 +147,17 @@ class SessionMixin(_Base):
 
         Runs navigation subprocess calls in a background thread to avoid
         blocking the UI.
+
+        For navigation (finding existing terminal): uses the server's IDE
+        from metadata so we look in the right app.
+        For opening a NEW server: uses default_terminal from settings.
+        For opening a NEW client: uses the server's IDE so it opens beside
+        the server in the same app.
         """
         metadata = load_session_metadata(tag)
-        preferred_ide = metadata.get('ide') if metadata else None
+        # IDE the server is currently running in (for navigation & client open)
+        server_ide = metadata.get('ide') if metadata else None
+        preferred_ide = server_ide
         project_path = metadata.get('project_path') if metadata else None
         title_pattern = f"cq-{session_type} {tag}"
 
