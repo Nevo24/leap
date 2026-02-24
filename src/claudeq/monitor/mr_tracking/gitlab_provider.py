@@ -419,7 +419,7 @@ class GitLabProvider(SCMProvider):
             discussion.notes.create({"body": CQ_ACK_MESSAGE})
             return True
         except Exception:
-            logger.error("Failed to acknowledge /cq on MR !%s discussion %s",
+            logger.debug("Failed to acknowledge /cq on MR !%s discussion %s",
                          mr_iid, discussion_id, exc_info=True)
             return False
 
@@ -525,7 +525,7 @@ class GitLabProvider(SCMProvider):
             discussion.notes.create({"body": CQ_NO_SESSION_MESSAGE})
             return True
         except Exception:
-            logger.error("Failed to post no-session reply on MR !%s discussion %s",
+            logger.debug("Failed to post no-session reply on MR !%s discussion %s",
                          mr_iid, discussion_id, exc_info=True)
             return False
 

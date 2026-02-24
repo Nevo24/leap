@@ -347,7 +347,7 @@ class GitHubProvider(SCMProvider):
             pr.create_review_comment_reply(root_comment.id, CQ_ACK_MESSAGE)
             return True
         except Exception:
-            logger.error("Failed to acknowledge /cq on PR #%s thread %s",
+            logger.debug("Failed to acknowledge /cq on PR #%s thread %s",
                          mr_iid, discussion_id, exc_info=True)
             return False
 
@@ -362,7 +362,7 @@ class GitHubProvider(SCMProvider):
             pr.create_review_comment_reply(root_comment.id, CQ_NO_SESSION_MESSAGE)
             return True
         except Exception:
-            logger.error("Failed to post no-session reply on PR #%s thread %s",
+            logger.debug("Failed to post no-session reply on PR #%s thread %s",
                          mr_iid, discussion_id, exc_info=True)
             return False
 

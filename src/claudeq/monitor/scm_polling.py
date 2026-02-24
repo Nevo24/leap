@@ -142,7 +142,7 @@ class SCMPollerWorker(QThread):
                             if status_code == 403:
                                 self.notification_auth_error.emit(key)
             except TimeoutError:
-                logger.warning("SCM poll timed out after %ds, returning partial results",
+                logger.debug("SCM poll timed out after %ds, returning partial results",
                                _POLL_TIMEOUT_SECONDS)
 
         self.results_ready.emit(results)
@@ -238,23 +238,23 @@ class SCMPollerWorker(QThread):
                     message = format_cq_message(cmd)
                     sent = send_to_cq_session(tag, message)
                     if sent:
-                        logger.info("/cq from MR !%s sent to session '%s'",
-                                    cmd.mr_iid, tag)
+                        logger.debug("/cq from MR !%s sent to session '%s'",
+                                     cmd.mr_iid, tag)
                     else:
-                        logger.error("Failed to send /cq message to session '%s'", tag)
+                        logger.debug("Failed to send /cq message to session '%s'", tag)
                     # Acknowledge to prevent re-processing
                     acked = provider.acknowledge_cq_command(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
                     if not acked:
-                        logger.error("Failed to acknowledge /cq on MR !%s", cmd.mr_iid)
+                        logger.debug("Failed to acknowledge /cq on MR !%s", cmd.mr_iid)
                         self.cq_ack_failed.emit()
                         return  # Stop processing — ack will fail for all
                 else:
                     provider.report_no_session(
                         cmd.project_path, cmd.mr_iid, cmd.discussion_id
                     )
-                    logger.info("No session match for /cq from MR !%s (%s)",
+                    logger.debug("No session match for /cq from MR !%s (%s)",
                                 cmd.mr_iid, cmd.project_path)
             except Exception:
                 logger.debug("Error handling /cq command for MR !%s",
@@ -391,7 +391,7 @@ class SendThreadsWorker(_BaseSendWorker):
                         ack_ok = False
                     sent_count += 1
                 else:
-                    logger.error("Failed to send thread to session '%s'", self._matched_tag)
+                    logger.debug("Failed to send thread to session '%s'", self._matched_tag)
 
             self.finished.emit(sent_count, self._matched_tag)
             if not ack_ok:
@@ -423,7 +423,7 @@ class SendThreadsCombinedWorker(_BaseSendWorker):
                 if not ack_ok:
                     self.ack_failed.emit()
             else:
-                logger.error(
+                logger.debug(
                     "Failed to send combined threads to session '%s'",
                     self._matched_tag,
                 )

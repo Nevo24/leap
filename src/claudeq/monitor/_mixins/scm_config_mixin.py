@@ -151,7 +151,7 @@ class SCMConfigMixin(_Base):
                     return False, 'Server does not appear to be GitLab.'
                 warnings = _check_gitlab_scopes(gl)
                 for w in warnings:
-                    logger.warning("GitLab token: %s", w)
+                    logger.debug("GitLab token: %s", w)
                 return True, username
             elif provider_name == 'GitHub':
                 from github import Github
@@ -175,7 +175,7 @@ class SCMConfigMixin(_Base):
                     return False, 'Could not determine GitHub username.'
                 warnings = _check_github_scopes(gh)
                 for w in warnings:
-                    logger.warning("GitHub token: %s", w)
+                    logger.debug("GitHub token: %s", w)
                 return True, username
         except Exception as e:
             return False, str(e)

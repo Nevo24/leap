@@ -314,7 +314,7 @@ class MRTrackingMixin(_Base):
             # Force-reset if polling has been stuck for over 60 seconds
             elapsed = time.monotonic() - self._scm_poll_started_at
             if elapsed > 60:
-                logger.warning("SCM poll stuck for %.0fs, force-resetting", elapsed)
+                logger.debug("SCM poll stuck for %.0fs, force-resetting", elapsed)
                 self._show_status(f"SCM poll stuck for {elapsed:.0f}s — force-reset")
                 self._scm_polling = False
                 if self._scm_worker:

@@ -29,12 +29,12 @@ def _send_to_socket(
     """
     socket_path = SOCKET_DIR / f"{tag}.sock"
     if not socket_path.exists():
-        logger.warning("Socket not found for session: %s", tag)
+        logger.debug("Socket not found for session: %s", tag)
         return False
 
     result = send_socket_request(socket_path, {'type': msg_type, 'message': message})
     if result is None:
-        logger.error("Failed to send to session %s", tag)
+        logger.debug("Failed to send to session %s", tag)
         return False
 
     return result.get('status') in success_statuses

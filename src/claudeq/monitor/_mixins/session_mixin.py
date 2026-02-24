@@ -220,7 +220,7 @@ class SessionMixin(_Base):
                 return  # Successfully focused
 
             # Terminal not found — log details for diagnosing navigation issues
-            logger.error(
+            logger.debug(
                 "Terminal navigation failed: tag=%s type=%s preferred_ide=%s "
                 "title_pattern=%s project_path=%s",
                 _tag, _session_type, _preferred_ide, _title_pattern,
