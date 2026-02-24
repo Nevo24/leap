@@ -15,12 +15,12 @@ from claudeq.utils.constants import is_valid_tag
 from claudeq.monitor.dialogs.add_local_dialog import AddLocalDialog
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import (
-    load_gitlab_config, load_pinned_sessions, save_monitor_prefs,
-    save_pinned_sessions,
+    load_github_config, load_gitlab_config, load_pinned_sessions,
+    save_monitor_prefs, save_pinned_sessions,
 )
 from claudeq.monitor.mr_tracking.git_utils import (
     ParsedProjectUrl, SCMType, get_git_remote_info, parse_mr_url,
-    parse_project_url,
+    parse_project_url, refine_scm_type,
 )
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker,
@@ -109,11 +109,12 @@ class MRTrackingMixin(_Base):
                 return
             scm_project_path = remote_info.project_path
             scm_branch = remote_info.branch
+            scm_type = refine_scm_type(remote_info.host_url, remote_info.scm_type)
             # Store context for enriching pinned session on result
             self._pending_tracking_context[tag] = {
                 'remote_project_path': scm_project_path,
                 'host_url': remote_info.host_url,
-                'scm_type': remote_info.scm_type.value if hasattr(remote_info.scm_type, 'value') else str(remote_info.scm_type),
+                'scm_type': scm_type.value,
                 'branch': scm_branch,
             }
 
@@ -657,6 +658,7 @@ class MRTrackingMixin(_Base):
     def _add_row_from_git(self) -> None:
         """Add a row from a Git URL (MR/PR URL or plain project URL)."""
         gitlab_config = load_gitlab_config()
+        github_config = load_github_config()
         prev_url = ''
         while True:
             dlg = QInputDialog(self)
@@ -671,7 +673,7 @@ class MRTrackingMixin(_Base):
             prev_url = url.strip()
 
             # Try MR/PR URL first
-            parsed_mr = parse_mr_url(prev_url, gitlab_config)
+            parsed_mr = parse_mr_url(prev_url, gitlab_config, github_config)
             if parsed_mr:
                 provider = self._scm_providers.get(parsed_mr.scm_type.value)
                 if not provider:
@@ -691,7 +693,7 @@ class MRTrackingMixin(_Base):
                 return
 
             # Try plain project URL
-            parsed_proj = parse_project_url(prev_url, gitlab_config)
+            parsed_proj = parse_project_url(prev_url, gitlab_config, github_config)
             if parsed_proj:
                 self._add_row_from_project_url(parsed_proj)
                 return
@@ -770,6 +772,22 @@ class MRTrackingMixin(_Base):
 
     def _add_row_from_project_url(self, parsed: ParsedProjectUrl) -> None:
         """Add a row from a plain project URL (clone + open server)."""
+        # Refine UNKNOWN type using saved provider configs
+        scm_type = refine_scm_type(parsed.host_url, parsed.scm_type)
+
+        # Warn if no matching provider (clone will be unauthenticated)
+        if scm_type == SCMType.UNKNOWN and self._scm_providers:
+            reply = QMessageBox.question(
+                self, 'Unknown Host',
+                f"Could not match '{parsed.host_url}' to any connected "
+                f"provider (GitLab/GitHub).\n\n"
+                f"The clone will be unauthenticated and may fail on "
+                f"private repos.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
         project_name = parsed.project_path.rsplit('/', 1)[-1]
         tag = self._ask_tag([
             f"Project: {parsed.project_path}",
@@ -782,7 +800,7 @@ class MRTrackingMixin(_Base):
             'tag': tag,
             'remote_project_path': parsed.project_path,
             'host_url': parsed.host_url,
-            'scm_type': parsed.scm_type.value,
+            'scm_type': scm_type.value,
             'branch': '',
             'project_path': '',
             'ide': '',
@@ -820,6 +838,9 @@ class MRTrackingMixin(_Base):
                 )
                 return
 
+            # Refine UNKNOWN type using saved provider configs
+            scm_type = refine_scm_type(remote_info.host_url, remote_info.scm_type)
+
             tag = self._ask_tag([
                 f"Project: {remote_info.project_path}",
                 f"From: {local_path}",
@@ -832,7 +853,7 @@ class MRTrackingMixin(_Base):
                 'tag': tag,
                 'remote_project_path': remote_info.project_path,
                 'host_url': remote_info.host_url,
-                'scm_type': remote_info.scm_type.value,
+                'scm_type': scm_type.value,
                 'branch': '',
                 'project_path': '',
                 'ide': '',

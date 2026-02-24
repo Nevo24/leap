@@ -13,7 +13,9 @@ from claudeq.monitor.mr_tracking.base import (
 )
 from claudeq.monitor.mr_tracking.cq_command import format_cq_message
 from claudeq.monitor.mr_tracking.config import load_gitlab_config
-from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
+from claudeq.monitor.mr_tracking.git_utils import (
+    SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
+)
 from claudeq.monitor.cq_sender import send_to_cq_session
 from claudeq.monitor.session_manager import get_active_sessions
 
@@ -187,7 +189,8 @@ class SCMPollerWorker(QThread):
 
             scm_project_path = remote_info.project_path
             scm_branch = remote_info.branch
-            provider = self._providers.get(remote_info.scm_type.value)
+            scm_type = refine_scm_type(remote_info.host_url, remote_info.scm_type)
+            provider = self._providers.get(scm_type.value)
 
         if not provider:
             logger.debug("Poll skip: no provider for tag %s", session.get('tag'))
@@ -302,10 +305,7 @@ class CollectThreadsWorker(QThread):
                 self.collected.emit([], [])
                 return
 
-            scm_type = remote_info.scm_type
-            if scm_type == SCMType.UNKNOWN:
-                gitlab_config = load_gitlab_config()
-                scm_type = detect_scm_type(remote_info.host_url, gitlab_config)
+            scm_type = refine_scm_type(remote_info.host_url, remote_info.scm_type)
 
             self.provider = self._scm_providers.get(scm_type.value)
             if not self.provider:

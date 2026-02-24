@@ -41,7 +41,11 @@ class ParsedProjectUrl:
     project_path: str
 
 
-def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Optional[ParsedMRUrl]:
+def parse_mr_url(
+    url: str,
+    gitlab_config: Optional[dict[str, Any]] = None,
+    github_config: Optional[dict[str, Any]] = None,
+) -> Optional[ParsedMRUrl]:
     """Parse a GitLab MR or GitHub PR URL.
 
     Supported formats:
@@ -51,6 +55,7 @@ def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Op
     Args:
         url: The MR/PR URL.
         gitlab_config: Optional GitLab config dict for custom host detection.
+        github_config: Optional GitHub config dict for custom host detection.
 
     Returns:
         ParsedMRUrl or None if the URL cannot be parsed.
@@ -59,8 +64,12 @@ def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Op
     m = re.match(r'https?://([^/]+)/(.+?)/-/merge_requests/(\d+)', url)
     if m:
         host_url = f"https://{m.group(1)}"
+        scm_type = detect_scm_type(host_url, gitlab_config, github_config)
+        # URL structure is exclusively GitLab
+        if scm_type == SCMType.UNKNOWN:
+            scm_type = SCMType.GITLAB
         return ParsedMRUrl(
-            scm_type=detect_scm_type(host_url, gitlab_config),
+            scm_type=scm_type,
             host_url=host_url,
             project_path=m.group(2),
             mr_iid=int(m.group(3)),
@@ -70,8 +79,12 @@ def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Op
     m = re.match(r'https?://([^/]+)/([^/]+/[^/]+)/pull/(\d+)', url)
     if m:
         host_url = f"https://{m.group(1)}"
+        scm_type = detect_scm_type(host_url, gitlab_config, github_config)
+        # URL structure is exclusively GitHub
+        if scm_type == SCMType.UNKNOWN:
+            scm_type = SCMType.GITHUB
         return ParsedMRUrl(
-            scm_type=detect_scm_type(host_url, gitlab_config),
+            scm_type=scm_type,
             host_url=host_url,
             project_path=m.group(2),
             mr_iid=int(m.group(3)),
@@ -80,12 +93,17 @@ def parse_mr_url(url: str, gitlab_config: Optional[dict[str, Any]] = None) -> Op
     return None
 
 
-def detect_scm_type(host_url: str, gitlab_config: Optional[dict[str, Any]] = None) -> SCMType:
+def detect_scm_type(
+    host_url: str,
+    gitlab_config: Optional[dict[str, Any]] = None,
+    github_config: Optional[dict[str, Any]] = None,
+) -> SCMType:
     """Detect SCM platform type from a git remote host URL.
 
     Args:
         host_url: The host URL (e.g., 'https://github.com').
         gitlab_config: Optional GitLab config dict with 'gitlab_url' key.
+        github_config: Optional GitHub config dict with 'github_url' key.
 
     Returns:
         SCMType indicating the platform.
@@ -97,6 +115,11 @@ def detect_scm_type(host_url: str, gitlab_config: Optional[dict[str, Any]] = Non
     if 'github.com' in host_lower:
         return SCMType.GITHUB
 
+    if github_config:
+        github_url = github_config.get('github_url', '').lower().rstrip('/')
+        if github_url and github_url in host_lower:
+            return SCMType.GITHUB
+
     if gitlab_config:
         gitlab_url = gitlab_config.get('gitlab_url', '').lower().rstrip('/')
         if gitlab_url and gitlab_url in host_lower:
@@ -107,6 +130,34 @@ def detect_scm_type(host_url: str, gitlab_config: Optional[dict[str, Any]] = Non
         return SCMType.GITLAB
 
     return SCMType.UNKNOWN
+
+
+def refine_scm_type(host_url: str, scm_type: SCMType) -> SCMType:
+    """Refine an UNKNOWN SCM type by checking against saved provider configs.
+
+    Loads GitLab and GitHub configs from disk and re-runs detection. This is
+    useful after ``get_git_remote_info()`` which only uses hostname heuristics.
+
+    Args:
+        host_url: The host URL to check.
+        scm_type: The current (possibly UNKNOWN) SCM type.
+
+    Returns:
+        Refined SCMType, or the original if still unresolvable.
+    """
+    if scm_type != SCMType.UNKNOWN:
+        return scm_type
+
+    # Import here to avoid circular import (config imports are lightweight)
+    from claudeq.monitor.mr_tracking.config import (
+        load_github_config, load_gitlab_config,
+    )
+
+    return detect_scm_type(
+        host_url,
+        gitlab_config=load_gitlab_config(),
+        github_config=load_github_config(),
+    )
 
 
 def get_git_remote_info(cwd: str) -> Optional[GitRemoteInfo]:
@@ -180,7 +231,9 @@ _PROJECT_URL_SUFFIXES = re.compile(
 
 
 def parse_project_url(
-    url: str, gitlab_config: Optional[dict[str, Any]] = None,
+    url: str,
+    gitlab_config: Optional[dict[str, Any]] = None,
+    github_config: Optional[dict[str, Any]] = None,
 ) -> Optional[ParsedProjectUrl]:
     """Parse a plain Git project URL (HTTPS or SSH).
 
@@ -192,6 +245,7 @@ def parse_project_url(
     Args:
         url: The project URL.
         gitlab_config: Optional GitLab config dict for custom host detection.
+        github_config: Optional GitHub config dict for custom host detection.
 
     Returns:
         ParsedProjectUrl or None if the URL cannot be parsed.
@@ -206,7 +260,7 @@ def parse_project_url(
         if '/' not in project_path:
             return None
         return ParsedProjectUrl(
-            scm_type=detect_scm_type(host_url, gitlab_config),
+            scm_type=detect_scm_type(host_url, gitlab_config, github_config),
             host_url=host_url,
             project_path=project_path,
         )
@@ -226,7 +280,7 @@ def parse_project_url(
         return None
 
     return ParsedProjectUrl(
-        scm_type=detect_scm_type(host_url, gitlab_config),
+        scm_type=detect_scm_type(host_url, gitlab_config, github_config),
         host_url=host_url,
         project_path=project_path,
     )

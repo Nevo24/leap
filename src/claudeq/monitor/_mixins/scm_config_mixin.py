@@ -17,7 +17,9 @@ from claudeq.monitor.mr_tracking.config import (
     load_github_config, load_gitlab_config, resolve_scm_token,
     save_github_config, save_gitlab_config, save_monitor_prefs,
 )
-from claudeq.monitor.mr_tracking.git_utils import SCMType, detect_scm_type, get_git_remote_info
+from claudeq.monitor.mr_tracking.git_utils import (
+    SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
+)
 from claudeq.slack.config import is_slack_installed
 from claudeq.utils.constants import SCM_POLL_INTERVAL, SLACK_BOT_LOCK, STORAGE_DIR
 
@@ -236,12 +238,9 @@ class SCMConfigMixin(_Base):
         if not remote_info:
             return None
 
-        # Use the SCM type detected from the remote URL
-        scm_type = remote_info.scm_type
-        if scm_type == SCMType.UNKNOWN:
-            # Try to refine using GitLab config
-            gitlab_config = load_gitlab_config()
-            scm_type = detect_scm_type(remote_info.host_url, gitlab_config)
+        # Use the SCM type detected from the remote URL, refining
+        # UNKNOWN against saved provider configs (self-hosted hosts).
+        scm_type = refine_scm_type(remote_info.host_url, remote_info.scm_type)
 
         return self._scm_providers.get(scm_type.value)
 
