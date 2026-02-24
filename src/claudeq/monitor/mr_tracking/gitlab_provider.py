@@ -196,9 +196,9 @@ class GitLabProvider(SCMProvider):
         if not human_notes:
             return False
 
-        # If the discussion or all its resolvable notes are resolved,
-        # treat as acknowledged.  Check both the discussion-level flag
-        # and individual note flags for robustness.
+        # If resolved, treat as acknowledged.  Check both the discussion-
+        # level flag and individual note flags — discussions.list() may
+        # omit the discussion-level resolved field.
         if discussion.attributes.get('resolved', False):
             return False
         resolvable_notes = [n for n in notes if n.get('resolvable', False)]
