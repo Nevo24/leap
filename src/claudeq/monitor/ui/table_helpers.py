@@ -78,28 +78,19 @@ class TooltipApp(QApplication):
     def __init__(self, argv: list) -> None:
         super().__init__(argv)
         self.tooltips_enabled: bool = True
-        self._in_notify: bool = False
 
     def notify(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.ToolTip:
-            # Suppress tooltip events that fire re-entrantly during
-            # super().notify() — the target widget may already be deleted
-            # by Qt's C++ side (invisible to sip.isdeleted).
-            if self._in_notify:
-                return True
             try:
                 return self._handle_tooltip(obj, event)
             except RuntimeError:
                 return True
         if sip.isdeleted(obj):
             return True
-        self._in_notify = True
         try:
             return super().notify(obj, event)
         except RuntimeError:
             return True
-        finally:
-            self._in_notify = False
 
     def _handle_tooltip(self, obj: QObject, event: QEvent) -> bool:
         """Handle tooltip events, returning True to consume the event."""
@@ -109,23 +100,38 @@ class TooltipApp(QApplication):
         if not widget:
             return False
 
-        from PyQt5.QtWidgets import QAbstractItemView
+        from PyQt5.QtWidgets import QAbstractItemView, QToolTip as _QToolTip
         parent = widget.parent()
         if sip.isdeleted(parent) if parent is not None else False:
             return True
 
+        # --- Direct viewport of a table/tree view ---
         if isinstance(parent, QAbstractItemView):
             index = parent.indexAt(event.pos())
             if index.isValid():
-                display = index.data(Qt.DisplayRole)
                 tip = index.data(Qt.ToolTipRole)
                 if tip and str(tip) not in ('', 'N/A'):
-                    from PyQt5.QtWidgets import QToolTip as _QToolTip
                     _QToolTip.showText(
                         event.globalPos(), str(tip), widget,
                         parent.visualRect(index),
                         2_147_483_647,
                     )
+            return True
+
+        # --- obj IS the QAbstractItemView itself (not its viewport) ---
+        if isinstance(widget, QAbstractItemView):
+            vp = widget.viewport()
+            if vp and not sip.isdeleted(vp):
+                pos = event.pos() - vp.pos()
+                index = widget.indexAt(pos)
+                if index.isValid():
+                    tip = index.data(Qt.ToolTipRole)
+                    if tip and str(tip) not in ('', 'N/A'):
+                        _QToolTip.showText(
+                            event.globalPos(), str(tip), vp,
+                            widget.visualRect(index),
+                            2_147_483_647,
+                        )
             return True
 
         # Cell widget inside a table — check if the underlying
