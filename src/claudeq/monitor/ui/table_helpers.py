@@ -44,9 +44,9 @@ ACTIVE_BTN_STYLE = (
 )
 
 # Column group boundaries for vertical separators.
-# Groups: [X, Tag, Project] | [Server, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]
-GROUP_BOUNDARY_COLS = frozenset({0, 2, 6, 7, 8})   # Solid white (between groups)
-INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 9})       # Semi-transparent white (within groups)
+# Groups: [X, Tag, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]
+GROUP_BOUNDARY_COLS = frozenset({0, 2, 7, 8, 9})    # Solid white (between groups)
+INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 6, 10})   # Semi-transparent white (within groups)
 
 BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
 BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)

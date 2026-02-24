@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and template editor."""
 
-    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10})  # All data columns
+    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})  # All data columns
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
         """Set a cell widget wrapped in a hover-aware container.
@@ -244,6 +244,12 @@ class TableBuilderMixin(_Base):
                                     if remote_path
                                     else 'N/A')
                     self._set_cell_text(row, self.COL_PROJECT, dead_project)
+                    dead_path = pinned_data.get('project_path', '') or ''
+                    self._set_cell_text(row, self.COL_PATH, dead_path or 'N/A')
+                    if dead_path:
+                        item = self.table.item(row, self.COL_PATH)
+                        if item:
+                            item.setToolTip(dead_path)
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
@@ -251,6 +257,12 @@ class TableBuilderMixin(_Base):
                     self.table.removeCellWidget(row, self.COL_QUEUE)
                 else:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
+                    live_path = session.get('project_path', '') or ''
+                    self._set_cell_text(row, self.COL_PATH, live_path or 'N/A')
+                    if live_path:
+                        item = self.table.item(row, self.COL_PATH)
+                        if item:
+                            item.setToolTip(live_path)
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
 
                     claude_state = session.get('claude_state', 'idle')

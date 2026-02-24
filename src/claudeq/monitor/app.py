@@ -67,13 +67,14 @@ class MonitorWindow(
     COL_TAG = 1
     COL_PROJECT = 2
     COL_SERVER = 3
-    COL_SERVER_BRANCH = 4
-    COL_STATUS = 5
-    COL_QUEUE = 6
-    COL_CLIENT = 7
-    COL_SLACK = 8
-    COL_MR = 9
-    COL_MR_BRANCH = 10
+    COL_PATH = 4
+    COL_SERVER_BRANCH = 5
+    COL_STATUS = 6
+    COL_QUEUE = 7
+    COL_CLIENT = 8
+    COL_SLACK = 9
+    COL_MR = 10
+    COL_MR_BRANCH = 11
 
     def __init__(self) -> None:
         """Initialize the monitor window."""
@@ -175,17 +176,18 @@ class MonitorWindow(
         self.table.setHorizontalHeader(SeparatorHeaderView(Qt.Horizontal, self.table))
         self.table.setItemDelegate(SeparatorDelegate(self.table))
         self.table.setShowGrid(False)
-        self.table.setColumnCount(11)
+        self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels([
-            '', 'Tag', 'Project', 'Server', 'Server Branch', 'Status', 'Queue',
-            'Client', 'Slack', 'MR', 'MR Branch',
+            '', 'Tag', 'Project', 'Server', 'Path', 'Server Branch', 'Status',
+            'Queue', 'Client', 'Slack', 'MR', 'MR Branch',
         ])
 
         # Column header tooltips
         _col_tooltips = {
             self.COL_TAG: 'CQ session name',
-            self.COL_PROJECT: 'Project directory name',
+            self.COL_PROJECT: 'Git project name',
             self.COL_SERVER: 'CQ server process (green = running)',
+            self.COL_PATH: 'Directory where the server is running',
             self.COL_SERVER_BRANCH: 'The git branch the server is running on',
             self.COL_STATUS: 'Whether Claude is busy processing or idle',
             self.COL_QUEUE: 'Number of messages waiting in the queue',
