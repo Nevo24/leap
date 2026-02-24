@@ -244,8 +244,7 @@ class TableBuilderMixin(_Base):
                                     if remote_path
                                     else 'N/A')
                     self._set_cell_text(row, self.COL_PROJECT, dead_project)
-                    dead_path = pinned_data.get('project_path', '') or ''
-                    self._set_cell_text(row, self.COL_PATH, dead_path or 'N/A')
+                    self._set_cell_text(row, self.COL_PATH, 'N/A')
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     self._set_cell_text(row, self.COL_QUEUE, 'N/A')
