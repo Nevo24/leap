@@ -95,7 +95,6 @@ def open_terminal_with_command(
     Returns:
         True if a new terminal was opened successfully.
     """
-    logger.info("open_terminal_with_command: preferred_ide=%r", preferred_ide)
     if preferred_ide:
         # Try the specific IDE first. If it fails, fall through to generic
         # fallback so that a terminal always opens somewhere.
@@ -108,18 +107,17 @@ def open_terminal_with_command(
         elif preferred_ide == 'iTerm2':
             if _open_iterm2_terminal(command):
                 return True
-            logger.warning("iTerm2 open failed, falling back")
+            logger.debug("iTerm2 open failed, falling back")
         elif preferred_ide == 'Terminal.app':
             if _open_terminal_app_terminal(command):
                 return True
-            logger.warning("Terminal.app open failed, falling back")
+            logger.debug("Terminal.app open failed, falling back")
         elif preferred_ide == 'Warp':
             if _open_warp_terminal(command):
                 return True
-            logger.warning("Warp open failed, falling back")
+            logger.debug("Warp open failed, falling back")
 
     # Preferred IDE failed or unknown — try Terminal.app then iTerm2
-    logger.info("Falling back to Terminal.app then iTerm2")
     if _open_terminal_app_terminal(command):
         return True
     return _open_iterm2_terminal(command)
@@ -805,15 +803,113 @@ def _open_warp_terminal(command: str) -> bool:
 
     If Warp is already running and Accessibility is granted, opens a new
     tab in the frontmost Warp window using Cmd+T and pastes the command.
-    Otherwise falls back to Launch Configurations (creates a new window).
+    If Warp is not running, launches it and types the command into its
+    initial session (no extra window).
+    Falls back to Launch Configuration if keystroke approach fails.
     """
+    was_running = _get_app_pid(_WARP_BUNDLE_ID) is not None
+
+    if not was_running:
+        # Launch Warp and wait for it to be ready
+        try:
+            subprocess.run(
+                ['open', '-a', 'Warp'], capture_output=True, timeout=10,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return _open_warp_via_launch_config(command)
+
+        # Wait for Warp process to appear (up to 5s)
+        pid = None
+        for _ in range(25):
+            time.sleep(0.2)
+            pid = _get_app_pid(_WARP_BUNDLE_ID)
+            if pid is not None:
+                break
+        if pid is not None and _check_accessibility_trusted():
+            # Type command into Warp's initial session (no Cmd+T)
+            if _type_command_in_warp(pid, command):
+                return True
+        # Fallback
+        return _open_warp_via_launch_config(command)
+
+    # Warp is already running — open a new tab
     pid = _get_app_pid(_WARP_BUNDLE_ID)
     if pid is not None and _check_accessibility_trusted():
         if _open_warp_tab_with_keystroke(pid, command):
             return True
 
-    # Warp not running or keystroke approach failed — use Launch Configuration
+    # Keystroke approach failed — use Launch Configuration
     return _open_warp_via_launch_config(command)
+
+
+def _type_command_in_warp(pid: int, command: str) -> bool:
+    """Type a command into Warp's current session (no new tab).
+
+    Used when Warp was just launched and we want to use its initial
+    session.  Waits for Warp's window to appear, dismisses the
+    "New terminal session" overlay, then pastes and executes the command.
+    """
+    try:
+        import AppKit
+        from ApplicationServices import (
+            AXUIElementCreateApplication,
+            AXUIElementCopyAttributeValue,
+            kAXErrorSuccess,
+        )
+    except ImportError:
+        return False
+
+    ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    if not ns_app:
+        return False
+    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+
+    # Wait for Warp's window to appear (just launched, may take a moment)
+    app_ref = AXUIElementCreateApplication(pid)
+    windows = None
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        time.sleep(0.3)
+        err, windows = AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
+        if err == kAXErrorSuccess and windows:
+            break
+    if not windows:
+        return False
+
+    # Wait a bit more for the shell to be ready
+    time.sleep(1.0)
+
+    # Copy command to clipboard
+    try:
+        proc = subprocess.run(
+            ['pbcopy'], input=command.encode('utf-8'), timeout=2,
+        )
+        if proc.returncode != 0:
+            return False
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+    # Dismiss overlay and paste command (same retry logic as tab approach)
+    for attempt in range(4):
+        time.sleep(0.3 if attempt == 0 else 0.8)
+        _send_keystroke(53)            # Escape (dismiss overlay)
+        time.sleep(0.2)
+        _send_keystroke(32, ctrl=True)  # Ctrl+U (clear input line)
+        time.sleep(0.1)
+        _send_keystroke(9, cmd=True)   # Cmd+V (paste)
+        time.sleep(0.15)
+        _send_keystroke(36)            # Return (execute)
+        time.sleep(0.5)
+
+        # Check if the command executed
+        def _title() -> str:
+            e, t = AXUIElementCopyAttributeValue(windows[0], "AXTitle", None)
+            return str(t) if e == kAXErrorSuccess and t else ''
+
+        if 'cq-' in _title():
+            return True
+
+    return True  # Exhausted retries — command may still execute
 
 
 def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:

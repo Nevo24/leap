@@ -117,7 +117,7 @@ def _check_gitlab_scopes(gl: Any) -> list[str]:
 
     # Fallback: probe Todos API to check notification access
     try:
-        gl.todos.list(per_page=1)
+        gl.todos.list(per_page=1, get_all=False)
     except Exception as e:
         status_code = getattr(e, 'response_code', None)
         if status_code == 403:

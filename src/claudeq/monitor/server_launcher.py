@@ -132,8 +132,6 @@ class ServerLauncher:
         self, tag: str, preferred_ide: Optional[str], project_path: Optional[str],
     ) -> None:
         """Open a CQ server in a terminal at the given project path."""
-        logger.info("Opening CQ '%s': preferred_ide=%r, project_path=%r",
-                     tag, preferred_ide, project_path)
         cmd = f"cd {shlex.quote(project_path)} && claudeq {shlex.quote(tag)}" if project_path else f"claudeq {shlex.quote(tag)}"
         worker = BackgroundCallWorker(
             lambda: open_terminal_with_command(
