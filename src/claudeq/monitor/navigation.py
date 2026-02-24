@@ -889,6 +889,10 @@ def _type_command_in_warp(pid: int, command: str) -> bool:
     except (subprocess.SubprocessError, OSError):
         return False
 
+    # Re-focus Warp (user may have switched away during the wait)
+    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+    time.sleep(0.2)
+
     # Dismiss overlay and paste command (same retry logic as tab approach)
     for attempt in range(4):
         time.sleep(0.3 if attempt == 0 else 0.8)
@@ -971,6 +975,10 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
             return False
     except (subprocess.SubprocessError, OSError):
         return False
+
+    # Re-focus Warp (user may have switched away during the wait)
+    ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+    time.sleep(0.2)
 
     # Warp shows a "New terminal session" overlay on new tabs that
     # captures Enter.  The overlay can appear at varying times after
