@@ -247,6 +247,9 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_PATH, 'N/A')
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
+                    status_item = self.table.item(row, self.COL_STATUS)
+                    if status_item:
+                        status_item.setForeground(QColor(255, 255, 255))
 
                     # Queue N/A with menu button
                     dead_q_state = ('dead', session.get('auto_send_mode', 'pause'))
