@@ -78,29 +78,29 @@ class TooltipApp(QApplication):
     def __init__(self, argv: list) -> None:
         super().__init__(argv)
         self.tooltips_enabled: bool = True
-        self._in_notify: bool = False
+        self._in_tooltip: bool = False
 
     def notify(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.ToolTip:
-            # Suppress tooltips during re-entrant event processing —
-            # super().notify() can trigger Qt to dispatch a ToolTip
-            # event while widgets are being rebuilt, causing segfaults
-            # in mapTo() / coordinate translation.
-            if self._in_notify:
+            # Suppress re-entrant tooltip handling — _handle_tooltip
+            # can trigger Qt to dispatch nested ToolTip events while
+            # widgets are being inspected, causing segfaults in
+            # mapTo() / coordinate translation.
+            if self._in_tooltip:
                 return True
+            self._in_tooltip = True
             try:
                 return self._handle_tooltip(obj, event)
             except RuntimeError:
                 return True
+            finally:
+                self._in_tooltip = False
         if sip.isdeleted(obj):
             return True
-        self._in_notify = True
         try:
             return super().notify(obj, event)
         except RuntimeError:
             return True
-        finally:
-            self._in_notify = False
 
     def _handle_tooltip(self, obj: QObject, event: QEvent) -> bool:
         """Handle tooltip events, returning True to consume the event."""
