@@ -329,6 +329,72 @@ class TestInterruptedDetection:
 
 
 # ---------------------------------------------------------------------------
+# False positive: "Interrupted" inside ANSI escape sequences
+# ---------------------------------------------------------------------------
+
+class TestInterruptedFalsePositive:
+    """Ensure 'Interrupted' inside ANSI escape sequences does not trigger
+    a false interrupted state."""
+
+    def test_interrupted_in_hyperlink_osc_ignored(self, tmp_path: Path) -> None:
+        """Hyperlink OSC containing 'Interrupted' in URL must not trigger."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # OSC 8 hyperlink: \x1b]8;;URL\x07 text \x1b]8;;\x07
+        chunk = (
+            b'\x1b]8;;https://example.com/Interrupted\x07'
+            b'click here'
+            b'\x1b]8;;\x07'
+            b' normal output continues'
+        )
+        tracker.on_output(chunk)
+        assert tracker.current_state == 'running'
+
+    def test_interrupted_in_osc_buffer_ignored(self, tmp_path: Path) -> None:
+        """'Interrupted' split across buffer via OSC must not trigger."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'\x1b]8;;https://example.com/Inter')
+        t[0] = 1.1
+        tracker.on_output(b'rupted\x07link text\x1b]8;;\x07')
+        assert tracker.current_state == 'running'
+
+    def test_real_interrupted_still_detected(self, tmp_path: Path) -> None:
+        """Visible 'Interrupted' text (not in ANSI) must still trigger."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        chunk = b'\x1b[2J\x1b[HInterrupted \xc2\xb7 What next?\r\n'
+        tracker.on_output(chunk)
+        assert tracker.current_state == 'interrupted'
+
+    def test_escape_race_interrupted_in_osc_ignored(
+        self, tmp_path: Path,
+    ) -> None:
+        """Escape race: 'Interrupted' in ANSI must not trigger in idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Get to idle with recent input (Escape race window)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(True)
+        t[0] = 1.5
+        tracker.on_input(b'\x1b')  # Escape key
+        t[0] = 2.0
+        # Output with 'Interrupted' only inside OSC
+        tracker.on_output(
+            b'\x1b]8;;https://example.com/Interrupted\x07ok\x1b]8;;\x07',
+        )
+        assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
 # Escape race (idle state Interrupted detection)
 # ---------------------------------------------------------------------------
 

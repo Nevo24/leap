@@ -333,8 +333,13 @@ class ClaudeStateTracker:
             # idle transition may have reset _seen_user_input indirectly
             # (via _idle_since), but the Escape race still needs to work.
             if now - self._last_input_time < 3.0:
-                has_interrupted = b'Interrupted' in data
-                if has_interrupted or b'Interrupted' in self._output_buf:
+                # Strip ANSI before checking — raw PTY bytes may contain
+                # "Interrupted" inside escape sequences (e.g. hyperlink OSC).
+                stripped_chunk = self._ANSI_RE.sub(b'', data)
+                has_interrupted = b'Interrupted' in stripped_chunk
+                if has_interrupted or b'Interrupted' in self._ANSI_RE.sub(
+                    b'', bytes(self._output_buf),
+                ):
                     _log.debug(
                         'ON_OUTPUT idle→interrupted (Escape race detected)',
                     )
@@ -378,17 +383,20 @@ class ClaudeStateTracker:
         # Buffer recent output so the pattern is found even when the TUI
         # renderer splits "Interrupted" across chunk boundaries.
         if self._state == 'running':
-            # Check the raw chunk BEFORE buffer trim — a large TUI redraw
-            # chunk can exceed the buffer cap with "Interrupted" near the
-            # start, causing it to be trimmed out of the rolling buffer.
-            has_interrupted = b'Interrupted' in data
+            # Strip ANSI before checking — raw PTY bytes may contain
+            # "Interrupted" inside escape sequences (e.g. hyperlink OSC)
+            # which would cause false positives.
+            stripped_data = self._ANSI_RE.sub(b'', data)
+            has_interrupted = b'Interrupted' in stripped_data
             self._output_buf.extend(data)
             if len(self._output_buf) > 8192:
                 self._output_buf = self._output_buf[-8192:]
             if not has_interrupted:
-                has_interrupted = b'Interrupted' in self._output_buf
+                has_interrupted = b'Interrupted' in self._ANSI_RE.sub(
+                    b'', bytes(self._output_buf),
+                )
             # Log every chunk while running to diagnose detection failures
-            stripped_preview = self._ANSI_RE.sub(b'', data).strip()
+            stripped_preview = stripped_data.strip()
             if stripped_preview:
                 _log.debug(
                     'ON_OUTPUT running chunk len=%d buf_len=%d '
@@ -439,7 +447,7 @@ class ClaudeStateTracker:
             # after user input (Escape key).
             if (
                 self._state == 'has_question'
-                and b'Interrupted' in data
+                and b'Interrupted' in self._ANSI_RE.sub(b'', data)
                 and (now - self._last_input_time) < 3.0
             ):
                 _log.debug(
