@@ -39,6 +39,7 @@ class ParsedProjectUrl:
     scm_type: SCMType
     host_url: str
     project_path: str
+    commit: Optional[str] = None  # Commit SHA if parsed from a commit URL
 
 
 def parse_mr_url(
@@ -273,6 +274,12 @@ def parse_project_url(
     host_url = f"https://{m.group(1)}"
     raw_path = m.group(2).rstrip('/')
 
+    # Check for commit URL: /-/commit/<sha> (GitLab) or /commit/<sha> (GitHub)
+    commit_match = re.search(r'(?:/-)?/commit/([0-9a-fA-F]{7,40})(?:/.*)?$', raw_path)
+    commit_sha = commit_match.group(1) if commit_match else None
+    if commit_match:
+        raw_path = raw_path[:commit_match.start()]
+
     # Strip known path suffixes (e.g. /-/tree/main, /pull/42)
     project_path = _PROJECT_URL_SUFFIXES.sub('', raw_path).rstrip('/')
 
@@ -283,4 +290,5 @@ def parse_project_url(
         scm_type=detect_scm_type(host_url, gitlab_config, github_config),
         host_url=host_url,
         project_path=project_path,
+        commit=commit_sha,
     )

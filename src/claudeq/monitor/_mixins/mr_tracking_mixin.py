@@ -663,7 +663,7 @@ class MRTrackingMixin(_Base):
         while True:
             dlg = QInputDialog(self)
             dlg.setWindowTitle('Add from Git URL')
-            dlg.setLabelText('Git URL (MR/PR URL or project URL):')
+            dlg.setLabelText('Git URL (MR/PR URL, commit URL, or project URL):')
             dlg.setTextValue(prev_url)
             dlg.resize(800, dlg.sizeHint().height())
             ok = dlg.exec_() == QInputDialog.Accepted
@@ -702,10 +702,11 @@ class MRTrackingMixin(_Base):
                 self, 'Invalid URL',
                 'Could not parse the URL.\n\n'
                 'Supported formats:\n'
-                '  MR:  https://gitlab.com/group/project/-/merge_requests/42\n'
-                '  PR:  https://github.com/owner/repo/pull/42\n'
-                '  Git: https://host/group/project\n'
-                '  SSH: git@host:group/project.git',
+                '  MR:     https://gitlab.com/group/project/-/merge_requests/42\n'
+                '  PR:     https://github.com/owner/repo/pull/42\n'
+                '  Commit: https://gitlab.com/group/project/-/commit/abc123\n'
+                '  Git:    https://host/group/project\n'
+                '  SSH:    git@host:group/project.git',
             )
             continue
 
@@ -789,10 +790,13 @@ class MRTrackingMixin(_Base):
                 return
 
         project_name = parsed.project_path.rsplit('/', 1)[-1]
-        tag = self._ask_tag([
+        context_lines = [
             f"Project: {parsed.project_path}",
             f"Host: {parsed.host_url}",
-        ])
+        ]
+        if parsed.commit:
+            context_lines.append(f"Commit: {parsed.commit}")
+        tag = self._ask_tag(context_lines)
         if not tag:
             return
 
@@ -802,11 +806,13 @@ class MRTrackingMixin(_Base):
             'host_url': parsed.host_url,
             'scm_type': scm_type.value,
             'branch': '',
+            'commit': parsed.commit or '',
             'project_path': '',
             'ide': '',
         }
         save_pinned_sessions(self._pinned_sessions)
-        self._show_status(f"Added row '{tag}' from project: {project_name}")
+        commit_suffix = f" @ {parsed.commit[:8]}" if parsed.commit else ""
+        self._show_status(f"Added row '{tag}' from project: {project_name}{commit_suffix}")
 
         self._refresh_and_show_row(tag)
         self._start_server(tag)

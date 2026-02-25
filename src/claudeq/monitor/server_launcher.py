@@ -245,12 +245,57 @@ class ServerLauncher:
             QMessageBox.warning(self._w, 'Clone Failed', clone_err[0] or 'Unknown error.')
             self._cancel_start(tag)
             return
+        commit = pinned.get('commit', '')
+        if not branch and commit:
+            # Commit URL — checkout specific commit after clone
+            self._w._show_status(f"Cloned. Checking out commit {commit[:8]}...")
+            self._server_checkout_commit(tag, pinned, project_dir, commit)
+            return
         if not branch:
             # Project-URL row (no specific branch) — skip force-align
             self._server_finish(tag, pinned, project_dir)
             return
         self._w._show_status(f"Cloned. Checking out branch '{branch}'...")
         self._server_force_align(tag, pinned, project_dir, branch)
+
+    def _server_checkout_commit(
+        self, tag: str, pinned: dict[str, Any], project_dir: Path, commit: str,
+    ) -> None:
+        """Checkout a specific commit SHA after cloning."""
+        checkout_err: list[str] = ['']
+
+        def _checkout() -> None:
+            try:
+                subprocess.run(
+                    ['git', 'checkout', commit],
+                    check=True, capture_output=True, text=True,
+                    cwd=str(project_dir), timeout=30,
+                )
+            except subprocess.CalledProcessError as e:
+                checkout_err[0] = e.stderr or str(e)
+            except Exception as e:
+                checkout_err[0] = str(e)
+
+        w = BackgroundCallWorker(_checkout, self._w)
+        w.finished.connect(lambda: self._on_server_commit_checked_out(
+            tag, pinned, project_dir, commit, checkout_err,
+        ))
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _on_server_commit_checked_out(
+        self, tag: str, pinned: dict[str, Any], project_dir: Path,
+        commit: str, checkout_err: list,
+    ) -> None:
+        """Handle commit checkout completion."""
+        if checkout_err[0]:
+            QMessageBox.warning(
+                self._w, 'Checkout Failed',
+                f"Could not checkout commit {commit[:8]}:\n{checkout_err[0]}",
+            )
+            self._cancel_start(tag)
+            return
+        self._server_finish(tag, pinned, project_dir)
 
     def _server_force_align(
         self, tag: str, pinned: dict[str, Any], project_dir: Path, branch: str,
