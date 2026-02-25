@@ -177,9 +177,13 @@ class TooltipApp(QApplication):
             ancestor = ancestor.parent()
         if table_view is not None:
             viewport = table_view.viewport()
-            if sip.isdeleted(viewport) or sip.isdeleted(widget):
+            if sip.isdeleted(viewport):
                 return True
-            pos = widget.mapTo(viewport, event.pos())
+            # Use globalPos → viewport mapping instead of
+            # widget.mapTo(viewport) — avoids walking the widget
+            # hierarchy which can segfault when a cell widget is
+            # partially destroyed during a table rebuild.
+            pos = viewport.mapFromGlobal(event.globalPos())
             index = table_view.indexAt(pos)
             if index.isValid():
                 display = index.data(Qt.DisplayRole)
@@ -188,12 +192,14 @@ class TooltipApp(QApplication):
                     # Only show if the text is actually truncated.
                     # Use the widget's own width (not the full cell)
                     # since cell widgets share space with buttons.
+                    if sip.isdeleted(widget):
+                        return True
                     fm = widget.fontMetrics()
                     text_w = fm.horizontalAdvance(tip)
                     if text_w > widget.width():
                         from PyQt5.QtWidgets import QToolTip as _QToolTip
                         _QToolTip.showText(
-                            event.globalPos(), tip, widget,
+                            event.globalPos(), tip, viewport,
                             table_view.visualRect(index),
                             2_147_483_647,
                         )
