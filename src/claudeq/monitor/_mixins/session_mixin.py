@@ -114,6 +114,7 @@ class SessionMixin(_Base):
                 merged.append({
                     'tag': tag,
                     'queue_size': 0,
+                    'auto_send_mode': pin.get('auto_send_mode', 'pause'),
                     'project': project_name,
                     'branch': pinned_branch,
                     'mr_branch': pinned_branch if pin.get('remote_project_path') else None,

@@ -247,9 +247,40 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_PATH, 'N/A')
                     self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
-                    self._set_cell_text(row, self.COL_QUEUE, 'N/A')
-                    # Remove any queue widget from a previous live state
-                    self.table.removeCellWidget(row, self.COL_QUEUE)
+
+                    # Queue N/A with menu button
+                    dead_q_state = ('dead', session.get('auto_send_mode', 'pause'))
+                    if not self._cell_cached(tag, 'queue', dead_q_state,
+                                             row, self.COL_QUEUE):
+                        dq_container = QWidget()
+                        dq_layout = QHBoxLayout(dq_container)
+                        dq_layout.setContentsMargins(0, 0, 0, 0)
+                        dq_layout.setSpacing(2)
+
+                        dq_menu_btn = QPushButton('\u25be')
+                        dq_menu_btn.setFixedSize(
+                            24, dq_menu_btn.sizeHint().height())
+                        dq_menu_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                        dq_menu_btn.setToolTip('Queue options')
+                        dq_menu_btn.clicked.connect(
+                            lambda checked, btn=dq_menu_btn, t=tag:
+                                self._show_queue_context_menu(
+                                    btn, btn.rect().bottomLeft(), t)
+                        )
+                        dq_layout.addWidget(
+                            dq_menu_btn, 0, Qt.AlignVCenter)
+
+                        dq_label = QLabel('N/A')
+                        dq_label.setAlignment(Qt.AlignCenter)
+                        dq_layout.addWidget(dq_label, 1)
+
+                        item = self.table.item(row, self.COL_QUEUE)
+                        if item:
+                            item.setText('')
+                        self._set_cell_widget(
+                            row, self.COL_QUEUE, dq_container)
+                        self._cache_cell(tag, 'queue', dead_q_state,
+                                         row, self.COL_QUEUE)
                 else:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
                     live_path = session.get('project_path', '') or ''
@@ -283,24 +314,47 @@ class TableBuilderMixin(_Base):
                         if explanation and item:
                             item.setToolTip(explanation)
 
-                    # Queue column with right-click context menu
+                    # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', 'pause')
                     queue_size = session['queue_size']
                     q_state = (queue_size, auto_send_mode)
                     if not self._cell_cached(tag, 'queue', q_state,
                                              row, self.COL_QUEUE):
+                        q_container = QWidget()
+                        q_layout = QHBoxLayout(q_container)
+                        q_layout.setContentsMargins(0, 0, 0, 0)
+                        q_layout.setSpacing(2)
+
+                        q_menu_btn = QPushButton('\u25be')
+                        q_menu_btn.setFixedSize(
+                            24, q_menu_btn.sizeHint().height())
+                        q_menu_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                        q_menu_btn.setToolTip('Queue options')
+                        q_menu_btn.clicked.connect(
+                            lambda checked, btn=q_menu_btn, t=tag:
+                                self._show_queue_context_menu(
+                                    btn, btn.rect().bottomLeft(), t)
+                        )
+                        q_layout.addWidget(
+                            q_menu_btn, 0, Qt.AlignVCenter)
+
                         q_label = QLabel(str(queue_size))
                         q_label.setAlignment(Qt.AlignCenter)
+                        q_layout.addWidget(q_label, 1)
+
+                        # Keep right-click on the label too
                         q_label.setContextMenuPolicy(Qt.CustomContextMenu)
                         q_label.customContextMenuRequested.connect(
                             lambda pos, lbl=q_label, t=tag:
                                 self._show_queue_context_menu(lbl, pos, t)
                         )
+
                         # Clear underlying item text
                         item = self.table.item(row, self.COL_QUEUE)
                         if item:
                             item.setText('')
-                        self._set_cell_widget(row, self.COL_QUEUE, q_label)
+                        self._set_cell_widget(
+                            row, self.COL_QUEUE, q_container)
                         self._cache_cell(tag, 'queue', q_state,
                                          row, self.COL_QUEUE)
 
@@ -828,27 +882,36 @@ class TableBuilderMixin(_Base):
         )
 
         menu.exec_(label.mapToGlobal(pos))
+        # Clear stuck hover state after menu closes
+        if not sip.isdeleted(label):
+            label.setAttribute(Qt.WA_UnderMouse, False)
+            label.update()
 
     def _set_auto_send_mode(self, tag: str, mode: str) -> None:
         """Send set_auto_send_mode to the CQ server."""
         from claudeq.utils.constants import SOCKET_DIR
+        from claudeq.monitor.mr_tracking.config import save_pinned_sessions
 
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'set_auto_send_mode', 'mode': mode},
         )
+        # Update local session data immediately so the next menu
+        # open (before the background refresh) shows the new mode.
+        for s in self.sessions:
+            if s['tag'] == tag:
+                s['auto_send_mode'] = mode
+                break
+        # Persist in pinned sessions so dead rows survive refresh cycles
+        if tag in self._pinned_sessions:
+            self._pinned_sessions[tag]['auto_send_mode'] = mode
+            save_pinned_sessions(self._pinned_sessions)
+        # Invalidate cache so next refresh rebuilds with new mode
+        self._cell_cache.pop((tag, 'queue'), None)
         if response and response.get('status') == 'ok':
-            # Update local session data immediately so the next menu
-            # open (before the background refresh) shows the new mode.
-            for s in self.sessions:
-                if s['tag'] == tag:
-                    s['auto_send_mode'] = mode
-                    break
-            # Invalidate cache so next refresh rebuilds with new mode
-            self._cell_cache.pop((tag, 'queue'), None)
             self._show_status(f'Auto-send mode: {mode}')
         else:
-            self._show_status(f'Failed to set auto-send mode for {tag}')
+            self._show_status(f'Auto-send mode: {mode} (server offline)')
 
     def _force_send_next(self, tag: str) -> None:
         """Force-send the next queued message to the CQ server."""

@@ -87,10 +87,12 @@ class ClaudeQServer:
         self.metadata = SessionMetadata(tag, SOCKET_DIR)
         self.socket_handler = SocketHandler(self.socket_path, self._handle_message)
 
-        # State tracking
+        # State tracking — per-session pinned mode overrides global default
+        global_mode = load_settings().get('auto_send_mode', 'pause')
+        pinned_mode = self._load_pinned_auto_send_mode(tag, global_mode)
         self.state = ClaudeStateTracker(
             signal_file=SOCKET_DIR / f"{tag}.signal",
-            auto_send_mode=load_settings().get('auto_send_mode', 'pause'),
+            auto_send_mode=pinned_mode,
         )
         self.output_capture = OutputCapture(tag)
         self.pending_notifications: list[str] = []
@@ -109,6 +111,37 @@ class ClaudeQServer:
 
         # Register cleanup
         atexit.register(self.cleanup)
+
+    @staticmethod
+    def _load_pinned_auto_send_mode(tag: str, default: str) -> str:
+        """Read auto_send_mode from pinned sessions if set for this tag."""
+        import json
+        pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        try:
+            if pinned_file.exists():
+                with open(pinned_file, 'r') as f:
+                    pinned = json.load(f)
+                entry = pinned.get(tag, {})
+                return entry.get('auto_send_mode', default)
+        except (json.JSONDecodeError, OSError):
+            pass
+        return default
+
+    @staticmethod
+    def _save_pinned_auto_send_mode(tag: str, mode: str) -> None:
+        """Persist auto_send_mode in pinned sessions for this tag."""
+        import json
+        pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        try:
+            if pinned_file.exists():
+                with open(pinned_file, 'r') as f:
+                    pinned = json.load(f)
+                if tag in pinned:
+                    pinned[tag]['auto_send_mode'] = mode
+                    with open(pinned_file, 'w') as f:
+                        json.dump(pinned, f, indent=2)
+        except (json.JSONDecodeError, OSError):
+            pass
 
     def _handle_message(self, msg: dict[str, Any]) -> dict[str, Any]:
         """
@@ -269,6 +302,7 @@ class ClaudeQServer:
             settings = load_settings()
             settings['auto_send_mode'] = mode
             save_settings(settings)
+            self._save_pinned_auto_send_mode(self.tag, mode)
             return {'status': 'ok', 'auto_send_mode': mode}
 
         elif msg_type == 'shutdown':
