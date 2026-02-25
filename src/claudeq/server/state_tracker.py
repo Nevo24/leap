@@ -433,6 +433,22 @@ class ClaudeStateTracker:
         # Require user input AFTER entering the waiting state — prevents
         # TUI status bar rendering from falsely triggering resume.
         elif self._state in ('needs_permission', 'has_question', 'interrupted'):
+            # Notification hook for the interrupt dialog may race ahead
+            # and set has_question before PTY "Interrupted" output arrives.
+            # Override to interrupted if we see it in fresh output shortly
+            # after user input (Escape key).
+            if (
+                self._state == 'has_question'
+                and b'Interrupted' in data
+                and (now - self._last_input_time) < 3.0
+            ):
+                _log.debug(
+                    'ON_OUTPUT has_question→interrupted '
+                    '(Interrupted in output, Escape race)',
+                )
+                with self._lock:
+                    self._state = 'interrupted'
+                    self._waiting_since = now
             self._output_buf.clear()
             # Continue accumulating prompt output for Slack rendering.
             # The dialog may still be rendering after the state transition.

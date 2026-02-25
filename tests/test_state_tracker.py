@@ -937,3 +937,27 @@ class TestInterruptedState:
         t[0] = 7.0
         write_signal(tracker, 'has_question')
         assert tracker.get_state(pty_alive=True) == 'has_question'
+
+    def test_has_question_corrected_to_interrupted_by_pty_output(
+        self, tmp_path: Path,
+    ) -> None:
+        """Race: Stop hook → idle, Notification hook → has_question, then PTY
+        output with 'Interrupted' arrives.  The on_output handler should
+        correct has_question back to interrupted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Stop hook races ahead, writes idle
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Notification hook writes has_question (interrupt dialog)
+        t[0] = 1.1
+        write_signal(tracker, 'has_question')
+        assert tracker.get_state(pty_alive=True) == 'has_question'
+        # Simulate Escape keypress just before
+        tracker._last_input_time = 0.9
+        # PTY output with "Interrupted" arrives
+        t[0] = 1.2
+        tracker.on_output(b'Interrupted \xc2\xb7 What should Claude do instead?')
+        assert tracker.current_state == 'interrupted'

@@ -274,6 +274,10 @@ class TableBuilderMixin(_Base):
                         dq_label.setAlignment(Qt.AlignCenter)
                         dq_layout.addWidget(dq_label, 1)
 
+                        dq_spacer = QWidget()
+                        dq_spacer.setFixedWidth(24)
+                        dq_layout.addWidget(dq_spacer, 0)
+
                         item = self.table.item(row, self.COL_QUEUE)
                         if item:
                             item.setText('')
@@ -341,6 +345,10 @@ class TableBuilderMixin(_Base):
                         q_label = QLabel(str(queue_size))
                         q_label.setAlignment(Qt.AlignCenter)
                         q_layout.addWidget(q_label, 1)
+
+                        q_spacer = QWidget()
+                        q_spacer.setFixedWidth(24)
+                        q_layout.addWidget(q_spacer, 0)
 
                         # Keep right-click on the label too
                         q_label.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -618,6 +626,10 @@ class TableBuilderMixin(_Base):
                         mr_layout.addWidget(approval_label)
                         mr_layout.addWidget(mr_widget)
                         mr_layout.addStretch()
+
+                        mr_spacer = QWidget()
+                        mr_spacer.setFixedWidth(24)
+                        mr_layout.addWidget(mr_spacer, 0)
 
                         self._set_cell_widget(row, self.COL_MR,
                                               mr_container)
