@@ -230,7 +230,10 @@ class PulsingLabel(QLabel):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._mr_url and event.button() == Qt.LeftButton:
-            self._show_context_menu(event.pos())
+            if self._has_unresponded:
+                self._show_context_menu(event.pos())
+            else:
+                webbrowser.open(self._mr_url)
 
     def _show_context_menu(self, pos) -> None:
         """Show context menu on the MR status label (left click)."""
