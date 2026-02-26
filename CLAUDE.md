@@ -287,7 +287,9 @@ make install-slack-app # Install Slack integration + setup wizard
 make run-monitor       # Run monitor from source (no build needed)
 make update            # Update to latest version (git pull + rebuild)
 make update-deps       # Update Python dependencies only
-make uninstall         # Full cleanup
+make uninstall         # Full cleanup (calls uninstall-monitor + uninstall-slack-app)
+make uninstall-monitor   # Remove Monitor app only
+make uninstall-slack-app # Remove Slack integration only
 make clean             # Remove build artifacts
 ```
 
