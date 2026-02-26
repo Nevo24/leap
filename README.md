@@ -1,13 +1,16 @@
 # ClaudeQ
 
-**Multi-session Claude Code with message queueing and image support - works perfectly in IntelliJ and VS Code with native scrolling!**
+**Multi-session Claude Code with message queueing and image support — works perfectly in IntelliJ and VS Code with native scrolling!**
 
 Queue multiple prompts with images in one terminal while Claude works in another. Auto-sends queued messages when ready for a seamless workflow.
 
-## ✨ Key Features
+## Key Features
 
-- 📝 **Smart message queueing** - Auto-sends when Claude is ready
-- 🖥️ **Real-time GUI queue monitoring** - See messages being processed + Jump to sessions across IDEs and projects
+- **Smart message queueing** — Auto-sends when Claude is ready
+- **Real-time GUI monitoring** — See all sessions, jump across IDEs and projects
+- **MR/PR tracking** — GitLab & GitHub thread detection with `/cq` command support
+- **Slack integration** — Bidirectional messaging between Slack and CQ sessions
+- **Image support** — Paste clipboard images directly into messages
 
 ## How It Works
 
@@ -28,7 +31,7 @@ The same command auto-detects whether to start a server or connect as a client b
 
 ## Installation
 
-### Core Installation
+**Prerequisites:** Python 3.8+, Node.js, macOS
 
 ```bash
 # 1. Install Claude CLI (required)
@@ -43,46 +46,37 @@ make install
 source ~/.zshrc  # or ~/.bashrc for bash
 ```
 
-### Monitor GUI (Optional)
+`make install` installs the core system and then **prompts you** to optionally install:
+- **Monitor GUI** — native macOS app for session management (default: Yes)
+- **Slack Integration** — bidirectional Slack ↔ CQ messaging (default: No)
 
-The monitor is a native macOS app that shows all active sessions and lets you jump to them.
+You can install or uninstall these components individually at any time:
 
 ```bash
-make install-monitor
+make install-monitor       # Install Monitor GUI
+make uninstall-monitor     # Remove Monitor GUI
+
+make install-slack-app     # Install Slack integration
+make uninstall-slack-app   # Remove Slack integration
 ```
 
-This will:
-- Build the app with py2app (PyQt5)
-- Install to `/Applications/ClaudeQ Monitor.app`
-- Launch from Spotlight, Applications folder, or pin to Dock
-
-**Requirements:**
-- Python 3.8+
-- Poetry (auto-installed by Makefile)
-- Node.js and Claude CLI
-- macOS (for clipboard image support)
-
 ## Updating
-
-Keep ClaudeQ up to date with the latest features and fixes:
 
 ```bash
 make update
 ```
 
-**Note:** You must run `make install` first before using `make update`. If ClaudeQ isn't installed, you'll see an error message.
-
 This will:
+- Check for uncommitted changes (working tree must be clean)
+- Warn about unpushed local commits
 - Pull the latest code from git
-- Update all Python dependencies
-- Rebuild the monitor app (if installed)
-- Update IDE configurations (VS Code & JetBrains)
-- Optionally update shell configuration (prompts you first)
+- Update core dependencies
+- Auto-detect and update installed components (Monitor, Slack)
+- Update IDE and Claude Code hook configurations
+- Optionally update shell configuration (prompts first)
 - **Preserve all your data** (queues, history, settings in `.storage/`)
 
-**Note:** If you have uncommitted changes or merge conflicts, git pull will fail gracefully. Resolve conflicts and run `make update` again.
-
-### Update Options
+**Note:** `make update` requires a prior `make install`. If you have uncommitted changes, commit or stash them first.
 
 ```bash
 make update          # Full update (recommended)
@@ -130,47 +124,36 @@ All commands are **case-insensitive**.
 
 | Command | Description |
 |---------|-------------|
-| 📖 `!h` or `!help` | Show help |
-| 💬 `message` | Queue message (auto-sends) |
-| 📤 `!d <msg>` or `!direct <msg>` | Send directly (bypass queue) |
-| 📋 `!l` or `!list` | Show queue |
-| 📝 `!e <index>` or `!edit <index>` | Edit queued message by index |
-| 🧹 `!c` or `!clear` | Clear queue |
-| 🔥 `!f` or `!force` | Force-send next queued message |
-| 👋 `!x` or `!quit` (`Ctrl+D`) | Exit client |
+| `!h` or `!help` | Show help |
+| `message` | Queue message (auto-sends) |
+| `!d <msg>` or `!direct <msg>` | Send directly (bypass queue) |
+| `!l` or `!list` | Show queue |
+| `!e <index>` or `!edit <index>` | Edit queued message by index |
+| `!c` or `!clear` | Clear queue |
+| `!f` or `!force` | Force-send next queued message |
+| `!autosend pause/always` or `!as` | Toggle auto-send mode |
+| `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
+| `!slack on/off` | Toggle Slack for this session |
+| `Ctrl+V` | Paste clipboard image |
+| `!x` or `!quit` (`Ctrl+D`) | Exit client |
 
-**Additional:**
-| Command | Description |
-|---------|-------------|
-| 🖼 `Ctrl+V` | Paste clipboard image as `[Image #N]` |
-| 🤖 `!autosend pause/always` or `!as` | Toggle auto-send mode |
-| 🔔 `!auto-sent on/off` or `!asm on/off` | Toggle auto-sent notifications |
-| 📱 `!slack on/off` | Toggle Slack for this session (requires `make install-slack-app`) |
-
-### 💡 IDE Configuration
+### IDE Configuration
 
 **Terminal tab naming is automatically configured during installation!**
 
-**JetBrains IDEs:** Automatically configured by `make install` ✅
+**JetBrains IDEs:** Automatically configured by `make install`
 - Sets **Terminal Engine** to **Classic**
 - Enables **Show application title** in Advanced Settings
 - Configures all installed JetBrains IDEs (IntelliJ, PyCharm, GoLand, WebStorm, etc.)
 - **Restart your JetBrains IDEs** for changes to take effect
 
-**VS Code:** Automatically configured by `make install` ✅
+**VS Code:** Automatically configured by `make install`
 - Installs `code` CLI command
 - Adds `terminal.integrated.tabs.title` setting to settings.json
 - Installs the "ClaudeQ Terminal Selector" extension
 - Restart VS Code if it was already open
 
 ## Monitor GUI
-
-Launch the GUI monitor to view all active sessions and quickly jump to them.
-
-After running `make install-monitor`, launch from:
-- Spotlight: Search "ClaudeQ Monitor"
-- Applications folder: Double-click `ClaudeQ Monitor.app`
-- Dock: Pin the app for quick access
 
 ![ClaudeQ Monitor](assets/claudeq-monitor.png)
 
@@ -184,6 +167,7 @@ The monitor shows:
 - `/cq` command support — comment `/cq` on an MR thread to auto-send it to a CQ session
 - Dock badge notifications when sessions finish processing or MR status changes
 - **macOS banner notifications** — opt-in banners for MR changes, approvals, and session completions (requires enabling in macOS System Settings > Notifications > ClaudeQ Monitor)
+- **Presets** — configure MR thread context and message bundle templates
 - **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, notifications, and clean up unused repos
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2, Warp
@@ -194,7 +178,7 @@ The monitor shows:
 - **Terminal.app/iTerm2**: Jumps to specific tab automatically
 - **Warp**: Jumps to specific tab automatically (requires Accessibility permission — grant in System Settings > Privacy & Security > Accessibility)
 
-## Slack Integration (Optional)
+## Slack Integration
 
 Enable bidirectional communication between Slack and CQ sessions. Claude's output is posted to your Slack DM, and you can reply from Slack to send messages back.
 
@@ -252,7 +236,7 @@ You: [Image #1] What's wrong with this screenshot?
 
 ### Scrolling in IntelliJ
 
-**Native mouse scrolling works automatically!** 🖱️
+**Native mouse scrolling works automatically!**
 
 The PTY architecture ensures IntelliJ's native scrolling works perfectly without any special configuration.
 
@@ -264,23 +248,17 @@ ClaudeQ automatically sets terminal tab titles to help you identify sessions:
 
 #### JetBrains IDEs (IntelliJ, PyCharm, WebStorm, etc.)
 
-✅ **Automatically configured during installation!**
-
-The `make install` command automatically configures these settings for all installed JetBrains IDEs:
+Automatically configured during installation. The `make install` command configures:
 1. **Terminal Engine**: Set to **"Classic"**
 2. **Show application title**: Enabled in Advanced Settings
 
 **After installation, restart your JetBrains IDEs** for the changes to take effect.
 
-💡 *These settings enable automatic terminal tab naming and allow ClaudeQ Monitor to track and navigate to your sessions correctly!*
-
 Supports JetBrains 2024.2+ and newer versions.
 
 #### VS Code
 
-✅ **Automatically configured during installation!**
-
-When you run `make install`, ClaudeQ will:
+Automatically configured during installation. `make install` will:
 1. Install the `code` CLI command (creates symlink to `/usr/local/bin/code`)
 2. Update your VS Code settings.json with: `"terminal.integrated.tabs.title": "${sequence}"`
 3. Install the "ClaudeQ Terminal Selector" extension (enables automatic tab switching)
@@ -295,8 +273,6 @@ When you run `make install`, ClaudeQ will:
 **Requirements:**
 - Node.js and npm (for extension packaging)
 - VS Code installed in `/Applications`
-
-💡 *Tip: The extension runs silently in the background watching for terminal selection requests from the monitor!*
 
 ### Stale Socket
 
@@ -341,8 +317,6 @@ cq-cleanup         # Remove dead sessions (or: cqc)
 cq --slack         # Start Slack bot daemon
 ```
 
-For installation and maintenance commands, see [Make Commands Reference](#make-commands-reference) above.
-
 ## Technical Details
 
 ### Files
@@ -363,69 +337,30 @@ Images are sent to Claude CLI using the `@path` syntax with a required trailing 
 
 ## Make Commands Reference
 
-All available Make commands for managing ClaudeQ:
-
 ### Installation & Updates
 
-| Command | Description | When to Use |
-|---------|-------------|-------------|
-| `make install` | Install ClaudeQ core | First-time setup after cloning |
-| `make install-monitor` | Build and install monitor GUI | Add GUI app after core install |
-| `make install-slack-app` | Install Slack integration | Add Slack bidirectional messaging |
-| `make update` | Update to latest version | Pull new code + rebuild everything |
-| `make update-deps` | Update Python packages only | Update dependencies without git pull |
+| Command | Description |
+|---------|-------------|
+| `make install` | Full install (core + prompts for Monitor & Slack) |
+| `make install-monitor` | Install Monitor GUI separately |
+| `make install-slack-app` | Install Slack integration separately |
+| `make update` | Pull latest code + update all installed components |
+| `make update-deps` | Update Python packages only (no git pull) |
 
 ### Development & Testing
 
-| Command | Description | When to Use |
-|---------|-------------|-------------|
-| `make run-monitor` | Run monitor from source | Quick testing during development (no .app build needed) |
+| Command | Description |
+|---------|-------------|
+| `make run-monitor` | Run monitor from source (no .app build needed) |
 
 ### Cleanup
 
-| Command | Description | When to Use |
-|---------|-------------|-------------|
-| `make uninstall-monitor` | Remove monitor app only | Keep core, remove GUI |
-| `make uninstall` | Remove everything | Complete uninstallation |
-| `make clean` | Clean build artifacts | Free up disk space, clear caches |
-
-### Command Details
-
-**`make install`**
-- Installs core dependencies via Poetry
-- Adds shell configuration (`cq` alias) to ~/.zshrc or ~/.bashrc
-- Configures VS Code and JetBrains IDEs
-- Creates `.storage/` directory
-- **Does NOT pull git code** (assumes fresh clone)
-
-**`make install-monitor`**
-- Installs monitor dependencies (PyQt5)
-- Builds native macOS app with py2app
-- Installs to `/Applications/ClaudeQ Monitor.app`
-- Requires `make install` to be run first
-
-**`make update`**
-- Pulls latest code from git
-- Updates all dependencies
-- Rebuilds monitor if installed
-- Updates IDE configurations
-- Optionally updates shell config (prompts first)
-- **Preserves all data** in `.storage/`
-- **Requires prior `make install`**
-
-**`make run-monitor`**
-- Runs monitor directly from Python source
-- No app build required (instant startup)
-- Perfect for development - make changes and immediately test
-- Uses: `poetry run python -c "from claudeq.monitor.app import main; main()"`
-
-**`make uninstall`**
-- Prompts before removing shell configuration
-- Removes Poetry virtual environment
-- Removes monitor app from `/Applications`
-- Cleans all data in `.storage/`
-- Attempts to remove VS Code configuration
-- Creates backup of shell config before removing
+| Command | Description |
+|---------|-------------|
+| `make uninstall` | Remove everything |
+| `make uninstall-monitor` | Remove Monitor app only |
+| `make uninstall-slack-app` | Remove Slack integration only |
+| `make clean` | Clean build artifacts and data |
 
 ## License
 
