@@ -96,7 +96,13 @@ class TooltipApp(QApplication):
                 return True
             self._in_tooltip = True
             try:
-                return self._handle_tooltip(obj, event)
+                handled = self._handle_tooltip(obj, event)
+                if handled:
+                    return True
+                # Not handled by us — let Qt dispatch normally
+                # (needed for e.g. QMenu action tooltips via
+                # setToolTipsVisible).
+                return super().notify(obj, event)
             except RuntimeError:
                 return True
             finally:
