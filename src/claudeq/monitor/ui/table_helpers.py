@@ -41,7 +41,7 @@ MAX_COMBO_DISPLAY = 40
 
 # Reusable stylesheet constants for cell buttons
 CLOSE_BTN_STYLE = (
-    'QPushButton { color: #999; font-size: 11px; padding: 0; }'
+    'QPushButton { color: #999; font-size: 11px; padding: 0 0 2px 0; }'
     'QPushButton:hover { color: #ff4444; font-weight: bold; }'
 )
 ACTIVE_BTN_STYLE = (

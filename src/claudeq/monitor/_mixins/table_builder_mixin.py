@@ -277,7 +277,7 @@ class TableBuilderMixin(_Base):
                         dq_label.setAlignment(Qt.AlignCenter)
                         dq_layout.addWidget(dq_label, 1)
 
-                        dq_action_btn = QPushButton('\u25b8')
+                        dq_action_btn = QPushButton('\u25b6')
                         dq_action_btn.setFixedSize(
                             24, dq_action_btn.sizeHint().height())
                         dq_action_btn.setStyleSheet(CLOSE_BTN_STYLE)
@@ -354,11 +354,11 @@ class TableBuilderMixin(_Base):
                         q_label.setAlignment(Qt.AlignCenter)
                         q_layout.addWidget(q_label, 1)
 
-                        q_action_btn = QPushButton('\u25b8')
+                        q_action_btn = QPushButton('\u25b6')
                         q_action_btn.setFixedSize(
                             24, q_action_btn.sizeHint().height())
                         q_action_btn.setStyleSheet(
-                            'QPushButton { color: #00ff00; font-size: 11px; padding: 0; }'
+                            'QPushButton { color: #00ff00; font-size: 11px; padding: 0 0 2px 0; }'
                             'QPushButton:hover { color: #00cc00; font-weight: bold; }'
                         )
                         q_action_btn.setToolTip('Send options')
@@ -896,12 +896,12 @@ class TableBuilderMixin(_Base):
 
         menu.addSeparator()
 
-        msg_next_action = menu.addAction('Send message next\u2026')
+        msg_next_action = menu.addAction('Send message next')
         msg_next_action.triggered.connect(
             lambda _checked, t=tag: self._send_immediate_message(t, at_end=False)
         )
 
-        msg_end_action = menu.addAction('Send message to end\u2026')
+        msg_end_action = menu.addAction('Send message to end')
         msg_end_action.triggered.connect(
             lambda _checked, t=tag: self._send_immediate_message(t, at_end=True)
         )
