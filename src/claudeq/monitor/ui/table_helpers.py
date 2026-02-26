@@ -24,14 +24,14 @@ MR_TEMPLATE_HINT = (
 )
 
 QUICK_MSG_TEMPLATE_LABEL = 'Message bundle:'
-QUICK_MSG_TEMPLATE_TOOLTIP = 'Preset messages sent via right-click on Server button'
+QUICK_MSG_TEMPLATE_TOOLTIP = 'Preset messages sent via Queue column send button'
 QUICK_MSG_TEMPLATE_HINT = (
     'Message bundle: These preset messages are sent as standalone messages '
-    '(via right-click on Server button).'
+    '(via the send button in the Queue column).'
 )
 
-QUICK_MSG_SEND_NEXT = 'Send bundle next'
-QUICK_MSG_SEND_AT_END = 'Send bundle at end'
+QUICK_MSG_SEND_NEXT = 'Send message-bundle next'
+QUICK_MSG_SEND_AT_END = 'Send message-bundle to end'
 
 APPLY_MR_BTN = 'Apply to MR Context && Close'
 APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'

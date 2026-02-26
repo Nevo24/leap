@@ -953,15 +953,16 @@ class TestCleanup:
 # ---------------------------------------------------------------------------
 
 class TestInterruptedState:
-    def test_interrupted_auto_sends_in_pause_mode(self, tmp_path: Path) -> None:
-        """Interrupted state should auto-send even in pause mode."""
+    def test_interrupted_blocks_auto_send(self, tmp_path: Path) -> None:
+        """Interrupted state should block auto-send regardless of mode."""
         t = [0.0]
-        tracker = make_tracker(tmp_path, t, auto_send_mode='pause')
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'interrupted'
-        assert tracker.is_ready(pty_alive=True)
+        for mode in ('pause', 'always'):
+            tracker = make_tracker(tmp_path, t, auto_send_mode=mode)
+            tracker.on_send()
+            t[0] = 1.0
+            tracker.on_output(b'some text Interrupted more text')
+            assert tracker.current_state == 'interrupted'
+            assert not tracker.is_ready(pty_alive=True)
 
     def test_interrupted_protected_from_has_question_signal(self, tmp_path: Path) -> None:
         """Notification hook fires has_question for the interrupt dialog —

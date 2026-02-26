@@ -212,6 +212,7 @@ class ClaudeStateTracker:
 
         In 'pause' mode: only send when Claude is idle.
         In 'always' mode: send whenever Claude is not running.
+        Interrupted always blocks regardless of mode.
 
         Args:
             pty_alive: Whether the PTY child process is still running.
@@ -220,10 +221,12 @@ class ClaudeStateTracker:
             True if the auto-sender should send the next queued message.
         """
         state = self.get_state(pty_alive)
+        if state == 'interrupted':
+            return False
         if self._auto_send_mode == 'always':
             return state != 'running'
-        # 'pause' mode (default): also auto-send on interrupted
-        return state in ('idle', 'interrupted')
+        # 'pause' mode (default): only send when idle
+        return state == 'idle'
 
     def on_input(self, data: bytes) -> None:
         """Called when the user types in the server terminal.

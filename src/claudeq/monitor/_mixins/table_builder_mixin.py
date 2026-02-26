@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Callable
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QHBoxLayout, QLabel, QMenu,
-    QMessageBox, QPushButton, QTableWidgetItem, QWidget,
+    QAction, QApplication, QComboBox, QHBoxLayout, QInputDialog, QLabel,
+    QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
@@ -277,9 +277,14 @@ class TableBuilderMixin(_Base):
                         dq_label.setAlignment(Qt.AlignCenter)
                         dq_layout.addWidget(dq_label, 1)
 
-                        dq_spacer = QWidget()
-                        dq_spacer.setFixedWidth(24)
-                        dq_layout.addWidget(dq_spacer, 0)
+                        dq_action_btn = QPushButton('\u25b8')
+                        dq_action_btn.setFixedSize(
+                            24, dq_action_btn.sizeHint().height())
+                        dq_action_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                        dq_action_btn.setEnabled(False)
+                        dq_action_btn.setToolTip('Send options (server offline)')
+                        dq_layout.addWidget(
+                            dq_action_btn, 0, Qt.AlignVCenter)
 
                         item = self.table.item(row, self.COL_QUEUE)
                         if item:
@@ -349,16 +354,21 @@ class TableBuilderMixin(_Base):
                         q_label.setAlignment(Qt.AlignCenter)
                         q_layout.addWidget(q_label, 1)
 
-                        q_spacer = QWidget()
-                        q_spacer.setFixedWidth(24)
-                        q_layout.addWidget(q_spacer, 0)
-
-                        # Keep right-click on the label too
-                        q_label.setContextMenuPolicy(Qt.CustomContextMenu)
-                        q_label.customContextMenuRequested.connect(
-                            lambda pos, lbl=q_label, t=tag:
-                                self._show_queue_context_menu(lbl, pos, t)
+                        q_action_btn = QPushButton('\u25b8')
+                        q_action_btn.setFixedSize(
+                            24, q_action_btn.sizeHint().height())
+                        q_action_btn.setStyleSheet(
+                            'QPushButton { color: #00ff00; font-size: 11px; padding: 0; }'
+                            'QPushButton:hover { color: #00cc00; font-weight: bold; }'
                         )
+                        q_action_btn.setToolTip('Send options')
+                        q_action_btn.clicked.connect(
+                            lambda checked, btn=q_action_btn, t=tag:
+                                self._show_queue_action_menu(
+                                    btn, btn.rect().bottomLeft(), t)
+                        )
+                        q_layout.addWidget(
+                            q_action_btn, 0, Qt.AlignVCenter)
 
                         # Clear underlying item text
                         item = self.table.item(row, self.COL_QUEUE)
@@ -432,11 +442,6 @@ class TableBuilderMixin(_Base):
                             lambda checked, t=tag:
                                 self._focus_session(t, 'server')
                         )
-                    server_btn.setContextMenuPolicy(Qt.CustomContextMenu)
-                    server_btn.customContextMenuRequested.connect(
-                        lambda pos, btn=server_btn, t=tag, dead=is_dead:
-                            self._show_server_context_menu(btn, pos, t, dead)
-                    )
                     server_layout.addWidget(server_btn)
                     self._set_cell_widget(row, self.COL_SERVER,
                                           server_container)
@@ -832,55 +837,17 @@ class TableBuilderMixin(_Base):
             self._apply_tooltips_setting()
             self._show_status('Settings saved')
 
-    def _show_server_context_menu(
-        self, btn: QPushButton, pos: 'QPoint', tag: str, is_dead: bool,
-    ) -> None:
-        """Show right-click context menu on the Server button."""
-        menu = QMenu(self)
-
-        next_action = QAction(QUICK_MSG_SEND_NEXT, self)
-        if is_dead:
-            next_action.setEnabled(False)
-        else:
-            next_action.triggered.connect(
-                lambda: self._quick_send_next(tag)
-            )
-        menu.addAction(next_action)
-
-        end_action = QAction(QUICK_MSG_SEND_AT_END, self)
-        if is_dead:
-            end_action.setEnabled(False)
-        else:
-            end_action.triggered.connect(
-                lambda: self._quick_send_at_end(tag)
-            )
-        menu.addAction(end_action)
-
-        menu.exec_(btn.mapToGlobal(pos))
-
     def _show_queue_context_menu(
         self, label: QLabel, pos: 'QPoint', tag: str,
     ) -> None:
-        """Show right-click context menu on the Queue column label."""
-        # Read live session data so the checkmark and force-send state
-        # are always accurate.
+        """Show context menu on the Queue column left button."""
         current_mode = 'pause'
-        queue_size = 0
         for s in self.sessions:
             if s['tag'] == tag:
                 current_mode = s.get('auto_send_mode', 'pause')
-                queue_size = s.get('queue_size', 0)
                 break
 
         menu = QMenu(self)
-
-        force_action = menu.addAction('Force-send next queued message')
-        force_action.setEnabled(queue_size > 0)
-        force_action.triggered.connect(
-            lambda _checked, t=tag: self._force_send_next(t)
-        )
-
-        menu.addSeparator()
 
         pause_action = menu.addAction('Pause on input (default)')
         pause_action.setCheckable(True)
@@ -901,6 +868,48 @@ class TableBuilderMixin(_Base):
         if not sip.isdeleted(label):
             label.setAttribute(Qt.WA_UnderMouse, False)
             label.update()
+
+    def _show_queue_action_menu(
+        self, btn: QPushButton, pos: 'QPoint', tag: str,
+    ) -> None:
+        """Show send-options menu on the Queue column right button."""
+        queue_size = 0
+        for s in self.sessions:
+            if s['tag'] == tag:
+                queue_size = s.get('queue_size', 0)
+                break
+
+        menu = QMenu(self)
+
+        force_action = menu.addAction('Force-send next queued message')
+        force_action.setEnabled(queue_size > 0)
+        force_action.triggered.connect(
+            lambda _checked, t=tag: self._force_send_next(t)
+        )
+
+        menu.addSeparator()
+
+        msg_next_action = menu.addAction('Send message next\u2026')
+        msg_next_action.triggered.connect(
+            lambda _checked, t=tag: self._send_immediate_message(t, at_end=False)
+        )
+
+        msg_end_action = menu.addAction('Send message to end\u2026')
+        msg_end_action.triggered.connect(
+            lambda _checked, t=tag: self._send_immediate_message(t, at_end=True)
+        )
+
+        menu.addSeparator()
+
+        next_action = QAction(QUICK_MSG_SEND_NEXT, self)
+        next_action.triggered.connect(lambda: self._quick_send_next(tag))
+        menu.addAction(next_action)
+
+        end_action = QAction(QUICK_MSG_SEND_AT_END, self)
+        end_action.triggered.connect(lambda: self._quick_send_at_end(tag))
+        menu.addAction(end_action)
+
+        menu.exec_(btn.mapToGlobal(pos))
 
     def _set_auto_send_mode(self, tag: str, mode: str) -> None:
         """Send set_auto_send_mode to the CQ server."""
@@ -943,6 +952,25 @@ class TableBuilderMixin(_Base):
             self._show_status(f'No queued messages for {tag}')
         else:
             self._show_status(f'Failed to force-send for {tag}')
+
+    def _send_immediate_message(self, tag: str, at_end: bool = True) -> None:
+        """Open a dialog to type and queue a message for the session."""
+        from claudeq.monitor.cq_sender import prepend_to_cq_queue, send_to_cq_session_raw
+
+        label = 'Message to queue at end:' if at_end else 'Message to queue next:'
+        text, ok = QInputDialog.getMultiLineText(
+            self, 'Send Message', f'{label} ({tag})', '')
+        if ok and text.strip():
+            if at_end:
+                ok = send_to_cq_session_raw(tag, text.strip())
+            else:
+                ok = prepend_to_cq_queue(tag, [text.strip()])
+            if ok:
+                pos = 'end' if at_end else 'next'
+                self._show_status(f'Message queued ({pos}) for {tag}')
+                self._refresh_data()
+            else:
+                self._show_status(f'Failed to queue message for {tag}')
 
     def _quick_send_next(self, tag: str) -> None:
         """Prepend all message bundle messages to the front of the queue.

@@ -461,7 +461,7 @@ class ClaudeQServer:
                 prompt_write_due = 0.0
                 queue_has_next = (
                     not self.queue.is_empty
-                    and current_state in ('idle', 'interrupted')
+                    and current_state == 'idle'
                     and self.state.auto_send_mode in ('pause', 'always')
                 )
                 if current_state in ('needs_permission', 'has_question', 'interrupted'):

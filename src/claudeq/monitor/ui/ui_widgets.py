@@ -139,8 +139,6 @@ class PulsingLabel(QLabel):
         self._pulse_timer.timeout.connect(self._animate)
 
         self.setAlignment(Qt.AlignCenter)
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self._show_context_menu)
 
     def set_pulsing(self, pulsing: bool) -> None:
         self._pulsing = pulsing
@@ -232,12 +230,10 @@ class PulsingLabel(QLabel):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._mr_url and event.button() == Qt.LeftButton:
-            webbrowser.open(self._mr_url)
-        else:
-            super().mousePressEvent(event)
+            self._show_context_menu(event.pos())
 
     def _show_context_menu(self, pos) -> None:
-        """Show right-click context menu on the MR status label."""
+        """Show context menu on the MR status label (left click)."""
         url = self._mr_url
         if not url:
             return
