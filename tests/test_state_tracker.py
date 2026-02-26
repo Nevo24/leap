@@ -417,8 +417,8 @@ class TestEscapeRace:
         assert tracker.current_state == 'interrupted'
 
     def test_escape_race_after_signal_idle_transition(self, tmp_path: Path) -> None:
-        """Escape race detection must work even when the running→idle
-        signal transition happened just before 'Interrupted' arrives."""
+        """Signal idle is blocked when user pressed Escape during running,
+        keeping state as running until PTY outputs 'Interrupted'."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         # User types directly → output accumulation → running
@@ -429,11 +429,11 @@ class TestEscapeRace:
         # User presses Escape
         t[0] = 5.0
         tracker.on_input(b'\x1b')
-        # Stop hook fires → signal file says idle → get_state transitions
+        # Stop hook fires → signal file says idle → blocked (recent input)
         t[0] = 5.1
         write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # PTY outputs "Interrupted" shortly after
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # PTY outputs "Interrupted" shortly after → detected from running
         t[0] = 5.2
         tracker.on_output(b'Interrupted')
         assert tracker.current_state == 'interrupted'

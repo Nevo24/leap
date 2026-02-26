@@ -101,6 +101,9 @@ class ClaudeStateTracker:
         # needs_permission / has_question transitions.  Used by Slack
         # integration to show the actual prompt text + numbered options.
         self._last_prompt_buf: bytes = b''
+        # Timestamp when on_send() set state to running.  Used to detect
+        # user input *during* the running state (i.e. interrupt attempts).
+        self._running_since: float = 0.0
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
@@ -143,7 +146,22 @@ class ClaudeStateTracker:
             # Stop hook fires on Escape too, writing "idle",
             # but Claude is actually prompting "What should
             # Claude do instead?" — keep has_question/interrupted.
+            # Also guard running→idle when user pressed a key *during*
+            # the running state (interrupt attempt): the Stop hook fires
+            # before the PTY outputs "Interrupted", so delay accepting
+            # idle to let on_output() detect interruption first.
             if (
+                new_state == 'idle'
+                and current == 'running'
+                and self._last_input_time > self._running_since
+                and (self._clock() - self._last_input_time) < 2.0
+            ):
+                _log.debug(
+                    'GET_STATE signal=idle but protecting running '
+                    '(user input %.1fs ago, waiting for PTY)',
+                    self._clock() - self._last_input_time,
+                )
+            elif (
                 new_state == 'idle'
                 and current in ('has_question', 'interrupted')
                 and self._waiting_since is not None
@@ -260,6 +278,7 @@ class ClaudeStateTracker:
         """
         _log.debug('ON_SEND → running')
         self._seen_user_input = True
+        self._running_since = self._clock()
         with self._lock:
             self._state = 'running'
             self._waiting_since = None
@@ -372,6 +391,7 @@ class ClaudeStateTracker:
                         )
                         self._idle_output_acc = 0
                         self._output_buf.clear()
+                        self._running_since = self._clock()
                         with self._lock:
                             self._state = 'running'
                             self._waiting_since = None
@@ -498,6 +518,7 @@ class ClaudeStateTracker:
                         'ON_OUTPUT %s→running (resume, stripped=%r)',
                         self._state, stripped[:60],
                     )
+                    self._running_since = self._clock()
                     with self._lock:
                         self._state = 'running'
                         self._waiting_since = None
