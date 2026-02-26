@@ -161,6 +161,11 @@ class SessionMixin(_Base):
         preferred_ide = server_ide
         project_path = metadata.get('project_path') if metadata else None
         title_pattern = f"cq-{session_type} {tag}"
+        # Build command with cd prefix so the client opens in the server's directory
+        if project_path:
+            client_cmd = f"cd '{project_path}' && claudeq '{tag}'"
+        else:
+            client_cmd = f"claudeq '{tag}'"
 
         if not session_exists(tag, session_type):
             ext = 'client.lock' if session_type == 'client' else 'sock'
@@ -193,7 +198,7 @@ class SessionMixin(_Base):
                     self._show_status(f"Opening new client for '{tag}'")
                     worker = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f"claudeq '{tag}'",
+                            client_cmd,
                             preferred_ide=preferred_ide,
                             project_path=project_path,
                         ),
@@ -208,6 +213,7 @@ class SessionMixin(_Base):
         _session_type = session_type
         _preferred_ide = preferred_ide
         _project_path = project_path
+        _client_cmd = client_cmd
         _title_pattern = title_pattern
         result_holder: list[Optional[bool]] = [None]
 
@@ -246,7 +252,7 @@ class SessionMixin(_Base):
                     _remove_client_lock(_tag)
                     w = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f"claudeq '{_tag}'",
+                            _client_cmd,
                             preferred_ide=_preferred_ide,
                             project_path=_project_path,
                         ),
@@ -265,7 +271,7 @@ class SessionMixin(_Base):
                 if reply == QMessageBox.Yes:
                     w = BackgroundCallWorker(
                         lambda: open_terminal_with_command(
-                            f"claudeq '{_tag}'",
+                            _client_cmd,
                             preferred_ide=_preferred_ide,
                             project_path=_project_path,
                         ),
