@@ -439,16 +439,16 @@ class TemplateEditorDialog(QDialog):
         return True
 
     def _on_apply_mr(self) -> None:
-        """Apply the current preset to the MR context combo and close.
+        """Apply the current preset to the MR thread context combo and close.
 
-        Rejects multi-message presets — MR context must be single-message.
+        Rejects multi-message presets — MR thread context must be single-message.
         """
         if len(self._messages) > 1 and any(m.strip() for m in self._messages[1:]):
             QMessageBox.warning(
                 self, 'Multi-Message Preset',
-                'MR context must be a single-message preset.\n\n'
+                'MR thread context must be a single-message preset.\n\n'
                 'This preset has multiple messages. Only single-message '
-                'presets can be used as MR context.',
+                'presets can be used as MR thread context.',
             )
             return
         if not self._maybe_save_unsaved():

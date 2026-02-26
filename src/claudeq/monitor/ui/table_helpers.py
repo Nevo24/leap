@@ -19,7 +19,7 @@ from PyQt5.QtGui import QColor, QPen
 MR_TEMPLATE_LABEL = 'MR thread context:'
 MR_TEMPLATE_TOOLTIP = 'Context attached to every MR thread message sent to CQ (single-message only)'
 MR_TEMPLATE_HINT = (
-    'MR context: This preset is attached to every MR thread message sent to CQ. '
+    'MR thread context: This preset is attached to every MR thread message sent to CQ. '
     'Only single-message presets can be used.'
 )
 
@@ -33,7 +33,7 @@ QUICK_MSG_TEMPLATE_HINT = (
 QUICK_MSG_SEND_NEXT = 'Send message-bundle next'
 QUICK_MSG_SEND_AT_END = 'Send message-bundle to end'
 
-APPLY_MR_BTN = 'Apply to MR Context && Close'
+APPLY_MR_BTN = 'Apply to MR Thread Context && Close'
 APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'
 
 # Max characters shown in template combo items before truncation with ellipsis

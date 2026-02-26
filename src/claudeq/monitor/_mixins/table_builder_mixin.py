@@ -1128,10 +1128,10 @@ class TableBuilderMixin(_Base):
         )
 
     def _on_template_combo_changed(self) -> None:
-        """Handle MR context combo selection change.
+        """Handle MR thread context combo selection change.
 
         Rejects multi-message presets with a popup and reverts to the
-        previous selection, since MR context must be single-message.
+        previous selection, since MR thread context must be single-message.
         """
         text = self.template_combo.currentText()
         idx = self.template_combo.currentIndex()
@@ -1143,7 +1143,7 @@ class TableBuilderMixin(_Base):
                 QMessageBox.warning(
                     self, 'Multi-Message Preset',
                     f"'{name}' has {len(messages)} messages.\n\n"
-                    'MR context must be a single-message preset. '
+                    'MR thread context must be a single-message preset. '
                     'Use the Message bundle combo for multi-message presets.',
                 )
                 # Revert to previous selection
