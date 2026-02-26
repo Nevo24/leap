@@ -4,7 +4,7 @@ import math
 import webbrowser
 from typing import Optional
 
-from PyQt5.QtWidgets import QAction, QLabel, QMenu, QWidget
+from PyQt5.QtWidgets import QAction, QApplication, QLabel, QMenu, QWidget
 from PyQt5.QtCore import QPoint, QTimer, Qt
 from PyQt5.QtGui import QCursor, QMouseEvent, QPainter
 
@@ -253,17 +253,27 @@ class PulsingLabel(QLabel):
         # Parent menu to the top-level window so it survives table refresh
         top_level = self.window()
         menu = QMenu(top_level)
+        app = QApplication.instance()
+        if getattr(app, 'tooltips_enabled', False):
+            menu.setToolTipsVisible(True)
 
         go_action = QAction('Go to first thread', menu)
+        go_action.setToolTip('Open the first unresponded MR thread in your browser')
         go_action.triggered.connect(lambda: webbrowser.open(url))
         menu.addAction(go_action)
 
         send_action = QAction('Send each thread to CQ (one per queue message)', menu)
+        send_action.setToolTip(
+            'Queue each unresponded thread as a separate message\n'
+            'so Claude handles them one at a time')
         send_action.triggered.connect(lambda: send_to_cq() if send_to_cq else None)
         send_action.setEnabled(bool(server_running and has_unresponded and send_to_cq))
         menu.addAction(send_action)
 
         combined_action = QAction('Send all threads to CQ (combined into one message)', menu)
+        combined_action.setToolTip(
+            'Concatenate all unresponded threads into a single\n'
+            'message so Claude sees them all at once')
         combined_action.triggered.connect(lambda: send_combined() if send_combined else None)
         combined_action.setEnabled(bool(server_running and has_unresponded and send_combined))
         menu.addAction(combined_action)
@@ -271,11 +281,17 @@ class PulsingLabel(QLabel):
         menu.addSeparator()
 
         cq_each_action = QAction("Send each '/cq' thread to CQ (one per queue message)", menu)
+        cq_each_action.setToolTip(
+            "Only threads with an unacknowledged '/cq' comment —\n"
+            'queue each as a separate message')
         cq_each_action.triggered.connect(lambda: send_cq_threads() if send_cq_threads else None)
         cq_each_action.setEnabled(bool(server_running and not auto_fetch_cq and has_unresponded and send_cq_threads))
         menu.addAction(cq_each_action)
 
         cq_combined_action = QAction("Send all '/cq' threads to CQ (combined into one message)", menu)
+        cq_combined_action.setToolTip(
+            "Only threads with an unacknowledged '/cq' comment —\n"
+            'concatenate into a single message')
         cq_combined_action.triggered.connect(lambda: send_cq_combined() if send_cq_combined else None)
         cq_combined_action.setEnabled(bool(server_running and not auto_fetch_cq and has_unresponded and send_cq_combined))
         menu.addAction(cq_combined_action)

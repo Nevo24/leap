@@ -652,8 +652,21 @@ class MRTrackingMixin(_Base):
     def _add_row_menu(self) -> None:
         """Show a menu to choose how to add a new row."""
         menu = QMenu(self)
-        menu.addAction('From Git URL...', self._add_row_from_git)
-        menu.addAction('From Local Path...', self._add_row_from_local)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
+
+        git_action = menu.addAction('From Git URL...')
+        git_action.setToolTip(
+            'Add a row from an MR/PR URL, commit URL,\n'
+            'or plain Git project URL')
+        git_action.triggered.connect(self._add_row_from_git)
+
+        local_action = menu.addAction('From Local Path...')
+        local_action.setToolTip(
+            'Add a row from a local Git repository —\n'
+            'clone to repos dir or open directly')
+        local_action.triggered.connect(self._add_row_from_local)
+
         menu.exec_(QCursor.pos())
 
     def _add_row_from_git(self) -> None:
