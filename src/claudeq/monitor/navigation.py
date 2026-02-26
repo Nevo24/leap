@@ -33,21 +33,42 @@ _IDE_CMD_MAP: dict[str, str] = {
     'PhpStorm': 'phpstorm',
 }
 
-# Glob patterns for JetBrains .app bundles in /Applications
+# Glob patterns for JetBrains .app bundles
 _JETBRAINS_APP_PATTERNS: list[str] = [
     'IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
     'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
     'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app',
 ]
 
+# Directories to search for JetBrains .app bundles
+_JETBRAINS_APP_DIRS: list[str] = [
+    '/Applications',
+    os.path.expanduser('~/Applications'),
+]
+
 
 def _jetbrains_env() -> dict[str, str]:
-    """Build an env dict with JetBrains CLI tools on PATH."""
+    """Build an env dict with JetBrains CLI tools on PATH.
+
+    Searches /Applications, ~/Applications (JetBrains Toolbox), and
+    the Toolbox shell scripts directory.
+    """
     env = os.environ.copy()
     jetbrains_paths: list[str] = []
-    for pattern in _JETBRAINS_APP_PATTERNS:
-        for app in glob.glob(f'/Applications/{pattern}'):
-            jetbrains_paths.append(f'{app}/Contents/MacOS')
+
+    # Search .app bundles in known directories
+    for app_dir in _JETBRAINS_APP_DIRS:
+        for pattern in _JETBRAINS_APP_PATTERNS:
+            for app in glob.glob(f'{app_dir}/{pattern}'):
+                jetbrains_paths.append(f'{app}/Contents/MacOS')
+
+    # JetBrains Toolbox shell scripts directory
+    toolbox_scripts = os.path.expanduser(
+        '~/Library/Application Support/JetBrains/Toolbox/scripts'
+    )
+    if os.path.isdir(toolbox_scripts):
+        jetbrains_paths.append(toolbox_scripts)
+
     if jetbrains_paths:
         env['PATH'] = ':'.join(jetbrains_paths) + ':' + env.get('PATH', '')
     return env
