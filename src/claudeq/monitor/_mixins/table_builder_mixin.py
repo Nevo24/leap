@@ -29,8 +29,8 @@ from claudeq.monitor.scm_polling import SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
     ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
-    MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_DIRECTLY,
-    QUICK_MSG_SEND_TO_QUEUE, QUICK_MSG_TEMPLATE_TOOLTIP,
+    MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_AT_END,
+    QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
 )
 
 if TYPE_CHECKING:
@@ -838,23 +838,23 @@ class TableBuilderMixin(_Base):
         """Show right-click context menu on the Server button."""
         menu = QMenu(self)
 
-        direct_action = QAction(QUICK_MSG_SEND_DIRECTLY, self)
+        next_action = QAction(QUICK_MSG_SEND_NEXT, self)
         if is_dead:
-            direct_action.setEnabled(False)
+            next_action.setEnabled(False)
         else:
-            direct_action.triggered.connect(
-                lambda: self._send_direct_template(tag)
+            next_action.triggered.connect(
+                lambda: self._quick_send_next(tag)
             )
-        menu.addAction(direct_action)
+        menu.addAction(next_action)
 
-        queue_action = QAction(QUICK_MSG_SEND_TO_QUEUE, self)
+        end_action = QAction(QUICK_MSG_SEND_AT_END, self)
         if is_dead:
-            queue_action.setEnabled(False)
+            end_action.setEnabled(False)
         else:
-            queue_action.triggered.connect(
-                lambda: self._send_direct_template_to_queue(tag)
+            end_action.triggered.connect(
+                lambda: self._quick_send_at_end(tag)
             )
-        menu.addAction(queue_action)
+        menu.addAction(end_action)
 
         menu.exec_(btn.mapToGlobal(pos))
 
@@ -944,34 +944,39 @@ class TableBuilderMixin(_Base):
         else:
             self._show_status(f'Failed to force-send for {tag}')
 
-    def _send_direct_template(self, tag: str) -> None:
-        """Send the direct message template directly to the CQ session."""
-        from claudeq.monitor.cq_sender import send_to_cq_session_direct
+    def _quick_send_next(self, tag: str) -> None:
+        """Prepend all message bundle messages to the front of the queue.
 
-        template = load_cq_direct_template()
-        if not template:
-            self._show_status('No quick message template selected')
+        Messages are inserted before any existing queued messages so they
+        are processed next.
+        """
+        from claudeq.monitor.cq_sender import prepend_to_cq_queue
+
+        messages = load_cq_direct_template()
+        if not messages:
+            self._show_status('No message bundle selected')
             return
-        if send_to_cq_session_direct(tag, template):
-            self._show_status(f'Quick message sent to {tag}')
+        if prepend_to_cq_queue(tag, messages):
+            self._show_status(f'Bundle queued next for {tag}')
         else:
-            self._show_status(f'Failed to send quick message to {tag}')
+            self._show_status(f'Bundle send failed for {tag}')
 
-    def _send_direct_template_to_queue(self, tag: str) -> None:
-        """Queue the direct message template for the CQ session."""
+    def _quick_send_at_end(self, tag: str) -> None:
+        """Append all message bundle messages to the end of the queue."""
         from claudeq.monitor.cq_sender import send_to_cq_session_raw
 
-        template = load_cq_direct_template()
-        if not template:
-            self._show_status('No quick message template selected')
+        messages = load_cq_direct_template()
+        if not messages:
+            self._show_status('No message bundle selected')
             return
-        if send_to_cq_session_raw(tag, template):
-            self._show_status(f'Quick message queued for {tag}')
+        ok = all(send_to_cq_session_raw(tag, m) for m in messages)
+        if ok:
+            self._show_status(f'Bundle queued for {tag}')
         else:
-            self._show_status(f'Failed to queue quick message for {tag}')
+            self._show_status(f'Bundle send failed for {tag}')
 
     def _open_template_editor(self) -> None:
-        """Open a dialog to edit the CQ template text with named presets."""
+        """Open the preset editor dialog."""
         from claudeq.monitor.dialogs.scm_template_dialog import TemplateEditorDialog
 
         dialog = TemplateEditorDialog(self)
@@ -1053,7 +1058,38 @@ class TableBuilderMixin(_Base):
         )
 
     def _on_template_combo_changed(self) -> None:
-        """Handle template combo selection change."""
+        """Handle MR context combo selection change.
+
+        Rejects multi-message presets with a popup and reverts to the
+        previous selection, since MR context must be single-message.
+        """
+        text = self.template_combo.currentText()
+        idx = self.template_combo.currentIndex()
+        if text != '(None)':
+            full_name = self.template_combo.itemData(idx, Qt.UserRole)
+            name = full_name if full_name else text
+            messages = load_saved_templates().get(name, [])
+            if len(messages) > 1:
+                QMessageBox.warning(
+                    self, 'Multi-Message Preset',
+                    f"'{name}' has {len(messages)} messages.\n\n"
+                    'MR context must be a single-message preset. '
+                    'Use the Message bundle combo for multi-message presets.',
+                )
+                # Revert to previous selection
+                self.template_combo.blockSignals(True)
+                prev = load_selected_template_name()
+                if prev:
+                    prev_idx = self.template_combo.findText(prev)
+                    if prev_idx < 0 and len(prev) > MAX_COMBO_DISPLAY:
+                        prev_idx = self.template_combo.findText(
+                            prev[:MAX_COMBO_DISPLAY] + '\u2026')
+                    self.template_combo.setCurrentIndex(
+                        prev_idx if prev_idx >= 0 else 0)
+                else:
+                    self.template_combo.setCurrentIndex(0)
+                self.template_combo.blockSignals(False)
+                return
         self._on_combo_changed(
             self.template_combo, save_selected_template_name,
             MR_TEMPLATE_TOOLTIP,

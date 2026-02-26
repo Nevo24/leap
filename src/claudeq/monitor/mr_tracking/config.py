@@ -258,23 +258,27 @@ def save_selected_direct_template_name(name: str) -> None:
         raise
 
 
-def load_cq_direct_template() -> str:
-    """Load the text of the currently selected direct message template preset.
+def load_cq_direct_template() -> list[str]:
+    """Load the messages of the currently selected direct message template preset.
 
     Returns:
-        The template string, or empty string if no preset selected or not found.
+        List of non-empty message strings, or empty list if no preset selected
+        or not found.
     """
     name = load_selected_direct_template_name()
     if not name:
-        return ''
+        return []
     templates = load_saved_templates()
-    return templates.get(name, '')
+    messages = templates.get(name, [])
+    return [m for m in messages if m.strip()]
 
 
 def load_cq_template() -> str:
-    """Load the text of the currently selected template preset.
+    """Load the text of the currently selected MR template preset.
 
-    Resolves the selected preset name to its text from cq_templates.json.
+    Resolves the selected preset name to its first message from
+    cq_templates.json.  MR templates are enforced to be single-message
+    by the combo validation, so only the first element is returned.
 
     Returns:
         The template string, or empty string if no preset selected or not found.
@@ -283,14 +287,18 @@ def load_cq_template() -> str:
     if not name:
         return ''
     templates = load_saved_templates()
-    return templates.get(name, '')
+    messages = templates.get(name, [])
+    return messages[0] if messages else ''
 
 
-def load_saved_templates() -> dict[str, str]:
+def load_saved_templates() -> dict[str, list[str]]:
     """Load all named template presets from storage.
 
+    Auto-migrates old ``str`` values to ``[str]`` on read for backward
+    compatibility.
+
     Returns:
-        Dict mapping template name to text.
+        Dict mapping template name to list of message strings.
     """
     _migrate_old_template_files()
     if not CQ_TEMPLATES_FILE.exists():
@@ -299,21 +307,30 @@ def load_saved_templates() -> dict[str, str]:
         with open(CQ_TEMPLATES_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return data
+            # Auto-migrate str values → [str]
+            return {
+                k: v if isinstance(v, list) else [v]
+                for k, v in data.items()
+            }
     except (json.JSONDecodeError, OSError):
         pass
     return {}
 
 
-def _write_saved_templates(templates: dict[str, str]) -> None:
+def _write_saved_templates(templates: dict[str, list[str]]) -> None:
     """Write all named template presets to storage."""
     atomic_json_write(CQ_TEMPLATES_FILE, templates, ensure_ascii=False)
 
 
-def save_named_template(name: str, text: str) -> None:
-    """Save a template preset under the given name."""
+def save_named_template(name: str, messages: list[str]) -> None:
+    """Save a template preset under the given name.
+
+    Args:
+        name: Preset name.
+        messages: Ordered list of message strings.
+    """
     templates = load_saved_templates()
-    templates[name] = text
+    templates[name] = messages
     _write_saved_templates(templates)
 
 

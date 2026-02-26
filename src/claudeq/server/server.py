@@ -164,6 +164,17 @@ class ClaudeQServer:
                 'queue_contents': self.queue.get_contents()
             }
 
+        elif msg_type == 'queue_prepend':
+            messages = msg.get('messages', [])
+            if not messages:
+                return {'status': 'error', 'error': 'no messages'}
+            size = self.queue.prepend(messages)
+            return {
+                'status': 'queued',
+                'queue_size': size,
+                'queue_contents': self.queue.get_contents()
+            }
+
         elif msg_type == 'direct':
             self._send_to_claude(message)
             return {'status': 'sent'}

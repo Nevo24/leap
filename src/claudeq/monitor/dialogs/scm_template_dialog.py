@@ -1,14 +1,18 @@
 """Template editor dialog for ClaudeQ Monitor.
 
 A file-editor metaphor dialog for managing named CQ template presets.
-Preset management (Save/Save As/Delete) is independent from applying
-the active template (Apply & Close).
+Templates are ordered lists of messages (multi-message bundles). Each
+message is shown as a card in a scrollable area. Preset management
+(Save/Save As/Delete) is independent from applying the active template
+(Apply & Close).
 """
 
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog,
-    QLabel, QMessageBox, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
+    QLabel, QMessageBox, QPushButton, QScrollArea, QTextEdit,
+    QVBoxLayout, QWidget,
 )
+from PyQt5.QtCore import Qt
 
 from claudeq.monitor.mr_tracking.config import (
     delete_named_template, load_saved_templates,
@@ -25,17 +29,84 @@ from claudeq.monitor.ui.table_helpers import (
 MAX_TEMPLATE_NAME_LEN = 70
 
 
+class _MessageCard(QFrame):
+    """A single message card with a header, text editor, and remove button."""
+
+    def __init__(
+        self,
+        index: int,
+        text: str,
+        on_text_changed: 'callable',
+        on_remove: 'callable',
+        parent: QWidget = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet(
+            'QFrame { border: 1px solid #555; border-radius: 4px; '
+            'padding: 4px; margin: 2px 0px; }'
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(2)
+
+        # Header row: label + remove button
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        self._label = QLabel(f'Message {index + 1}')
+        self._label.setStyleSheet('border: none; font-weight: bold; font-size: 12px;')
+        header.addWidget(self._label)
+        header.addStretch()
+        self._remove_btn = QPushButton('\u00d7')
+        self._remove_btn.setFixedSize(20, 20)
+        self._remove_btn.setStyleSheet(
+            'QPushButton { border: none; color: #999; font-size: 14px; }'
+            'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+        )
+        self._remove_btn.setToolTip('Remove this message')
+        self._remove_btn.clicked.connect(on_remove)
+        header.addWidget(self._remove_btn)
+        layout.addLayout(header)
+
+        # Text editor
+        self._text_edit = QTextEdit()
+        self._text_edit.setPlaceholderText(f'Message {index + 1} content...')
+        self._text_edit.setPlainText(text)
+        self._text_edit.setFixedHeight(80)
+        self._text_edit.setStyleSheet('border: 1px solid #444; border-radius: 2px;')
+        self._text_edit.textChanged.connect(
+            lambda: on_text_changed(self._text_edit.toPlainText())
+        )
+        layout.addWidget(self._text_edit)
+
+    def set_removable(self, removable: bool) -> None:
+        """Enable or disable the remove button (disabled when only 1 card)."""
+        self._remove_btn.setEnabled(removable)
+        self._remove_btn.setVisible(removable)
+
+    def get_text(self) -> str:
+        """Return the current text of this card."""
+        return self._text_edit.toPlainText()
+
+    def focus_editor(self) -> None:
+        """Set focus to this card's text editor."""
+        self._text_edit.setFocus()
+
+
 class TemplateEditorDialog(QDialog):
-    """Dialog to edit CQ template text with named presets."""
+    """Dialog to edit CQ template messages with named presets."""
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle('Edit CQ Template')
-        self.resize(500, 400)
+        self.setWindowTitle('Edit Presets')
+        self.resize(550, 500)
 
         self._current_name: str = ''
         self._refreshing: bool = False
         self._unsaved: bool = False  # True after New, before first Save
+        self._messages: list[str] = ['']
+        self._cards: list[_MessageCard] = []
 
         dlg_layout = QVBoxLayout(self)
 
@@ -69,19 +140,28 @@ class TemplateEditorDialog(QDialog):
         preset_layout.addWidget(self._delete_btn)
         dlg_layout.addLayout(preset_layout)
 
-        self._text_edit = QTextEdit()
-        self._text_edit.setPlaceholderText(
-            'Enter template here (e.g. project conventions, review instructions)...'
-        )
-        dlg_layout.addWidget(self._text_edit)
+        # Scrollable area for message cards
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_content = QWidget()
+        self._scroll_layout = QVBoxLayout(self._scroll_content)
+        self._scroll_layout.setContentsMargins(4, 4, 4, 4)
+        self._scroll_layout.setSpacing(4)
+        self._scroll.setWidget(self._scroll_content)
+        dlg_layout.addWidget(self._scroll, 1)
 
         # Load the currently selected preset (if any)
         selected_name = load_selected_template_name()
         if selected_name:
             templates = load_saved_templates()
             if selected_name in templates:
-                self._text_edit.setPlainText(templates[selected_name])
+                self._messages = list(templates[selected_name])
+                if not self._messages:
+                    self._messages = ['']
         self._current_name = selected_name
+
+        self._rebuild_cards()
 
         # Bottom buttons: two Apply & Close buttons + Cancel
         btn_layout = QHBoxLayout()
@@ -113,8 +193,80 @@ class TemplateEditorDialog(QDialog):
             if fallback:
                 self._current_name = fallback
                 templates = load_saved_templates()
-                self._text_edit.setPlainText(templates.get(fallback, ''))
+                self._messages = list(templates.get(fallback, ['']))
+                if not self._messages:
+                    self._messages = ['']
+                self._rebuild_cards()
                 self._update_button_states()
+
+    # -- Card management ----------------------------------------------------
+
+    def _rebuild_cards(self) -> None:
+        """Rebuild the scrollable card list from self._messages."""
+        # Remove old cards
+        for card in self._cards:
+            card.setParent(None)
+            card.deleteLater()
+        self._cards.clear()
+
+        # Remove old "+ Add Message" button if present
+        if hasattr(self, '_add_btn') and self._add_btn is not None:
+            self._add_btn.setParent(None)
+            self._add_btn.deleteLater()
+
+        # Remove spacer if present
+        while self._scroll_layout.count():
+            item = self._scroll_layout.takeAt(0)
+            # Widgets were already handled above; just clear layout items
+            if item.widget():
+                item.widget().setParent(None)
+
+        # Create a card for each message
+        for i, text in enumerate(self._messages):
+            card = _MessageCard(
+                index=i,
+                text=text,
+                on_text_changed=lambda t, idx=i: self._on_card_text_changed(idx, t),
+                on_remove=lambda checked=False, idx=i: self._remove_message(idx),
+            )
+            card.set_removable(len(self._messages) > 1)
+            self._cards.append(card)
+            self._scroll_layout.addWidget(card)
+
+        # "+ Add Message" button
+        self._add_btn = QPushButton('+ Add Message')
+        self._add_btn.setStyleSheet(
+            'QPushButton { color: #aaa; border: 1px dashed #666; '
+            'border-radius: 4px; padding: 6px; }'
+            'QPushButton:hover { color: #fff; border-color: #999; }'
+        )
+        self._add_btn.clicked.connect(self._add_message)
+        self._scroll_layout.addWidget(self._add_btn)
+
+        # Push cards to the top
+        self._scroll_layout.addStretch()
+
+    def _add_message(self) -> None:
+        """Append a new empty message and rebuild cards."""
+        self._messages.append('')
+        self._rebuild_cards()
+        # Focus the new card
+        if self._cards:
+            self._cards[-1].focus_editor()
+
+    def _remove_message(self, index: int) -> None:
+        """Remove a message by index and rebuild cards. Min 1 message."""
+        if len(self._messages) <= 1:
+            return
+        del self._messages[index]
+        self._rebuild_cards()
+
+    def _on_card_text_changed(self, index: int, text: str) -> None:
+        """Update the internal message list when a card's text changes."""
+        if 0 <= index < len(self._messages):
+            self._messages[index] = text
+
+    # -- Preset management --------------------------------------------------
 
     def _update_button_states(self) -> None:
         has_preset = bool(self._current_name)
@@ -140,8 +292,10 @@ class TemplateEditorDialog(QDialog):
         if not name:
             return
         templates = load_saved_templates()
-        text = templates.get(name, '')
-        self._text_edit.setPlainText(text)
+        self._messages = list(templates.get(name, ['']))
+        if not self._messages:
+            self._messages = ['']
+        self._rebuild_cards()
         self._current_name = name
         self._unsaved = False
         self._update_button_states()
@@ -177,7 +331,7 @@ class TemplateEditorDialog(QDialog):
                 if reply != QMessageBox.Yes:
                     continue
             break
-        save_named_template(name, self._text_edit.toPlainText())
+        save_named_template(name, list(self._messages))
         self._current_name = name
         self._unsaved = False
         self._refresh_combo(name)
@@ -212,18 +366,19 @@ class TemplateEditorDialog(QDialog):
                 if reply != QMessageBox.Yes:
                     continue
             break
-        save_named_template(name, '')
+        save_named_template(name, [''])
         self._current_name = name
         self._unsaved = True
-        self._text_edit.clear()
+        self._messages = ['']
+        self._rebuild_cards()
         self._refresh_combo(name)
 
     def _on_save(self) -> None:
         if not self._current_name:
             return
-        current_text = self._text_edit.toPlainText()
-        saved_text = load_saved_templates().get(self._current_name, '')
-        if current_text == saved_text:
+        current_messages = list(self._messages)
+        saved_messages = load_saved_templates().get(self._current_name, [''])
+        if current_messages == saved_messages:
             return  # No changes — nothing to save
         if not self._unsaved:
             reply = QMessageBox.question(
@@ -233,7 +388,7 @@ class TemplateEditorDialog(QDialog):
             )
             if reply != QMessageBox.Yes:
                 return
-        save_named_template(self._current_name, current_text)
+        save_named_template(self._current_name, current_messages)
         self._unsaved = False
 
     def _on_save_as(self) -> None:
@@ -257,18 +412,21 @@ class TemplateEditorDialog(QDialog):
             fallback = self._combo.currentText()
             if fallback:
                 templates = load_saved_templates()
-                self._text_edit.setPlainText(templates.get(fallback, ''))
+                self._messages = list(templates.get(fallback, ['']))
+                if not self._messages:
+                    self._messages = ['']
                 self._current_name = fallback
             else:
-                self._text_edit.clear()
+                self._messages = ['']
+            self._rebuild_cards()
             self._update_button_states()
 
     def _maybe_save_unsaved(self) -> bool:
         """Check for unsaved changes and offer to save. Returns False if cancelled."""
         name = self._current_name
         if name:
-            saved_text = load_saved_templates().get(name, '')
-            if self._text_edit.toPlainText() != saved_text:
+            saved_messages = load_saved_templates().get(name, [''])
+            if list(self._messages) != saved_messages:
                 reply = QMessageBox.question(
                     self, 'Unsaved Changes',
                     f"Save changes to '{name}' before closing?",
@@ -277,18 +435,29 @@ class TemplateEditorDialog(QDialog):
                 if reply == QMessageBox.Cancel:
                     return False
                 if reply == QMessageBox.Yes:
-                    save_named_template(name, self._text_edit.toPlainText())
+                    save_named_template(name, list(self._messages))
         return True
 
     def _on_apply_mr(self) -> None:
-        """Apply the current template to the MR threads combobox and close."""
+        """Apply the current preset to the MR context combo and close.
+
+        Rejects multi-message presets — MR context must be single-message.
+        """
+        if len(self._messages) > 1 and any(m.strip() for m in self._messages[1:]):
+            QMessageBox.warning(
+                self, 'Multi-Message Preset',
+                'MR context must be a single-message preset.\n\n'
+                'This preset has multiple messages. Only single-message '
+                'presets can be used as MR context.',
+            )
+            return
         if not self._maybe_save_unsaved():
             return
         save_selected_template_name(self._current_name)
         self.accept()
 
     def _on_apply_direct(self) -> None:
-        """Apply the current template to the Direct msg combobox and close."""
+        """Apply the current preset to the Message bundle combo and close."""
         if not self._maybe_save_unsaved():
             return
         save_selected_direct_template_name(self._current_name)

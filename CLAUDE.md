@@ -58,7 +58,7 @@ src/
     │   ├── server_launcher.py   # MR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
-    │   ├── cq_sender.py         # Socket sender for /cq commands + quick message
+    │   ├── cq_sender.py         # Socket sender for /cq commands + message bundles
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   │
@@ -76,7 +76,7 @@ src/
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
-    │   │   ├── scm_template_dialog.py # Template editor dialog (named presets)
+    │   │   ├── scm_template_dialog.py # Preset editor dialog (MR context + message bundles)
     │   │   └── add_local_dialog.py    # Add session from local path dialog
     │   │
     │   ├── ui/                  # UI components
@@ -131,7 +131,7 @@ assets/
 | `MRDisplayMixin` | `monitor/_mixins/mr_display_mixin.py` | MR column styling, dock badge, banners |
 | `NotificationsMixin` | `monitor/_mixins/notifications_mixin.py` | User notification handling |
 | `TableBuilderMixin` | `monitor/_mixins/table_builder_mixin.py` | Table build, refresh, settings |
-| `TemplateEditorDialog` | `monitor/dialogs/scm_template_dialog.py` | Template preset editor dialog |
+| `TemplateEditorDialog` | `monitor/dialogs/scm_template_dialog.py` | Preset editor dialog (MR context + message bundles) |
 | `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
 | `StatusLog` | `monitor/ui/status_log.py` | In-memory status message log + viewer dialog |
 | `SettingsDialog` | `monitor/dialogs/settings_dialog.py` | Settings: terminal, repos dir, cleanup unused repos |
@@ -146,10 +146,11 @@ assets/
 | `NotificationType` | `monitor/ui/dock_badge.py` | Enum of notification event types |
 | `NotificationEvent` | `monitor/ui/dock_badge.py` | Dataclass for detected notification events |
 | `NotificationsDialog` | `monitor/dialogs/notifications_dialog.py` | Per-type notification config (dock/banner toggles) |
-| `load_cq_template()` | `monitor/mr_tracking/config.py` | Load active MR threads template text |
-| `load_cq_direct_template()` | `monitor/mr_tracking/config.py` | Load active quick message template text |
-| `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends MR template) |
-| `send_to_cq_session_raw()` | `monitor/cq_sender.py` | Send message to CQ session (no template prepend) |
+| `load_cq_template()` | `monitor/mr_tracking/config.py` | Load active MR context preset text |
+| `load_cq_direct_template()` | `monitor/mr_tracking/config.py` | Load active message bundle preset (list of messages) |
+| `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends MR context) |
+| `send_to_cq_session_raw()` | `monitor/cq_sender.py` | Send message to CQ session (no context prepend) |
+| `prepend_to_cq_queue()` | `monitor/cq_sender.py` | Prepend messages to front of CQ session queue |
 | `resolve_scm_token()` | `monitor/mr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `get_notification_prefs()` | `monitor/mr_tracking/config.py` | Merge saved notification prefs with defaults |
 | `load_notification_seen()` | `monitor/mr_tracking/config.py` | Load seen notification IDs per SCM type |
@@ -183,9 +184,9 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` |
 | Notification seen state | `.storage/notification_seen.json` |
-| MR threads template selection | `.storage/cq_selected_template` |
-| Quick message template selection | `.storage/cq_selected_direct_template` |
-| Template presets | `.storage/cq_templates.json` |
+| MR context preset selection | `.storage/cq_selected_template` |
+| Message bundle preset selection | `.storage/cq_selected_direct_template` |
+| Preset definitions | `.storage/cq_templates.json` |
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Slack config | `.storage/slack/config.json` |

@@ -16,19 +16,25 @@ from PyQt5.QtGui import QColor, QPen
 
 
 # Template UI strings (single source of truth for labels, tooltips, hints).
-MR_TEMPLATE_LABEL = 'MR threads template:'
-MR_TEMPLATE_TOOLTIP = 'Attached to every MR thread message sent to CQ'
-MR_TEMPLATE_HINT = 'MR threads: This template is attached to every MR thread message sent to CQ.'
+MR_TEMPLATE_LABEL = 'MR context:'
+MR_TEMPLATE_TOOLTIP = 'Context attached to every MR thread message sent to CQ (single-message only)'
+MR_TEMPLATE_HINT = (
+    'MR context: This preset is attached to every MR thread message sent to CQ. '
+    'Only single-message presets can be used.'
+)
 
-QUICK_MSG_TEMPLATE_LABEL = 'Quick message template:'
-QUICK_MSG_TEMPLATE_TOOLTIP = 'A message that can be quickly sent via right-click on Server button'
-QUICK_MSG_TEMPLATE_HINT = 'Quick message: This template is sent as a standalone message (via right-click on Server button).'
+QUICK_MSG_TEMPLATE_LABEL = 'Message bundle:'
+QUICK_MSG_TEMPLATE_TOOLTIP = 'Preset messages sent via right-click on Server button'
+QUICK_MSG_TEMPLATE_HINT = (
+    'Message bundle: These preset messages are sent as standalone messages '
+    '(via right-click on Server button).'
+)
 
-QUICK_MSG_SEND_DIRECTLY = 'Send quick message directly'
-QUICK_MSG_SEND_TO_QUEUE = 'Send quick message to queue'
+QUICK_MSG_SEND_NEXT = 'Send bundle next'
+QUICK_MSG_SEND_AT_END = 'Send bundle at end'
 
-APPLY_MR_BTN = 'Apply to MR threads && Close'
-APPLY_QUICK_MSG_BTN = 'Apply to Quick message && Close'
+APPLY_MR_BTN = 'Apply to MR Context && Close'
+APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'
 
 # Max characters shown in template combo items before truncation with ellipsis
 MAX_COMBO_DISPLAY = 40

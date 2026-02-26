@@ -107,6 +107,22 @@ class QueueManager:
             self.save()
             return len(self.queue)
 
+    def prepend(self, messages: list[str]) -> int:
+        """Insert messages at the front of the queue, preserving their order.
+
+        Args:
+            messages: Messages to prepend (first element will be at the front).
+
+        Returns:
+            Current queue size after prepending.
+        """
+        with self._lock:
+            for msg in reversed(messages):
+                msg_id = self._generate_id()
+                self.queue.appendleft({'id': msg_id, 'msg': msg})
+            self.save()
+            return len(self.queue)
+
     def pop(self) -> Optional[str]:
         """
         Remove and return the next message from the queue.

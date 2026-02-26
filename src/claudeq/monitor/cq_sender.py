@@ -73,6 +73,32 @@ def send_to_cq_session_raw(tag: str, message: str) -> bool:
     return _send_to_socket(tag, 'queue', message)
 
 
+def prepend_to_cq_queue(tag: str, messages: list[str]) -> bool:
+    """Prepend messages to the front of a CQ session's queue.
+
+    Messages are inserted in order so the first element will be sent next.
+
+    Args:
+        tag: Session tag name.
+        messages: Ordered list of messages to prepend.
+
+    Returns:
+        True on success, False on failure.
+    """
+    socket_path = SOCKET_DIR / f"{tag}.sock"
+    if not socket_path.exists():
+        logger.debug("Socket not found for session: %s", tag)
+        return False
+
+    result = send_socket_request(
+        socket_path, {'type': 'queue_prepend', 'messages': messages})
+    if result is None:
+        logger.debug("Failed to prepend to session %s", tag)
+        return False
+
+    return result.get('status') in ('ok', 'queued')
+
+
 def send_to_cq_session_direct(tag: str, message: str) -> bool:
     """Send a message directly to a CQ session, bypassing the queue.
 

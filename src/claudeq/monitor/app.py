@@ -252,8 +252,8 @@ class MonitorWindow(
 
         top_layout.addStretch()
 
-        edit_template_btn = QPushButton('\u270e  Templates')
-        edit_template_btn.setToolTip('Edit template presets')
+        edit_template_btn = QPushButton('\u270e  Presets')
+        edit_template_btn.setToolTip('Edit presets')
         edit_template_btn.clicked.connect(self._open_template_editor)
         top_layout.addWidget(edit_template_btn)
 
