@@ -855,10 +855,15 @@ class TableBuilderMixin(_Base):
                 break
 
         menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
 
         pause_action = menu.addAction('Pause on input (default)')
         pause_action.setCheckable(True)
         pause_action.setChecked(current_mode == 'pause')
+        pause_action.setToolTip(
+            'Auto-send queued messages only when Claude is idle\n'
+            'and waiting for input (not while running)')
         pause_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'pause')
         )
@@ -866,6 +871,9 @@ class TableBuilderMixin(_Base):
         always_action = menu.addAction('Always send')
         always_action.setCheckable(True)
         always_action.setChecked(current_mode == 'always')
+        always_action.setToolTip(
+            'Auto-send queued messages as soon as Claude\n'
+            'is not running (even during permission/question prompts)')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
         )
@@ -887,9 +895,14 @@ class TableBuilderMixin(_Base):
                 break
 
         menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
 
         force_action = menu.addAction('Force-send next queued message')
         force_action.setEnabled(queue_size > 0)
+        force_action.setToolTip(
+            'Send the next queued message immediately,\n'
+            'even if Claude is still running')
         force_action.triggered.connect(
             lambda _checked, t=tag: self._force_send_next(t)
         )
@@ -897,11 +910,16 @@ class TableBuilderMixin(_Base):
         menu.addSeparator()
 
         msg_next_action = menu.addAction('Send message next')
+        msg_next_action.setToolTip(
+            'Type a message and insert it at the front\n'
+            'of the queue (sent before other queued messages)')
         msg_next_action.triggered.connect(
             lambda _checked, t=tag: self._send_immediate_message(t, at_end=False)
         )
 
         msg_end_action = menu.addAction('Send message to end')
+        msg_end_action.setToolTip(
+            'Type a message and add it to the end of the queue')
         msg_end_action.triggered.connect(
             lambda _checked, t=tag: self._send_immediate_message(t, at_end=True)
         )
@@ -909,10 +927,16 @@ class TableBuilderMixin(_Base):
         menu.addSeparator()
 
         next_action = QAction(QUICK_MSG_SEND_NEXT, self)
+        next_action.setToolTip(
+            'Send the active message-bundle preset\n'
+            'and insert it at the front of the queue')
         next_action.triggered.connect(lambda: self._quick_send_next(tag))
         menu.addAction(next_action)
 
         end_action = QAction(QUICK_MSG_SEND_AT_END, self)
+        end_action.setToolTip(
+            'Send the active message-bundle preset\n'
+            'and add it to the end of the queue')
         end_action.triggered.connect(lambda: self._quick_send_at_end(tag))
         menu.addAction(end_action)
 
