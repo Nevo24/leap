@@ -862,8 +862,13 @@ class TableBuilderMixin(_Base):
         pause_action.setCheckable(True)
         pause_action.setChecked(current_mode == 'pause')
         pause_action.setToolTip(
-            'Auto-send queued messages only when Claude is idle\n'
-            'and waiting for input (not while running)')
+            'Auto-send queued messages only when Claude is idle.\n'
+            '\n'
+            '\u25cb Idle — sends next queued message\n'
+            '\u25cf Running — waits until finished\n'
+            '\u25b2 Permission — waits (does not interrupt)\n'
+            '\u25c6 Question — waits (does not interrupt)\n'
+            '\u25c7 Interrupted — sends next queued message')
         pause_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'pause')
         )
@@ -872,8 +877,14 @@ class TableBuilderMixin(_Base):
         always_action.setCheckable(True)
         always_action.setChecked(current_mode == 'always')
         always_action.setToolTip(
-            'Auto-send queued messages as soon as Claude\n'
-            'is not running (even during permission/question prompts)')
+            'Auto-send queued messages whenever Claude is\n'
+            'not actively running — even if waiting for input.\n'
+            '\n'
+            '\u25cb Idle — sends next queued message\n'
+            '\u25cf Running — waits until finished\n'
+            '\u25b2 Permission — sends (interrupts the prompt)\n'
+            '\u25c6 Question — sends (interrupts the prompt)\n'
+            '\u25c7 Interrupted — sends next queued message')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
         )
