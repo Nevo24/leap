@@ -275,6 +275,7 @@ class CollectThreadsWorker(QThread):
         self._project_path: str = ''
         self._scm_providers: dict[str, SCMProvider] = {}
         self._sessions: list[dict[str, Any]] = []
+        self._target_tag: Optional[str] = None
         self.provider: Optional[SCMProvider] = None  # set during run()
 
     def configure(
@@ -283,6 +284,7 @@ class CollectThreadsWorker(QThread):
         scm_providers: dict[str, SCMProvider],
         sessions: list[dict[str, Any]],
         cq_only: bool = False,
+        target_tag: Optional[str] = None,
     ) -> None:
         """Configure the worker.
 
@@ -291,11 +293,13 @@ class CollectThreadsWorker(QThread):
             scm_providers: Dict mapping SCMType value to provider instance.
             sessions: List of session dicts (need 'project_path' and 'tag' keys).
             cq_only: If True, collect only threads with unacknowledged /cq commands.
+            target_tag: If set, skip session matching and use this tag directly.
         """
         self._project_path = project_path
         self._scm_providers = dict(scm_providers)
         self._sessions = list(sessions)
         self._cq_only = cq_only
+        self._target_tag = target_tag
 
     def run(self) -> None:
         try:
@@ -322,15 +326,18 @@ class CollectThreadsWorker(QThread):
                     remote_info.project_path, remote_info.branch
                 )
 
-            # Find matching sessions by project path (subprocess per session)
-            matching_tags: list[str] = []
-            for session in self._sessions:
-                sp = session.get('project_path')
-                if not sp:
-                    continue
-                ri = get_git_remote_info(sp)
-                if ri and ri.project_path == remote_info.project_path:
-                    matching_tags.append(session['tag'])
+            if self._target_tag:
+                matching_tags = [self._target_tag]
+            else:
+                # Find matching sessions by project path (subprocess per session)
+                matching_tags: list[str] = []
+                for session in self._sessions:
+                    sp = session.get('project_path')
+                    if not sp:
+                        continue
+                    ri = get_git_remote_info(sp)
+                    if ri and ri.project_path == remote_info.project_path:
+                        matching_tags.append(session['tag'])
 
             self.collected.emit(commands, matching_tags)
         except Exception:

@@ -430,7 +430,7 @@ class MRTrackingMixin(_Base):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
-            project_path, self._scm_providers, self.sessions
+            project_path, self._scm_providers, self.sessions, target_tag=tag
         )
         self._combined_send = False
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
@@ -580,7 +580,7 @@ class MRTrackingMixin(_Base):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
-            project_path, self._scm_providers, self.sessions
+            project_path, self._scm_providers, self.sessions, target_tag=tag
         )
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
@@ -638,7 +638,8 @@ class MRTrackingMixin(_Base):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
-            project_path, self._scm_providers, self.sessions, cq_only=True
+            project_path, self._scm_providers, self.sessions, cq_only=True,
+            target_tag=tag,
         )
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
