@@ -16,7 +16,7 @@ from PyQt5.QtGui import QColor, QPen
 
 
 # Template UI strings (single source of truth for labels, tooltips, hints).
-MR_TEMPLATE_LABEL = 'MR context:'
+MR_TEMPLATE_LABEL = 'MR thread context:'
 MR_TEMPLATE_TOOLTIP = 'Context attached to every MR thread message sent to CQ (single-message only)'
 MR_TEMPLATE_HINT = (
     'MR context: This preset is attached to every MR thread message sent to CQ. '
@@ -231,7 +231,7 @@ class TooltipApp(QApplication):
                 return True
             # Not truncated — fall through to normal tooltips_enabled check
 
-        if not self.tooltips_enabled:
+        if not self.tooltips_enabled and not widget.property('always_tooltip'):
             return True  # Suppress
         if widget.toolTip():
             from PyQt5.QtWidgets import QToolTip as _QToolTip

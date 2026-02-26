@@ -37,6 +37,7 @@ class SettingsDialog(QDialog):
         log_fn: Optional[Callable[[str], None]] = None,
         show_tooltips: bool = True,
         notification_prefs: Optional[dict[str, dict[str, bool]]] = None,
+        current_auto_send_mode: str = 'pause',
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
@@ -87,16 +88,24 @@ class SettingsDialog(QDialog):
         cleanup_btn.clicked.connect(self._cleanup_repos)
         grid.addWidget(cleanup_btn, 2, 3)
 
+        # Default auto-send mode
+        grid.addWidget(QLabel('Default auto-send:'), 3, 0)
+        self._auto_send_combo = QComboBox()
+        self._auto_send_combo.addItems(['Pause on input', 'Always send'])
+        if current_auto_send_mode == 'always':
+            self._auto_send_combo.setCurrentIndex(1)
+        grid.addWidget(self._auto_send_combo, 3, 1)
+
         # Show tooltips
         self._tooltips_check = QCheckBox('Show hover explanations')
         self._tooltips_check.setChecked(show_tooltips)
-        grid.addWidget(self._tooltips_check, 3, 0, 1, 2)
+        grid.addWidget(self._tooltips_check, 4, 0, 1, 2)
 
         # Notifications
         notif_btn = QPushButton('Notifications...')
         notif_btn.setToolTip('Configure dock badge and banner notifications per event type')
         notif_btn.clicked.connect(self._open_notifications)
-        grid.addWidget(notif_btn, 4, 0)
+        grid.addWidget(notif_btn, 5, 0)
 
         layout.addLayout(grid)
 
@@ -192,3 +201,7 @@ class SettingsDialog(QDialog):
     def show_tooltips(self) -> bool:
         """Return whether hover explanations are enabled."""
         return self._tooltips_check.isChecked()
+
+    def selected_auto_send_mode(self) -> str:
+        """Return the selected default auto-send mode."""
+        return 'always' if self._auto_send_combo.currentIndex() == 1 else 'pause'

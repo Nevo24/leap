@@ -433,6 +433,7 @@ class TableBuilderMixin(_Base):
                                 f"Branch mismatch: expected '{pinned_branch}', "
                                 f"got '{session['branch']}'"
                             )
+                            server_btn.setProperty('always_tooltip', True)
                         else:
                             server_btn = QPushButton('Server')
                             server_btn.setStyleSheet(ACTIVE_BTN_STYLE)
@@ -818,7 +819,9 @@ class TableBuilderMixin(_Base):
     def _open_settings(self) -> None:
         """Open the settings dialog."""
         from claudeq.monitor.dialogs.settings_dialog import SettingsDialog, DEFAULT_REPOS_DIR
+        from claudeq.utils.constants import load_settings, save_settings
 
+        server_settings = load_settings()
         dialog = SettingsDialog(
             current_terminal=self._prefs.get('default_terminal', 'Terminal.app'),
             current_repos_dir=self._prefs.get('repos_dir', DEFAULT_REPOS_DIR),
@@ -826,6 +829,7 @@ class TableBuilderMixin(_Base):
             log_fn=self._show_status,
             show_tooltips=self._prefs.get('show_tooltips', True),
             notification_prefs=get_notification_prefs(self._prefs),
+            current_auto_send_mode=server_settings.get('auto_send_mode', 'pause'),
             parent=self,
         )
         if dialog.exec_():
@@ -834,6 +838,9 @@ class TableBuilderMixin(_Base):
             self._prefs['show_tooltips'] = dialog.show_tooltips()
             self._prefs['notifications'] = dialog.notification_prefs()
             save_monitor_prefs(self._prefs)
+            # Save auto-send mode to server settings (read by new servers)
+            server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()
+            save_settings(server_settings)
             self._apply_tooltips_setting()
             self._show_status('Settings saved')
 
