@@ -868,7 +868,7 @@ class TableBuilderMixin(_Base):
             '\u25cf Running — waits until finished\n'
             '\u25b2 Permission — waits (does not interrupt)\n'
             '\u25c6 Question — waits (does not interrupt)\n'
-            '\u25c7 Interrupted — sends next queued message')
+            '\u25c7 Interrupted — waits (needs manual resume)')
         pause_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'pause')
         )
@@ -884,7 +884,7 @@ class TableBuilderMixin(_Base):
             '\u25cf Running — waits until finished\n'
             '\u25b2 Permission — sends (interrupts the prompt)\n'
             '\u25c6 Question — sends (interrupts the prompt)\n'
-            '\u25c7 Interrupted — sends next queued message')
+            '\u25c7 Interrupted — waits (needs manual resume)')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
         )
