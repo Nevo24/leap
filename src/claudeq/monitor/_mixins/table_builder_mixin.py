@@ -31,6 +31,7 @@ from claudeq.monitor.ui.table_helpers import (
     ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
     MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
+    git_branch_icon, open_external_icon,
 )
 
 if TYPE_CHECKING:
@@ -138,6 +139,98 @@ class TableBuilderMixin(_Base):
         self._cell_cache[(tag, col)] = (
             state, self.table.cellWidget(row, table_col))
 
+    def _build_path_cell(self, row: int, tag: str, path_text: str) -> None:
+        """Build the Path column cell: elided label + 3-dot menu button.
+
+        The 3-dot button and right-click on the label both open the path
+        actions menu (Open in Terminal, Open with IDE).  Disabled when
+        path_text is 'N/A'.
+        """
+        path_state = (path_text,)
+        if self._cell_cached(tag, 'path', path_state, row, self.COL_PATH):
+            return
+
+        has_path = path_text != 'N/A'
+        path_container = QWidget()
+        path_layout = QHBoxLayout(path_container)
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.setSpacing(2)
+
+        path_label = ElidedLabel(path_text)
+        path_label.setAlignment(Qt.AlignCenter)
+        path_label.setToolTip(path_text)
+        if has_path:
+            path_label.setContextMenuPolicy(Qt.CustomContextMenu)
+            path_label.customContextMenuRequested.connect(
+                lambda _pos, t=tag: self._show_path_menu(t)
+            )
+        path_layout.addWidget(path_label, 1)
+
+        path_menu_btn = QPushButton()
+        path_menu_btn.setIcon(open_external_icon(14))
+        path_menu_btn.setFixedSize(22, path_menu_btn.sizeHint().height())
+        path_menu_btn.setStyleSheet(MENU_BTN_STYLE)
+        path_menu_btn.setToolTip('Open in Terminal / IDE' if has_path
+                                 else 'No project path available')
+        path_menu_btn.setEnabled(has_path)
+        if has_path:
+            path_menu_btn.clicked.connect(
+                lambda checked, t=tag: self._show_path_menu(t))
+        path_layout.addWidget(path_menu_btn, 0, Qt.AlignVCenter)
+
+        # Clear any existing text item so the widget takes over
+        item = self.table.item(row, self.COL_PATH)
+        if item:
+            item.setText('')
+        self._set_cell_widget(row, self.COL_PATH, path_container)
+        self._cache_cell(tag, 'path', path_state, row, self.COL_PATH)
+
+    def _build_branch_cell(self, row: int, tag: str, branch_text: str) -> None:
+        """Build the Server Branch column cell: label + git icon button.
+
+        The git icon button and right-click on the label both open the git
+        changes menu.  Disabled when branch_text is 'N/A'.
+        """
+        branch_state = (branch_text,)
+        if self._cell_cached(tag, 'server_branch', branch_state,
+                             row, self.COL_SERVER_BRANCH):
+            return
+
+        has_git = branch_text != 'N/A' and self._has_git_project(tag)
+        branch_container = QWidget()
+        branch_layout = QHBoxLayout(branch_container)
+        branch_layout.setContentsMargins(0, 0, 0, 0)
+        branch_layout.setSpacing(2)
+
+        branch_label = ElidedLabel(branch_text)
+        branch_label.setAlignment(Qt.AlignCenter)
+        branch_label.setToolTip(branch_text)
+        if has_git:
+            branch_label.setContextMenuPolicy(Qt.CustomContextMenu)
+            branch_label.customContextMenuRequested.connect(
+                lambda _pos, t=tag: self._show_git_menu(t)
+            )
+        branch_layout.addWidget(branch_label, 1)
+
+        git_btn = QPushButton()
+        git_btn.setIcon(git_branch_icon(14))
+        git_btn.setFixedSize(22, git_btn.sizeHint().height())
+        git_btn.setStyleSheet(MENU_BTN_STYLE)
+        git_btn.setToolTip('Git Changes' if has_git
+                           else 'No git project detected')
+        git_btn.setEnabled(has_git)
+        if has_git:
+            git_btn.clicked.connect(
+                lambda checked, t=tag: self._show_git_menu(t))
+        branch_layout.addWidget(git_btn, 0, Qt.AlignVCenter)
+
+        item = self.table.item(row, self.COL_SERVER_BRANCH)
+        if item:
+            item.setText('')
+        self._set_cell_widget(row, self.COL_SERVER_BRANCH, branch_container)
+        self._cache_cell(tag, 'server_branch', branch_state,
+                         row, self.COL_SERVER_BRANCH)
+
     def _update_table(self) -> None:
         """Update table with current sessions.
 
@@ -244,8 +337,8 @@ class TableBuilderMixin(_Base):
                                     if remote_path
                                     else 'N/A')
                     self._set_cell_text(row, self.COL_PROJECT, dead_project)
-                    self._set_cell_text(row, self.COL_PATH, 'N/A')
-                    self._set_cell_text(row, self.COL_SERVER_BRANCH, 'N/A')
+                    self._build_path_cell(row, tag, 'N/A')
+                    self._build_branch_cell(row, tag, 'N/A')
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     status_item = self.table.item(row, self.COL_STATUS)
                     if status_item:
@@ -296,8 +389,8 @@ class TableBuilderMixin(_Base):
                 else:
                     self._set_cell_text(row, self.COL_PROJECT, session['project'])
                     live_path = session.get('project_path', '') or ''
-                    self._set_cell_text(row, self.COL_PATH, live_path or 'N/A')
-                    self._set_cell_text(row, self.COL_SERVER_BRANCH, server_branch)
+                    self._build_path_cell(row, tag, live_path or 'N/A')
+                    self._build_branch_cell(row, tag, server_branch)
 
                     claude_state = session.get('claude_state', 'idle')
                     state_display = {
@@ -443,20 +536,7 @@ class TableBuilderMixin(_Base):
                             lambda checked, t=tag:
                                 self._focus_session(t, 'server')
                         )
-                    server_btn.setContextMenuPolicy(Qt.CustomContextMenu)
-                    server_btn.customContextMenuRequested.connect(
-                        lambda _pos, t=tag: self._show_actions_menu(t)
-                    )
                     server_layout.addWidget(server_btn)
-
-                    # Three-dot actions menu button
-                    menu_btn = QPushButton('\u22ee')  # ⋮
-                    menu_btn.setFixedSize(20, menu_btn.sizeHint().height())
-                    menu_btn.setStyleSheet(MENU_BTN_STYLE)
-                    menu_btn.setToolTip('Actions')
-                    menu_btn.clicked.connect(
-                        lambda checked, t=tag: self._show_actions_menu(t))
-                    server_layout.addWidget(menu_btn, 0, Qt.AlignVCenter)
 
                     self._set_cell_widget(row, self.COL_SERVER,
                                           server_container)

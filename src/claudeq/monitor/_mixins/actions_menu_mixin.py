@@ -1,4 +1,4 @@
-"""Per-row actions menu — Open with IDE, See Git Changes."""
+"""Per-row actions menus — Git Changes (server), Path actions (Open Terminal / IDE)."""
 
 from __future__ import annotations
 
@@ -22,10 +22,12 @@ else:
 
 
 class ActionsMenuMixin(_Base):
-    """Three-dot actions menu handlers for session rows."""
+    """Actions menu handlers for session rows (git menu + path menu)."""
 
-    def _show_actions_menu(self, tag: str) -> None:
-        """Show the per-row actions menu at the cursor position."""
+    # ── Git menu (server 3-dot button / server right-click) ──────────
+
+    def _show_git_menu(self, tag: str) -> None:
+        """Show the git changes menu with all three options directly."""
         project_path = self._resolve_project_path(tag)
         has_path = bool(project_path)
         has_git = has_path and self._has_git_project(tag)
@@ -34,6 +36,59 @@ class ActionsMenuMixin(_Base):
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
 
+        no_git_tip = 'No git project detected'
+
+        local_action = menu.addAction('See local changes')
+        local_action.setEnabled(has_git)
+        local_action.setToolTip(
+            'Show uncommitted changes using difftool' if has_git
+            else no_git_tip
+        )
+
+        main_action = menu.addAction('Compare to remote main branch')
+        main_action.setEnabled(has_git)
+        main_action.setToolTip(
+            'Show diff between HEAD and the default remote branch' if has_git
+            else no_git_tip
+        )
+
+        commit_action = menu.addAction('Compare to previous commit')
+        commit_action.setEnabled(has_git)
+        commit_action.setToolTip(
+            'Pick a commit and show its diff using difftool' if has_git
+            else no_git_tip
+        )
+
+        chosen = menu.exec_(QCursor.pos())
+        if not chosen or not has_git or not project_path:
+            return
+
+        if chosen == local_action:
+            self._run_git_difftool([], project_path)
+        elif chosen == main_action:
+            main_branch = self._detect_main_branch(project_path)
+            self._run_git_difftool([f'origin/{main_branch}'], project_path)
+        elif chosen == commit_action:
+            self._show_commit_picker(project_path)
+
+    # ── Path menu (path 3-dot button / path right-click) ─────────────
+
+    def _show_path_menu(self, tag: str) -> None:
+        """Show the path actions menu (Open in Terminal, Open with IDE)."""
+        project_path = self._resolve_project_path(tag)
+        has_path = bool(project_path)
+
+        menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
+
+        terminal_action = menu.addAction('Open in Terminal')
+        terminal_action.setEnabled(has_path)
+        terminal_action.setToolTip(
+            'Open default terminal and cd to project path' if has_path
+            else 'No project path available'
+        )
+
         ide_action = menu.addAction('Open with IDE')
         ide_action.setEnabled(has_path)
         ide_action.setToolTip(
@@ -41,18 +96,16 @@ class ActionsMenuMixin(_Base):
             else 'No project path available'
         )
 
-        git_action = menu.addAction('See Git Changes')
-        git_action.setEnabled(has_git)
-        git_action.setToolTip(
-            'View diffs using git difftool' if has_git
-            else 'No git project detected'
-        )
-
         chosen = menu.exec_(QCursor.pos())
-        if chosen == ide_action and has_path:
+        if not chosen or not has_path or not project_path:
+            return
+
+        if chosen == terminal_action:
+            self._open_in_terminal(tag, project_path)
+        elif chosen == ide_action:
             self._open_with_ide(tag, project_path)
-        elif chosen == git_action and has_git:
-            self._show_git_changes(tag, project_path)
+
+    # ── Helpers ───────────────────────────────────────────────────────
 
     def _resolve_project_path(self, tag: str) -> Optional[str]:
         """Resolve the project path for a session tag."""
@@ -71,6 +124,26 @@ class ActionsMenuMixin(_Base):
                 project = s.get('project', '')
                 return bool(project) and project != 'N/A'
         return False
+
+    def _open_in_terminal(self, tag: str, project_path: str) -> None:
+        """Open the default terminal and cd to the project path."""
+        default_terminal = self._prefs.get('default_terminal', '')
+
+        from claudeq.monitor.navigation import open_terminal_with_command
+
+        _path = project_path
+        _term = default_terminal
+
+        def _open() -> None:
+            open_terminal_with_command(
+                f'cd "{_path}"',
+                preferred_ide=_term or None,
+            )
+
+        worker = BackgroundCallWorker(_open, self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._show_status(f"Opening terminal for '{tag}'")
 
     def _open_with_ide(self, tag: str, project_path: str) -> None:
         """Open a file dialog to pick an .app, then open the project with it."""
@@ -109,16 +182,33 @@ class ActionsMenuMixin(_Base):
         worker.start()
         self._show_status(f"Opening {path.rsplit('/', 1)[-1]} for '{tag}'")
 
-    def _show_git_changes(self, tag: str, project_path: str) -> None:
-        """Open the Git Changes dialog."""
-        from claudeq.monitor.dialogs.git_changes_dialog import GitChangesDialog
+    def _show_commit_picker(self, project_path: str) -> None:
+        """Open commit list, then run difftool for the selected commit."""
+        from claudeq.monitor.dialogs.git_changes_dialog import CommitListDialog
 
-        dialog = GitChangesDialog(
-            project_path=project_path,
-            on_run_git=self._run_git_difftool,
-            parent=self,
-        )
-        dialog.exec_()
+        dialog = CommitListDialog(project_path, parent=self)
+        if dialog.exec_():
+            sha = dialog.selected_commit()
+            if sha:
+                self._run_git_difftool([f'{sha}~1', sha], project_path)
+
+    @staticmethod
+    def _detect_main_branch(project_path: str) -> str:
+        """Detect the default branch name (main or master)."""
+        try:
+            result = subprocess.run(
+                ['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
+                cwd=project_path,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                ref = result.stdout.strip()
+                return ref.rsplit('/', 1)[-1]
+        except Exception:
+            logger.debug("Failed to detect main branch", exc_info=True)
+        return 'master'
 
     def _run_git_difftool(self, diff_args: list, cwd: str) -> None:
         """Check for changes, then run git difftool (fire-and-forget).

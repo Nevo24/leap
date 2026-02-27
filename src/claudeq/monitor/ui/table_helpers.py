@@ -12,7 +12,54 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt
-from PyQt5.QtGui import QColor, QPen
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
+from PyQt5.QtSvg import QSvgRenderer
+
+
+_OPEN_EXTERNAL_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<path d="M384 224v184a40 40 0 0 1-40 40H104a40 40 0 0 1-40-40V168'
+    b'a40 40 0 0 1 40-40h184" fill="none" stroke="#aaa" stroke-width="44"'
+    b' stroke-linecap="round" stroke-linejoin="round"/>'
+    b'<polyline points="336 64 448 64 448 176" fill="none" stroke="#aaa"'
+    b' stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>'
+    b'<line x1="448" y1="64" x2="240" y2="272" stroke="#aaa"'
+    b' stroke-width="44" stroke-linecap="round"/>'
+    b'</svg>'
+)
+
+_GIT_BRANCH_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<circle cx="160" cy="96" r="48" fill="none" stroke="#aaa" stroke-width="40"/>'
+    b'<circle cx="352" cy="192" r="48" fill="none" stroke="#aaa" stroke-width="40"/>'
+    b'<circle cx="160" cy="416" r="48" fill="none" stroke="#aaa" stroke-width="40"/>'
+    b'<line x1="160" y1="144" x2="160" y2="368" stroke="#aaa" stroke-width="40"/>'
+    b'<path d="M160 208 C160 208 160 192 192 192 L304 192" '
+    b'fill="none" stroke="#aaa" stroke-width="40"/>'
+    b'</svg>'
+)
+
+
+def open_external_icon(size: int = 16) -> QIcon:
+    """Return a small open-external icon rendered from inline SVG."""
+    renderer = QSvgRenderer(_OPEN_EXTERNAL_SVG)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def git_branch_icon(size: int = 16) -> QIcon:
+    """Return a small git-branch icon rendered from inline SVG."""
+    renderer = QSvgRenderer(_GIT_BRANCH_SVG)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
 
 
 # Template UI strings (single source of truth for labels, tooltips, hints).
