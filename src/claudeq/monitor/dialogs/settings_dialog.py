@@ -1,7 +1,9 @@
 """Settings dialog for ClaudeQ Monitor."""
 
+import glob
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -67,6 +69,54 @@ def _detect_installed_terminals() -> list[str]:
         ('Warp', [Path('/Applications/Warp.app'), home / 'Applications' / 'Warp.app']),
     ]
     return [name for name, paths in candidates if any(p.is_dir() for p in paths)]
+
+
+# JetBrains IDEs to search, in priority order (PyCharm first).
+# Each entry: (glob pattern, CLI binary name inside Contents/MacOS/).
+_DIFFTOOL_SEARCH_ORDER: list[tuple[str, str]] = [
+    ('PyCharm*.app', 'pycharm'),
+    ('IntelliJ*.app', 'idea'),
+    ('GoLand*.app', 'goland'),
+    ('WebStorm*.app', 'webstorm'),
+    ('PhpStorm*.app', 'phpstorm'),
+    ('CLion*.app', 'clion'),
+    ('RubyMine*.app', 'rubymine'),
+    ('DataGrip*.app', 'datagrip'),
+    ('Rider*.app', 'rider'),
+]
+
+_DIFFTOOL_APP_DIRS: list[str] = [
+    '/Applications',
+    os.path.expanduser('~/Applications'),
+]
+
+
+def detect_default_difftool() -> str:
+    """Auto-detect a JetBrains diff tool on first launch.
+
+    Returns the full CLI binary path (e.g. /Applications/PyCharm.app/Contents/MacOS/pycharm)
+    or '' if the user already has a git difftool configured or no JetBrains IDE is found.
+    """
+    # If the user already configured a difftool in git, respect their choice.
+    try:
+        result = subprocess.run(
+            ['git', 'config', 'diff.tool'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return ''
+    except Exception:
+        pass
+
+    # Search for JetBrains IDEs in priority order.
+    for app_pattern, binary_name in _DIFFTOOL_SEARCH_ORDER:
+        for app_dir in _DIFFTOOL_APP_DIRS:
+            for app_path in sorted(glob.glob(f'{app_dir}/{app_pattern}')):
+                binary = Path(app_path) / 'Contents' / 'MacOS' / binary_name
+                if binary.is_file():
+                    return str(binary)
+
+    return ''
 
 
 class SettingsDialog(QDialog):

@@ -102,6 +102,10 @@ class MonitorWindow(
         self._tracked_tags: set[str] = set()
         self._checking_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
+        if 'default_diff_tool' not in self._prefs:
+            from claudeq.monitor.dialogs.settings_dialog import detect_default_difftool
+            self._prefs['default_diff_tool'] = detect_default_difftool()
+            save_monitor_prefs(self._prefs)
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._starting_tags: set[str] = set()  # guard against double-click server start
