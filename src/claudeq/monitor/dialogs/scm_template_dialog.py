@@ -42,8 +42,9 @@ class _MessageCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
+        self.setObjectName('messageCard')
         self.setStyleSheet(
-            'QFrame { border: 1px solid #555; border-radius: 4px; '
+            'QFrame#messageCard { border: 1px solid #555; border-radius: 4px; '
             'padding: 4px; margin: 2px 0px; }'
         )
 
@@ -74,7 +75,7 @@ class _MessageCard(QFrame):
         self._text_edit.setPlaceholderText(f'Message {index + 1} content...')
         self._text_edit.setPlainText(text)
         self._text_edit.setFixedHeight(80)
-        self._text_edit.setStyleSheet('border: 1px solid #444; border-radius: 2px;')
+        self._text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._text_edit.textChanged.connect(
             lambda: on_text_changed(self._text_edit.toPlainText())
         )
@@ -100,7 +101,7 @@ class TemplateEditorDialog(QDialog):
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Edit Presets')
-        self.resize(550, 500)
+        self.resize(780, 500)
 
         self._current_name: str = ''
         self._refreshing: bool = False

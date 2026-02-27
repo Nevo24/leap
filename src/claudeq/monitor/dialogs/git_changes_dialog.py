@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtGui import QTextDocument
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class _CommitItemWidget(QWidget):
                     ref_parts.append(f'<span style="color: #98c379;">{r}</span>')
             commit_html += f' <span style="font-size: 11px;">({", ".join(ref_parts)})</span>'
         commit_label = QLabel(commit_html)
+        commit_label.setWordWrap(False)
         layout.addWidget(commit_label)
 
         # Line 2: Author
@@ -107,8 +109,26 @@ class _CommitItemWidget(QWidget):
                 for f in files
             )
             files_label = QLabel(files_html)
+            files_label.setWordWrap(False)
             files_label.setContentsMargins(16, 2, 0, 0)
             layout.addWidget(files_label)
+
+        # Compute true width from richtext labels for proper horizontal scroll
+        margins = layout.contentsMargins()
+        pad = margins.left() + margins.right() + 20  # extra for frame border/padding
+        max_w = 0
+        for i in range(layout.count()):
+            w = layout.itemAt(i).widget()
+            if isinstance(w, QLabel) and not w.wordWrap():
+                doc = QTextDocument()
+                doc.setHtml(w.text())
+                doc.setDefaultFont(w.font())
+                max_w = max(max_w, int(doc.idealWidth()))
+        self._ideal_width = max_w + pad
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        return QSize(max(hint.width(), self._ideal_width), hint.height())
 
 
 class CommitListDialog(QDialog):
@@ -123,7 +143,7 @@ class CommitListDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle('Select Commit')
-        self.resize(700, 500)
+        self.resize(780, 500)
         self._project_path = project_path
         self._selected_commit: Optional[str] = None
         self._commits: list[str] = []  # SHA list parallel to list items
@@ -135,6 +155,8 @@ class CommitListDialog(QDialog):
 
         self._list = QListWidget()
         self._list.setSpacing(6)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._list.setResizeMode(QListWidget.Fixed)
         self._list.setStyleSheet(
             'QListWidget { background: #1e1e1e; border: none; }'
             'QListWidget::item { border: none; padding: 2px; }'
@@ -221,7 +243,7 @@ class CommitListDialog(QDialog):
                     author_email, date_abs, date_rel, refs, files,
                 )
                 item = QListWidgetItem(self._list)
-                item.setSizeHint(QSize(0, widget.sizeHint().height() + 6))
+                item.setSizeHint(widget.sizeHint() + QSize(0, 6))
                 self._list.setItemWidget(item, widget)
                 self._commits.append(sha)
                 count += 1
