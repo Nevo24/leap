@@ -131,9 +131,16 @@ class MRTrackingMixin(_Base):
         worker.configure(provider, tag, scm_project_path, scm_branch)
         worker.result_ready.connect(self._on_tracking_result)
         worker.error.connect(self._on_tracking_error)
+        worker.finished.connect(self._on_oneshot_cleanup)
         worker.finished.connect(worker.deleteLater)
         self._scm_oneshot_worker = worker
         worker.start()
+
+    def _on_oneshot_cleanup(self) -> None:
+        """Clear the oneshot worker reference after it finishes."""
+        worker = self.sender()
+        if self._scm_oneshot_worker is worker:
+            self._scm_oneshot_worker = None
 
     def _stop_tracking(self, tag: str, _skip_prompt: bool = False) -> None:
         """Stop MR tracking for a session.
@@ -239,8 +246,9 @@ class MRTrackingMixin(_Base):
 
     def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
         """Handle the result of a one-shot MR check."""
-        self._set_busy(False)
         self._checking_tags.discard(tag)
+        if not self._checking_tags:
+            self._set_busy(False)
         silent = tag in self._silent_tracking_tags
         self._silent_tracking_tags.discard(tag)
 
@@ -295,8 +303,9 @@ class MRTrackingMixin(_Base):
 
     def _on_tracking_error(self, tag: str, message: str) -> None:
         """Handle an error from a one-shot MR check."""
-        self._set_busy(False)
         self._checking_tags.discard(tag)
+        if not self._checking_tags:
+            self._set_busy(False)
         silent = tag in self._silent_tracking_tags
         self._silent_tracking_tags.discard(tag)
         self._pending_tracking_context.pop(tag, None)
