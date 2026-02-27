@@ -75,7 +75,11 @@ class ActionsMenuMixin(_Base):
     def _open_with_ide(self, tag: str, project_path: str) -> None:
         """Open a file dialog to pick an .app, then open the project with it."""
         last_app = self._prefs.get('last_ide_app', '')
-        start_dir = str(last_app).rsplit('/', 1)[0] if last_app else '/Applications'
+        if last_app:
+            start_dir = str(last_app).rsplit('/', 1)[0]
+        else:
+            home_apps = os.path.expanduser('~/Applications')
+            start_dir = home_apps if os.path.isdir(home_apps) else '/Applications'
 
         path, _ = QFileDialog.getOpenFileName(
             self,

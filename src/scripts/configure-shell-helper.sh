@@ -77,12 +77,21 @@ echo "" >> "$RC_FILE"
 echo "# Add JetBrains IDE CLI tools to PATH for monitor support" >> "$RC_FILE"
 JETBRAINS_PATHS=""
 for pattern in IntelliJ PyCharm WebStorm PhpStorm GoLand RubyMine CLion DataGrip Rider Fleet; do
-    for app in /Applications/${pattern}*.app; do
-        if [ -d "$app/Contents/MacOS" ]; then
-            JETBRAINS_PATHS="$JETBRAINS_PATHS:$app/Contents/MacOS"
-        fi
+    # Search both /Applications (standalone) and ~/Applications (JetBrains Toolbox)
+    for app_dir in /Applications "$HOME/Applications"; do
+        for app in "$app_dir"/${pattern}*.app; do
+            if [ -d "$app/Contents/MacOS" ]; then
+                JETBRAINS_PATHS="$JETBRAINS_PATHS:$app/Contents/MacOS"
+            fi
+        done
     done
 done
+
+# JetBrains Toolbox shell scripts directory
+TOOLBOX_SCRIPTS="$HOME/Library/Application Support/JetBrains/Toolbox/scripts"
+if [ -d "$TOOLBOX_SCRIPTS" ]; then
+    JETBRAINS_PATHS="$JETBRAINS_PATHS:$TOOLBOX_SCRIPTS"
+fi
 
 if [ -n "$JETBRAINS_PATHS" ]; then
     echo "export PATH=\"\$PATH$JETBRAINS_PATHS\"" >> "$RC_FILE"

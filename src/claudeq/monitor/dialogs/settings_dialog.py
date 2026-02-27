@@ -41,6 +41,7 @@ _JETBRAINS_BINARY: dict[str, str] = {
     'IntelliJ IDEA CE': 'idea',
     'IntelliJ IDEA': 'idea',
     'IntelliJ IDEA Ultimate': 'idea',
+    'IntelliJ IDEA Community Edition': 'idea',
     'PyCharm': 'pycharm',
     'PyCharm CE': 'pycharm',
     'PyCharm Community Edition': 'pycharm',
@@ -189,8 +190,10 @@ class SettingsDialog(QDialog):
         2. JetBrains IDE → store full CLI binary path (used via --extcmd)
         3. Unknown → show help with available tool names
         """
+        home_apps = os.path.expanduser('~/Applications')
+        start_dir = home_apps if os.path.isdir(home_apps) else '/Applications'
         path, _ = QFileDialog.getOpenFileName(
-            self, 'Select Diff Application', '/Applications',
+            self, 'Select Diff Application', start_dir,
             'Applications (*.app);;All Files (*)',
         )
         if not path:
