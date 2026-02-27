@@ -62,6 +62,28 @@ def git_branch_icon(size: int = 16) -> QIcon:
     return QIcon(pixmap)
 
 
+_SEND_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<path d="M464 48L48 240l168 64 184-208-144 248 64 120z"'
+    b' fill="none" stroke="#aaa" stroke-width="40"'
+    b' stroke-linejoin="round" stroke-linecap="round"/>'
+    b'<line x1="216" y1="304" x2="400" y2="96"'
+    b' stroke="#aaa" stroke-width="40" stroke-linecap="round"/>'
+    b'</svg>'
+)
+
+
+def send_icon(size: int = 16) -> QIcon:
+    """Return a small paper-plane send icon rendered from inline SVG."""
+    renderer = QSvgRenderer(_SEND_SVG)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pixmap)
+
+
 # Template UI strings (single source of truth for labels, tooltips, hints).
 MR_TEMPLATE_LABEL = 'MR thread context:'
 MR_TEMPLATE_TOOLTIP = 'Context attached to every MR thread message sent to CQ (single-message only)'

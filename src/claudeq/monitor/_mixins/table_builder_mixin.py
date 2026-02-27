@@ -31,7 +31,7 @@ from claudeq.monitor.ui.table_helpers import (
     ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
     MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
-    git_branch_icon, open_external_icon,
+    git_branch_icon, open_external_icon, send_icon,
 )
 
 if TYPE_CHECKING:
@@ -370,10 +370,11 @@ class TableBuilderMixin(_Base):
                         dq_label.setAlignment(Qt.AlignCenter)
                         dq_layout.addWidget(dq_label, 1)
 
-                        dq_action_btn = QPushButton('\u25b6')
+                        dq_action_btn = QPushButton()
+                        dq_action_btn.setIcon(send_icon(14))
                         dq_action_btn.setFixedSize(
                             24, dq_action_btn.sizeHint().height())
-                        dq_action_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                        dq_action_btn.setStyleSheet(MENU_BTN_STYLE)
                         dq_action_btn.setEnabled(False)
                         dq_action_btn.setToolTip('Send options (server offline)')
                         dq_layout.addWidget(
@@ -447,13 +448,11 @@ class TableBuilderMixin(_Base):
                         q_label.setAlignment(Qt.AlignCenter)
                         q_layout.addWidget(q_label, 1)
 
-                        q_action_btn = QPushButton('\u25b6')
+                        q_action_btn = QPushButton()
+                        q_action_btn.setIcon(send_icon(14))
                         q_action_btn.setFixedSize(
                             24, q_action_btn.sizeHint().height())
-                        q_action_btn.setStyleSheet(
-                            'QPushButton { color: #00ff00; font-size: 11px; padding: 0 0 2px 0; }'
-                            'QPushButton:hover { color: #00cc00; font-weight: bold; }'
-                        )
+                        q_action_btn.setStyleSheet(MENU_BTN_STYLE)
                         q_action_btn.setToolTip('Send options')
                         q_action_btn.clicked.connect(
                             lambda checked, btn=q_action_btn, t=tag:
