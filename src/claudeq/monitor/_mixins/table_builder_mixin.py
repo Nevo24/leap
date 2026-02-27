@@ -32,7 +32,7 @@ from claudeq.monitor.ui.table_helpers import (
     MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
     HoverIconButton,
-    _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _SEND_SVG,
+    _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _SEND_SVG, _THREE_DOT_SVG,
 )
 
 if TYPE_CHECKING:
@@ -352,10 +352,10 @@ class TableBuilderMixin(_Base):
                         dq_layout.setContentsMargins(0, 0, 0, 0)
                         dq_layout.setSpacing(2)
 
-                        dq_menu_btn = QPushButton('\u25be')
+                        dq_menu_btn = HoverIconButton(_THREE_DOT_SVG, 14)
                         dq_menu_btn.setFixedSize(
                             24, dq_menu_btn.sizeHint().height())
-                        dq_menu_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                        dq_menu_btn.setStyleSheet(MENU_BTN_STYLE)
                         dq_menu_btn.setToolTip('Queue options')
                         dq_menu_btn.clicked.connect(
                             lambda checked, btn=dq_menu_btn, t=tag:
@@ -429,10 +429,10 @@ class TableBuilderMixin(_Base):
                         q_layout.setContentsMargins(0, 0, 0, 0)
                         q_layout.setSpacing(2)
 
-                        q_menu_btn = QPushButton('\u25be')
+                        q_menu_btn = HoverIconButton(_THREE_DOT_SVG, 14)
                         q_menu_btn.setFixedSize(
                             24, q_menu_btn.sizeHint().height())
-                        q_menu_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                        q_menu_btn.setStyleSheet(MENU_BTN_STYLE)
                         q_menu_btn.setToolTip('Queue options')
                         q_menu_btn.clicked.connect(
                             lambda checked, btn=q_menu_btn, t=tag:

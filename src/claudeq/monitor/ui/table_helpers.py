@@ -40,6 +40,14 @@ _GIT_BRANCH_SVG = (
 )
 
 
+_THREE_DOT_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<circle cx="256" cy="96" r="48" fill="#aaa"/>'
+    b'<circle cx="256" cy="256" r="48" fill="#aaa"/>'
+    b'<circle cx="256" cy="416" r="48" fill="#aaa"/>'
+    b'</svg>'
+)
+
 _SEND_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
     b'<path d="M464 48L48 240l168 64 184-208-144 248 64 120z"'
