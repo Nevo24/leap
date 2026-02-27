@@ -63,7 +63,7 @@ make uninstall-slack-app   # Remove Slack integration
 ## Updating
 
 ```bash
-make update
+claudeq --update
 ```
 
 This will:
@@ -75,18 +75,6 @@ This will:
 - Update IDE and Claude Code hook configurations
 - Optionally update shell configuration (prompts first)
 - **Preserve all your data** (queues, history, settings in `.storage/`)
-
-**Note:** `make update` requires a prior `make install`. If you have uncommitted changes, commit or stash them first.
-
-```bash
-make update          # Full update (recommended)
-make update-deps     # Update Python packages only (no git pull)
-```
-
-After updating, reload your shell if the configuration was updated:
-```bash
-source ~/.zshrc  # or ~/.bashrc for bash
-```
 
 ## Usage
 
@@ -168,7 +156,8 @@ The monitor shows:
 - Dock badge notifications when sessions finish processing or MR status changes
 - **macOS banner notifications** — opt-in banners for MR changes, approvals, and session completions (requires enabling in macOS System Settings > Notifications > ClaudeQ Monitor)
 - **Presets** — configure MR thread context and message bundle templates
-- **Per-row actions menu (⋮)** — right-click or click ⋮ next to Server to open a project with any IDE or view git changes (local diff, diff vs main, diff of a specific commit) using your preferred difftool
+- **Git changes** — click the git icon or right-click in the Server Branch column to view diffs (local, vs main, vs a specific commit) using your preferred difftool
+- **Path actions** — click the open icon or right-click in the Path column to open the project in a terminal or IDE
 - **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, git diff tool, notifications, and clean up unused repos
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2, Warp
@@ -345,8 +334,7 @@ Images are sent to Claude CLI using the `@path` syntax with a required trailing 
 | `make install` | Full install (core + prompts for Monitor & Slack) |
 | `make install-monitor` | Install Monitor GUI separately |
 | `make install-slack-app` | Install Slack integration separately |
-| `make update` | Pull latest code + update all installed components |
-| `make update-deps` | Update Python packages only (no git pull) |
+| `claudeq --update` | Pull latest code + update all installed components |
 
 ### Development & Testing
 
