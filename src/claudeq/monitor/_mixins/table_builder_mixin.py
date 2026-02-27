@@ -31,7 +31,8 @@ from claudeq.monitor.ui.table_helpers import (
     ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
     MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
-    git_branch_icon, open_external_icon, send_icon,
+    HoverIconButton,
+    _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _SEND_SVG,
 )
 
 if TYPE_CHECKING:
@@ -166,8 +167,7 @@ class TableBuilderMixin(_Base):
             )
         path_layout.addWidget(path_label, 1)
 
-        path_menu_btn = QPushButton()
-        path_menu_btn.setIcon(open_external_icon(14))
+        path_menu_btn = HoverIconButton(_OPEN_EXTERNAL_SVG, 14)
         path_menu_btn.setFixedSize(22, path_menu_btn.sizeHint().height())
         path_menu_btn.setStyleSheet(MENU_BTN_STYLE)
         path_menu_btn.setToolTip('Open in Terminal / IDE' if has_path
@@ -212,8 +212,7 @@ class TableBuilderMixin(_Base):
             )
         branch_layout.addWidget(branch_label, 1)
 
-        git_btn = QPushButton()
-        git_btn.setIcon(git_branch_icon(14))
+        git_btn = HoverIconButton(_GIT_BRANCH_SVG, 14)
         git_btn.setFixedSize(22, git_btn.sizeHint().height())
         git_btn.setStyleSheet(MENU_BTN_STYLE)
         git_btn.setToolTip('Git Changes' if has_git
@@ -370,8 +369,7 @@ class TableBuilderMixin(_Base):
                         dq_label.setAlignment(Qt.AlignCenter)
                         dq_layout.addWidget(dq_label, 1)
 
-                        dq_action_btn = QPushButton()
-                        dq_action_btn.setIcon(send_icon(14))
+                        dq_action_btn = HoverIconButton(_SEND_SVG, 14)
                         dq_action_btn.setFixedSize(
                             24, dq_action_btn.sizeHint().height())
                         dq_action_btn.setStyleSheet(MENU_BTN_STYLE)
@@ -448,8 +446,7 @@ class TableBuilderMixin(_Base):
                         q_label.setAlignment(Qt.AlignCenter)
                         q_layout.addWidget(q_label, 1)
 
-                        q_action_btn = QPushButton()
-                        q_action_btn.setIcon(send_icon(14))
+                        q_action_btn = HoverIconButton(_SEND_SVG, 14)
                         q_action_btn.setFixedSize(
                             24, q_action_btn.sizeHint().height())
                         q_action_btn.setStyleSheet(MENU_BTN_STYLE)

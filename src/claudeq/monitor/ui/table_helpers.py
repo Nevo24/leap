@@ -4,12 +4,12 @@ Contains separator delegates, header views, tooltip overrides, and
 column-group boundary constants extracted from app.py.
 """
 
-from typing import Any
+from typing import Any, Optional
 
 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QHeaderView, QProxyStyle, QStyle, QStyledItemDelegate,
-    QWidget,
+    QApplication, QHeaderView, QPushButton, QProxyStyle, QStyle,
+    QStyledItemDelegate, QWidget,
 )
 from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
@@ -40,28 +40,6 @@ _GIT_BRANCH_SVG = (
 )
 
 
-def open_external_icon(size: int = 16) -> QIcon:
-    """Return a small open-external icon rendered from inline SVG."""
-    renderer = QSvgRenderer(_OPEN_EXTERNAL_SVG)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    renderer.render(painter)
-    painter.end()
-    return QIcon(pixmap)
-
-
-def git_branch_icon(size: int = 16) -> QIcon:
-    """Return a small git-branch icon rendered from inline SVG."""
-    renderer = QSvgRenderer(_GIT_BRANCH_SVG)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    renderer.render(painter)
-    painter.end()
-    return QIcon(pixmap)
-
-
 _SEND_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
     b'<path d="M464 48L48 240l168 64 184-208-144 248 64 120z"'
@@ -72,16 +50,53 @@ _SEND_SVG = (
     b'</svg>'
 )
 
+_HOVER_COLOR = b'#ff4444'
 
-def send_icon(size: int = 16) -> QIcon:
-    """Return a small paper-plane send icon rendered from inline SVG."""
-    renderer = QSvgRenderer(_SEND_SVG)
+
+def _render_svg(svg_data: bytes, size: int, color: bytes = b'#aaa') -> QIcon:
+    """Render SVG bytes into a QIcon, replacing #aaa with *color*."""
+    colored = svg_data.replace(b'#aaa', color).replace(b'#888', color)
+    renderer = QSvgRenderer(colored)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     renderer.render(painter)
     painter.end()
     return QIcon(pixmap)
+
+
+class HoverIconButton(QPushButton):
+    """QPushButton that swaps to a red icon on hover."""
+
+    def __init__(self, svg_data: bytes, size: int = 14,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._normal_icon = _render_svg(svg_data, size)
+        self._hover_icon = _render_svg(svg_data, size, _HOVER_COLOR)
+        self.setIcon(self._normal_icon)
+
+    def enterEvent(self, event: Any) -> None:
+        self.setIcon(self._hover_icon)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        self.setIcon(self._normal_icon)
+        super().leaveEvent(event)
+
+
+def open_external_icon(size: int = 16) -> QIcon:
+    """Return a small open-external icon."""
+    return _render_svg(_OPEN_EXTERNAL_SVG, size)
+
+
+def git_branch_icon(size: int = 16) -> QIcon:
+    """Return a small git-branch icon."""
+    return _render_svg(_GIT_BRANCH_SVG, size)
+
+
+def send_icon(size: int = 16) -> QIcon:
+    """Return a small paper-plane send icon."""
+    return _render_svg(_SEND_SVG, size)
 
 
 # Template UI strings (single source of truth for labels, tooltips, hints).
