@@ -794,9 +794,16 @@ class TableBuilderMixin(_Base):
         self._refresh_worker.start()
 
     def _on_refresh_worker_finished(self) -> None:
-        """Clean up the refresh worker reference after it completes."""
-        if self._refresh_worker:
-            self._refresh_worker.deleteLater()
+        """Clean up the refresh worker reference after it completes.
+
+        Uses sender() to identify the actual worker that emitted ``finished``,
+        avoiding a race where a *new* worker has already replaced
+        ``self._refresh_worker`` (e.g. after sleep/wake timer bursts).
+        """
+        worker = self.sender()
+        if worker is not None:
+            worker.deleteLater()
+        if self._refresh_worker is worker:
             self._refresh_worker = None
 
     def _on_sessions_refreshed(self, sessions: list) -> None:

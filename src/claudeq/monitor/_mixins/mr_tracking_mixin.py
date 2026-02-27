@@ -325,12 +325,18 @@ class MRTrackingMixin(_Base):
                 self._show_status(f"SCM poll stuck for {elapsed:.0f}s — force-reset")
                 self._scm_polling = False
                 if self._scm_worker:
+                    old_worker = self._scm_worker
                     try:
-                        self._scm_worker.results_ready.disconnect()
-                        self._scm_worker.notifications_ready.disconnect()
-                        self._scm_worker.finished.disconnect()
+                        old_worker.results_ready.disconnect()
+                        old_worker.notifications_ready.disconnect()
+                        old_worker.finished.disconnect()
                     except (TypeError, RuntimeError):
                         pass  # Already disconnected or deleted
+                    # Schedule cleanup once the stuck thread eventually finishes.
+                    # deleteLater() is safe here: it won't fire until the event
+                    # loop processes it, and by then _on_scm_worker_finished
+                    # (now disconnected) won't interfere.
+                    old_worker.finished.connect(old_worker.deleteLater)
                     self._scm_worker = None
             else:
                 return
@@ -365,11 +371,18 @@ class MRTrackingMixin(_Base):
         worker.start()
 
     def _on_scm_worker_finished(self) -> None:
-        """Clean up after poller worker completes."""
+        """Clean up after poller worker completes.
+
+        Uses sender() to identify the actual worker that emitted ``finished``,
+        avoiding a race where the stuck-poll safeguard has already replaced
+        ``self._scm_worker`` with a new instance.
+        """
+        worker = self.sender()
         logger.debug("SCM poll worker finished")
-        self._scm_polling = False
-        if self._scm_worker:
-            self._scm_worker.deleteLater()
+        if worker is not None:
+            worker.deleteLater()
+        if self._scm_worker is worker:
+            self._scm_polling = False
             self._scm_worker = None
 
     def _on_scm_results(self, results: dict[str, MRStatus]) -> None:
@@ -443,6 +456,10 @@ class MRTrackingMixin(_Base):
         Uses ``_combined_send`` flag to decide which Phase 2 worker to launch.
         """
         provider = self._collect_threads_worker.provider if self._collect_threads_worker else None
+        # Clean up the collect worker now that Phase 1 is done
+        if self._collect_threads_worker:
+            self._collect_threads_worker.deleteLater()
+            self._collect_threads_worker = None
 
         if not commands or not provider:
             self._set_busy(False)
@@ -496,6 +513,9 @@ class MRTrackingMixin(_Base):
 
     def _on_send_threads_finished(self, sent_count: int, matched_tag: str) -> None:
         """Handle Phase 2 completion."""
+        if self._send_threads_worker:
+            self._send_threads_worker.deleteLater()
+            self._send_threads_worker = None
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
         if sent_count > 0:
@@ -514,6 +534,12 @@ class MRTrackingMixin(_Base):
 
     def _on_send_threads_error(self, message: str) -> None:
         """Handle error from either background worker."""
+        # Clean up whichever worker(s) are still alive
+        for attr in ('_collect_threads_worker', '_send_threads_worker', '_send_combined_worker'):
+            worker = getattr(self, attr, None)
+            if worker is not None:
+                worker.deleteLater()
+                setattr(self, attr, None)
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
         self._show_status(f"Thread send error: {message}")
@@ -588,6 +614,9 @@ class MRTrackingMixin(_Base):
 
     def _on_send_combined_finished(self, thread_count: int, matched_tag: str) -> None:
         """Handle combined send completion."""
+        if self._send_combined_worker:
+            self._send_combined_worker.deleteLater()
+            self._send_combined_worker = None
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
         if thread_count > 0:
