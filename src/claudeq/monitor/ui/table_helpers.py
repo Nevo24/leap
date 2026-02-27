@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QApplication, QHeaderView, QPushButton, QProxyStyle, QStyle,
     QStyledItemDelegate, QWidget,
 )
-from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt
+from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
 from PyQt5.QtSvg import QSvgRenderer
 
@@ -82,14 +82,29 @@ class HoverIconButton(QPushButton):
         self._normal_icon = _render_svg(svg_data, size)
         self._hover_icon = _render_svg(svg_data, size, _HOVER_COLOR)
         self.setIcon(self._normal_icon)
+        self._hover_timer = QTimer(self)
+        self._hover_timer.timeout.connect(self._check_hover)
 
     def enterEvent(self, event: Any) -> None:
         self.setIcon(self._hover_icon)
+        self._hover_timer.start(150)
         super().enterEvent(event)
 
     def leaveEvent(self, event: Any) -> None:
-        self.setIcon(self._normal_icon)
+        self._reset()
         super().leaveEvent(event)
+
+    def _reset(self) -> None:
+        self._hover_timer.stop()
+        self.setIcon(self._normal_icon)
+
+    def _check_hover(self) -> None:
+        if QApplication.activePopupWidget():
+            return  # menu is open — stay red
+        from PyQt5.QtGui import QCursor
+        local_pos = self.mapFromGlobal(QCursor.pos())
+        if not self.rect().contains(local_pos):
+            self._reset()
 
 
 def open_external_icon(size: int = 16) -> QIcon:
