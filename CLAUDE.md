@@ -63,6 +63,7 @@ src/
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   │
     │   ├── _mixins/             # MonitorWindow mixin classes
+    │   │   ├── actions_menu_mixin.py  # Per-row ⋮ actions menu (Open IDE, Git Changes)
     │   │   ├── scm_config_mixin.py    # SCM provider init, setup dialogs, toggles
     │   │   ├── session_mixin.py       # Session merge, navigate, close, delete
     │   │   ├── mr_tracking_mixin.py   # MR tracking, polling, thread send, add-row
@@ -71,7 +72,8 @@ src/
     │   │   └── table_builder_mixin.py # Table build, refresh, settings
     │   │
     │   ├── dialogs/             # Dialog windows
-    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, cleanup)
+    │   │   ├── git_changes_dialog.py  # Git diff viewer (local, commit, vs main)
+    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, cleanup)
     │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
@@ -128,6 +130,9 @@ assets/
 | `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
 | `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking + user notifications |
 | `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
+| `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Per-row ⋮ menu (Open IDE, Git Changes, difftool) |
+| `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
+| `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |

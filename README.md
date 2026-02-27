@@ -168,7 +168,8 @@ The monitor shows:
 - Dock badge notifications when sessions finish processing or MR status changes
 - **macOS banner notifications** — opt-in banners for MR changes, approvals, and session completions (requires enabling in macOS System Settings > Notifications > ClaudeQ Monitor)
 - **Presets** — configure MR thread context and message bundle templates
-- **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, notifications, and clean up unused repos
+- **Per-row actions menu (⋮)** — right-click or click ⋮ next to Server to open a project with any IDE or view git changes (local diff, diff vs main, diff of a specific commit) using your preferred difftool
+- **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, git diff tool, notifications, and clean up unused repos
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2, Warp
 

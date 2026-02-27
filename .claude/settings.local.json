@@ -35,7 +35,9 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd GitLab MR tracking to monitor\n\n- New MR column with pulsing indicator for unresponded threads\n- Bot comment filtering with user toggle\n- Emoji reaction detection as acknowledgment\n- GitLab setup dialog with configurable poll interval\n- Thread-level comment tracking \\(ignores own comments/bots\\)\n- Auto-connects on startup, persists preferences\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git rm:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(poetry run pytest tests/ -v 2>&1 | tail -5)",
+      "Bash(grep -n \"_merge_sessions\" src/claudeq/monitor/_mixins/*.py)"
     ]
   }
 }

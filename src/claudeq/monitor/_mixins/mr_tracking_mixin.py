@@ -247,8 +247,7 @@ class MRTrackingMixin(_Base):
     def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
         """Handle the result of a one-shot MR check."""
         self._checking_tags.discard(tag)
-        if not self._checking_tags:
-            self._set_busy(False)
+        self._set_busy(False)
         silent = tag in self._silent_tracking_tags
         self._silent_tracking_tags.discard(tag)
 
@@ -304,8 +303,7 @@ class MRTrackingMixin(_Base):
     def _on_tracking_error(self, tag: str, message: str) -> None:
         """Handle an error from a one-shot MR check."""
         self._checking_tags.discard(tag)
-        if not self._checking_tags:
-            self._set_busy(False)
+        self._set_busy(False)
         silent = tag in self._silent_tracking_tags
         self._silent_tracking_tags.discard(tag)
         self._pending_tracking_context.pop(tag, None)

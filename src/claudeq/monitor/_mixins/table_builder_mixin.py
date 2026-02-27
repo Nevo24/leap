@@ -29,8 +29,8 @@ from claudeq.monitor.scm_polling import SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
     ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
-    MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP, QUICK_MSG_SEND_AT_END,
-    QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
+    MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
+    QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
 )
 
 if TYPE_CHECKING:
@@ -443,7 +443,21 @@ class TableBuilderMixin(_Base):
                             lambda checked, t=tag:
                                 self._focus_session(t, 'server')
                         )
+                    server_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+                    server_btn.customContextMenuRequested.connect(
+                        lambda _pos, t=tag: self._show_actions_menu(t)
+                    )
                     server_layout.addWidget(server_btn)
+
+                    # Three-dot actions menu button
+                    menu_btn = QPushButton('\u22ee')  # ⋮
+                    menu_btn.setFixedSize(20, menu_btn.sizeHint().height())
+                    menu_btn.setStyleSheet(MENU_BTN_STYLE)
+                    menu_btn.setToolTip('Actions')
+                    menu_btn.clicked.connect(
+                        lambda checked, t=tag: self._show_actions_menu(t))
+                    server_layout.addWidget(menu_btn, 0, Qt.AlignVCenter)
+
                     self._set_cell_widget(row, self.COL_SERVER,
                                           server_container)
                     self._cache_cell(tag, 'server', srv_state,
@@ -837,6 +851,7 @@ class TableBuilderMixin(_Base):
             show_tooltips=self._prefs.get('show_tooltips', True),
             notification_prefs=get_notification_prefs(self._prefs),
             current_auto_send_mode=server_settings.get('auto_send_mode', 'pause'),
+            current_diff_tool=self._prefs.get('default_diff_tool', ''),
             parent=self,
         )
         if dialog.exec_():
@@ -844,6 +859,7 @@ class TableBuilderMixin(_Base):
             self._prefs['repos_dir'] = dialog.selected_repos_dir()
             self._prefs['show_tooltips'] = dialog.show_tooltips()
             self._prefs['notifications'] = dialog.notification_prefs()
+            self._prefs['default_diff_tool'] = dialog.selected_diff_tool()
             save_monitor_prefs(self._prefs)
             # Save auto-send mode to server settings (read by new servers)
             server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()

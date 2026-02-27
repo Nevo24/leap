@@ -48,6 +48,10 @@ ACTIVE_BTN_STYLE = (
     'QPushButton { color: #00ff00; } '
     'QToolTip { color: #e0e0e0; }'
 )
+MENU_BTN_STYLE = (
+    'QPushButton { color: #aaa; font-size: 14px; padding: 0; }'
+    'QPushButton:hover { color: #ffffff; }'
+)
 
 # Column group boundaries for vertical separators.
 # Groups: [X, Tag, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]

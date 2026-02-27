@@ -41,6 +41,7 @@ from claudeq.monitor.ui.table_helpers import (
 from claudeq.monitor.ui.ui_widgets import PulsingLabel, IndicatorLabel
 
 from claudeq.slack.config import is_slack_installed
+from claudeq.monitor._mixins.actions_menu_mixin import ActionsMenuMixin
 from claudeq.monitor._mixins.scm_config_mixin import SCMConfigMixin
 from claudeq.monitor._mixins.session_mixin import SessionMixin
 from claudeq.monitor._mixins.mr_tracking_mixin import MRTrackingMixin
@@ -52,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 class MonitorWindow(
+    ActionsMenuMixin,
     SCMConfigMixin,
     SessionMixin,
     MRTrackingMixin,
