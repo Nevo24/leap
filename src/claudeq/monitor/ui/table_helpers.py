@@ -160,13 +160,64 @@ MENU_BTN_STYLE = (
     'QPushButton:hover { color: #ffffff; }'
 )
 
-# Column group boundaries for vertical separators.
+# Column groups for vertical separators.
 # Groups: [X, Tag, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]
+COLUMN_GROUPS: list[list[int]] = [
+    [0, 1, 2],          # Info
+    [3, 4, 5, 6, 7],    # Server
+    [8],                 # Client
+    [9],                 # Slack
+    [10, 11],            # MR
+]
+
+# Precomputed: column index → group index (for fast lookup)
+_COL_TO_GROUP: dict[int, int] = {
+    col: gi for gi, group in enumerate(COLUMN_GROUPS) for col in group
+}
+
+# Legacy constants kept for backward compatibility (used by _set_cell_widget static fallback)
 GROUP_BOUNDARY_COLS = frozenset({0, 2, 7, 8, 9})    # Solid white (between groups)
 INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 6, 10})   # Semi-transparent white (within groups)
 
 BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
 BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)
+
+# Border type constants returned by column_border_type()
+BORDER_NONE = 0
+BORDER_GROUP = 1    # Solid white — between groups
+BORDER_INTRA = 2    # Semi-transparent — within a group
+
+
+def column_border_type(col: int, table: Any) -> int:
+    """Return the border type for a column's right edge given current visibility.
+
+    Examines which columns are hidden to decide dynamically whether *col*
+    sits at a group boundary, inside a group, or at the very last visible
+    column (no border).
+    """
+    gi = _COL_TO_GROUP.get(col)
+    if gi is None:
+        return BORDER_NONE
+
+    group = COLUMN_GROUPS[gi]
+
+    # Find visible columns in this group that come *after* col
+    has_later_in_group = any(
+        c > col and not table.isColumnHidden(c) for c in group
+    )
+
+    if has_later_in_group:
+        return BORDER_INTRA
+
+    # col is the last visible column in its group.
+    # Draw a solid border only if there's at least one visible column
+    # in a later group.
+    for later_gi in range(gi + 1, len(COLUMN_GROUPS)):
+        if any(not table.isColumnHidden(c) for c in COLUMN_GROUPS[later_gi]):
+            return BORDER_GROUP
+
+    # Last visible column overall — no border
+    return BORDER_NONE
 ROW_HOVER_BG = QColor(255, 255, 255, 20)
 
 
@@ -369,13 +420,14 @@ class SeparatorDelegate(QStyledItemDelegate):
             painter.fillRect(option.rect, ROW_HOVER_BG)
         super().paint(painter, option, index)
         col = index.column()
-        if col in GROUP_BOUNDARY_COLS:
+        border = column_border_type(col, table) if table is not None else BORDER_NONE
+        if border == BORDER_GROUP:
             painter.save()
             painter.setPen(BORDER_SOLID)
             x = option.rect.right()
             painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
             painter.restore()
-        elif col in INTRA_GROUP_COLS:
+        elif border == BORDER_INTRA:
             painter.save()
             painter.setPen(BORDER_SUBTLE)
             x = option.rect.right()
@@ -390,9 +442,11 @@ class SeparatorHeaderView(QHeaderView):
         painter.save()
         super().paintSection(painter, rect, logicalIndex)
         painter.restore()
-        if logicalIndex in GROUP_BOUNDARY_COLS:
+        table = self.parent()
+        border = column_border_type(logicalIndex, table) if table is not None else BORDER_NONE
+        if border == BORDER_GROUP:
             painter.setPen(BORDER_SOLID)
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
-        elif logicalIndex in INTRA_GROUP_COLS:
+        elif border == BORDER_INTRA:
             painter.setPen(BORDER_SUBTLE)
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())

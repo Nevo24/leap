@@ -28,10 +28,10 @@ from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.scm_polling import SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
-    ACTIVE_BTN_STYLE, CLOSE_BTN_STYLE, GROUP_BOUNDARY_COLS, INTRA_GROUP_COLS,
+    ACTIVE_BTN_STYLE, BORDER_GROUP, BORDER_INTRA, CLOSE_BTN_STYLE,
     MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
-    HoverIconButton,
+    HoverIconButton, column_border_type,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _SEND_SVG, _THREE_DOT_SVG,
 )
 
@@ -56,10 +56,11 @@ class TableBuilderMixin(_Base):
         toggled uniformly via the ``_hover`` dynamic property.  Columns
         at group boundaries additionally get a right border.
         """
-        if col in GROUP_BOUNDARY_COLS or col in INTRA_GROUP_COLS:
-            border = ('1px solid white' if col in GROUP_BOUNDARY_COLS
-                      else '1px solid rgba(255, 255, 255, 50)')
-            border_css = f'border-right: {border}; '
+        border = column_border_type(col, self.table)
+        if border == BORDER_GROUP:
+            border_css = 'border-right: 1px solid white; '
+        elif border == BORDER_INTRA:
+            border_css = 'border-right: 1px solid rgba(255, 255, 255, 50); '
         else:
             border_css = ''
         wrapper = QWidget()
