@@ -219,10 +219,11 @@ class SettingsDialog(QDialog):
         self._tooltips_check.setChecked(show_tooltips)
         grid.addWidget(self._tooltips_check, 5, 0, 1, 2)
 
-        # New status indicator duration
-        new_status_label = QLabel('New status indicator:')
+        # New change indicator duration
+        new_status_label = QLabel('New change indicator (\U0001f525):')
         new_status_label.setToolTip(
-            'Show a fire icon next to the status when it recently changed.\n'
+            'Show a fire icon in the Status and MR columns\n'
+            'when the value recently changed.\n'
             'Set to 0 to disable.'
         )
         grid.addWidget(new_status_label, 6, 0)

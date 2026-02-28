@@ -73,7 +73,7 @@ src/
     │   │
     │   ├── dialogs/             # Dialog windows
     │   │   ├── git_changes_dialog.py  # Git diff viewer (local, commit, vs main)
-    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, new status indicator, cleanup)
+    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, new change indicator, cleanup)
     │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
@@ -251,9 +251,12 @@ Rows persist via `pinned_sessions.json`. Key rules:
 
 Two options: **From Git URL** (MR/PR URLs or plain project URLs → parse, pin, clone/track) and **From Local Path** (clone to repos dir or open directly). Tag validation via shared `_ask_tag()` helper.
 
-### New Status Indicator
+### New Change Indicator
 
-The Status column shows a fire icon (🔥) when a session's state recently changed. Controlled by `new_status_seconds` in monitor prefs (default: 60, 0 = disabled). Never shown for `running` or `interrupted` states. Click the indicator to dismiss it; dismissal resets when the state changes again. Tracked in `_state_changed_at` and `_dismissed_new_status` on `MonitorWindow`.
+A fire icon (🔥) appears on the far right of the Status and MR columns when the value recently changed. Controlled by `new_status_seconds` in monitor prefs (default: 60, 0 = disabled). Click the indicator to dismiss it; dismissal resets when the value changes again.
+
+- **Status column**: Never shown for `running` or `interrupted` states. Tracked in `_state_changed_at` and `_dismissed_new_status` on `MonitorWindow`.
+- **MR column**: Triggers on changes to MR state, unresponded count, approval status, or who approved. First-time discovery is seeded with epoch 0 (no fire on startup). Tracked in `_mr_changed_at` and `_dismissed_mr_new_status` on `MonitorWindow`.
 
 ### Branch Mismatch & Server Startup Validation
 

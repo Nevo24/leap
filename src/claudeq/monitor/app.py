@@ -119,6 +119,8 @@ class MonitorWindow(
         self._ui_ready = False  # suppress resizeEvent during init
         self._state_changed_at: dict[str, tuple[str, float]] = {}  # tag -> (state, timestamp)
         self._dismissed_new_status: set[str] = set()  # tags where user dismissed fire icon
+        self._mr_changed_at: dict[str, tuple[tuple, float]] = {}  # tag -> (snapshot, timestamp)
+        self._dismissed_mr_new_status: set[str] = set()  # tags where user dismissed MR fire
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect

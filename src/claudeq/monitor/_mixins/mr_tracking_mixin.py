@@ -177,6 +177,8 @@ class MRTrackingMixin(_Base):
         self._mr_widgets.pop(tag, None)
         self._mr_approval_widgets.pop(tag, None)
         self._pending_tracking_context.pop(tag, None)
+        self._mr_changed_at.pop(tag, None)
+        self._dismissed_mr_new_status.discard(tag)
         self._dock_badge.discard_tag(tag)
 
         # Persist tracking-off so auto-reconnect won't re-track on next startup
@@ -399,9 +401,23 @@ class MRTrackingMixin(_Base):
         try:
             if not self.isVisible():
                 return
+            now = time.time()
             for tag, status in results.items():
                 logger.debug("SCM result: tag=%s state=%s unresponded=%s approved=%s",
                              tag, status.state.value, status.unresponded_count, status.approved)
+                new_snap = (
+                    status.state,
+                    status.unresponded_count,
+                    status.approved,
+                    tuple(status.approved_by or []),
+                )
+                prev = self._mr_changed_at.get(tag)
+                if prev is None:
+                    # First time — seed with epoch 0 (no fire on startup)
+                    self._mr_changed_at[tag] = (new_snap, 0)
+                elif prev[0] != new_snap:
+                    self._mr_changed_at[tag] = (new_snap, now)
+                    self._dismissed_mr_new_status.discard(tag)
             self._mr_statuses.update(results)
             self._update_mr_column()
             self._update_dock_badge()

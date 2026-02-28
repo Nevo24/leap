@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from PyQt5 import sip
+from PyQt5.QtWidgets import QLabel
 
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import get_dock_enabled, get_notification_prefs
@@ -44,6 +45,15 @@ class MRDisplayMixin(_Base):
                 mr_widget.set_has_unresponded(
                     status is not None and status.state == MRState.UNRESPONDED
                 )
+                # Update fire label on the fast path
+                cell_widget = self.table.cellWidget(row, self.COL_MR)
+                if cell_widget and not sip.isdeleted(cell_widget):
+                    fire_label = cell_widget.findChild(QLabel, '_mrFireLabel')
+                    if fire_label and not sip.isdeleted(fire_label):
+                        show = self._should_show_mr_fire(tag)
+                        fire_label.setText('\U0001f525' if show else '')
+                        fire_label.setToolTip(
+                            self._mr_fire_tooltip(tag) if show else '')
             except RuntimeError:
                 # Widget was deleted, remove from cache
                 self._mr_widgets.pop(tag, None)

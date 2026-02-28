@@ -142,6 +142,27 @@ class TableBuilderMixin(_Base):
         self._cell_cache[(tag, col)] = (
             state, self.table.cellWidget(row, table_col))
 
+    def _should_show_mr_fire(self, tag: str) -> bool:
+        """Return True if the MR fire indicator should be shown for *tag*."""
+        threshold = self._prefs.get('new_status_seconds', 60)
+        if threshold <= 0:
+            return False
+        if tag in self._dismissed_mr_new_status:
+            return False
+        entry = self._mr_changed_at.get(tag)
+        if entry is None:
+            return False
+        changed_at = entry[1]
+        return (time.time() - changed_at) < threshold
+
+    def _mr_fire_tooltip(self, tag: str) -> str:
+        """Build tooltip text for the MR fire indicator."""
+        entry = self._mr_changed_at.get(tag)
+        if not entry:
+            return ''
+        ago = int(time.time() - entry[1])
+        return f'MR status changed {ago}s ago \u2014 click to dismiss'
+
     def _build_path_cell(self, row: int, tag: str, path_text: str) -> None:
         """Build the Path column cell: elided label + 3-dot menu button.
 
@@ -767,7 +788,7 @@ class TableBuilderMixin(_Base):
 
                     # Reuse MR container if widgets survived and cell is
                     # still at the right row.
-                    mr_state = ('tracked',)
+                    mr_state = ('tracked', self._should_show_mr_fire(tag))
                     mr_cached = (
                         reused_mr and reused_approval
                         and self._cell_cached(tag, 'mr', mr_state,
@@ -801,9 +822,28 @@ class TableBuilderMixin(_Base):
                         mr_layout.addWidget(mr_widget)
                         mr_layout.addStretch()
 
-                        mr_spacer = QWidget()
-                        mr_spacer.setFixedWidth(24)
-                        mr_layout.addWidget(mr_spacer, 0)
+                        # Right-aligned fire icon (matches Status column
+                        # pattern — always occupies space; text hidden when
+                        # inactive to keep the centered label stable)
+                        show_mr_fire = self._should_show_mr_fire(tag)
+                        mr_fire_label = QLabel(
+                            '\U0001f525' if show_mr_fire else '')
+                        mr_fire_label.setObjectName('_mrFireLabel')
+                        mr_fire_label.setFixedWidth(24)
+                        mr_fire_label.setAlignment(
+                            Qt.AlignRight | Qt.AlignVCenter)
+                        if show_mr_fire:
+                            mr_fire_label.setToolTip(
+                                self._mr_fire_tooltip(tag))
+
+                        def _make_mr_dismiss(t: str = tag) -> Callable:
+                            def _dismiss(event: object) -> None:
+                                if t not in self._dismissed_mr_new_status:
+                                    self._dismissed_mr_new_status.add(t)
+                                    self._update_table()
+                            return _dismiss
+                        mr_fire_label.mousePressEvent = _make_mr_dismiss()
+                        mr_layout.addWidget(mr_fire_label)
 
                         self._set_cell_widget(row, self.COL_MR,
                                               mr_container)
