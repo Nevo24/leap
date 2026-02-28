@@ -655,18 +655,33 @@ class MonitorWindow(
         if qt_mods & 0x02000000:  # Qt.ShiftModifier
             ns_flags |= 1 << 17   # NSEventModifierFlagShift
 
-        # Convert Qt key code to macOS key character for matching
+        # Map character → macOS hardware virtual key code (layout-independent).
+        # Using keyCode() instead of charactersIgnoringModifiers() so the
+        # shortcut works regardless of the active keyboard input source
+        # (Hebrew, Arabic, Russian, etc.).
+        _CHAR_TO_KEYCODE: dict[str, int] = {
+            'a': 0x00, 's': 0x01, 'd': 0x02, 'f': 0x03, 'h': 0x04,
+            'g': 0x05, 'z': 0x06, 'x': 0x07, 'c': 0x08, 'v': 0x09,
+            'b': 0x0B, 'q': 0x0C, 'w': 0x0D, 'e': 0x0E, 'r': 0x0F,
+            'y': 0x10, 't': 0x11, '1': 0x12, '2': 0x13, '3': 0x14,
+            '4': 0x15, '6': 0x16, '5': 0x17, '=': 0x18, '9': 0x19,
+            '7': 0x1A, '-': 0x1B, '8': 0x1C, '0': 0x1D, ']': 0x1E,
+            'o': 0x1F, 'u': 0x20, '[': 0x21, 'i': 0x22, 'p': 0x23,
+            'l': 0x25, 'j': 0x26, "'": 0x27, 'k': 0x28, ';': 0x29,
+            '\\': 0x2A, ',': 0x2B, '/': 0x2C, 'n': 0x2D, 'm': 0x2E,
+            '.': 0x2F, ' ': 0x31, '`': 0x32,
+        }
         char = chr(qt_key).lower() if 0x20 <= qt_key <= 0x7E else None
-        if char is None:
+        if char is None or char not in _CHAR_TO_KEYCODE:
             logger.warning("Global shortcut: unsupported key code %d", qt_key)
             return
+        expected_keycode = _CHAR_TO_KEYCODE[char]
 
         def _handler(event: object) -> object:
-            """NSEvent handler — check modifiers + key character."""
+            """NSEvent handler — check modifiers + hardware key code."""
             try:
                 ev_flags = event.modifierFlags() & 0x00FF0000  # device-independent
-                ev_chars = event.charactersIgnoringModifiers()
-                if ev_chars and ev_chars.lower() == char and ev_flags == ns_flags:
+                if event.keyCode() == expected_keycode and ev_flags == ns_flags:
                     from PyQt5.QtCore import QTimer
                     QTimer.singleShot(0, self._on_global_shortcut_triggered)
             except Exception:
