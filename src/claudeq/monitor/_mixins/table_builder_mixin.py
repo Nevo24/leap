@@ -510,23 +510,26 @@ class TableBuilderMixin(_Base):
                             return _dismiss
                         container.mousePressEvent = _make_dismiss()
 
-                        # Ensure item tooltip for cell-widget
-                        # truncation path (shows full text on hover)
+                        # Ensure a table item exists so the
+                        # cell-widget tooltip path can find it.
                         s_item = self.table.item(row, self.COL_STATUS)
                         if not s_item:
                             s_item = QTableWidgetItem('')
                             self.table.setItem(
                                 row, self.COL_STATUS, s_item)
                         s_item.setText('')
-                        s_item.setToolTip(text)
 
                         self._set_cell_widget(
                             row, self.COL_STATUS, container)
                         self._cache_cell(tag, 'status', status_state,
                                          row, self.COL_STATUS)
 
+                    # Update item + widget tooltips every refresh
+                    # (explanation and fire-ago text can change).
+                    s_item = self.table.item(row, self.COL_STATUS)
+                    w = self.table.cellWidget(row, self.COL_STATUS)
+                    explanation = ''
                     if self._prefs.get('show_tooltips', True):
-                        w = self.table.cellWidget(row, self.COL_STATUS)
                         explanation = state_explanations.get(
                             claude_state, '')
                         if show_fire and explanation:
@@ -535,8 +538,15 @@ class TableBuilderMixin(_Base):
                             explanation += (
                                 f' (changed {ago}s ago'
                                 ' — click to dismiss)')
-                        if explanation and w:
-                            w.setToolTip(explanation)
+                    if s_item:
+                        if explanation:
+                            s_item.setToolTip(f'{text} | {explanation}')
+                        else:
+                            s_item.setToolTip(text)
+                    if explanation and w:
+                        w.setToolTip(explanation)
+                    elif w:
+                        w.setToolTip('')
 
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', 'pause')
