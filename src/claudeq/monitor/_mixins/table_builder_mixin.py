@@ -524,8 +524,13 @@ class TableBuilderMixin(_Base):
                         self._cache_cell(tag, 'status', status_state,
                                          row, self.COL_STATUS)
 
-                    # Update item + widget tooltips every refresh
-                    # (explanation and fire-ago text can change).
+                    # Update tooltips every refresh (explanation and
+                    # fire-ago text can change).
+                    # Item tooltip = value only (for truncation path).
+                    # _extra_tooltip on cell widget = explanation
+                    #   (combined by tooltip handler when truncated).
+                    # ElidedLabel tooltip = explanation (shown by
+                    #   widget tooltip path when not truncated).
                     s_item = self.table.item(row, self.COL_STATUS)
                     w = self.table.cellWidget(row, self.COL_STATUS)
                     explanation = ''
@@ -539,14 +544,13 @@ class TableBuilderMixin(_Base):
                                 f' (changed {ago}s ago'
                                 ' — click to dismiss)')
                     if s_item:
-                        if explanation:
-                            s_item.setToolTip(f'{text} | {explanation}')
-                        else:
-                            s_item.setToolTip(text)
-                    if explanation and w:
-                        w.setToolTip(explanation)
-                    elif w:
-                        w.setToolTip('')
+                        s_item.setToolTip(text)
+                    if w:
+                        w.setProperty('_extra_tooltip',
+                                      explanation or None)
+                        label = w.findChild(ElidedLabel)
+                        if label:
+                            label.setToolTip(explanation)
 
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', 'pause')

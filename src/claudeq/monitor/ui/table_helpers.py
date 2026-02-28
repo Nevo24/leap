@@ -391,9 +391,20 @@ class TooltipApp(QApplication):
                     fm = widget.fontMetrics()
                     text_w = fm.horizontalAdvance(tip)
                     if text_w > widget.width():
+                        final_tip = tip
+                        if self.tooltips_enabled:
+                            from PyQt5.QtWidgets import QTableWidget
+                            if isinstance(table_view, QTableWidget):
+                                cell_w = table_view.cellWidget(
+                                    index.row(), index.column())
+                                if cell_w and not sip.isdeleted(cell_w):
+                                    extra = cell_w.property(
+                                        '_extra_tooltip')
+                                    if extra:
+                                        final_tip = f'{tip} | {extra}'
                         from PyQt5.QtWidgets import QToolTip as _QToolTip
                         _QToolTip.showText(
-                            event.globalPos(), tip, viewport,
+                            event.globalPos(), final_tip, viewport,
                             table_view.visualRect(index),
                             2_147_483_647,
                         )
