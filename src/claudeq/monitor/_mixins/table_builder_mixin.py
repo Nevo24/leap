@@ -1322,10 +1322,28 @@ class TableBuilderMixin(_Base):
             self._dismissed_new_status.add(tag)
             self._update_table()
 
+    def _apply_header_tooltips(self) -> None:
+        """Set or clear column header tooltips based on show_tooltips preference."""
+        enabled = self._prefs.get('show_tooltips', True)
+        right_click_hint = 'Right-click header to show/hide columns'
+        for col, desc in self._col_tooltip_descriptions.items():
+            item = self.table.horizontalHeaderItem(col)
+            if not item:
+                continue
+            if enabled:
+                item.setToolTip(
+                    f'{desc}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+                    f'\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+                    f'\n{right_click_hint}'
+                )
+            else:
+                item.setToolTip('')
+
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""
         if hasattr(self, '_tooltip_app'):
             self._tooltip_app.tooltips_enabled = self._prefs.get('show_tooltips', True)
+        self._apply_header_tooltips()
 
     def _is_slack_installed(self) -> bool:
         """Check if the Slack app config file exists."""

@@ -193,8 +193,8 @@ class MonitorWindow(
         self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels(self._HEADER_LABELS)
 
-        # Column header tooltips
-        _col_tooltips = {
+        # Column header tooltip descriptions (applied via _apply_header_tooltips)
+        self._col_tooltip_descriptions = {
             self.COL_TAG: 'CQ session name',
             self.COL_PROJECT: 'Git project name',
             self.COL_SERVER: 'CQ server process (green = running)',
@@ -207,10 +207,7 @@ class MonitorWindow(
             self.COL_MR: 'Merge/pull request tracking status',
             self.COL_MR_BRANCH: 'MR/PR source branch',
         }
-        for col, tip in _col_tooltips.items():
-            item = self.table.horizontalHeaderItem(col)
-            if item:
-                item.setToolTip(tip)
+        self._apply_header_tooltips()
 
         # Enable interactive column resizing
         header = self.table.horizontalHeader()
