@@ -84,7 +84,7 @@ src/
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
     │   │   ├── dock_badge.py    # Dock icon badge overlay + notification event detection
-    │   │   ├── status_log.py    # Status log history (in-memory + dialog)
+    │   │   ├── log_history.py   # Log history (in-memory + dialog)
     │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides)
     │   │
     │   ├── mr_tracking/         # MR tracking subsystem

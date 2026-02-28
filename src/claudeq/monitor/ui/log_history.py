@@ -1,4 +1,4 @@
-"""Status log history for ClaudeQ Monitor.
+"""Log history for ClaudeQ Monitor.
 
 Stores transient status messages in-memory (session-only, not persisted)
 and provides a dialog to view them.
@@ -13,26 +13,26 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox
 
 
 @dataclass
-class StatusEntry:
-    """A single status log entry."""
+class LogEntry:
+    """A single log history entry."""
     timestamp: float
     message: str
     url: Optional[str] = None
 
 
-class StatusLog:
+class LogHistory:
     """In-memory log of status messages."""
 
     def __init__(self) -> None:
-        self._entries: List[StatusEntry] = []
+        self._entries: List[LogEntry] = []
 
     def append(self, message: str, url: Optional[str] = None) -> None:
         """Append a new status message."""
-        self._entries.append(StatusEntry(
+        self._entries.append(LogEntry(
             timestamp=time.time(), message=message, url=url,
         ))
 
-    def entries(self) -> List[StatusEntry]:
+    def entries(self) -> List[LogEntry]:
         """Return all log entries."""
         return list(self._entries)
 
@@ -50,12 +50,12 @@ def _is_error_message(msg: str) -> bool:
     return any(kw in lower for kw in _ERROR_KEYWORDS)
 
 
-class StatusLogDialog(QDialog):
+class LogHistoryDialog(QDialog):
     """Dialog showing all past status messages with timestamps."""
 
-    def __init__(self, status_log: StatusLog, parent: QWidget = None) -> None:
+    def __init__(self, log_history: LogHistory, parent: QWidget = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle('Status Log')
+        self.setWindowTitle('Log History')
         self.resize(800, 400)
 
         layout = QVBoxLayout(self)
@@ -63,7 +63,7 @@ class StatusLogDialog(QDialog):
         text_edit = QTextBrowser()
         text_edit.setOpenExternalLinks(True)
 
-        entries = status_log.entries()
+        entries = log_history.entries()
         if entries:
             html_lines = []
             for entry in entries:

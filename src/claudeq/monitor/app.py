@@ -33,7 +33,7 @@ from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.monitor.monitor_utils import find_icon, load_shell_env
 from claudeq.monitor.server_launcher import ServerLauncher
 from claudeq.monitor.ui.dock_badge import DockBadge
-from claudeq.monitor.ui.status_log import StatusLog, StatusLogDialog
+from claudeq.monitor.ui.log_history import LogHistory, LogHistoryDialog
 from claudeq.monitor.ui.table_helpers import (
     MR_TEMPLATE_LABEL, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_TEMPLATE_LABEL, QUICK_MSG_TEMPLATE_TOOLTIP,
@@ -122,7 +122,7 @@ class MonitorWindow(
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
-        self._status_log = StatusLog()
+        self._log_history = LogHistory()
         self._server_launcher = ServerLauncher(self)
         self._slack_bot_process: Optional[QProcess] = None
         self._slack_bot_was_running: bool = self._is_slack_bot_running()
@@ -381,7 +381,7 @@ class MonitorWindow(
 
         full_log_btn = QPushButton('Logs')
         full_log_btn.setToolTip('View full status message history')
-        full_log_btn.clicked.connect(self._open_status_log)
+        full_log_btn.clicked.connect(self._open_log_history)
         status_layout.addWidget(full_log_btn)
 
         self._log_label = QLabel('')
@@ -411,20 +411,20 @@ class MonitorWindow(
     #  Core utilities
     # ------------------------------------------------------------------
 
-    def _open_status_log(self) -> None:
-        """Open the status log dialog."""
-        dialog = StatusLogDialog(self._status_log, self)
+    def _open_log_history(self) -> None:
+        """Open the log history dialog."""
+        dialog = LogHistoryDialog(self._log_history, self)
         dialog.exec_()
 
     def _show_status(self, msg: str, timeout_ms: int = 5000,
                      url: Optional[str] = None) -> None:
         """Log a status message and update the inline log labels."""
-        self._status_log.append(msg, url=url)
+        self._log_history.append(msg, url=url)
         self._refresh_log_labels()
 
     def _refresh_log_labels(self) -> None:
         """Update the inline log label with the most recent entry."""
-        entries = self._status_log.entries()
+        entries = self._log_history.entries()
         if entries:
             e = entries[-1]
             ts = time.strftime('%H:%M:%S', time.localtime(e.timestamp))
