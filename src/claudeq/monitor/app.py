@@ -12,11 +12,12 @@ import time
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QGridLayout, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QPushButton,
-    QCheckBox, QHeaderView, QMessageBox, QProgressBar,
+    QAction, QApplication, QComboBox, QGridLayout, QMainWindow, QMenu,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
+    QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QProcess, QTimer, Qt
+from PyQt5.QtCore import QEvent, QPoint, QProcess, QTimer, Qt
 from PyQt5.QtGui import QCursor, QIcon, QCloseEvent, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
@@ -77,6 +78,12 @@ class MonitorWindow(
     COL_SLACK = 9
     COL_MR = 10
     COL_MR_BRANCH = 11
+
+    _HEADER_LABELS = [
+        '', 'Tag', 'Project', 'Server', 'Path', 'Server Branch', 'Status',
+        'Queue', 'Client', 'Slack', 'MR', 'MR Branch',
+    ]
+    _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
 
     def __init__(self) -> None:
         """Initialize the monitor window."""
@@ -157,7 +164,6 @@ class MonitorWindow(
         saved_geom = self._prefs.get('window_geometry')
         if saved_geom and len(saved_geom) == 4:
             # Validate the saved position is on a visible screen
-            from PyQt5.QtCore import QPoint
             center = QPoint(saved_geom[0] + saved_geom[2] // 2,
                             saved_geom[1] + saved_geom[3] // 2)
             screen = QApplication.screenAt(center)
@@ -183,10 +189,7 @@ class MonitorWindow(
         self.table.setItemDelegate(SeparatorDelegate(self.table))
         self.table.setShowGrid(False)
         self.table.setColumnCount(12)
-        self.table.setHorizontalHeaderLabels([
-            '', 'Tag', 'Project', 'Server', 'Path', 'Server Branch', 'Status',
-            'Queue', 'Client', 'Slack', 'MR', 'MR Branch',
-        ])
+        self.table.setHorizontalHeaderLabels(self._HEADER_LABELS)
 
         # Column header tooltips
         _col_tooltips = {
@@ -224,6 +227,18 @@ class MonitorWindow(
         self._slack_available = is_slack_installed()
         if not self._slack_available:
             self.table.setColumnHidden(self.COL_SLACK, True)
+
+        # Right-click column header → show/hide columns menu
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(
+            self._show_column_visibility_menu)
+
+        # Restore user-hidden columns from prefs
+        for label in self._prefs.get('hidden_columns', []):
+            if label in self._HEADER_LABELS:
+                col = self._HEADER_LABELS.index(label)
+                if col not in self._NON_TOGGLEABLE_COLS:
+                    self.table.setColumnHidden(col, True)
 
         # Last column: keep Interactive (same as all others) so that
         # resizeEvent scales every column proportionally on window resize.
@@ -467,10 +482,58 @@ class MonitorWindow(
             self.table.setColumnWidth(col, col_width)
 
     def _reset_window_size(self) -> None:
-        """Reset window geometry, column widths, and dialog sizes to defaults."""
+        """Reset window geometry, column widths, dialog sizes, and column visibility."""
+        # Clear hidden-columns pref
+        self._prefs.pop('hidden_columns', None)
+        save_monitor_prefs(self._prefs)
+
+        # Un-hide all columns (except Slack when not installed)
+        for col in range(self.table.columnCount()):
+            if col == self.COL_SLACK and not self._slack_available:
+                continue
+            self.table.setColumnHidden(col, False)
+
         self._center_on_screen()
         self._apply_equal_column_widths()
         clear_all_dialog_geometry()
+
+    # ------------------------------------------------------------------
+    #  Column visibility
+    # ------------------------------------------------------------------
+
+    def _show_column_visibility_menu(self, pos: QPoint) -> None:
+        """Show a context menu to toggle column visibility."""
+        menu = QMenu(self)
+        for col, label in enumerate(self._HEADER_LABELS):
+            if col in self._NON_TOGGLEABLE_COLS:
+                continue
+            # Skip Slack entry when Slack is not installed
+            if col == self.COL_SLACK and not self._slack_available:
+                continue
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            action.setChecked(not self.table.isColumnHidden(col))
+            action.toggled.connect(
+                lambda checked, c=col, lbl=label: self._toggle_column(
+                    c, lbl, checked))
+            menu.addAction(action)
+        header = self.table.horizontalHeader()
+        menu.exec_(header.mapToGlobal(pos))
+
+    def _toggle_column(self, col: int, label: str, visible: bool) -> None:
+        """Toggle a column's visibility and persist the choice."""
+        self.table.setColumnHidden(col, not visible)
+
+        hidden: list[str] = self._prefs.get('hidden_columns', [])
+        if visible:
+            hidden = [h for h in hidden if h != label]
+        else:
+            if label not in hidden:
+                hidden.append(label)
+        self._prefs['hidden_columns'] = hidden
+        save_monitor_prefs(self._prefs)
+
+        self._apply_equal_column_widths()
 
     # ------------------------------------------------------------------
     #  Window lifecycle

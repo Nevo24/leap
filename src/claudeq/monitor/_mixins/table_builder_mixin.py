@@ -903,7 +903,13 @@ class TableBuilderMixin(_Base):
         slack_now = self._is_slack_installed()
         if slack_now != self._slack_available:
             self._slack_available = slack_now
-            self.table.setColumnHidden(self.COL_SLACK, not slack_now)
+            if not slack_now:
+                self.table.setColumnHidden(self.COL_SLACK, True)
+            else:
+                # Only un-hide if user hasn't explicitly hidden it
+                hidden = self._prefs.get('hidden_columns', [])
+                if 'Slack' not in hidden:
+                    self.table.setColumnHidden(self.COL_SLACK, False)
         self._update_table()
         self._update_slack_bot_button()
         self._check_slack_bot_transition()
