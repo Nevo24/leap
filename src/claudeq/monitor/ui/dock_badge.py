@@ -108,15 +108,7 @@ class DockBadge:
         events: list[NotificationEvent] = []
 
         if seen is None:
-            # First time seeing this tag — only fire if it's already in a notable state
-            if current.state == MRState.UNRESPONDED:
-                events.append(NotificationEvent(
-                    type=NotificationType.MR_UNRESPONDED,
-                    tag=tag,
-                    mr_iid=current.mr_iid,
-                    mr_title=current.mr_title,
-                    unresponded_count=current.unresponded_count,
-                ))
+            # First time seeing this tag — seed silently, no alert on startup
             return events
 
         # State became UNRESPONDED or unresponded_count increased
