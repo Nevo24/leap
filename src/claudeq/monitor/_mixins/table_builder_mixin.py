@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -401,6 +402,26 @@ class TableBuilderMixin(_Base):
                         'interrupted': ('\u25c7 Interrupted', QColor(255, 213, 79)),
                     }
                     text, color = state_display.get(claude_state, (claude_state, None))
+
+                    # Track state changes and show fire indicator for recent ones
+                    prev = self._state_changed_at.get(tag)
+                    now = time.time()
+                    if prev is None or prev[0] != claude_state:
+                        self._state_changed_at[tag] = (claude_state, now)
+                        # Reset dismissal when state changes again
+                        self._dismissed_new_status.discard(tag)
+                    show_fire = False
+                    threshold = self._prefs.get('new_status_seconds', 60)
+                    if (
+                        threshold > 0
+                        and claude_state not in ('running', 'interrupted')
+                        and tag not in self._dismissed_new_status
+                    ):
+                        changed_at = self._state_changed_at[tag][1]
+                        if (now - changed_at) < threshold:
+                            show_fire = True
+                            text = text + ' \U0001f525'
+
                     self._set_cell_text(row, self.COL_STATUS, text)
                     item = self.table.item(row, self.COL_STATUS)
                     if item and color:
@@ -416,6 +437,9 @@ class TableBuilderMixin(_Base):
                     }
                     if self._prefs.get('show_tooltips', True):
                         explanation = state_explanations.get(claude_state, '')
+                        if show_fire and explanation:
+                            ago = int(now - self._state_changed_at[tag][1])
+                            explanation += f' (changed {ago}s ago — click to dismiss)'
                         if explanation and item:
                             item.setToolTip(explanation)
 
@@ -935,6 +959,7 @@ class TableBuilderMixin(_Base):
             notification_prefs=get_notification_prefs(self._prefs),
             current_auto_send_mode=server_settings.get('auto_send_mode', 'pause'),
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
+            new_status_seconds=self._prefs.get('new_status_seconds', 60),
             parent=self,
         )
         if dialog.exec_():
@@ -943,6 +968,7 @@ class TableBuilderMixin(_Base):
             self._prefs['show_tooltips'] = dialog.show_tooltips()
             self._prefs['notifications'] = dialog.notification_prefs()
             self._prefs['default_diff_tool'] = dialog.selected_diff_tool()
+            self._prefs['new_status_seconds'] = dialog.new_status_seconds()
             save_monitor_prefs(self._prefs)
             # Save auto-send mode to server settings (read by new servers)
             server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()
@@ -1284,6 +1310,17 @@ class TableBuilderMixin(_Base):
             self.direct_template_combo, save_selected_direct_template_name,
             QUICK_MSG_TEMPLATE_TOOLTIP,
         )
+
+    def _on_cell_clicked(self, row: int, col: int) -> None:
+        """Handle cell click — dismiss fire indicator on Status column."""
+        if col != self.COL_STATUS:
+            return
+        if row < 0 or row >= len(self.sessions):
+            return
+        tag = self.sessions[row]['tag']
+        if tag in self._state_changed_at and tag not in self._dismissed_new_status:
+            self._dismissed_new_status.add(tag)
+            self._update_table()
 
     def _apply_tooltips_setting(self) -> None:
         """Sync the tooltip app with the current preference."""

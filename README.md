@@ -158,7 +158,8 @@ The monitor shows:
 - **Presets** — configure MR thread context and message bundle templates
 - **Git changes** — click the git icon or right-click in the Server Branch column to view diffs (local, vs main, vs a specific commit) using your preferred difftool
 - **Path actions** — click the open icon or right-click in the Path column to open the project in a terminal or IDE
-- **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, git diff tool, notifications, and clean up unused repos
+- **New status indicator** — fire icon next to status when it recently changed (configurable duration, click to dismiss; never shown for Running/Interrupted)
+- **Settings** — configure default terminal (Terminal.app/iTerm2/Warp), repos directory, git diff tool, new status indicator duration, notifications, and clean up unused repos
 
 **Supports:** PyCharm, IntelliJ IDEA, GoLand, WebStorm, VS Code, Terminal.app, iTerm2, Warp
 

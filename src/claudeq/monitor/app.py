@@ -117,6 +117,8 @@ class MonitorWindow(
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._starting_tags: set[str] = set()  # guard against double-click server start
         self._ui_ready = False  # suppress resizeEvent during init
+        self._state_changed_at: dict[str, tuple[str, float]] = {}  # tag -> (state, timestamp)
+        self._dismissed_new_status: set[str] = set()  # tags where user dismissed fire icon
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
@@ -256,6 +258,7 @@ class MonitorWindow(
             self._apply_equal_column_widths()
 
         self.table.setSelectionMode(QTableWidget.NoSelection)
+        self.table.cellClicked.connect(self._on_cell_clicked)
 
         # Row hover highlight — poll cursor position to track hovered row
         self.table.setProperty('_hovered_row', -1)

@@ -73,7 +73,7 @@ src/
     │   │
     │   ├── dialogs/             # Dialog windows
     │   │   ├── git_changes_dialog.py  # Git diff viewer (local, commit, vs main)
-    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, cleanup)
+    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, new status indicator, cleanup)
     │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
@@ -250,6 +250,10 @@ Rows persist via `pinned_sessions.json`. Key rules:
 ### Add Row (+ Button)
 
 Two options: **From Git URL** (MR/PR URLs or plain project URLs → parse, pin, clone/track) and **From Local Path** (clone to repos dir or open directly). Tag validation via shared `_ask_tag()` helper.
+
+### New Status Indicator
+
+The Status column shows a fire icon (🔥) when a session's state recently changed. Controlled by `new_status_seconds` in monitor prefs (default: 60, 0 = disabled). Never shown for `running` or `interrupted` states. Click the indicator to dismiss it; dismissal resets when the state changes again. Tracked in `_state_changed_at` and `_dismissed_new_status` on `MonitorWindow`.
 
 ### Branch Mismatch & Server Startup Validation
 

@@ -9,7 +9,8 @@ from typing import Any, Callable, Optional
 
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
+    QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QVBoxLayout,
 )
 
 from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
@@ -133,6 +134,7 @@ class SettingsDialog(QDialog):
         notification_prefs: Optional[dict[str, dict[str, bool]]] = None,
         current_auto_send_mode: str = 'pause',
         current_diff_tool: str = '',
+        new_status_seconds: int = 60,
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
@@ -217,11 +219,26 @@ class SettingsDialog(QDialog):
         self._tooltips_check.setChecked(show_tooltips)
         grid.addWidget(self._tooltips_check, 5, 0, 1, 2)
 
+        # New status indicator duration
+        new_status_label = QLabel('New status indicator:')
+        new_status_label.setToolTip(
+            'Show a fire icon next to the status when it recently changed.\n'
+            'Set to 0 to disable.'
+        )
+        grid.addWidget(new_status_label, 6, 0)
+        self._new_status_spin = QSpinBox()
+        self._new_status_spin.setRange(0, 600)
+        self._new_status_spin.setSuffix(' seconds')
+        self._new_status_spin.setSpecialValueText('Disabled')
+        self._new_status_spin.setValue(new_status_seconds)
+        self._new_status_spin.setToolTip(new_status_label.toolTip())
+        grid.addWidget(self._new_status_spin, 6, 1)
+
         # Notifications
         notif_btn = QPushButton('Notifications...')
         notif_btn.setToolTip('Configure dock badge and banner notifications per event type')
         notif_btn.clicked.connect(self._open_notifications)
-        grid.addWidget(notif_btn, 6, 0)
+        grid.addWidget(notif_btn, 7, 0)
 
         layout.addLayout(grid)
         layout.addStretch()
@@ -418,6 +435,10 @@ class SettingsDialog(QDialog):
     def selected_auto_send_mode(self) -> str:
         """Return the selected default auto-send mode."""
         return 'always' if self._auto_send_combo.currentIndex() == 1 else 'pause'
+
+    def new_status_seconds(self) -> int:
+        """Return the new-status fire indicator duration in seconds."""
+        return self._new_status_spin.value()
 
     def done(self, result: int) -> None:
         """Save dialog size on close."""
