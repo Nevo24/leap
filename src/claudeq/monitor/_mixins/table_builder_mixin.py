@@ -1331,11 +1331,10 @@ class TableBuilderMixin(_Base):
             if not item:
                 continue
             if enabled:
-                item.setToolTip(
-                    f'{desc}\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
-                    f'\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
-                    f'\n{right_click_hint}'
-                )
+                all_lines = desc.split('\n') + [right_click_hint]
+                max_len = max(len(line) for line in all_lines)
+                separator = '\u2500' * max_len
+                item.setToolTip(f'{desc}\n{separator}\n{right_click_hint}')
             else:
                 item.setToolTip('')
 
