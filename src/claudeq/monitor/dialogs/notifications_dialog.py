@@ -7,6 +7,8 @@ from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QLabel, QVBoxLayout,
 )
 
+from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+
 
 # Display labels for each notification type
 _TYPE_LABELS = {
@@ -48,6 +50,9 @@ class NotificationsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Notifications')
         self.resize(400, 260)
+        saved = load_dialog_geometry('notifications')
+        if saved:
+            self.resize(saved[0], saved[1])
 
         layout = QVBoxLayout(self)
 
@@ -103,6 +108,11 @@ class NotificationsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry('notifications', self.width(), self.height())
+        super().done(result)
 
     def selected_prefs(self) -> dict[str, dict[str, bool]]:
         """Return the updated notification preferences."""

@@ -122,6 +122,31 @@ def resolve_scm_token(config: dict[str, Any], token_key: str) -> Optional[str]:
     return config.get(token_key)
 
 
+def load_dialog_geometry(key: str) -> Optional[list[int]]:
+    """Return [w, h] for the given dialog key, or None if not saved."""
+    prefs = load_monitor_prefs()
+    geom = prefs.get('dialog_geometry', {}).get(key)
+    if isinstance(geom, list) and len(geom) == 2:
+        return geom
+    return None
+
+
+def save_dialog_geometry(key: str, width: int, height: int) -> None:
+    """Persist [w, h] for the given dialog key."""
+    prefs = load_monitor_prefs()
+    dialog_geom = prefs.get('dialog_geometry', {})
+    dialog_geom[key] = [width, height]
+    prefs['dialog_geometry'] = dialog_geom
+    save_monitor_prefs(prefs)
+
+
+def clear_all_dialog_geometry() -> None:
+    """Remove all saved dialog geometries (for reset)."""
+    prefs = load_monitor_prefs()
+    prefs.pop('dialog_geometry', None)
+    save_monitor_prefs(prefs)
+
+
 def load_gitlab_config() -> Optional[dict[str, Any]]:
     """Load GitLab configuration from storage.
 

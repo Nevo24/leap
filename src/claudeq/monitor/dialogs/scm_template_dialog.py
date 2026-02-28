@@ -15,10 +15,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from claudeq.monitor.mr_tracking.config import (
-    delete_named_template, load_saved_templates,
+    delete_named_template, load_dialog_geometry, load_saved_templates,
     load_selected_direct_template_name, load_selected_template_name,
-    save_named_template, save_selected_direct_template_name,
-    save_selected_template_name,
+    save_dialog_geometry, save_named_template,
+    save_selected_direct_template_name, save_selected_template_name,
 )
 from claudeq.monitor.ui.table_helpers import (
     APPLY_MR_BTN, APPLY_QUICK_MSG_BTN, MR_TEMPLATE_HINT,
@@ -102,6 +102,9 @@ class TemplateEditorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Edit Presets')
         self.resize(780, 500)
+        saved = load_dialog_geometry('template_editor')
+        if saved:
+            self.resize(saved[0], saved[1])
 
         self._current_name: str = ''
         self._refreshing: bool = False
@@ -456,6 +459,11 @@ class TemplateEditorDialog(QDialog):
             return
         save_selected_template_name(self._current_name)
         self.accept()
+
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry('template_editor', self.width(), self.height())
+        super().done(result)
 
     def _on_apply_direct(self) -> None:
         """Apply the current preset to the Message bundle combo and close."""

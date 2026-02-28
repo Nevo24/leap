@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QTextDocument
 
+from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+
 logger = logging.getLogger(__name__)
 
 _COMMIT_ITEM_STYLE = """
@@ -144,6 +146,9 @@ class CommitListDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Select Commit')
         self.resize(780, 500)
+        saved = load_dialog_geometry('commit_list')
+        if saved:
+            self.resize(saved[0], saved[1])
         self._project_path = project_path
         self._selected_commit: Optional[str] = None
         self._commits: list[str] = []  # SHA list parallel to list items
@@ -291,6 +296,11 @@ class CommitListDialog(QDialog):
             self._selected_commit = text.strip()
             self.accept()
 
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry('commit_list', self.width(), self.height())
+        super().done(result)
+
     def selected_commit(self) -> Optional[str]:
         """Return the selected commit SHA."""
         return self._selected_commit
@@ -314,6 +324,9 @@ class GitChangesDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('See Git Changes')
         self.resize(350, 150)
+        saved = load_dialog_geometry('git_changes')
+        if saved:
+            self.resize(saved[0], saved[1])
         self._project_path = project_path
         self._on_run_git = on_run_git
 
@@ -360,6 +373,11 @@ class GitChangesDialog(QDialog):
         main_branch = self._detect_main_branch()
         self._on_run_git([f'origin/{main_branch}'], self._project_path)
         self.accept()
+
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry('git_changes', self.width(), self.height())
+        super().done(result)
 
     def _detect_main_branch(self) -> str:
         """Detect the default branch name (main or master)."""

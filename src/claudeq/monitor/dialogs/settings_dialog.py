@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 )
 
 from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
+from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
 
 DEFAULT_REPOS_DIR = '/tmp/claudeq-repos'
 
@@ -140,6 +141,9 @@ class SettingsDialog(QDialog):
         self._notification_prefs: dict[str, dict[str, bool]] = notification_prefs or {}
         self.setWindowTitle('Settings')
         self.resize(800, 220)
+        saved = load_dialog_geometry('settings')
+        if saved:
+            self.resize(saved[0], saved[1])
 
         layout = QVBoxLayout(self)
 
@@ -220,6 +224,7 @@ class SettingsDialog(QDialog):
         grid.addWidget(notif_btn, 6, 0)
 
         layout.addLayout(grid)
+        layout.addStretch()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -413,6 +418,11 @@ class SettingsDialog(QDialog):
     def selected_auto_send_mode(self) -> str:
         """Return the selected default auto-send mode."""
         return 'always' if self._auto_send_combo.currentIndex() == 1 else 'pause'
+
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry('settings', self.width(), self.height())
+        super().done(result)
 
     def selected_diff_tool(self) -> str:
         """Return the configured git diff tool name (empty = use git default)."""

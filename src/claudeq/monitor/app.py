@@ -21,8 +21,8 @@ from PyQt5.QtGui import QCursor, QIcon, QCloseEvent, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    load_monitor_prefs, load_notification_seen, load_pinned_sessions,
-    save_monitor_prefs,
+    clear_all_dialog_geometry, load_monitor_prefs, load_notification_seen,
+    load_pinned_sessions, save_monitor_prefs,
 )
 from claudeq.monitor.scm_polling import (
     CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
@@ -467,9 +467,10 @@ class MonitorWindow(
             self.table.setColumnWidth(col, col_width)
 
     def _reset_window_size(self) -> None:
-        """Reset window geometry and column widths to defaults."""
+        """Reset window geometry, column widths, and dialog sizes to defaults."""
         self._center_on_screen()
         self._apply_equal_column_widths()
+        clear_all_dialog_geometry()
 
     # ------------------------------------------------------------------
     #  Window lifecycle
