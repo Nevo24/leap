@@ -22,7 +22,7 @@ from PyQt5.QtGui import QCursor, QIcon, QCloseEvent, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
-    clear_all_dialog_geometry, load_monitor_prefs, load_notification_seen,
+    load_monitor_prefs, load_notification_seen,
     load_pinned_sessions, save_monitor_prefs,
 )
 from claudeq.monitor.scm_polling import (
@@ -112,7 +112,7 @@ class MonitorWindow(
         if 'default_diff_tool' not in self._prefs:
             from claudeq.monitor.dialogs.settings_dialog import detect_default_difftool
             self._prefs['default_diff_tool'] = detect_default_difftool()
-            save_monitor_prefs(self._prefs)
+            self._save_prefs()
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._starting_tags: set[str] = set()  # guard against double-click server start
@@ -493,8 +493,9 @@ class MonitorWindow(
 
     def _reset_window_size(self) -> None:
         """Reset window geometry, column widths, dialog sizes, and column visibility."""
-        # Clear hidden-columns pref
+        # Clear hidden-columns and dialog geometry from in-memory prefs
         self._prefs.pop('hidden_columns', None)
+        self._prefs.pop('dialog_geometry', None)
         save_monitor_prefs(self._prefs)
 
         # Un-hide all columns (except Slack when not installed)
@@ -505,7 +506,6 @@ class MonitorWindow(
 
         self._center_on_screen()
         self._apply_equal_column_widths()
-        clear_all_dialog_geometry()
 
     # ------------------------------------------------------------------
     #  Column visibility
@@ -541,7 +541,7 @@ class MonitorWindow(
             if label not in hidden:
                 hidden.append(label)
         self._prefs['hidden_columns'] = hidden
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
 
         self._apply_equal_column_widths()
 
@@ -594,6 +594,20 @@ class MonitorWindow(
         except Exception:
             logger.exception("Error in auto-refresh")
 
+    def _save_prefs(self) -> None:
+        """Save self._prefs to disk, preserving dialog geometries.
+
+        Dialog done() methods save their geometry directly to disk via
+        save_dialog_geometry(), which bypasses self._prefs.  Before writing
+        self._prefs, merge the latest dialog_geometry from disk so those
+        saves are not overwritten.
+        """
+        disk_prefs = load_monitor_prefs()
+        disk_geom = disk_prefs.get('dialog_geometry')
+        if disk_geom:
+            self._prefs['dialog_geometry'] = disk_geom
+        save_monitor_prefs(self._prefs)
+
     def _confirm_close(self) -> None:
         """Ask for confirmation before closing the monitor."""
         reply = QMessageBox.question(
@@ -627,7 +641,7 @@ class MonitorWindow(
             self._prefs['column_widths'] = [
                 self.table.columnWidth(col) for col in range(self.table.columnCount())
             ]
-            save_monitor_prefs(self._prefs)
+            self._save_prefs()
         except Exception:
             logger.debug("Failed to save monitor prefs on close", exc_info=True)
 

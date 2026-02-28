@@ -11,6 +11,8 @@ from typing import List, Optional
 
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QWidget
 
+from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+
 
 @dataclass
 class LogEntry:
@@ -57,6 +59,9 @@ class LogHistoryDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Log History')
         self.resize(800, 400)
+        saved = load_dialog_geometry('log_history')
+        if saved:
+            self.resize(saved[0], saved[1])
 
         layout = QVBoxLayout(self)
 
@@ -96,3 +101,8 @@ class LogHistoryDialog(QDialog):
         btn_box = QDialogButtonBox(QDialogButtonBox.Close)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
+
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry('log_history', self.width(), self.height())
+        super().done(result)

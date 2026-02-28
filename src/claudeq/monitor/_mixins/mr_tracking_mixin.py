@@ -16,7 +16,7 @@ from claudeq.monitor.dialogs.add_local_dialog import AddLocalDialog
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import (
     load_github_config, load_gitlab_config, load_pinned_sessions,
-    save_monitor_prefs, save_pinned_sessions,
+    save_pinned_sessions,
 )
 from claudeq.monitor.mr_tracking.git_utils import (
     ParsedProjectUrl, SCMType, get_git_remote_info, parse_mr_url,
@@ -579,7 +579,7 @@ class MRTrackingMixin(_Base):
 
         # Disable auto-fetch
         self._prefs['auto_fetch_cq'] = False
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
         self.auto_cq_check.setChecked(False)
 
         QMessageBox.warning(

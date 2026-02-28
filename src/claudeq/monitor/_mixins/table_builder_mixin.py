@@ -21,7 +21,7 @@ from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
     get_dock_enabled, get_notification_prefs, load_cq_direct_template,
     load_saved_templates, load_selected_direct_template_name,
-    load_selected_template_name, save_monitor_prefs,
+    load_selected_template_name,
     save_selected_direct_template_name, save_selected_template_name,
 )
 from claudeq.monitor.session_manager import get_active_sessions
@@ -1059,7 +1059,7 @@ class TableBuilderMixin(_Base):
             self._prefs['notifications'] = dialog.notification_prefs()
             self._prefs['default_diff_tool'] = dialog.selected_diff_tool()
             self._prefs['new_status_seconds'] = dialog.new_status_seconds()
-            save_monitor_prefs(self._prefs)
+            self._save_prefs()
             # Save auto-send mode to server settings (read by new servers)
             server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()
             save_settings(server_settings)

@@ -164,8 +164,7 @@ class ActionsMenuMixin(_Base):
             return
 
         self._prefs['last_ide_app'] = path
-        from claudeq.monitor.mr_tracking.config import save_monitor_prefs
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
 
         _app_path = path
         _proj_path = project_path

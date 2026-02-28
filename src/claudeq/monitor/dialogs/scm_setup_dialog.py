@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL
 from claudeq.monitor.mr_tracking.base import ConnectionTestResult
+from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from claudeq.monitor.scm_polling import TestConnectionWorker
 
 
@@ -34,6 +35,10 @@ class SCMSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self._window_title())
         self.setMinimumWidth(450)
+        self._geometry_key = self._window_title().lower().replace(' ', '_')
+        saved = load_dialog_geometry(self._geometry_key)
+        if saved:
+            self.resize(saved[0], saved[1])
         self._verified_username: Optional[str] = None
         self._test_worker: Optional[TestConnectionWorker] = None
         self._init_ui()
@@ -322,3 +327,8 @@ class SCMSetupDialog(QDialog):
         }
         self._save_config(config)
         self.accept()
+
+    def done(self, result: int) -> None:
+        """Save dialog size on close."""
+        save_dialog_geometry(self._geometry_key, self.width(), self.height())
+        super().done(result)

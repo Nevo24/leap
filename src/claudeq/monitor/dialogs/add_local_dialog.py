@@ -14,7 +14,7 @@ class AddLocalDialog(QDialog):
     def __init__(self, parent: object = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Add from Local Path')
-        self.setMinimumWidth(500)
+        self.resize(500, 200)
         saved = load_dialog_geometry('add_local')
         if saved:
             self.resize(saved[0], saved[1])

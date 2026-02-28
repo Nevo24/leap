@@ -142,7 +142,7 @@ class SettingsDialog(QDialog):
         self._log_fn = log_fn
         self._notification_prefs: dict[str, dict[str, bool]] = notification_prefs or {}
         self.setWindowTitle('Settings')
-        self.resize(800, 220)
+        self.resize(800, 380)
         saved = load_dialog_geometry('settings')
         if saved:
             self.resize(saved[0], saved[1])

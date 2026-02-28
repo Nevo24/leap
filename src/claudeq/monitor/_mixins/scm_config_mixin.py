@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 from claudeq.monitor.mr_tracking.base import SCMProvider
 from claudeq.monitor.mr_tracking.config import (
     load_github_config, load_gitlab_config, resolve_scm_token,
-    save_github_config, save_gitlab_config, save_monitor_prefs,
+    save_github_config, save_gitlab_config,
 )
 from claudeq.monitor.mr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
@@ -295,7 +295,7 @@ class SCMConfigMixin(_Base):
         """Toggle bot comment inclusion and persist."""
         include = state == Qt.Checked
         self._prefs['include_bots'] = include
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
         # Update filter and re-poll tracked sessions
         for provider in self._scm_providers.values():
             provider._filter_bots = not include
@@ -305,7 +305,7 @@ class SCMConfigMixin(_Base):
     def _toggle_auto_fetch_cq(self, state: int) -> None:
         """Toggle auto /cq command fetching and persist."""
         self._prefs['auto_fetch_cq'] = state == Qt.Checked
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
 
     # ------------------------------------------------------------------
     #  Slack bot management
@@ -367,7 +367,7 @@ class SCMConfigMixin(_Base):
 
         self._slack_bot_process = process
         self._prefs['slack_bot_enabled'] = True
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
         self._update_slack_bot_button()
 
         if not silent:
@@ -416,7 +416,7 @@ class SCMConfigMixin(_Base):
             pass
 
         self._prefs['slack_bot_enabled'] = False
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
         self._update_slack_bot_button()
         self._show_status('Slack bot stopped')
 
