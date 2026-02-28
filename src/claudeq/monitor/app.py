@@ -200,7 +200,15 @@ class MonitorWindow(
             self.COL_SERVER: 'CQ server process (green = running)',
             self.COL_PATH: 'Directory where the server is running',
             self.COL_SERVER_BRANCH: 'The git branch the server is running on',
-            self.COL_STATUS: 'Whether Claude is busy processing or idle',
+            self.COL_STATUS: (
+                'Claude\u2019s current state:\n'
+                '\n'
+                '\u25cb Idle \u2014 waiting for input\n'
+                '\u25cf Running \u2014 actively processing\n'
+                '\u25b2 Permission \u2014 needs your approval\n'
+                '\u25c6 Question \u2014 asking a clarifying question\n'
+                '\u25c7 Interrupted \u2014 stopped, needs manual resume'
+            ),
             self.COL_QUEUE: 'Number of messages waiting in the queue',
             self.COL_CLIENT: 'CQ client process (green = connected)',
             self.COL_SLACK: 'Slack integration (output to DM thread)',
