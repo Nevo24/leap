@@ -409,7 +409,7 @@ class MRTrackingMixin(_Base):
                     status.state,
                     status.unresponded_count,
                     status.approved,
-                    tuple(status.approved_by or []),
+                    tuple(sorted(status.approved_by or [])),
                 )
                 prev = self._mr_changed_at.get(tag)
                 if prev is None:

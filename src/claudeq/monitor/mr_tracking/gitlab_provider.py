@@ -28,6 +28,10 @@ class GitLabProvider(SCMProvider):
         self._filter_bots = filter_bots
         self._project_cache: dict[str, gitlab.v4.objects.Project] = {}
         self._bot_cache: dict[int, bool] = {}  # user_id -> is_bot
+        # Caches to avoid phantom state changes on transient API failures
+        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str]]] = {}
+        self._status_cache: dict[tuple[str, str], MRStatus] = {}
+        self._emoji_cache: dict[int, bool] = {}  # note_id -> user_reacted
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -72,6 +76,7 @@ class GitLabProvider(SCMProvider):
             return None
 
     def get_mr_status(self, project_path: str, branch: str) -> MRStatus:
+        cache_key = (project_path, branch)
         project = self._get_project(project_path)
         if not project:
             return MRStatus(state=MRState.NO_MR)
@@ -99,12 +104,16 @@ class GitLabProvider(SCMProvider):
             mr_full = project.mergerequests.get(mr_iid)
         except Exception:
             logger.debug("Failed to fetch full MR !%s", mr_iid, exc_info=True)
+            cached = self._status_cache.get(cache_key)
+            if cached is not None:
+                return cached
             return MRStatus(
                 state=MRState.ALL_RESPONDED,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
             )
 
         # Check approval status
+        approval_failed = False
         approved = False
         approved_by: list[str] = []
         try:
@@ -134,14 +143,31 @@ class GitLabProvider(SCMProvider):
                     pass
             logger.debug("Approvals for MR !%s: approved=%s approved_by=%s",
                          mr_iid, approved, approved_by)
+            self._approval_cache[cache_key] = (approved, list(approved_by))
         except Exception:
             logger.debug("Failed to fetch approval status for MR !%s", mr_iid, exc_info=True)
+            approval_failed = True
+            cached_approval = self._approval_cache.get(cache_key)
+            if cached_approval is not None:
+                approved, approved_by = cached_approval[0], list(cached_approval[1])
 
         # Fetch discussions to count unresponded threads
         try:
             discussions = mr_full.discussions.list(get_all=True)
         except Exception:
             logger.debug("Failed to fetch discussions for MR !%s", mr_iid)
+            cached = self._status_cache.get(cache_key)
+            if cached is not None:
+                # Use cached status but update approval fields if they were fresh
+                if not approval_failed:
+                    return MRStatus(
+                        state=cached.state,
+                        unresponded_count=cached.unresponded_count,
+                        mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
+                        first_unresponded_note_id=cached.first_unresponded_note_id,
+                        approved=approved, approved_by=approved_by or None,
+                    )
+                return cached
             return MRStatus(
                 state=MRState.ALL_RESPONDED,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
@@ -159,19 +185,22 @@ class GitLabProvider(SCMProvider):
                         first_note_id = notes[0].get('id')
 
         if unresponded > 0:
-            return MRStatus(
+            result = MRStatus(
                 state=MRState.UNRESPONDED,
                 unresponded_count=unresponded,
                 mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
                 first_unresponded_note_id=first_note_id,
                 approved=approved, approved_by=approved_by or None,
             )
+        else:
+            result = MRStatus(
+                state=MRState.ALL_RESPONDED,
+                mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
+                approved=approved, approved_by=approved_by or None,
+            )
 
-        return MRStatus(
-            state=MRState.ALL_RESPONDED,
-            mr_url=mr_url, mr_title=mr_title, mr_iid=mr_iid,
-            approved=approved, approved_by=approved_by or None,
-        )
+        self._status_cache[cache_key] = result
+        return result
 
     def _is_unresponded_thread(self, discussion, project, mr_iid: int) -> bool:
         """Check if a discussion thread has unresponded comments from others.
@@ -242,12 +271,14 @@ class GitLabProvider(SCMProvider):
                 f'/projects/{project.id}/merge_requests/{mr_iid}/notes/{note_id}/award_emoji',
                 as_list=True,
             )
-            return any(
+            result = any(
                 e.get('user', {}).get('username') == self._username
                 for e in emojis
             )
+            self._emoji_cache[note_id] = result
+            return result
         except Exception:
-            return False
+            return self._emoji_cache.get(note_id, False)
 
     def _is_bot_author(self, note: dict) -> bool:
         """Check if a note's author is a bot, with caching via GitLab user API."""

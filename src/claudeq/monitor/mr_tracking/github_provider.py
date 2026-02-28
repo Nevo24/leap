@@ -36,6 +36,9 @@ class GitHubProvider(SCMProvider):
         self._username = username
         self._filter_bots = filter_bots
         self._repo_cache: dict[str, object] = {}
+        # Caches to avoid phantom state changes on transient API failures
+        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str]]] = {}
+        self._status_cache: dict[tuple[str, str], MRStatus] = {}
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -81,6 +84,7 @@ class GitHubProvider(SCMProvider):
             return None
 
     def get_mr_status(self, project_path: str, branch: str) -> MRStatus:
+        cache_key = (project_path, branch)
         repo = self._get_repo(project_path)
         if not repo:
             return MRStatus(state=MRState.NO_MR)
@@ -98,6 +102,7 @@ class GitHubProvider(SCMProvider):
         pr_title = pr.title
 
         # Check approval status
+        approval_failed = False
         approved = False
         approved_by: list[str] = []
         try:
@@ -111,14 +116,30 @@ class GitHubProvider(SCMProvider):
                 if state == 'APPROVED':
                     approved = True
                     approved_by.append(reviewer)
+            self._approval_cache[cache_key] = (approved, list(approved_by))
         except Exception:
             logger.debug("Failed to fetch review status for PR #%s", pr_number)
+            approval_failed = True
+            cached_approval = self._approval_cache.get(cache_key)
+            if cached_approval is not None:
+                approved, approved_by = cached_approval[0], list(cached_approval[1])
 
         # Count unresponded review comment threads
         try:
             unresponded, first_comment_id = self._count_unresponded_threads(repo, pr)
         except Exception:
             logger.debug("Failed to count unresponded threads for PR #%s", pr_number)
+            cached = self._status_cache.get(cache_key)
+            if cached is not None:
+                if not approval_failed:
+                    return MRStatus(
+                        state=cached.state,
+                        unresponded_count=cached.unresponded_count,
+                        mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
+                        first_unresponded_note_id=cached.first_unresponded_note_id,
+                        approved=approved, approved_by=approved_by or None,
+                    )
+                return cached
             return MRStatus(
                 state=MRState.ALL_RESPONDED,
                 mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
@@ -126,19 +147,22 @@ class GitHubProvider(SCMProvider):
             )
 
         if unresponded > 0:
-            return MRStatus(
+            result = MRStatus(
                 state=MRState.UNRESPONDED,
                 unresponded_count=unresponded,
                 mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
                 first_unresponded_note_id=first_comment_id,
                 approved=approved, approved_by=approved_by or None,
             )
+        else:
+            result = MRStatus(
+                state=MRState.ALL_RESPONDED,
+                mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
+                approved=approved, approved_by=approved_by or None,
+            )
 
-        return MRStatus(
-            state=MRState.ALL_RESPONDED,
-            mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
-            approved=approved, approved_by=approved_by or None,
-        )
+        self._status_cache[cache_key] = result
+        return result
 
     def _count_unresponded_threads(self, repo, pr) -> tuple[int, Optional[int]]:
         """Count unresponded review comment threads on a PR.
