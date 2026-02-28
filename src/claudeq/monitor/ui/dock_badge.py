@@ -96,7 +96,8 @@ class DockBadge:
                 if dock_enabled is None or dock_enabled.get(ev.type.value, True):
                     dock_count += 1
 
-        self._mr_changed = dock_count
+        self._seen_mr_statuses = dict(mr_statuses)
+        self._mr_changed += dock_count
         self._render_total()
         return events
 
