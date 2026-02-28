@@ -289,6 +289,26 @@ class TooltipApp(QApplication):
         if sip.isdeleted(parent) if parent is not None else False:
             return True
 
+        # --- Header view viewport (e.g. column headers) ---
+        if isinstance(parent, QHeaderView):
+            logical = parent.logicalIndexAt(event.pos())
+            if logical >= 0:
+                table = parent.parent()
+                if table is not None and not sip.isdeleted(table):
+                    from PyQt5.QtWidgets import QTableWidget
+                    if isinstance(table, QTableWidget):
+                        header_item = table.horizontalHeaderItem(logical)
+                        if header_item:
+                            tip = header_item.toolTip()
+                            if tip:
+                                if self.tooltips_enabled:
+                                    _QToolTip.showText(
+                                        event.globalPos(), tip, widget,
+                                        parent.rect(), 2_147_483_647,
+                                    )
+                                return True
+            return True
+
         # --- Direct viewport of a table/tree view ---
         if isinstance(parent, QAbstractItemView):
             index = parent.indexAt(event.pos())
