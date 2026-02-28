@@ -9,9 +9,10 @@ from typing import Any, Callable, Optional
 
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QGridLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
-    QVBoxLayout,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QSpinBox, QVBoxLayout, QWidget,
 )
+from PyQt5.QtGui import QKeySequence
 
 from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
 from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
@@ -135,6 +136,7 @@ class SettingsDialog(QDialog):
         current_auto_send_mode: str = 'pause',
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
+        current_global_shortcut: str = '',
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
@@ -142,7 +144,7 @@ class SettingsDialog(QDialog):
         self._log_fn = log_fn
         self._notification_prefs: dict[str, dict[str, bool]] = notification_prefs or {}
         self.setWindowTitle('Settings')
-        self.resize(800, 380)
+        self.resize(800, 440)
         saved = load_dialog_geometry('settings')
         if saved:
             self.resize(saved[0], saved[1])
@@ -227,19 +229,48 @@ class SettingsDialog(QDialog):
             'Set to 0 to disable.'
         )
         grid.addWidget(new_status_label, 6, 0)
+        new_status_layout = QHBoxLayout()
         self._new_status_spin = QSpinBox()
-        self._new_status_spin.setRange(0, 600)
-        self._new_status_spin.setSuffix(' seconds')
+        self._new_status_spin.setRange(0, 999)
         self._new_status_spin.setSpecialValueText('Disabled')
         self._new_status_spin.setValue(new_status_seconds)
         self._new_status_spin.setToolTip(new_status_label.toolTip())
-        grid.addWidget(self._new_status_spin, 6, 1)
+        self._new_status_spin.setFixedWidth(80)
+        new_status_layout.addWidget(self._new_status_spin)
+        new_status_layout.addWidget(QLabel('seconds'))
+        new_status_layout.addStretch()
+        grid.addLayout(new_status_layout, 6, 1)
 
         # Notifications
-        notif_btn = QPushButton('Notifications...')
+        notif_btn = QPushButton('Notifications')
         notif_btn.setToolTip('Configure dock badge and banner notifications per event type')
         notif_btn.clicked.connect(self._open_notifications)
         grid.addWidget(notif_btn, 7, 0)
+
+        # Global focus shortcut
+        shortcut_label = QLabel('Global focus shortcut:')
+        shortcut_label.setToolTip(
+            'System-wide keyboard shortcut to bring the monitor to the foreground'
+        )
+        grid.addWidget(shortcut_label, 8, 0)
+        self._shortcut_edit = _ShortcutEdit()
+        self._shortcut_edit.setToolTip(shortcut_label.toolTip())
+        if current_global_shortcut:
+            self._shortcut_edit.setKeySequence(QKeySequence(current_global_shortcut))
+        grid.addWidget(self._shortcut_edit, 8, 1)
+        clear_shortcut_btn = QPushButton('Clear')
+        clear_shortcut_btn.clicked.connect(self._shortcut_edit.clear)
+        grid.addWidget(clear_shortcut_btn, 8, 2)
+
+        # Accessibility permission hint (always visible)
+        shortcut_hint = QLabel(
+            'Global shortcuts require Accessibility permission.\n'
+            'Grant in: System Settings > Privacy & Security > Accessibility\n'
+            '> enable "ClaudeQ Monitor" (or "Python" if running from source)'
+        )
+        shortcut_hint.setStyleSheet('color: grey; font-size: 11px;')
+        shortcut_hint.setWordWrap(True)
+        grid.addWidget(shortcut_hint, 9, 0, 1, 4)
 
         layout.addLayout(grid)
         layout.addStretch()
@@ -449,3 +480,67 @@ class SettingsDialog(QDialog):
     def selected_diff_tool(self) -> str:
         """Return the configured git diff tool name (empty = use git default)."""
         return self._diff_tool_edit.text().strip()
+
+    def selected_global_shortcut(self) -> str:
+        """Return the global focus shortcut as a portable string (e.g. 'Ctrl+Shift+M')."""
+        seq = self._shortcut_edit.keySequence()
+        return seq.toString() if not seq.isEmpty() else ''
+
+
+class _ShortcutEdit(QLineEdit):
+    """Single-shortcut capture field.
+
+    QKeySequenceEdit allows multi-chord sequences and has a
+    timeout-based "finish" that feels sluggish. This simple
+    QLineEdit captures one key combo on press and is done.
+    """
+
+    _STYLE_NORMAL = (
+        'QLineEdit { border: 1px solid #555; border-radius: 3px; padding: 3px; }'
+    )
+    _STYLE_FOCUSED = (
+        'QLineEdit { border: 2px solid #5B9BD5; border-radius: 3px; padding: 2px; '
+        'background-color: #2a2a3a; }'
+    )
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._seq = QKeySequence()
+        self.setReadOnly(True)
+        self.setPlaceholderText('Click to set shortcut')
+        self.setStyleSheet(self._STYLE_NORMAL)
+
+    def keySequence(self) -> QKeySequence:
+        return self._seq
+
+    def setKeySequence(self, seq: QKeySequence) -> None:
+        self._seq = seq
+        self.setText(seq.toString(QKeySequence.NativeText))
+
+    def clear(self) -> None:
+        self._seq = QKeySequence()
+        self.setText('')
+
+    # -- Qt overrides --------------------------------------------------
+
+    def focusInEvent(self, event: Any) -> None:
+        super().focusInEvent(event)
+        self.setStyleSheet(self._STYLE_FOCUSED)
+        if not self._seq.isEmpty():
+            self.setPlaceholderText('Press new shortcut…')
+        else:
+            self.setPlaceholderText('Press shortcut…')
+
+    def focusOutEvent(self, event: Any) -> None:
+        super().focusOutEvent(event)
+        self.setStyleSheet(self._STYLE_NORMAL)
+        self.setPlaceholderText('Click to set shortcut')
+
+    def keyPressEvent(self, event: Any) -> None:
+        from PyQt5.QtCore import Qt
+        key = event.key()
+        if key in (Qt.Key_unknown, Qt.Key_Control, Qt.Key_Shift,
+                   Qt.Key_Alt, Qt.Key_Meta):
+            return  # modifier-only, wait for the real key
+        modifiers = int(event.modifiers()) & ~Qt.KeypadModifier
+        self.setKeySequence(QKeySequence(key | modifiers))

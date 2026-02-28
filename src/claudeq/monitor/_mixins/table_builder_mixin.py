@@ -1050,6 +1050,7 @@ class TableBuilderMixin(_Base):
             current_auto_send_mode=server_settings.get('auto_send_mode', 'pause'),
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
             new_status_seconds=self._prefs.get('new_status_seconds', 60),
+            current_global_shortcut=self._prefs.get('global_shortcut', ''),
             parent=self,
         )
         if dialog.exec_():
@@ -1059,11 +1060,16 @@ class TableBuilderMixin(_Base):
             self._prefs['notifications'] = dialog.notification_prefs()
             self._prefs['default_diff_tool'] = dialog.selected_diff_tool()
             self._prefs['new_status_seconds'] = dialog.new_status_seconds()
+            old_shortcut = self._prefs.get('global_shortcut', '')
+            new_shortcut = dialog.selected_global_shortcut()
+            self._prefs['global_shortcut'] = new_shortcut
             self._save_prefs()
             # Save auto-send mode to server settings (read by new servers)
             server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()
             save_settings(server_settings)
             self._apply_tooltips_setting()
+            if new_shortcut != old_shortcut:
+                self._register_global_shortcut()
             self._show_status('Settings saved')
 
     def _show_queue_context_menu(

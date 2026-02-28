@@ -128,6 +128,8 @@ class MonitorWindow(
         self._server_launcher = ServerLauncher(self)
         self._slack_bot_process: Optional[QProcess] = None
         self._slack_bot_was_running: bool = self._is_slack_bot_running()
+        self._global_event_monitor: Optional[object] = None
+        self._local_event_monitor: Optional[object] = None
 
         # User notification tracking state
         raw_seen = load_notification_seen()
@@ -159,6 +161,9 @@ class MonitorWindow(
 
         # Always start auto-refresh
         self.timer.start(1000)
+
+        # Register global focus shortcut (if configured)
+        self._register_global_shortcut()
 
     def _init_ui(self) -> None:
         """Initialize the user interface."""
@@ -608,6 +613,99 @@ class MonitorWindow(
             self._prefs['dialog_geometry'] = disk_geom
         save_monitor_prefs(self._prefs)
 
+    # ------------------------------------------------------------------
+    #  Global keyboard shortcut
+    # ------------------------------------------------------------------
+
+    def _register_global_shortcut(self) -> None:
+        """Register (or re-register) the global focus shortcut from prefs."""
+        self._unregister_global_shortcut()
+
+        shortcut_str = self._prefs.get('global_shortcut', '')
+        if not shortcut_str:
+            return
+
+        try:
+            from AppKit import NSEvent, NSKeyDownMask
+        except ImportError:
+            logger.debug("AppKit not available — global shortcut disabled")
+            return
+
+        seq = __import__('PyQt5.QtGui', fromlist=['QKeySequence']).QKeySequence(shortcut_str)
+        if seq.isEmpty():
+            return
+
+        # Decompose the QKeySequence into key + modifiers
+        combined = seq[0]
+        qt_mods = int(combined) & 0xFE000000  # upper bits = modifiers
+        qt_key = int(combined) & 0x01FFFFFF    # lower bits = key code
+
+        # Map Qt modifier flags → NSEvent modifier flags
+        ns_flags = 0
+        # Qt.ControlModifier (physical Cmd on macOS) → NSCommandKeyMask
+        if qt_mods & 0x04000000:  # Qt.ControlModifier
+            ns_flags |= 1 << 20   # NSEventModifierFlagCommand
+        # Qt.MetaModifier (physical Ctrl on macOS) → NSControlKeyMask
+        if qt_mods & 0x10000000:  # Qt.MetaModifier
+            ns_flags |= 1 << 18   # NSEventModifierFlagControl
+        # Qt.AltModifier (Option) → NSAlternateKeyMask
+        if qt_mods & 0x08000000:  # Qt.AltModifier
+            ns_flags |= 1 << 19   # NSEventModifierFlagOption
+        # Qt.ShiftModifier → NSShiftKeyMask
+        if qt_mods & 0x02000000:  # Qt.ShiftModifier
+            ns_flags |= 1 << 17   # NSEventModifierFlagShift
+
+        # Convert Qt key code to macOS key character for matching
+        char = chr(qt_key).lower() if 0x20 <= qt_key <= 0x7E else None
+        if char is None:
+            logger.warning("Global shortcut: unsupported key code %d", qt_key)
+            return
+
+        def _handler(event: object) -> object:
+            """NSEvent handler — check modifiers + key character."""
+            try:
+                ev_flags = event.modifierFlags() & 0x00FF0000  # device-independent
+                ev_chars = event.charactersIgnoringModifiers()
+                if ev_chars and ev_chars.lower() == char and ev_flags == ns_flags:
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(0, self._on_global_shortcut_triggered)
+            except Exception:
+                pass
+            return event
+
+        self._global_event_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            NSKeyDownMask, _handler,
+        )
+        self._local_event_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            NSKeyDownMask, _handler,
+        )
+        logger.debug("Global shortcut registered: %s", shortcut_str)
+
+    def _unregister_global_shortcut(self) -> None:
+        """Remove any active NSEvent monitors."""
+        try:
+            from AppKit import NSEvent
+        except ImportError:
+            return
+        if self._global_event_monitor is not None:
+            NSEvent.removeMonitor_(self._global_event_monitor)
+            self._global_event_monitor = None
+        if self._local_event_monitor is not None:
+            NSEvent.removeMonitor_(self._local_event_monitor)
+            self._local_event_monitor = None
+
+    def _on_global_shortcut_triggered(self) -> None:
+        """Bring the monitor window to the foreground."""
+        try:
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
     def _confirm_close(self) -> None:
         """Ask for confirmation before closing the monitor."""
         reply = QMessageBox.question(
@@ -632,6 +730,7 @@ class MonitorWindow(
         self.timer.stop()
         self._scm_poll_timer.stop()
         self._hover_timer.stop()
+        self._unregister_global_shortcut()
         self._clear_dock_badge()
 
         # Save window geometry and column widths
