@@ -497,17 +497,13 @@ class MonitorWindow(
             self.table.setColumnWidth(col, col_width)
 
     def _reset_window_size(self) -> None:
-        """Reset window geometry, column widths, dialog sizes, and column visibility."""
-        # Clear hidden-columns and dialog geometry from in-memory prefs
-        self._prefs.pop('hidden_columns', None)
+        """Reset window geometry, column widths, and dialog sizes.
+
+        Column visibility (hidden columns) is preserved — only sizes
+        and positions are reset.
+        """
         self._prefs.pop('dialog_geometry', None)
         save_monitor_prefs(self._prefs)
-
-        # Un-hide all columns (except Slack when not installed)
-        for col in range(self.table.columnCount()):
-            if col == self.COL_SLACK and not self._slack_available:
-                continue
-            self.table.setColumnHidden(col, False)
 
         self._center_on_screen()
         self._apply_equal_column_widths()
