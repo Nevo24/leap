@@ -310,8 +310,8 @@ class MonitorWindow(
         top_layout.addLayout(template_grid)
 
         top_layout.addStretch()
-        reset_cols_btn = QPushButton('Reset Window Size')
-        reset_cols_btn.setToolTip('Reset window and column sizes to defaults')
+        reset_cols_btn = QPushButton('Reset Window Sizes')
+        reset_cols_btn.setToolTip('Reset all window and column sizes to defaults')
         reset_cols_btn.clicked.connect(self._reset_window_size)
         top_layout.addWidget(reset_cols_btn)
         layout.addLayout(top_layout)
