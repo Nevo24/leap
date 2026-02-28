@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QPalette
 
 from claudeq.monitor.mr_tracking.base import MRState
 from claudeq.monitor.mr_tracking.config import (
@@ -477,12 +477,17 @@ class TableBuilderMixin(_Base):
                         spacer.setFixedWidth(18)
                         c_layout.addWidget(spacer)
 
-                        # Centered status text
-                        status_label = QLabel(text)
+                        # Centered status text (ElidedLabel for "..."
+                        # when truncated; palette color so the custom
+                        # paintEvent picks it up)
+                        status_label = ElidedLabel(text)
                         status_label.setAlignment(Qt.AlignCenter)
-                        color_css = (f'color: {color.name()};'
-                                     if color else 'color: white;')
-                        status_label.setStyleSheet(color_css)
+                        pal = status_label.palette()
+                        pal.setColor(
+                            QPalette.WindowText,
+                            color if color else QColor(255, 255, 255),
+                        )
+                        status_label.setPalette(pal)
                         c_layout.addWidget(status_label, 1)
 
                         # Right-aligned fire icon (always occupies
@@ -504,6 +509,16 @@ class TableBuilderMixin(_Base):
                                     self._update_table()
                             return _dismiss
                         container.mousePressEvent = _make_dismiss()
+
+                        # Ensure item tooltip for cell-widget
+                        # truncation path (shows full text on hover)
+                        s_item = self.table.item(row, self.COL_STATUS)
+                        if not s_item:
+                            s_item = QTableWidgetItem('')
+                            self.table.setItem(
+                                row, self.COL_STATUS, s_item)
+                        s_item.setText('')
+                        s_item.setToolTip(text)
 
                         self._set_cell_widget(
                             row, self.COL_STATUS, container)
