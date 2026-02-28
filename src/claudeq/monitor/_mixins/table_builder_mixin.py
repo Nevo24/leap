@@ -406,7 +406,11 @@ class TableBuilderMixin(_Base):
                     # Track state changes and show fire indicator for recent ones
                     prev = self._state_changed_at.get(tag)
                     now = time.time()
-                    if prev is None or prev[0] != claude_state:
+                    if prev is None:
+                        # First time seeing this tag — seed with epoch 0
+                        # so the fire indicator doesn't flash on startup.
+                        self._state_changed_at[tag] = (claude_state, 0)
+                    elif prev[0] != claude_state:
                         self._state_changed_at[tag] = (claude_state, now)
                         # Reset dismissal when state changes again
                         self._dismissed_new_status.discard(tag)
@@ -420,14 +424,7 @@ class TableBuilderMixin(_Base):
                         changed_at = self._state_changed_at[tag][1]
                         if (now - changed_at) < threshold:
                             show_fire = True
-                            text = text + ' \U0001f525'
 
-                    self._set_cell_text(row, self.COL_STATUS, text)
-                    item = self.table.item(row, self.COL_STATUS)
-                    if item and color:
-                        item.setForeground(color)
-                    elif item:
-                        item.setForeground(QColor(255, 255, 255))
                     state_explanations = {
                         'idle': 'Claude is waiting for input — will accept next queued message',
                         'running': 'Claude is actively processing a request',
@@ -435,13 +432,66 @@ class TableBuilderMixin(_Base):
                         'has_question': 'Claude is asking a clarifying question',
                         'interrupted': 'Claude was interrupted — will accept next queued message',
                     }
+
+                    color_key = color.name() if color else 'white'
+                    status_state = (text, show_fire, color_key)
+                    if not self._cell_cached(tag, 'status', status_state,
+                                             row, self.COL_STATUS):
+                        container = QWidget()
+                        c_layout = QHBoxLayout(container)
+                        c_layout.setContentsMargins(0, 0, 2, 0)
+                        c_layout.setSpacing(0)
+
+                        # Left spacer balances the fire icon width
+                        spacer = QWidget()
+                        spacer.setFixedWidth(18)
+                        c_layout.addWidget(spacer)
+
+                        # Centered status text
+                        status_label = QLabel(text)
+                        status_label.setAlignment(Qt.AlignCenter)
+                        color_css = (f'color: {color.name()};'
+                                     if color else 'color: white;')
+                        status_label.setStyleSheet(color_css)
+                        c_layout.addWidget(status_label, 1)
+
+                        # Right-aligned fire icon (always occupies
+                        # space; text hidden when inactive to keep
+                        # the centered label stable)
+                        fire_label = QLabel(
+                            '\U0001f525' if show_fire else '')
+                        fire_label.setObjectName('_fireLabel')
+                        fire_label.setFixedWidth(18)
+                        fire_label.setAlignment(
+                            Qt.AlignRight | Qt.AlignVCenter)
+                        c_layout.addWidget(fire_label)
+
+                        # Click anywhere to dismiss fire indicator
+                        def _make_dismiss(t: str = tag) -> Callable:
+                            def _dismiss(event: object) -> None:
+                                if t not in self._dismissed_new_status:
+                                    self._dismissed_new_status.add(t)
+                                    self._update_table()
+                            return _dismiss
+                        container.mousePressEvent = _make_dismiss()
+
+                        self._set_cell_widget(
+                            row, self.COL_STATUS, container)
+                        self._cache_cell(tag, 'status', status_state,
+                                         row, self.COL_STATUS)
+
                     if self._prefs.get('show_tooltips', True):
-                        explanation = state_explanations.get(claude_state, '')
+                        w = self.table.cellWidget(row, self.COL_STATUS)
+                        explanation = state_explanations.get(
+                            claude_state, '')
                         if show_fire and explanation:
-                            ago = int(now - self._state_changed_at[tag][1])
-                            explanation += f' (changed {ago}s ago — click to dismiss)'
-                        if explanation and item:
-                            item.setToolTip(explanation)
+                            ago = int(
+                                now - self._state_changed_at[tag][1])
+                            explanation += (
+                                f' (changed {ago}s ago'
+                                ' — click to dismiss)')
+                        if explanation and w:
+                            w.setToolTip(explanation)
 
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', 'pause')
