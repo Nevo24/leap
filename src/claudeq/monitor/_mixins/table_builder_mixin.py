@@ -201,10 +201,14 @@ class TableBuilderMixin(_Base):
                 lambda checked, t=tag: self._show_path_menu(t))
         path_layout.addWidget(path_menu_btn, 0, Qt.AlignVCenter)
 
-        # Clear any existing text item so the widget takes over
+        # Ensure a table item exists with the tooltip so the
+        # cell-widget tooltip path can show truncated text.
         item = self.table.item(row, self.COL_PATH)
-        if item:
-            item.setText('')
+        if not item:
+            item = QTableWidgetItem('')
+            self.table.setItem(row, self.COL_PATH, item)
+        item.setText('')
+        item.setToolTip(path_text)
         self._set_cell_widget(row, self.COL_PATH, path_container)
         self._cache_cell(tag, 'path', path_state, row, self.COL_PATH)
 
@@ -246,9 +250,14 @@ class TableBuilderMixin(_Base):
                 lambda checked, t=tag: self._show_git_menu(t))
         branch_layout.addWidget(git_btn, 0, Qt.AlignVCenter)
 
+        # Ensure a table item exists with the tooltip so the
+        # cell-widget tooltip path can show truncated text.
         item = self.table.item(row, self.COL_SERVER_BRANCH)
-        if item:
-            item.setText('')
+        if not item:
+            item = QTableWidgetItem('')
+            self.table.setItem(row, self.COL_SERVER_BRANCH, item)
+        item.setText('')
+        item.setToolTip(branch_text)
         self._set_cell_widget(row, self.COL_SERVER_BRANCH, branch_container)
         self._cache_cell(tag, 'server_branch', branch_state,
                          row, self.COL_SERVER_BRANCH)
