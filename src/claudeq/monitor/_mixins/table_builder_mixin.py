@@ -506,14 +506,21 @@ class TableBuilderMixin(_Base):
                             Qt.AlignRight | Qt.AlignVCenter)
                         c_layout.addWidget(fire_label)
 
-                        # Click anywhere to dismiss fire indicator
-                        def _make_dismiss(t: str = tag) -> Callable:
-                            def _dismiss(event: object) -> None:
-                                if t not in self._dismissed_new_status:
+                        # Click: "interrupted" → force-send menu;
+                        # other states → dismiss fire indicator.
+                        def _make_click(
+                            t: str = tag,
+                            st: str = claude_state,
+                            w: QWidget = container,
+                        ) -> Callable:
+                            def _on_click(event: object) -> None:
+                                if st == 'interrupted':
+                                    self._show_status_action_menu(w, t)
+                                elif t not in self._dismissed_new_status:
                                     self._dismissed_new_status.add(t)
                                     self._update_table()
-                            return _dismiss
-                        container.mousePressEvent = _make_dismiss()
+                            return _on_click
+                        container.mousePressEvent = _make_click()
 
                         # Ensure a table item exists so the
                         # cell-widget tooltip path can find it.
@@ -1249,6 +1256,31 @@ class TableBuilderMixin(_Base):
             self._show_status(f'Auto-send mode: {mode}')
         else:
             self._show_status(f'Auto-send mode: {mode} (server offline)')
+
+    def _show_status_action_menu(
+        self, widget: QWidget, tag: str,
+    ) -> None:
+        """Show action menu when clicking an 'interrupted' status cell."""
+        queue_size = 0
+        for s in self.sessions:
+            if s['tag'] == tag:
+                queue_size = s.get('queue_size', 0)
+                break
+
+        menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
+
+        force_action = menu.addAction('Force-send next queued message')
+        force_action.setEnabled(queue_size > 0)
+        force_action.setToolTip(
+            'Send the next queued message immediately,\n'
+            'even if Claude is still running')
+        force_action.triggered.connect(
+            lambda _checked, t=tag: self._force_send_next(t)
+        )
+
+        menu.exec_(widget.mapToGlobal(widget.rect().center()))
 
     def _force_send_next(self, tag: str) -> None:
         """Force-send the next queued message to the CQ server."""
