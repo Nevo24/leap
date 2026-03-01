@@ -12,6 +12,7 @@ from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QTextDocument
 
 from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
 
 logger = logging.getLogger(__name__)
 
@@ -381,18 +382,4 @@ class GitChangesDialog(QDialog):
 
     def _detect_main_branch(self) -> str:
         """Detect the default branch name (main or master)."""
-        try:
-            result = subprocess.run(
-                ['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
-                cwd=self._project_path,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Output: refs/remotes/origin/main
-                ref = result.stdout.strip()
-                return ref.rsplit('/', 1)[-1]
-        except Exception:
-            logger.debug("Failed to detect main branch", exc_info=True)
-        return 'main'
+        return detect_default_branch(self._project_path)

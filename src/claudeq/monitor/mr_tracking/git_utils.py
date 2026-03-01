@@ -1,10 +1,13 @@
 """Git remote parsing utilities."""
 
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class SCMType(Enum):
@@ -292,3 +295,49 @@ def parse_project_url(
         project_path=project_path,
         commit=commit_sha,
     )
+
+
+def detect_default_branch(project_path: str) -> str:
+    """Detect the default remote branch for a git repository.
+
+    Reads ``refs/remotes/origin/HEAD``.  If the ref is missing (common after
+    a fresh clone), runs ``git remote set-head origin --auto`` to fetch it
+    from the remote and retries.
+
+    Args:
+        project_path: Filesystem path to the git working tree.
+
+    Returns:
+        Branch name (e.g. ``'main'``).  Falls back to ``'main'`` if detection
+        fails entirely.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().rsplit('/', 1)[-1]
+
+        # origin/HEAD not set locally — fetch it from remote and retry
+        subprocess.run(
+            ['git', 'remote', 'set-head', 'origin', '--auto'],
+            cwd=project_path,
+            capture_output=True,
+            timeout=10,
+        )
+        result = subprocess.run(
+            ['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip().rsplit('/', 1)[-1]
+    except Exception:
+        logger.debug("Failed to detect default branch for %s", project_path, exc_info=True)
+    return 'main'

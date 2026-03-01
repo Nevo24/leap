@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from PyQt5.QtWidgets import QFileDialog, QMenu, QMessageBox
 from PyQt5.QtGui import QCursor
 
+from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
 from claudeq.monitor.scm_polling import BackgroundCallWorker
 
 logger = logging.getLogger(__name__)
@@ -194,20 +195,7 @@ class ActionsMenuMixin(_Base):
     @staticmethod
     def _detect_main_branch(project_path: str) -> str:
         """Detect the default branch name (main or master)."""
-        try:
-            result = subprocess.run(
-                ['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
-                cwd=project_path,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                ref = result.stdout.strip()
-                return ref.rsplit('/', 1)[-1]
-        except Exception:
-            logger.debug("Failed to detect main branch", exc_info=True)
-        return 'master'
+        return detect_default_branch(project_path)
 
     def _run_git_difftool(self, diff_args: list, cwd: str) -> None:
         """Check for changes, then run git difftool (fire-and-forget).
