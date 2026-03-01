@@ -370,6 +370,11 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_PROJECT, dead_project)
                     self._build_path_cell(row, tag, 'N/A')
                     self._build_branch_cell(row, tag, 'N/A')
+                    # Remove the live status cell widget (coloured
+                    # indicator + label) before switching to plain text,
+                    # otherwise the old widget renders on top of "N/A".
+                    self.table.removeCellWidget(row, self.COL_STATUS)
+                    self._cell_cache.pop((tag, 'status'), None)
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     status_item = self.table.item(row, self.COL_STATUS)
                     if status_item:
