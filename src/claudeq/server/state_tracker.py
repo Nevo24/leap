@@ -597,17 +597,18 @@ class ClaudeStateTracker:
         screen = pyte.Screen(cols, rows)
         stream = pyte.Stream(screen)
         text = raw.decode('utf-8', errors='replace')
-        stream.feed(text)
+        try:
+            stream.feed(text)
+            display = screen.display
+        except (IndexError, ValueError, AssertionError):
+            # pyte bugs: wcwidth(char[0]) crashes on empty strings in
+            # the screen buffer, stream.feed() can raise on malformed
+            # escape sequences, and screen.display has an assert that
+            # can fire if character data is corrupted.
+            return ''
 
         # Box-drawing characters used by Ink's TUI borders.
         _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')
-
-        try:
-            display = screen.display
-        except (IndexError, ValueError):
-            # pyte bug: wcwidth(char[0]) crashes on empty strings in
-            # the screen buffer left by certain escape sequences.
-            return ''
         lines = [line.rstrip() for line in display]
         # Strip leading/trailing blank or purely decorative border lines.
         while lines and (

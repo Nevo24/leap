@@ -213,6 +213,19 @@ class ClaudeQServer:
                         time.sleep(0.2)
                         self.pty.send('\r')
                         return {'status': 'sent'}
+            # Validate that the option exists in the prompt before sending.
+            # Sending an unknown number + CR to Ink would silently confirm
+            # whichever option the cursor happens to be on.
+            valid_nums = set()
+            for line in prompt.split('\n'):
+                vm = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+', line)
+                if vm:
+                    valid_nums.add(int(vm.group(1)))
+            if option_num not in valid_nums:
+                return {
+                    'status': 'error',
+                    'error': f'option {option_num} not found in prompt',
+                }
             self.state.on_send()
             self.pty.sendline(str(option_num))
             return {'status': 'sent'}
@@ -254,7 +267,7 @@ class ClaudeQServer:
                 'queue_size': self.queue.size,
                 'queue_contents': self.queue.get_contents(),
                 'recently_sent': self.queue.get_recently_sent(),
-                'ready': self.state.is_ready(self.pty.is_alive()),
+                'ready': self.state.is_ready_for_state(state),
                 'claude_state': state,
                 'auto_send_mode': self.state.auto_send_mode,
                 'claude_running': self.pty.is_alive(),
@@ -504,14 +517,16 @@ class ClaudeQServer:
 
                 # Delayed prompt output write
                 if prompt_write_due and time.time() >= prompt_write_due:
-                    cs = self.state.current_state
-                    if cs in ('needs_permission', 'has_question', 'interrupted'):
-                        prompt_output = self.state.get_prompt_output()
-                        self.output_capture.on_state_change(
-                            cs, prompt_prev_state,
-                            prompt_queue_has_next, prompt_output,
-                        )
-                    prompt_write_due = 0.0
+                    try:
+                        cs = self.state.current_state
+                        if cs in ('needs_permission', 'has_question', 'interrupted'):
+                            prompt_output = self.state.get_prompt_output()
+                            self.output_capture.on_state_change(
+                                cs, prompt_prev_state,
+                                prompt_queue_has_next, prompt_output,
+                            )
+                    finally:
+                        prompt_write_due = 0.0
 
                 if self.queue.is_empty or not self.state.is_ready_for_state(current_state):
                     continue
