@@ -79,7 +79,8 @@ src/
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   ├── scm_template_dialog.py # Preset editor dialog (MR context + message bundles)
-    │   │   └── add_local_dialog.py    # Add session from local path dialog
+    │   │   ├── add_local_dialog.py    # Add session from local path dialog
+    │   │   └── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -133,6 +134,7 @@ assets/
 | `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu (branch col) + Path menu (Open Terminal/IDE) |
 | `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
+| `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |

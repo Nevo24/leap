@@ -277,6 +277,12 @@ class TableBuilderMixin(_Base):
         """
         new_count = len(self.sessions)
 
+        # Dismiss any active tooltip before destroying/recreating cell
+        # widgets — Qt's tooltip timer may hold a reference to a widget
+        # that is about to be deleted, causing a SIGSEGV.
+        from PyQt5.QtWidgets import QToolTip
+        QToolTip.hideText()
+
         self.table.setUpdatesEnabled(False)
         try:
             # Track which cached MR widgets are stale (tag no longer in table).

@@ -402,12 +402,13 @@ class TooltipApp(QApplication):
                                         '_extra_tooltip')
                                     if extra:
                                         final_tip = f'{tip} | {extra}'
-                        from PyQt5.QtWidgets import QToolTip as _QToolTip
-                        _QToolTip.showText(
-                            event.globalPos(), final_tip, viewport,
-                            table_view.visualRect(index),
-                            2_147_483_647,
-                        )
+                        if not sip.isdeleted(viewport):
+                            from PyQt5.QtWidgets import QToolTip as _QToolTip
+                            _QToolTip.showText(
+                                event.globalPos(), final_tip, viewport,
+                                table_view.visualRect(index),
+                                2_147_483_647,
+                            )
                         return True
             # Fall through to normal widget tooltip handling
 
@@ -430,9 +431,16 @@ class TooltipApp(QApplication):
                 return True
             # Not truncated — fall through to normal tooltips_enabled check
 
+        if sip.isdeleted(widget):
+            return True
         if not self.tooltips_enabled and not widget.property('always_tooltip'):
             return True  # Suppress
         if widget.toolTip():
+            if sip.isdeleted(widget):
+                return True
+            parent = widget.parent()
+            if parent is not None and sip.isdeleted(parent):
+                return True
             from PyQt5.QtWidgets import QToolTip as _QToolTip
             _QToolTip.showText(
                 event.globalPos(), widget.toolTip(), widget,

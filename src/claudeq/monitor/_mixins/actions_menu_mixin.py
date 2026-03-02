@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Optional
 from PyQt5.QtWidgets import QFileDialog, QMenu, QMessageBox
 from PyQt5.QtGui import QCursor
 
-from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
 from claudeq.monitor.scm_polling import BackgroundCallWorker
 
 logger = logging.getLogger(__name__)
@@ -46,10 +45,10 @@ class ActionsMenuMixin(_Base):
             else no_git_tip
         )
 
-        main_action = menu.addAction('Compare to remote main branch')
+        main_action = menu.addAction('Compare to branch')
         main_action.setEnabled(has_git)
         main_action.setToolTip(
-            'Show diff between HEAD and the default remote branch' if has_git
+            'Compare HEAD to a selected branch' if has_git
             else no_git_tip
         )
 
@@ -67,8 +66,7 @@ class ActionsMenuMixin(_Base):
         if chosen == local_action:
             self._run_git_difftool([], project_path)
         elif chosen == main_action:
-            main_branch = self._detect_main_branch(project_path)
-            self._run_git_difftool([f'origin/{main_branch}'], project_path)
+            self._show_branch_picker(project_path)
         elif chosen == commit_action:
             self._show_commit_picker(project_path)
 
@@ -182,6 +180,16 @@ class ActionsMenuMixin(_Base):
         worker.start()
         self._show_status(f"Opening {path.rsplit('/', 1)[-1]} for '{tag}'")
 
+    def _show_branch_picker(self, project_path: str) -> None:
+        """Open branch picker, then run difftool for the selected branch."""
+        from claudeq.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
+
+        dialog = BranchPickerDialog(project_path, parent=self)
+        if dialog.exec_():
+            ref = dialog.selected_branch()
+            if ref:
+                self._run_git_difftool([ref], project_path)
+
     def _show_commit_picker(self, project_path: str) -> None:
         """Open commit list, then run difftool for the selected commit."""
         from claudeq.monitor.dialogs.git_changes_dialog import CommitListDialog
@@ -191,11 +199,6 @@ class ActionsMenuMixin(_Base):
             sha = dialog.selected_commit()
             if sha:
                 self._run_git_difftool([f'{sha}~1', sha], project_path)
-
-    @staticmethod
-    def _detect_main_branch(project_path: str) -> str:
-        """Detect the default branch name (main or master)."""
-        return detect_default_branch(project_path)
 
     def _run_git_difftool(self, diff_args: list, cwd: str) -> None:
         """Check for changes, then run git difftool (fire-and-forget).
