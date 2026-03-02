@@ -326,7 +326,7 @@ class ClaudeQServer:
             return {'status': 'ok', 'auto_send_mode': mode}
 
         elif msg_type == 'interrupt':
-            self.pty.send('\x03')
+            self.pty.send('\x1b')
             return {'status': 'sent'}
 
         elif msg_type == 'shutdown':
