@@ -325,6 +325,10 @@ class ClaudeQServer:
             self._save_pinned_auto_send_mode(self.tag, mode)
             return {'status': 'ok', 'auto_send_mode': mode}
 
+        elif msg_type == 'interrupt':
+            self.pty.send('\x03')
+            return {'status': 'sent'}
+
         elif msg_type == 'shutdown':
             # Use a thread so we can return the response before exiting.
             # Sends SIGTERM to our own process, which the main thread catches

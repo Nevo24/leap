@@ -513,6 +513,7 @@ class TableBuilderMixin(_Base):
                         c_layout.addWidget(fire_label)
 
                         # Click: "interrupted" → force-send menu;
+                        # "running" → interrupt menu;
                         # other states → dismiss fire indicator.
                         def _make_click(
                             t: str = tag,
@@ -522,6 +523,8 @@ class TableBuilderMixin(_Base):
                             def _on_click(event: object) -> None:
                                 if st == 'interrupted':
                                     self._show_status_action_menu(w, t)
+                                elif st == 'running':
+                                    self._show_running_status_menu(w, t)
                                 elif t not in self._dismissed_new_status:
                                     self._dismissed_new_status.add(t)
                                     self._update_table()
@@ -1292,6 +1295,36 @@ class TableBuilderMixin(_Base):
             self._show_status('Queue cleared')
         else:
             self._show_status('Failed to clear queue (server offline)')
+
+    def _show_running_status_menu(
+        self, widget: QWidget, tag: str,
+    ) -> None:
+        """Show action menu when clicking a 'running' status cell."""
+        menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
+
+        interrupt_action = menu.addAction('Interrupt')
+        interrupt_action.setToolTip('Send Ctrl+C to stop Claude')
+        interrupt_action.triggered.connect(
+            lambda _checked, t=tag: self._send_interrupt(t)
+        )
+
+        menu.exec_(widget.mapToGlobal(widget.rect().center()))
+
+    def _send_interrupt(self, tag: str) -> None:
+        """Send interrupt (Ctrl+C) to a running CQ session."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'interrupt'},
+        )
+        if response and response.get('status') == 'sent':
+            self._show_status(f'Interrupted {tag}')
+            self._refresh_data()
+        else:
+            self._show_status(f'Failed to interrupt {tag}')
 
     def _show_status_action_menu(
         self, widget: QWidget, tag: str,
