@@ -444,7 +444,7 @@ class ClaudeStateTracker:
                     len(data), len(self._output_buf),
                     has_interrupted, stripped_preview[:80],
                 )
-            if has_interrupted:
+            if has_interrupted and (now - self._last_input_time) < 3.0:
                 _log.debug('ON_OUTPUT running→interrupted (Interrupted)')
                 self._output_buf.clear()
                 with self._lock:

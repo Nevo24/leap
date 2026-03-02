@@ -326,6 +326,7 @@ class ClaudeQServer:
             return {'status': 'ok', 'auto_send_mode': mode}
 
         elif msg_type == 'interrupt':
+            self.state.on_input(b'\x1b')
             self.pty.send('\x1b')
             return {'status': 'sent'}
 
