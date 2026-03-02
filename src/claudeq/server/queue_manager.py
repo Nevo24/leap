@@ -194,6 +194,16 @@ class QueueManager:
         with self._lock:
             return [f"<{entry['id']}> {entry['msg']}" for entry in self.queue]
 
+    def get_details(self) -> list[dict[str, str]]:
+        """
+        Get current queue entries as a list of dicts.
+
+        Returns:
+            List of {'id': ..., 'msg': ...} dictionaries (copies).
+        """
+        with self._lock:
+            return [dict(entry) for entry in self.queue]
+
     def get_message_by_index(self, index: int) -> Optional[dict[str, str]]:
         """
         Get message at a specific index for editing.

@@ -306,6 +306,9 @@ class ClaudeQServer:
                 return {'status': 'ok', 'message': 'Message edited'}
             return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
 
+        elif msg_type == 'get_queue_details':
+            return {'status': 'ok', 'messages': self.queue.get_details()}
+
         elif msg_type == 'clear_queue':
             self.queue.clear()
             return {

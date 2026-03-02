@@ -1178,6 +1178,20 @@ class TableBuilderMixin(_Base):
 
         menu.addSeparator()
 
+        # Determine current queue size for enabling/disabling actions
+        queue_size = 0
+        for s in self.sessions:
+            if s['tag'] == tag:
+                queue_size = s.get('queue_size', 0)
+                break
+
+        edit_action = menu.addAction('Edit queue messages')
+        edit_action.setToolTip('Open a dialog to view and edit queued messages')
+        edit_action.setEnabled(queue_size > 0)
+        edit_action.triggered.connect(
+            lambda _checked, t=tag: self._edit_queue_messages(t)
+        )
+
         clear_action = menu.addAction('Clear queue')
         clear_action.setToolTip('Delete all queued messages without sending them')
         clear_action.triggered.connect(
@@ -1273,6 +1287,17 @@ class TableBuilderMixin(_Base):
             self._show_status(f'Auto-send mode: {mode}')
         else:
             self._show_status(f'Auto-send mode: {mode} (server offline)')
+
+    def _edit_queue_messages(self, tag: str) -> None:
+        """Open the queue edit dialog for a session."""
+        from claudeq.utils.constants import SOCKET_DIR
+        from claudeq.monitor.dialogs.queue_edit_dialog import QueueEditDialog
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        dialog = QueueEditDialog(tag, socket_path, parent=self)
+        dialog.exec_()
+        # Invalidate cache so next refresh reflects any edits
+        self._cell_cache.pop((tag, 'queue'), None)
 
     def _clear_queue(self, tag: str) -> None:
         """Clear all queued messages for a session without sending them."""

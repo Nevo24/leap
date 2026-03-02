@@ -80,7 +80,8 @@ src/
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   ├── scm_template_dialog.py # Preset editor dialog (MR context + message bundles)
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
-    │   │   └── branch_picker_dialog.py # Branch picker for git difftool comparison
+    │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
+    │   │   └── queue_edit_dialog.py   # Queue message editor dialog
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -135,6 +136,7 @@ assets/
 | `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
+| `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |
@@ -190,6 +192,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 - **Monitor** → `src/claudeq/monitor/`, update `MonitorWindow`
 - **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a CQ server via Unix socket. Do not duplicate the connect/send/recv pattern. Incoming messages are capped at `MAX_MESSAGE_SIZE` (1 MB) in `socket_handler.py`; larger payloads are rejected.
 - **New third-party dependencies** → Add to `pyproject.toml` under the appropriate group: `[tool.poetry.dependencies]` for core, `[tool.poetry.group.monitor.dependencies]` for GUI-only deps. Run `poetry lock && poetry install` after. All imports must be at module top level (no inline imports except optional deps).
+- **New dialogs** → All new resizable dialogs (except simple warning/error/info popups) must save/restore their size using `load_dialog_geometry(key)` / `save_dialog_geometry(key, w, h)` from `monitor/mr_tracking/config.py`. Call `load_dialog_geometry()` in `__init__` to restore. For persistence: if the dialog closes via `accept()`/`reject()`, save in `done()`. If it closes via `close()` or the X button, save in `closeEvent()` instead — `done()` is **not** called for `close()`/X.
 - **New `.storage` subdirectories** → If you add a new subdirectory under `.storage/`, you **must** update three places:
   1. Add the constant in `utils/constants.py` (next to `QUEUE_DIR`, `SOCKET_DIR`, `HISTORY_DIR`)
   2. Add a `.mkdir()` call in `ensure_storage_dirs()` in `utils/constants.py`
