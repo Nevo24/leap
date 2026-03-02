@@ -189,9 +189,11 @@ class ClaudeQServer:
             if option_num < 1:
                 return {'status': 'error', 'error': 'option must be >= 1'}
             # Check for special options that need different PTY handling.
+            # The ❯ cursor marks the currently-selected option in the
+            # Ink TUI, so allow optional ❯ + whitespace before the digit.
             prompt = self.state.get_prompt_output()
             for line in prompt.split('\n'):
-                m = re.match(r'\s*(\d+)\.\s+(.+)', line)
+                m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
                 if m and int(m.group(1)) == option_num:
                     label = m.group(2).strip()
                     if label.startswith('Type something'):
@@ -221,7 +223,7 @@ class ClaudeQServer:
             prompt = self.state.get_prompt_output()
             type_option = None
             for line in prompt.split('\n'):
-                m = re.match(r'\s*(\d+)\.\s+Type something', line)
+                m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+Type something', line)
                 if m:
                     type_option = m.group(1)
                     break

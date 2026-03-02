@@ -206,6 +206,7 @@ class ClaudeStateTracker:
                     self._output_buf.clear()
                 if new_state == 'idle':
                     self._idle_since = self._clock()
+                    self._trust_dialog_phase = False
                 return new_state
 
         # Fallback: PTY silence timeout (handles interruptions,
@@ -292,8 +293,6 @@ class ClaudeStateTracker:
         """Called when a message is sent to Claude.
 
         Sets state to 'running' and deletes the stale signal file.
-        During the trust dialog phase, _waiting_since is preserved so
-        the resume path can detect startup output and transition to idle.
         """
         _log.debug('ON_SEND → running')
         self._seen_user_input = True

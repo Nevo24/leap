@@ -1388,11 +1388,11 @@ class TableBuilderMixin(_Base):
             return
 
         # Parse numbered options from prompt output.
-        # The selected option has a ❯ cursor prefix, so skip
-        # any non-digit characters before the number.
+        # The ❯ cursor marks the currently-selected option in the
+        # Ink TUI, so allow optional ❯ + whitespace before the digit.
         options: list[tuple[int, str]] = []
         for line in prompt_output.split('\n'):
-            m = re.match(r'[^\d]*(\d+)\.\s+(.+)', line)
+            m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
             if m:
                 options.append((int(m.group(1)), m.group(2).strip()))
 
