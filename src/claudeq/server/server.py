@@ -12,6 +12,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from typing import Any, Optional
 
 from claudeq.utils.constants import (
@@ -453,53 +454,60 @@ class ClaudeQServer:
         while self.running:
             time.sleep(POLL_INTERVAL)
 
-            current_state = self.state.get_state(self.pty.is_alive())
-
-            # Detect state transitions for Slack output capture
-            if current_state != prev_state:
-                # Cancel any pending prompt write on state change
-                prompt_write_due = 0.0
-                queue_has_next = (
-                    not self.queue.is_empty
-                    and current_state == 'idle'
-                    and self.state.auto_send_mode in ('pause', 'always')
-                )
-                if current_state in ('needs_permission', 'has_question', 'interrupted'):
-                    # Delay writing: let PTY output accumulate so the
-                    # full permission dialog / question is captured.
-                    prompt_write_due = time.time() + 0.2
-                    prompt_prev_state = prev_state
-                    prompt_queue_has_next = queue_has_next
-                else:
-                    self.output_capture.on_state_change(
-                        current_state, prev_state, queue_has_next,
-                    )
-                prev_state = current_state
-
-            # Delayed prompt output write
-            if prompt_write_due and time.time() >= prompt_write_due:
-                cs = self.state.current_state
-                if cs in ('needs_permission', 'has_question', 'interrupted'):
-                    prompt_output = self.state.get_prompt_output()
-                    self.output_capture.on_state_change(
-                        cs, prompt_prev_state,
-                        prompt_queue_has_next, prompt_output,
-                    )
-                prompt_write_due = 0.0
-
-            if self.queue.is_empty or not self.state.is_ready(self.pty.is_alive()):
-                continue
-
-            message = self.queue.pop()
-            if not message:
-                continue
-
             try:
-                self._send_to_claude(message)
-                self.queue.track_sent(message)
-            except Exception as e:
-                print(f"Error sending to Claude, requeuing: {e}", file=sys.stderr, flush=True)
-                self.queue.requeue(message)
+                current_state = self.state.get_state(self.pty.is_alive())
+
+                # Detect state transitions for Slack output capture
+                if current_state != prev_state:
+                    # Cancel any pending prompt write on state change
+                    prompt_write_due = 0.0
+                    queue_has_next = (
+                        not self.queue.is_empty
+                        and current_state == 'idle'
+                        and self.state.auto_send_mode in ('pause', 'always')
+                    )
+                    if current_state in ('needs_permission', 'has_question', 'interrupted'):
+                        # Delay writing: let PTY output accumulate so the
+                        # full permission dialog / question is captured.
+                        prompt_write_due = time.time() + 0.2
+                        prompt_prev_state = prev_state
+                        prompt_queue_has_next = queue_has_next
+                    else:
+                        self.output_capture.on_state_change(
+                            current_state, prev_state, queue_has_next,
+                        )
+                    prev_state = current_state
+
+                # Delayed prompt output write
+                if prompt_write_due and time.time() >= prompt_write_due:
+                    cs = self.state.current_state
+                    if cs in ('needs_permission', 'has_question', 'interrupted'):
+                        prompt_output = self.state.get_prompt_output()
+                        self.output_capture.on_state_change(
+                            cs, prompt_prev_state,
+                            prompt_queue_has_next, prompt_output,
+                        )
+                    prompt_write_due = 0.0
+
+                if self.queue.is_empty or not self.state.is_ready_for_state(current_state):
+                    continue
+
+                message = self.queue.pop()
+                if not message:
+                    continue
+
+                try:
+                    self._send_to_claude(message)
+                    self.queue.track_sent(message)
+                except Exception as e:
+                    print(f"Error sending to Claude, requeuing: {e}", file=sys.stderr, flush=True)
+                    self.queue.requeue(message)
+            except Exception:
+                print(
+                    "Error in auto-sender loop iteration:",
+                    file=sys.stderr, flush=True,
+                )
+                traceback.print_exc(file=sys.stderr)
 
     def _title_keeper_loop(self) -> None:
         """Background thread to maintain terminal title."""

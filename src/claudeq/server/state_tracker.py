@@ -228,9 +228,11 @@ class ClaudeStateTracker:
     def is_ready(self, pty_alive: bool) -> bool:
         """Check if the auto-sender should send the next message.
 
-        In 'pause' mode: only send when Claude is idle.
-        In 'always' mode: send whenever Claude is not running.
-        Interrupted always blocks regardless of mode.
+        Polls ``get_state()`` and evaluates readiness based on the
+        current auto-send mode.  For callers that already have a
+        fresh state (e.g. the auto-sender loop), use
+        ``is_ready_for_state()`` to avoid a redundant signal-file
+        read that can race with the first one.
 
         Args:
             pty_alive: Whether the PTY child process is still running.
@@ -238,7 +240,22 @@ class ClaudeStateTracker:
         Returns:
             True if the auto-sender should send the next queued message.
         """
-        state = self.get_state(pty_alive)
+        return self.is_ready_for_state(self.get_state(pty_alive))
+
+    def is_ready_for_state(self, state: str) -> bool:
+        """Check readiness given an already-computed state.
+
+        In 'pause' mode: only send when Claude is idle.
+        In 'always' mode: send whenever Claude is not running.
+        Interrupted always blocks regardless of mode.
+
+        Args:
+            state: The current Claude state (from a prior
+                ``get_state()`` call).
+
+        Returns:
+            True if the auto-sender should send the next queued message.
+        """
         if state == 'interrupted':
             return False
         if self._auto_send_mode == 'always':
