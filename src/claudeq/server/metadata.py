@@ -7,6 +7,7 @@ Handles saving and loading session metadata including IDE, project path, and bra
 import json
 import logging
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -31,10 +32,28 @@ class SessionMetadata:
         self.metadata_file = socket_dir / f"{tag}.meta"
         self._data: dict[str, Any] = {}
 
+    @staticmethod
+    def _get_git_root(cwd: str) -> Optional[str]:
+        """Get the git repository root directory for a given path."""
+        try:
+            result = subprocess.run(
+                ['git', 'rev-parse', '--show-toplevel'],
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=2
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return None
+
     def save(self) -> None:
         """Save metadata about the session to disk."""
         ide = detect_ide()
-        project_path = os.getcwd()
+        cwd = os.getcwd()
+        project_path = self._get_git_root(cwd) or cwd
         branch_name = get_git_branch(project_path)
 
         self._data = {
