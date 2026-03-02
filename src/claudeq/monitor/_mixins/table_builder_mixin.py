@@ -8,7 +8,7 @@ import subprocess
 import time
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
@@ -27,7 +27,7 @@ from claudeq.monitor.mr_tracking.config import (
 )
 from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.utils.socket_utils import send_socket_request
-from claudeq.monitor.scm_polling import SessionRefreshWorker
+from claudeq.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from claudeq.monitor.ui.table_helpers import (
     ACTIVE_BTN_STYLE, BORDER_GROUP, BORDER_INTRA, CLOSE_BTN_STYLE,
@@ -1445,16 +1445,32 @@ class TableBuilderMixin(_Base):
         if not ok or not text.strip():
             return
 
+        stripped = text.strip()
         socket_path = SOCKET_DIR / f"{tag}.sock"
-        response = send_socket_request(
-            socket_path, {'type': 'custom_answer', 'message': text.strip()},
-        )
-        if response and response.get('status') == 'sent':
-            self._show_status(f'Sent custom answer for {tag}')
-            self._refresh_data()
-        else:
-            error = (response or {}).get('error', 'unknown error')
-            self._show_status(f'Failed: {error}')
+        # custom_answer types char-by-char (20ms/char) + 0.5s setup;
+        # scale timeout so long messages don't hit the default 5s limit.
+        timeout = max(5.0, 1.0 + len(stripped) * 0.025)
+        result_holder: list[Optional[dict]] = [None]
+
+        def _send() -> None:
+            result_holder[0] = send_socket_request(
+                socket_path, {'type': 'custom_answer', 'message': stripped},
+                timeout=timeout,
+            )
+
+        def _on_done() -> None:
+            response = result_holder[0]
+            if response and response.get('status') == 'sent':
+                self._show_status(f'Sent custom answer for {tag}')
+                self._refresh_data()
+            else:
+                error = (response or {}).get('error', 'unknown error')
+                self._show_status(f'Failed: {error}')
+
+        worker = BackgroundCallWorker(_send, self)
+        worker.finished.connect(_on_done)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _show_status_action_menu(
         self, widget: QWidget, tag: str,

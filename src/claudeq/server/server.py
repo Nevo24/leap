@@ -182,6 +182,12 @@ class ClaudeQServer:
 
         elif msg_type == 'select_option':
             # Select a numbered option in a permission/question dialog.
+            current = self.state.current_state
+            if current not in ('needs_permission', 'has_question'):
+                return {
+                    'status': 'error',
+                    'error': f'not in permission/question state (state={current})',
+                }
             try:
                 option_num = int(message)
             except (ValueError, TypeError):
@@ -233,6 +239,12 @@ class ClaudeQServer:
         elif msg_type == 'custom_answer':
             # Select "Type something." in a question dialog, then enter
             # the user's free-form text.
+            current = self.state.current_state
+            if current not in ('needs_permission', 'has_question'):
+                return {
+                    'status': 'error',
+                    'error': f'not in permission/question state (state={current})',
+                }
             prompt = self.state.get_prompt_output()
             type_option = None
             for line in prompt.split('\n'):
