@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import time
 import webbrowser
@@ -514,6 +515,9 @@ class TableBuilderMixin(_Base):
 
                         # Click: "interrupted" → force-send menu;
                         # "running" → interrupt menu;
+                        # "needs_permission"/"has_question" →
+                        #   right-click: permission options menu;
+                        #   left-click: dismiss fire indicator;
                         # other states → dismiss fire indicator.
                         def _make_click(
                             t: str = tag,
@@ -530,6 +534,19 @@ class TableBuilderMixin(_Base):
                                     self._update_table()
                             return _on_click
                         container.mousePressEvent = _make_click()
+
+                        # Right-click on permission/question →
+                        # show options menu (uses customContext
+                        # signal so Qt delivers it properly).
+                        if claude_state in (
+                            'needs_permission', 'has_question',
+                        ):
+                            container.setContextMenuPolicy(
+                                Qt.CustomContextMenu)
+                            container.customContextMenuRequested.connect(
+                                lambda _pos, w=container, t=tag:
+                                    self._show_permission_menu(w, t)
+                            )
 
                         # Ensure a table item exists so the
                         # cell-widget tooltip path can find it.
@@ -1350,6 +1367,94 @@ class TableBuilderMixin(_Base):
             self._refresh_data()
         else:
             self._show_status(f'Failed to interrupt {tag}')
+
+    def _show_permission_menu(
+        self, widget: QWidget, tag: str,
+    ) -> None:
+        """Show permission options menu for needs_permission/has_question."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'get_prompt'},
+        )
+        if not response or response.get('status') != 'ok':
+            self._show_status(f'Failed to get prompt for {tag}')
+            return
+
+        prompt_output = response.get('prompt_output', '')
+        if not prompt_output:
+            self._show_status(f'No prompt output for {tag}')
+            return
+
+        # Parse numbered options from prompt output.
+        # The selected option has a ❯ cursor prefix, so skip
+        # any non-digit characters before the number.
+        options: list[tuple[int, str]] = []
+        for line in prompt_output.split('\n'):
+            m = re.match(r'[^\d]*(\d+)\.\s+(.+)', line)
+            if m:
+                options.append((int(m.group(1)), m.group(2).strip()))
+
+        if not options:
+            self._show_status(f'No options found in prompt for {tag}')
+            return
+
+        menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
+
+        for option_num, label in options:
+            if label.startswith('Type something'):
+                action = menu.addAction(f'{option_num}. {label}')
+                action.setToolTip('Open a text input dialog')
+                action.triggered.connect(
+                    lambda _checked, t=tag:
+                        self._show_custom_answer_dialog(t)
+                )
+            else:
+                action = menu.addAction(f'{option_num}. {label}')
+                action.triggered.connect(
+                    lambda _checked, t=tag, n=option_num:
+                        self._select_permission_option(t, n)
+                )
+
+        menu.exec_(widget.mapToGlobal(widget.rect().center()))
+
+    def _select_permission_option(self, tag: str, option_num: int) -> None:
+        """Send a numbered option selection to a CQ session."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'select_option', 'message': str(option_num)},
+        )
+        if response and response.get('status') == 'sent':
+            self._show_status(f'Selected option {option_num} for {tag}')
+            self._refresh_data()
+        else:
+            error = (response or {}).get('error', 'unknown error')
+            self._show_status(f'Failed: {error}')
+
+    def _show_custom_answer_dialog(self, tag: str) -> None:
+        """Show text input dialog for the 'Type something' permission option."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        text, ok = QInputDialog.getMultiLineText(
+            self, 'Custom Answer', f'Type your answer ({tag}):', '')
+        if not ok or not text.strip():
+            return
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'custom_answer', 'message': text.strip()},
+        )
+        if response and response.get('status') == 'sent':
+            self._show_status(f'Sent custom answer for {tag}')
+            self._refresh_data()
+        else:
+            error = (response or {}).get('error', 'unknown error')
+            self._show_status(f'Failed: {error}')
 
     def _show_status_action_menu(
         self, widget: QWidget, tag: str,

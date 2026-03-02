@@ -333,6 +333,12 @@ class ClaudeQServer:
             self.pty.send('\x1b')
             return {'status': 'sent'}
 
+        elif msg_type == 'get_prompt':
+            return {
+                'status': 'ok',
+                'prompt_output': self.state.get_prompt_output(),
+            }
+
         elif msg_type == 'shutdown':
             # Use a thread so we can return the response before exiting.
             # Sends SIGTERM to our own process, which the main thread catches

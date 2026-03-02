@@ -292,6 +292,8 @@ class ClaudeStateTracker:
         """Called when a message is sent to Claude.
 
         Sets state to 'running' and deletes the stale signal file.
+        During the trust dialog phase, _waiting_since is preserved so
+        the resume path can detect startup output and transition to idle.
         """
         _log.debug('ON_SEND → running')
         self._seen_user_input = True
@@ -451,6 +453,26 @@ class ClaudeStateTracker:
                     self._state = 'interrupted'
                     self._waiting_since = self._clock()
             else:
+                # Trust dialog phase: after user answered via select_option,
+                # on_send() sets state to running.  Startup output means
+                # Claude is booting — go straight to idle.
+                if self._trust_dialog_phase:
+                    stripped = self._ANSI_RE.sub(b'', data).strip()
+                    if stripped:
+                        _log.debug(
+                            'ON_OUTPUT running→idle '
+                            '(trust dialog startup)',
+                        )
+                        self._trust_dialog_phase = False
+                        self._output_buf.clear()
+                        with self._lock:
+                            self._state = 'idle'
+                            self._waiting_since = None
+                        self._idle_since = self._clock()
+                        self._idle_output_acc = 0
+                        self._last_prompt_buf = b''
+                        return
+
                 # Detect permission/question dialogs from PTY output.
                 # Claude Code's Notification hook fires ~15s late, but
                 # the dialog content is in the PTY output immediately.
