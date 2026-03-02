@@ -1173,6 +1173,14 @@ class TableBuilderMixin(_Base):
             lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
         )
 
+        menu.addSeparator()
+
+        clear_action = menu.addAction('Clear queue')
+        clear_action.setToolTip('Delete all queued messages without sending them')
+        clear_action.triggered.connect(
+            lambda _checked, t=tag: self._clear_queue(t)
+        )
+
         menu.exec_(label.mapToGlobal(pos))
         # Clear stuck hover state after menu closes
         if not sip.isdeleted(label):
@@ -1262,6 +1270,28 @@ class TableBuilderMixin(_Base):
             self._show_status(f'Auto-send mode: {mode}')
         else:
             self._show_status(f'Auto-send mode: {mode} (server offline)')
+
+    def _clear_queue(self, tag: str) -> None:
+        """Clear all queued messages for a session without sending them."""
+        from claudeq.utils.constants import SOCKET_DIR
+
+        reply = QMessageBox.question(
+            self, 'Clear Queue',
+            f'Delete all queued messages for "{tag}"?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'clear_queue'},
+        )
+        self._cell_cache.pop((tag, 'queue'), None)
+        if response and response.get('status') == 'ok':
+            self._show_status('Queue cleared')
+        else:
+            self._show_status('Failed to clear queue (server offline)')
 
     def _show_status_action_menu(
         self, widget: QWidget, tag: str,

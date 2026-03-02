@@ -172,6 +172,10 @@ class SocketClient:
             silent=silent,
         )
 
+    def clear_queue(self, silent: bool = False) -> Optional[dict[str, Any]]:
+        """Clear all queued messages without sending them."""
+        return self._send_request({'type': 'clear_queue'}, silent=silent)
+
     def set_auto_send_mode(
         self, mode: str, silent: bool = False
     ) -> Optional[dict[str, Any]]:

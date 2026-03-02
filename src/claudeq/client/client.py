@@ -415,6 +415,18 @@ class ClaudeQClient:
         else:
             print("\u2717 Could not get server status\n")
 
+    def _handle_clear(self) -> None:
+        """Clear all queued messages without sending them."""
+        confirm = input("Delete all queued messages? [y/N] ").strip().lower()
+        if confirm not in ('y', 'yes'):
+            print("Cancelled\n")
+            return
+        response = self.socket.clear_queue()
+        if response and response.get('status') == 'ok':
+            print("\u2713 Queue cleared\n")
+        else:
+            print("\u2717 Could not clear queue\n")
+
     def _force_send(self) -> None:
         """Force send next queued message."""
         response = self.socket.force_send_next()
@@ -723,7 +735,7 @@ class ClaudeQClient:
 
         # !c / !clear
         if line_lower in ['!c', '!clear']:
-            print("⚠ Queue is managed by server\n")
+            self._handle_clear()
             return True
 
         # !f / !force

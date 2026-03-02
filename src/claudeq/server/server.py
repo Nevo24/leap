@@ -306,6 +306,14 @@ class ClaudeQServer:
                 return {'status': 'ok', 'message': 'Message edited'}
             return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
 
+        elif msg_type == 'clear_queue':
+            self.queue.clear()
+            return {
+                'status': 'ok',
+                'queue_size': 0,
+                'queue_contents': [],
+            }
+
         elif msg_type == 'set_auto_send_mode':
             mode = msg.get('mode', '')
             if mode not in ('pause', 'always'):
