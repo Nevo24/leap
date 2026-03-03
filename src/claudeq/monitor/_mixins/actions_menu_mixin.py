@@ -38,7 +38,7 @@ class ActionsMenuMixin(_Base):
 
         no_git_tip = 'No git project detected'
 
-        local_action = menu.addAction('See local changes')
+        local_action = menu.addAction('See local uncommitted changes')
         local_action.setEnabled(has_git)
         local_action.setToolTip(
             'Show uncommitted changes using difftool' if has_git

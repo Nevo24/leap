@@ -339,7 +339,7 @@ class GitChangesDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        local_btn = QPushButton('See local changes')
+        local_btn = QPushButton('See local uncommitted changes')
         local_btn.setAutoDefault(False)
         local_btn.setToolTip('Show uncommitted changes using difftool')
         local_btn.clicked.connect(self._see_local_changes)
