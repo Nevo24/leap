@@ -15,7 +15,7 @@ from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.session_manager import (
     is_client_lock_held, load_session_metadata, read_client_pid, session_exists,
 )
-from claudeq.monitor.mr_tracking.config import save_pinned_sessions
+from claudeq.monitor.mr_tracking.config import save_monitor_prefs, save_pinned_sessions
 from claudeq.monitor.scm_polling import BackgroundCallWorker
 from claudeq.monitor.monitor_utils import _remove_client_lock
 from claudeq.monitor.navigation import (
@@ -134,6 +134,7 @@ class SessionMixin(_Base):
             for tag in tags_to_remove:
                 self._pinned_sessions.pop(tag, None)
             save_pinned_sessions(self._pinned_sessions)
+            self._remove_from_row_order(set(tags_to_remove))
 
         # Include any active sessions not yet pinned (shouldn't happen, but safe)
         pinned_tags = set(self._pinned_sessions.keys())
@@ -141,7 +142,20 @@ class SessionMixin(_Base):
             if s['tag'] not in pinned_tags:
                 merged.append(s)
 
-        return sorted(merged, key=lambda x: x['tag'])
+        # Sort by persisted row order (not alphabetical); new tags go to end
+        row_order: list[str] = self._prefs.get('row_order', [])
+        order_map = {tag: i for i, tag in enumerate(row_order)}
+        merged.sort(key=lambda x: order_map.get(x['tag'], float('inf')))
+
+        # Append newly discovered tags to row_order
+        existing_tags = set(row_order)
+        new_tags = [s['tag'] for s in merged if s['tag'] not in existing_tags]
+        if new_tags:
+            row_order = row_order + new_tags
+            self._prefs['row_order'] = row_order
+            save_monitor_prefs(self._prefs)
+
+        return merged
 
     def _focus_session(self, tag: str, session_type: str = 'server') -> None:
         """Focus or open the terminal for a session (non-blocking).
@@ -431,6 +445,7 @@ class SessionMixin(_Base):
             return  # Server is running — keep the row
         self._pinned_sessions.pop(tag, None)
         save_pinned_sessions(self._pinned_sessions)
+        self._remove_from_row_order({tag})
         self._deleted_tags.add(tag)
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
         self._show_status(f"Removed dead row '{tag}' (MR tracking failed, no server)")
@@ -440,12 +455,23 @@ class SessionMixin(_Base):
         self._pinned_sessions.pop(tag, None)
         save_pinned_sessions(self._pinned_sessions)
 
+        # Clean up row order
+        self._remove_from_row_order({tag})
+
         # Clean up MR tracking (skip prompt — _delete_row already prompted)
         self._stop_tracking(tag, _skip_prompt=True)
 
         # Remove from sessions list and refresh table
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
         self._update_table()
+
+    def _remove_from_row_order(self, tags: set[str]) -> None:
+        """Remove tags from the persisted row order list."""
+        row_order = self._prefs.get('row_order', [])
+        updated = [t for t in row_order if t not in tags]
+        if len(updated) != len(row_order):
+            self._prefs['row_order'] = updated
+            save_monitor_prefs(self._prefs)
 
     def _get_active_project_paths(self) -> set[str]:
         """Return the set of project_path values for all running CQ servers."""

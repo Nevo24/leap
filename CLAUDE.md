@@ -162,7 +162,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Client lock | `.storage/sockets/<tag>.client.lock` |
 | Server lock | `.storage/sockets/<tag>.server.lock/` (directory) |
 | Pinned sessions | `.storage/pinned_sessions.json` |
-| Monitor prefs | `.storage/monitor_prefs.json` |
+| Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`) |
 | Notification seen state | `.storage/notification_seen.json` |
 | MR context preset selection | `.storage/cq_selected_template` |
 | Message bundle preset selection | `.storage/cq_selected_direct_template` |
@@ -271,6 +271,15 @@ A fire icon (🔥) appears on the far right of the Status and MR columns when th
 
 - **Runtime mismatch**: Monitor shows `⚠ Server` in orange when live branch differs from expected MR branch
 - **Startup validation** (`_validate_pinned_session()` in `server.py`): Checks repo match, branch match, behind-remote status. Fails 1-3 block startup; ahead/dirty is a warning only. Skipped for non-MR-pinned rows
+
+### Row Ordering (Drag-and-Drop)
+
+Rows are ordered by insertion time (not alphabetical). Users can drag any cell to reorder rows; the order is persisted as a `row_order` list in `monitor_prefs.json`. New sessions are appended at the end.
+
+- **Drag detection**: App-level event filter (`eventFilter` in `app.py`) intercepts `MouseButtonPress`/`MouseMove` on cell widgets to initiate a `QDrag`
+- **Drop indicator**: A 2px theme-colored line shows the drop position during drag
+- **Auto-refresh paused** during drag (`timer.stop()` / `timer.start()`) to prevent table rebuilds from interrupting the gesture
+- **Cleanup**: When rows are deleted, `_remove_from_row_order()` in `session_mixin.py` removes the tag from the persisted list
 
 ## Slack Integration
 

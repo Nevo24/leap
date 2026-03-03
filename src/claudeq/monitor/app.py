@@ -17,8 +17,10 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QPoint, QProcess, QTimer, Qt
-from PyQt5.QtGui import QColor, QCursor, QIcon, QCloseEvent, QPalette, QResizeEvent
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QTimer, Qt
+from PyQt5.QtGui import (
+    QColor, QCursor, QDrag, QIcon, QCloseEvent, QPalette, QResizeEvent,
+)
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
@@ -131,6 +133,11 @@ class MonitorWindow(
         self._slack_bot_was_running: bool = self._is_slack_bot_running()
         self._global_event_monitor: Optional[object] = None
         self._local_event_monitor: Optional[object] = None
+
+        # Row drag-and-drop state
+        self._drag_source_row: int = -1
+        self._drag_start_pos: QPoint = QPoint()
+        self._drop_indicator: Optional[QWidget] = None
 
         # User notification tracking state
         raw_seen = load_notification_seen()
@@ -273,9 +280,18 @@ class MonitorWindow(
         self.table.setSelectionMode(QTableWidget.NoSelection)
         self.table.cellClicked.connect(self._on_cell_clicked)
 
-        # Double-click-to-copy: install app-level event filter so we can
-        # intercept double-clicks on cell widgets (which bypass cellDoubleClicked).
+        # App-level event filter for double-click-to-copy and row drag-and-drop
+        # (both need to intercept events on cell widgets).
         QApplication.instance().installEventFilter(self)
+        self.table.setAcceptDrops(True)
+
+        # Drop indicator line (positioned during drag, hidden otherwise)
+        self._drop_indicator = QWidget(self.table.viewport())
+        self._drop_indicator.setFixedHeight(2)
+        self._drop_indicator.setStyleSheet(
+            f'background-color: {current_theme().accent_blue};')
+        self._drop_indicator.setVisible(False)
+        self._drop_indicator.setAttribute(Qt.WA_TransparentForMouseEvents)
 
         # Row hover highlight — poll cursor position to track hovered row
         self.table.setProperty('_hovered_row', -1)
@@ -467,6 +483,100 @@ class MonitorWindow(
         self._progress_bar.setVisible(self._busy_count > 0)
 
     # ------------------------------------------------------------------
+    #  Row reordering (drag-and-drop)
+    # ------------------------------------------------------------------
+
+    def _perform_row_drag(self, source_row: int) -> None:
+        """Initiate a QDrag for row reordering."""
+        if source_row < 0 or source_row >= len(self.sessions):
+            return
+
+        tag = self.sessions[source_row]['tag']
+
+        drag = QDrag(self.table)
+        mime = QMimeData()
+        mime.setData('application/x-claudeq-row', str(source_row).encode())
+        drag.setMimeData(mime)
+
+        # Capture a snapshot of the row as the drag pixmap
+        row_y = self.table.rowViewportPosition(source_row)
+        row_h = self.table.rowHeight(source_row)
+        viewport_w = self.table.viewport().width()
+        pixmap = self.table.viewport().grab(
+            QRect(0, row_y, viewport_w, row_h))
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+
+        # Pause auto-refresh during drag
+        self.timer.stop()
+        logger.debug("Row drag started: row=%d tag=%s", source_row, tag)
+        drag.exec_(Qt.MoveAction)
+        self.timer.start(1000)
+        self._hide_drop_indicator()
+
+    def _update_drop_indicator(self, pos: QPoint) -> None:
+        """Position the drop indicator line at the nearest row boundary."""
+        if not self._drop_indicator:
+            return
+        target_row = self.table.rowAt(pos.y())
+        if target_row < 0:
+            last_row = self.table.rowCount() - 1
+            if last_row < 0:
+                self._drop_indicator.setVisible(False)
+                return
+            y = (self.table.rowViewportPosition(last_row)
+                 + self.table.rowHeight(last_row))
+        else:
+            row_y = self.table.rowViewportPosition(target_row)
+            row_h = self.table.rowHeight(target_row)
+            if pos.y() > row_y + row_h // 2:
+                y = row_y + row_h
+            else:
+                y = row_y
+        viewport_w = self.table.viewport().width()
+        self._drop_indicator.setGeometry(0, y - 1, viewport_w, 2)
+        self._drop_indicator.setVisible(True)
+        self._drop_indicator.raise_()
+
+    def _hide_drop_indicator(self) -> None:
+        """Hide the row drop indicator line."""
+        if self._drop_indicator:
+            self._drop_indicator.setVisible(False)
+
+    def _drop_target_row(self, pos: QPoint) -> tuple[int, bool]:
+        """Compute the target row and whether the drop is below it."""
+        target_row = self.table.rowAt(pos.y())
+        if target_row < 0:
+            return len(self.sessions) - 1, True
+        row_y = self.table.rowViewportPosition(target_row)
+        row_h = self.table.rowHeight(target_row)
+        drop_below = pos.y() > row_y + row_h // 2
+        return target_row, drop_below
+
+    def _on_row_moved(self, source_row: int, target_row: int,
+                      drop_below: bool) -> None:
+        """Handle row reorder from drag-and-drop."""
+        if source_row < 0 or target_row < 0:
+            return
+        if source_row >= len(self.sessions) or target_row >= len(self.sessions):
+            return
+
+        # Compute insertion index, adjusting for the pop shift
+        insert_at = target_row + (1 if drop_below else 0)
+        if source_row < insert_at:
+            insert_at -= 1
+
+        if source_row == insert_at:
+            return
+
+        session = self.sessions.pop(source_row)
+        self.sessions.insert(insert_at, session)
+
+        self._prefs['row_order'] = [s['tag'] for s in self.sessions]
+        self._save_prefs()
+        self._update_table()
+
+    # ------------------------------------------------------------------
     #  Window geometry
     # ------------------------------------------------------------------
 
@@ -555,29 +665,83 @@ class MonitorWindow(
         self._apply_equal_column_widths()
 
     # ------------------------------------------------------------------
-    #  Double-click-to-copy (app-level event filter)
+    #  App-level event filter (double-click-to-copy + row drag-and-drop)
     # ------------------------------------------------------------------
 
-    def eventFilter(self, obj: object, event: QEvent) -> bool:
-        """Intercept double-clicks on table cell widgets to copy text."""
-        if event.type() != QEvent.MouseButtonDblClick:
-            return super().eventFilter(obj, event)
-        # Walk up widget tree to check if the target is inside the table
-        widget = obj
+    def _is_in_table(self, widget: object) -> bool:
+        """Check if a widget is inside the session table."""
         while widget is not None:
             if widget is self.table:
-                break
+                return True
             widget = widget.parent() if hasattr(widget, 'parent') else None
-        else:
+        return False
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:
+        """Intercept events on table cell widgets for copy and drag."""
+        etype = event.type()
+
+        # ── Row drag-and-drop ────────────────────────────────────────
+        if etype == QEvent.MouseButtonPress:
+            if event.button() == Qt.LeftButton and self._is_in_table(obj):
+                pos = self.table.viewport().mapFromGlobal(event.globalPos())
+                row = self.table.rowAt(pos.y())
+                col = self.table.columnAt(pos.x())
+                if row >= 0 and col != self.COL_DELETE:
+                    self._drag_source_row = row
+                    self._drag_start_pos = event.globalPos()
+                else:
+                    self._drag_source_row = -1
+
+        elif etype == QEvent.MouseMove:
+            if (self._drag_source_row >= 0
+                    and event.buttons() & Qt.LeftButton
+                    and self._is_in_table(obj)):
+                dist = (event.globalPos() - self._drag_start_pos).manhattanLength()
+                if dist >= QApplication.startDragDistance():
+                    self._perform_row_drag(self._drag_source_row)
+                    self._drag_source_row = -1
+                    return True
+
+        elif etype == QEvent.MouseButtonRelease:
+            self._drag_source_row = -1
+
+        elif etype == QEvent.DragEnter and obj is self.table.viewport():
+            if event.mimeData().hasFormat('application/x-claudeq-row'):
+                event.acceptProposedAction()
+                return True
+
+        elif etype == QEvent.DragMove and obj is self.table.viewport():
+            if event.mimeData().hasFormat('application/x-claudeq-row'):
+                self._update_drop_indicator(event.pos())
+                event.acceptProposedAction()
+                return True
+
+        elif etype == QEvent.DragLeave and obj is self.table.viewport():
+            self._hide_drop_indicator()
+
+        elif etype == QEvent.Drop and obj is self.table.viewport():
+            mime = event.mimeData()
+            if mime.hasFormat('application/x-claudeq-row'):
+                self._hide_drop_indicator()
+                source_row = int(
+                    bytes(mime.data('application/x-claudeq-row')).decode())
+                target_row, drop_below = self._drop_target_row(event.pos())
+                self._on_row_moved(source_row, target_row, drop_below)
+                event.acceptProposedAction()
+                return True
+
+        # ── Double-click-to-copy ─────────────────────────────────────
+        if etype != QEvent.MouseButtonDblClick:
             return super().eventFilter(obj, event)
-        # Find which cell was double-clicked by mapping global position
+        if not self._is_in_table(obj):
+            return super().eventFilter(obj, event)
         pos = self.table.viewport().mapFromGlobal(event.globalPos())
         row = self.table.rowAt(pos.y())
         col = self.table.columnAt(pos.x())
         if row < 0 or col < 0 or col == self.COL_DELETE:
             return super().eventFilter(obj, event)
         if self._copy_cell_to_clipboard(row, col):
-            return True  # consume event — don't trigger widget actions
+            return True
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -720,6 +884,11 @@ class MonitorWindow(
         self._log_label.setStyleSheet(
             f'color: {t.text_secondary}; font-size: 11px;'
         )
+
+        # Update drop indicator color
+        if self._drop_indicator:
+            self._drop_indicator.setStyleSheet(
+                f'background-color: {t.accent_blue};')
 
     # ------------------------------------------------------------------
     #  Global keyboard shortcut
