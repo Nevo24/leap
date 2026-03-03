@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QLabel
 
 from claudeq.monitor.mr_tracking.base import MRState, MRStatus
 from claudeq.monitor.mr_tracking.config import get_dock_enabled, get_notification_prefs
+from claudeq.monitor.themes import current_theme
 from claudeq.monitor.ui.dock_badge import NotificationEvent, NotificationType
 from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
 from claudeq.monitor.monitor_utils import find_icon
@@ -70,7 +71,7 @@ class MRDisplayMixin(_Base):
 
         if not status or not self._scm_providers:
             widget.setText('N/A')
-            widget.setStyleSheet('color: grey;')
+            widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('No SCM provider configured')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
@@ -90,7 +91,7 @@ class MRDisplayMixin(_Base):
 
         if status.state == MRState.NOT_CONFIGURED:
             widget.setText('N/A')
-            widget.setStyleSheet('color: grey;')
+            widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
@@ -98,7 +99,7 @@ class MRDisplayMixin(_Base):
 
         elif status.state == MRState.NO_MR:
             widget.setText('No MR')
-            widget.setStyleSheet('color: grey;')
+            widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('')
             widget.set_pulsing(False)
             widget.set_mr_url(None)
@@ -106,7 +107,7 @@ class MRDisplayMixin(_Base):
 
         elif status.state == MRState.ALL_RESPONDED:
             widget.setText('\u2713')
-            widget.setStyleSheet('color: green; font-weight: bold;')
+            widget.setStyleSheet(f'color: {current_theme().accent_green}; font-weight: bold;')
             approval_line = self._format_approval_line(status)
             widget.setToolTip('')
             widget.set_pulsing(False)

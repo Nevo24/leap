@@ -6,7 +6,9 @@ from typing import Optional
 
 from PyQt5.QtWidgets import QAction, QApplication, QLabel, QMenu, QWidget
 from PyQt5.QtCore import QPoint, QTimer, Qt
-from PyQt5.QtGui import QCursor, QMouseEvent, QPainter
+from PyQt5.QtGui import QColor, QCursor, QMouseEvent, QPainter
+
+from claudeq.monitor.themes import current_theme
 
 
 class ElidedLabel(QLabel):
@@ -36,11 +38,12 @@ class IndicatorPopup(QLabel):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent, Qt.ToolTip)
         self.setWordWrap(True)
+        t = current_theme()
         self.setStyleSheet(
             'QLabel {'
-            '  background-color: #2b2b2b;'
-            '  color: #e0e0e0;'
-            '  border: 1px solid #555;'
+            f'  background-color: {t.popup_bg};'
+            f'  color: {t.text_primary};'
+            f'  border: 1px solid {t.popup_border};'
             '  border-radius: 4px;'
             '  padding: 6px 8px;'
             '  font-size: 12px;'
@@ -303,7 +306,9 @@ class PulsingLabel(QLabel):
             self._phase += 0.05
             # Oscillate opacity between 0.3 and 1.0
             opacity = 0.65 + 0.35 * math.sin(self._phase)
-            r, g, b = 230, 150, 0  # orange
+            t = current_theme()
+            c = QColor(t.accent_orange)
+            r, g, b = c.red(), c.green(), c.blue()
             self.setStyleSheet(f'color: rgba({r}, {g}, {b}, {opacity:.2f}); font-weight: bold;')
         except Exception:
             # Silently stop pulsing if animation fails

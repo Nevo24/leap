@@ -17,6 +17,7 @@ from claudeq.monitor.mr_tracking.config import (
     load_github_config, load_gitlab_config, resolve_scm_token,
     save_github_config, save_gitlab_config,
 )
+from claudeq.monitor.themes import current_theme
 from claudeq.monitor.mr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
 )
@@ -199,16 +200,21 @@ class SCMConfigMixin(_Base):
 
     def _update_scm_buttons(self) -> None:
         """Update SCM button text/style based on connection state."""
+        t = current_theme()
+        connected_style = (
+            f'QPushButton {{ color: {t.accent_green}; }} '
+            f'QToolTip {{ color: {t.text_primary}; }}'
+        )
         if SCMType.GITLAB.value in self._scm_providers:
             self.gitlab_btn.setText('GitLab Connected')
-            self.gitlab_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
+            self.gitlab_btn.setStyleSheet(connected_style)
         else:
             self.gitlab_btn.setText('Connect GitLab')
             self.gitlab_btn.setStyleSheet('')
 
         if SCMType.GITHUB.value in self._scm_providers:
             self.github_btn.setText('GitHub Connected')
-            self.github_btn.setStyleSheet('QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
+            self.github_btn.setStyleSheet(connected_style)
         else:
             self.github_btn.setText('Connect GitHub')
             self.github_btn.setStyleSheet('')
@@ -326,8 +332,10 @@ class SCMConfigMixin(_Base):
         self.slack_bot_btn.setEnabled(True)
         if self._is_slack_bot_running():
             self.slack_bot_btn.setText('Slack Bot Running')
+            t = current_theme()
             self.slack_bot_btn.setStyleSheet(
-                'QPushButton { color: #00ff00; } QToolTip { color: #e0e0e0; }')
+                f'QPushButton {{ color: {t.accent_green}; }} '
+                f'QToolTip {{ color: {t.text_primary}; }}')
             self.slack_bot_btn.setToolTip('Slack bot is running — click to stop')
         else:
             self.slack_bot_btn.setText('Run Slack Bot')

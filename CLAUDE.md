@@ -61,6 +61,7 @@ src/
     │   ├── cq_sender.py         # Socket sender for /cq commands + message bundles
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
+    │   ├── themes.py            # Visual theme definitions (6 built-in themes, manager API)
     │   │
     │   ├── _mixins/             # MonitorWindow mixin classes
     │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE)
@@ -138,6 +139,8 @@ assets/
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
+| `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (6 built-in themes) |
+| `ensure_contrast()` | `monitor/themes.py` | WCAG contrast safety-net (returns black/white if ratio < 4.5:1) |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
@@ -197,6 +200,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
   1. Add the constant in `utils/constants.py` (next to `QUEUE_DIR`, `SOCKET_DIR`, `HISTORY_DIR`)
   2. Add a `.mkdir()` call in `ensure_storage_dirs()` in `utils/constants.py`
   3. Add the path to the `ensure-storage` target in `Makefile`
+- **Theming** → Use `current_theme()` from `monitor/themes.py` to access colors. Never hardcode colors in monitor code — use theme properties (e.g. `t.accent_green`, `t.text_primary`). Theme colors are applied via `QPalette` (preserves native macOS widget rendering) + minimal QSS. Cell button styles use `close_btn_style()` / `active_btn_style()` / `menu_btn_style()` from `table_helpers.py`. Theme persists as `"theme"` in `monitor_prefs.json` (default: `"Midnight"`). Six built-in themes: Midnight, Ocean, Monokai, Nord, Solarized Dark, Dawn.
 
 ## Testing
 

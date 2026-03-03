@@ -15,6 +15,8 @@ from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
 from PyQt5.QtSvg import QSvgRenderer
 
+from claudeq.monitor.themes import current_theme
+
 
 _OPEN_EXTERNAL_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
@@ -61,8 +63,10 @@ _SEND_SVG = (
 _HOVER_COLOR = b'#ff4444'
 
 
-def _render_svg(svg_data: bytes, size: int, color: bytes = b'#aaa') -> QIcon:
+def _render_svg(svg_data: bytes, size: int, color: Optional[bytes] = None) -> QIcon:
     """Render SVG bytes into a QIcon, replacing #aaa with *color*."""
+    if color is None:
+        color = current_theme().icon_color.encode()
     colored = svg_data.replace(b'#aaa', color).replace(b'#888', color)
     renderer = QSvgRenderer(colored)
     pixmap = QPixmap(size, size)
@@ -146,7 +150,36 @@ APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'
 # Max characters shown in template combo items before truncation with ellipsis
 MAX_COMBO_DISPLAY = 40
 
-# Reusable stylesheet constants for cell buttons
+# Theme-aware stylesheet functions for cell buttons
+
+def close_btn_style() -> str:
+    """Return stylesheet for close/delete buttons."""
+    t = current_theme()
+    return (
+        f'QPushButton {{ color: {t.text_muted}; font-size: 11px; padding: 0 0 2px 0; }}'
+        f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold; }}'
+    )
+
+
+def active_btn_style() -> str:
+    """Return stylesheet for active/connected indicator buttons."""
+    t = current_theme()
+    return (
+        f'QPushButton {{ color: {t.accent_green}; }} '
+        f'QToolTip {{ color: {t.text_primary}; }}'
+    )
+
+
+def menu_btn_style() -> str:
+    """Return stylesheet for three-dot menu buttons."""
+    t = current_theme()
+    return (
+        f'QPushButton {{ color: {t.icon_color}; font-size: 14px; padding: 0; }}'
+        f'QPushButton:hover {{ color: {t.text_primary}; }}'
+    )
+
+
+# Legacy constants kept for backward compatibility (imports in other files)
 CLOSE_BTN_STYLE = (
     'QPushButton { color: #999; font-size: 11px; padding: 0 0 2px 0; }'
     'QPushButton:hover { color: #ff4444; font-weight: bold; }'
@@ -181,6 +214,22 @@ INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 6, 10})   # Semi-transparent white (wi
 
 BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
 BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)
+
+
+def border_solid_pen() -> QPen:
+    """Return a QPen for solid group-boundary separators."""
+    return QPen(QColor(current_theme().border_solid), 1)
+
+
+def border_subtle_pen() -> QPen:
+    """Return a QPen for subtle intra-group separators."""
+    t = current_theme()
+    # Parse rgba() or hex
+    bs = t.border_subtle
+    if bs.startswith('rgba('):
+        parts = bs[5:-1].split(',')
+        return QPen(QColor(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])), 1)
+    return QPen(QColor(bs), 1)
 
 # Border type constants returned by column_border_type()
 BORDER_NONE = 0
@@ -219,6 +268,16 @@ def column_border_type(col: int, table: Any) -> int:
     # Last visible column overall — no border
     return BORDER_NONE
 ROW_HOVER_BG = QColor(255, 255, 255, 20)
+
+
+def row_hover_bg() -> QColor:
+    """Return the QColor for row hover background."""
+    t = current_theme()
+    h = t.hover_bg
+    if h.startswith('rgba('):
+        parts = h[5:-1].split(',')
+        return QColor(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+    return QColor(h)
 
 
 class PersistentTooltipStyle(QProxyStyle):
@@ -456,19 +515,19 @@ class SeparatorDelegate(QStyledItemDelegate):
     def paint(self, painter: Any, option: Any, index: QModelIndex) -> None:
         table = self.parent()
         if table is not None and index.row() == table.property('_hovered_row'):
-            painter.fillRect(option.rect, ROW_HOVER_BG)
+            painter.fillRect(option.rect, row_hover_bg())
         super().paint(painter, option, index)
         col = index.column()
         border = column_border_type(col, table) if table is not None else BORDER_NONE
         if border == BORDER_GROUP:
             painter.save()
-            painter.setPen(BORDER_SOLID)
+            painter.setPen(border_solid_pen())
             x = option.rect.right()
             painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
             painter.restore()
         elif border == BORDER_INTRA:
             painter.save()
-            painter.setPen(BORDER_SUBTLE)
+            painter.setPen(border_subtle_pen())
             x = option.rect.right()
             painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
             painter.restore()
@@ -484,8 +543,8 @@ class SeparatorHeaderView(QHeaderView):
         table = self.parent()
         border = column_border_type(logicalIndex, table) if table is not None else BORDER_NONE
         if border == BORDER_GROUP:
-            painter.setPen(BORDER_SOLID)
+            painter.setPen(border_solid_pen())
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
         elif border == BORDER_INTRA:
-            painter.setPen(BORDER_SUBTLE)
+            painter.setPen(border_subtle_pen())
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())

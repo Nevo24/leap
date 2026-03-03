@@ -29,11 +29,13 @@ from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
+from claudeq.monitor.themes import current_theme
 from claudeq.monitor.ui.table_helpers import (
-    ACTIVE_BTN_STYLE, BORDER_GROUP, BORDER_INTRA, CLOSE_BTN_STYLE,
-    MAX_COMBO_DISPLAY, MENU_BTN_STYLE, MR_TEMPLATE_TOOLTIP,
+    BORDER_GROUP, BORDER_INTRA,
+    MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
     HoverIconButton, column_border_type,
+    active_btn_style, close_btn_style, menu_btn_style,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _SEND_SVG, _THREE_DOT_SVG,
 )
 
@@ -99,10 +101,11 @@ class TableBuilderMixin(_Base):
         at group boundaries additionally get a right border.
         """
         border = column_border_type(col, self.table)
+        t = current_theme()
         if border == BORDER_GROUP:
-            border_css = 'border-right: 1px solid white; '
+            border_css = f'border-right: 1px solid {t.border_solid}; '
         elif border == BORDER_INTRA:
-            border_css = 'border-right: 1px solid rgba(255, 255, 255, 50); '
+            border_css = f'border-right: 1px solid {t.border_subtle}; '
         else:
             border_css = ''
         wrapper = QWidget()
@@ -233,7 +236,7 @@ class TableBuilderMixin(_Base):
 
         path_menu_btn = HoverIconButton(_OPEN_EXTERNAL_SVG, 14)
         path_menu_btn.setFixedSize(22, path_menu_btn.sizeHint().height())
-        path_menu_btn.setStyleSheet(MENU_BTN_STYLE)
+        path_menu_btn.setStyleSheet(menu_btn_style())
         path_menu_btn.setToolTip('Open in Terminal / IDE' if has_path
                                  else 'No project path available')
         path_menu_btn.setEnabled(has_path)
@@ -282,7 +285,7 @@ class TableBuilderMixin(_Base):
 
         git_btn = HoverIconButton(_GIT_BRANCH_SVG, 14)
         git_btn.setFixedSize(22, git_btn.sizeHint().height())
-        git_btn.setStyleSheet(MENU_BTN_STYLE)
+        git_btn.setStyleSheet(menu_btn_style())
         git_btn.setToolTip('Git Changes' if has_git
                            else 'No git project detected')
         git_btn.setEnabled(has_git)
@@ -387,7 +390,7 @@ class TableBuilderMixin(_Base):
                     del_layout.setSpacing(0)
                     del_btn = QPushButton('X')
                     del_btn.setFixedSize(24, del_btn.sizeHint().height())
-                    del_btn.setStyleSheet(CLOSE_BTN_STYLE)
+                    del_btn.setStyleSheet(close_btn_style())
                     del_btn.setToolTip(f'Remove row for {tag}')
                     del_btn.clicked.connect(
                         lambda checked, t=tag: self._delete_row(t)
@@ -425,7 +428,7 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_STATUS, 'N/A')
                     status_item = self.table.item(row, self.COL_STATUS)
                     if status_item:
-                        status_item.setForeground(QColor(255, 255, 255))
+                        status_item.setForeground(QColor(current_theme().text_primary))
 
                     # Queue N/A with menu button
                     dead_q_state = ('dead', session.get('auto_send_mode', 'pause'))
@@ -439,7 +442,7 @@ class TableBuilderMixin(_Base):
                         dq_menu_btn = HoverIconButton(_THREE_DOT_SVG, 14)
                         dq_menu_btn.setFixedSize(
                             24, dq_menu_btn.sizeHint().height())
-                        dq_menu_btn.setStyleSheet(MENU_BTN_STYLE)
+                        dq_menu_btn.setStyleSheet(menu_btn_style())
                         dq_menu_btn.setToolTip('Queue options')
                         dq_menu_btn.clicked.connect(
                             lambda checked, btn=dq_menu_btn, t=tag:
@@ -456,7 +459,7 @@ class TableBuilderMixin(_Base):
                         dq_action_btn = HoverIconButton(_SEND_SVG, 14)
                         dq_action_btn.setFixedSize(
                             24, dq_action_btn.sizeHint().height())
-                        dq_action_btn.setStyleSheet(MENU_BTN_STYLE)
+                        dq_action_btn.setStyleSheet(menu_btn_style())
                         dq_action_btn.setEnabled(False)
                         dq_action_btn.setToolTip('Send options (server offline)')
                         dq_layout.addWidget(
@@ -476,14 +479,15 @@ class TableBuilderMixin(_Base):
                     self._build_branch_cell(row, tag, server_branch)
 
                     claude_state = session.get('claude_state', 'idle')
+                    t = current_theme()
                     state_display = {
-                        'idle': ('\u25cb Idle', None),
-                        'running': ('\u25cf Running', QColor(76, 175, 80)),
-                        'needs_permission': ('\u25b2 Permission', QColor(255, 152, 0)),
-                        'has_question': ('\u25c6 Question', QColor(100, 181, 246)),
-                        'interrupted': ('\u25c7 Interrupted', QColor(255, 213, 79)),
+                        'idle': ('\u25cb Idle', QColor(t.status_idle)),
+                        'running': ('\u25cf Running', QColor(t.status_running)),
+                        'needs_permission': ('\u25b2 Permission', QColor(t.status_permission)),
+                        'has_question': ('\u25c6 Question', QColor(t.status_question)),
+                        'interrupted': ('\u25c7 Interrupted', QColor(t.status_interrupted)),
                     }
-                    text, color = state_display.get(claude_state, (claude_state, None))
+                    text, color = state_display.get(claude_state, (claude_state, QColor(t.status_idle)))
 
                     # Track state changes and show fire indicator for recent ones
                     prev = self._state_changed_at.get(tag)
@@ -515,7 +519,7 @@ class TableBuilderMixin(_Base):
                         'interrupted': 'Claude was interrupted — will accept next queued message',
                     }
 
-                    color_key = color.name() if color else 'white'
+                    color_key = color.name()
                     status_state = (text, show_fire, color_key)
                     if not self._cell_cached(tag, 'status', status_state,
                                              row, self.COL_STATUS):
@@ -537,7 +541,7 @@ class TableBuilderMixin(_Base):
                         pal = status_label.palette()
                         pal.setColor(
                             QPalette.WindowText,
-                            color if color else QColor(255, 255, 255),
+                            color,
                         )
                         status_label.setPalette(pal)
                         c_layout.addWidget(status_label, 1)
@@ -644,7 +648,7 @@ class TableBuilderMixin(_Base):
                         q_menu_btn = HoverIconButton(_THREE_DOT_SVG, 14)
                         q_menu_btn.setFixedSize(
                             24, q_menu_btn.sizeHint().height())
-                        q_menu_btn.setStyleSheet(MENU_BTN_STYLE)
+                        q_menu_btn.setStyleSheet(menu_btn_style())
                         q_menu_btn.setToolTip('Queue options')
                         q_menu_btn.clicked.connect(
                             lambda checked, btn=q_menu_btn, t=tag:
@@ -661,7 +665,7 @@ class TableBuilderMixin(_Base):
                         q_action_btn = HoverIconButton(_SEND_SVG, 14)
                         q_action_btn.setFixedSize(
                             24, q_action_btn.sizeHint().height())
-                        q_action_btn.setStyleSheet(MENU_BTN_STYLE)
+                        q_action_btn.setStyleSheet(menu_btn_style())
                         q_action_btn.setToolTip('Send options')
                         q_action_btn.clicked.connect(
                             lambda checked, btn=q_action_btn, t=tag:
@@ -704,7 +708,7 @@ class TableBuilderMixin(_Base):
                     if not is_dead:
                         server_x = QPushButton('X')
                         server_x.setFixedSize(24, server_x.sizeHint().height())
-                        server_x.setStyleSheet(CLOSE_BTN_STYLE)
+                        server_x.setStyleSheet(close_btn_style())
                         server_x.setToolTip(f'Close server {tag}')
                         server_x.clicked.connect(
                             lambda checked, t=tag, spid=server_pid:
@@ -728,8 +732,8 @@ class TableBuilderMixin(_Base):
                         if branch_mismatch:
                             server_btn = QPushButton('\u26a0 Server')
                             server_btn.setStyleSheet(
-                                'QPushButton { color: #ffa500; } '
-                                'QToolTip { color: #e0e0e0; }')
+                                f'QPushButton {{ color: {current_theme().accent_orange}; }} '
+                                f'QToolTip {{ color: {current_theme().text_primary}; }}')
                             server_btn.setToolTip(
                                 f"Branch mismatch: expected '{pinned_branch}', "
                                 f"got '{session['branch']}'"
@@ -737,7 +741,7 @@ class TableBuilderMixin(_Base):
                             server_btn.setProperty('always_tooltip', True)
                         else:
                             server_btn = QPushButton('Server')
-                            server_btn.setStyleSheet(ACTIVE_BTN_STYLE)
+                            server_btn.setStyleSheet(active_btn_style())
                             server_btn.setToolTip(
                                 f'Jump to server terminal for {tag}')
                         server_btn.clicked.connect(
@@ -764,7 +768,7 @@ class TableBuilderMixin(_Base):
                     if has_client:
                         client_x = QPushButton('X')
                         client_x.setFixedSize(24, client_x.sizeHint().height())
-                        client_x.setStyleSheet(CLOSE_BTN_STYLE)
+                        client_x.setStyleSheet(close_btn_style())
                         client_x.setToolTip(f'Close client {tag}')
                         client_x.clicked.connect(
                             lambda checked, t=tag, pid=client_pid:
@@ -778,7 +782,7 @@ class TableBuilderMixin(_Base):
                         client_btn.setToolTip('No client connected')
                     else:
                         if has_client:
-                            client_btn.setStyleSheet(ACTIVE_BTN_STYLE)
+                            client_btn.setStyleSheet(active_btn_style())
                             client_btn.setToolTip(
                                 f'Jump to client terminal for {tag}')
                         else:
@@ -833,7 +837,7 @@ class TableBuilderMixin(_Base):
 
                         slack_x = QPushButton('X')
                         slack_x.setFixedSize(24, slack_x.sizeHint().height())
-                        slack_x.setStyleSheet(CLOSE_BTN_STYLE)
+                        slack_x.setStyleSheet(close_btn_style())
                         slack_x.setToolTip(f'Disconnect Slack for {tag}')
                         slack_x.clicked.connect(
                             lambda checked, t=tag:
@@ -842,7 +846,7 @@ class TableBuilderMixin(_Base):
                         slack_layout.addWidget(slack_x, 0, Qt.AlignVCenter)
 
                         slack_btn = QPushButton('Slack')
-                        slack_btn.setStyleSheet(ACTIVE_BTN_STYLE)
+                        slack_btn.setStyleSheet(active_btn_style())
                         slack_btn.setToolTip(
                             f'Open Slack thread for {tag}')
                         slack_btn.clicked.connect(
@@ -926,7 +930,7 @@ class TableBuilderMixin(_Base):
 
                         mr_x = QPushButton('X')
                         mr_x.setFixedSize(24, mr_x.sizeHint().height())
-                        mr_x.setStyleSheet(CLOSE_BTN_STYLE)
+                        mr_x.setStyleSheet(close_btn_style())
                         mr_x.setToolTip(f'Stop tracking MR for {tag}')
                         mr_x.clicked.connect(
                             lambda checked, t=tag: self._stop_tracking(t)
@@ -1043,7 +1047,7 @@ class TableBuilderMixin(_Base):
 
                             mr_br_x = QPushButton('X')
                             mr_br_x.setFixedSize(24, mr_br_x.sizeHint().height())
-                            mr_br_x.setStyleSheet(CLOSE_BTN_STYLE)
+                            mr_br_x.setStyleSheet(close_btn_style())
                             mr_br_x.setToolTip(
                                 f'Clear pinned MR data for {tag}')
                             mr_br_x.clicked.connect(
@@ -1167,6 +1171,8 @@ class TableBuilderMixin(_Base):
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
             new_status_seconds=self._prefs.get('new_status_seconds', 60),
             current_global_shortcut=self._prefs.get('global_shortcut', ''),
+            current_theme_name=self._prefs.get('theme', 'Midnight'),
+            on_theme_change=self._apply_theme,
             parent=self,
         )
         if dialog.exec_():
@@ -1179,6 +1185,7 @@ class TableBuilderMixin(_Base):
             old_shortcut = self._prefs.get('global_shortcut', '')
             new_shortcut = dialog.selected_global_shortcut()
             self._prefs['global_shortcut'] = new_shortcut
+            self._prefs['theme'] = dialog.selected_theme()
             self._save_prefs()
             # Save auto-send mode to server settings (read by new servers)
             server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()

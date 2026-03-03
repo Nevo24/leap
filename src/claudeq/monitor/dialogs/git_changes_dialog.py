@@ -13,21 +13,25 @@ from PyQt5.QtGui import QTextDocument
 
 from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
+from claudeq.monitor.themes import current_theme
 
 logger = logging.getLogger(__name__)
 
-_COMMIT_ITEM_STYLE = """
-QWidget#commit_item {
-    border: 1px solid #555;
+def _commit_item_style() -> str:
+    """Return the stylesheet for commit item widgets."""
+    t = current_theme()
+    return f"""
+QWidget#commit_item {{
+    border: 1px solid {t.popup_border};
     border-radius: 6px;
     padding: 8px;
     margin: 2px;
-    background: #2d2d2d;
-}
-QWidget#commit_item:hover {
-    background: #3a3a3a;
-    border-color: #88f;
-}
+    background: {t.popup_bg};
+}}
+QWidget#commit_item:hover {{
+    background: {t.input_bg};
+    border-color: {t.accent_blue};
+}}
 """
 
 
@@ -49,7 +53,7 @@ class _CommitItemWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName('commit_item')
-        self.setStyleSheet(_COMMIT_ITEM_STYLE)
+        self.setStyleSheet(_commit_item_style())
         self.setCursor(Qt.PointingHandCursor)
 
         mono = 'Menlo, Monaco, Courier'
@@ -163,10 +167,11 @@ class CommitListDialog(QDialog):
         self._list.setSpacing(6)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._list.setResizeMode(QListWidget.Fixed)
+        t = current_theme()
         self._list.setStyleSheet(
-            'QListWidget { background: #1e1e1e; border: none; }'
-            'QListWidget::item { border: none; padding: 2px; }'
-            'QListWidget::item:selected { background: rgba(80, 120, 255, 40); }'
+            f'QListWidget {{ background: {t.window_bg}; border: none; }}'
+            f'QListWidget::item {{ border: none; padding: 2px; }}'
+            f'QListWidget::item:selected {{ background: {t.hover_bg}; }}'
         )
         self._list.itemDoubleClicked.connect(self._on_double_click)
         layout.addWidget(self._list)
@@ -264,10 +269,11 @@ class CommitListDialog(QDialog):
     def _add_load_more_item(self) -> None:
         """Append a 'Load more commits...' button at the bottom of the list."""
         btn = QPushButton(f'Load more commits... ({self._loaded} loaded)')
+        t = current_theme()
         btn.setStyleSheet(
-            'QPushButton { color: #5B9BD5; border: 1px solid #444; '
-            'border-radius: 6px; padding: 10px; background: #252525; }'
-            'QPushButton:hover { background: #333; border-color: #88f; }'
+            f'QPushButton {{ color: {t.accent_blue}; border: 1px solid {t.popup_border}; '
+            f'border-radius: 6px; padding: 10px; background: {t.popup_bg}; }}'
+            f'QPushButton:hover {{ background: {t.input_bg}; border-color: {t.accent_blue}; }}'
         )
         btn.setCursor(Qt.PointingHandCursor)
         btn.clicked.connect(self._load_page)

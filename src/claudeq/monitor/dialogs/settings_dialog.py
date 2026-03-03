@@ -16,6 +16,7 @@ from PyQt5.QtGui import QKeySequence
 
 from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
 from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.themes import THEMES
 
 DEFAULT_REPOS_DIR = '/tmp/claudeq-repos'
 
@@ -137,12 +138,16 @@ class SettingsDialog(QDialog):
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
         current_global_shortcut: str = '',
+        current_theme_name: str = 'Midnight',
+        on_theme_change: Optional[Callable[[str], None]] = None,
         parent: Optional[object] = None,
     ) -> None:
         super().__init__(parent)
         self._active_paths_fn = active_paths_fn
         self._log_fn = log_fn
         self._notification_prefs: dict[str, dict[str, bool]] = notification_prefs or {}
+        self._on_theme_change = on_theme_change
+        self._original_theme = current_theme_name
         self.setWindowTitle('Settings')
         self.resize(800, 440)
         saved = load_dialog_geometry('settings')
@@ -153,14 +158,23 @@ class SettingsDialog(QDialog):
 
         grid = QGridLayout()
 
+        # Theme selector
+        grid.addWidget(QLabel('Theme:'), 0, 0)
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(list(THEMES.keys()))
+        if current_theme_name in THEMES:
+            self._theme_combo.setCurrentText(current_theme_name)
+        self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
+        grid.addWidget(self._theme_combo, 0, 1)
+
         # Default terminal
-        grid.addWidget(QLabel('Default terminal:'), 0, 0)
+        grid.addWidget(QLabel('Default terminal:'), 1, 0)
         self._terminal_combo = QComboBox()
         self._installed_terminals = _detect_installed_terminals()
         self._terminal_combo.addItems(self._installed_terminals)
         if current_terminal and current_terminal in self._installed_terminals:
             self._terminal_combo.setCurrentText(current_terminal)
-        grid.addWidget(self._terminal_combo, 0, 1)
+        grid.addWidget(self._terminal_combo, 1, 1)
 
         # Warp accessibility hint (shown only when Warp is selected)
         self._warp_hint = QLabel(
@@ -171,32 +185,32 @@ class SettingsDialog(QDialog):
         self._warp_hint.setStyleSheet('color: grey; font-size: 11px;')
         self._warp_hint.setWordWrap(True)
         self._warp_hint.setVisible(self._terminal_combo.currentText() == 'Warp')
-        grid.addWidget(self._warp_hint, 1, 0, 1, 4)
+        grid.addWidget(self._warp_hint, 2, 0, 1, 4)
         self._terminal_combo.currentTextChanged.connect(
             lambda text: self._warp_hint.setVisible(text == 'Warp'))
 
         # Repositories directory
-        grid.addWidget(QLabel('Clone to dir:'), 2, 0)
+        grid.addWidget(QLabel('Clone to dir:'), 3, 0)
         self._repos_dir_edit = QLineEdit()
         self._repos_dir_edit.setPlaceholderText(DEFAULT_REPOS_DIR)
         if current_repos_dir:
             self._repos_dir_edit.setText(current_repos_dir)
-        grid.addWidget(self._repos_dir_edit, 2, 1)
+        grid.addWidget(self._repos_dir_edit, 3, 1)
         browse_btn = QPushButton('Browse...')
         browse_btn.clicked.connect(self._browse_repos_dir)
-        grid.addWidget(browse_btn, 2, 2)
+        grid.addWidget(browse_btn, 3, 2)
         cleanup_btn = QPushButton('Clean')
         cleanup_btn.setToolTip('Delete cloned repos that have no running CQ server')
         cleanup_btn.clicked.connect(self._cleanup_repos)
-        grid.addWidget(cleanup_btn, 2, 3)
+        grid.addWidget(cleanup_btn, 3, 3)
 
         # Default auto-send mode
-        grid.addWidget(QLabel('Default auto-send:'), 3, 0)
+        grid.addWidget(QLabel('Default auto-send:'), 4, 0)
         self._auto_send_combo = QComboBox()
         self._auto_send_combo.addItems(['Pause on input', 'Always send'])
         if current_auto_send_mode == 'always':
             self._auto_send_combo.setCurrentIndex(1)
-        grid.addWidget(self._auto_send_combo, 3, 1)
+        grid.addWidget(self._auto_send_combo, 4, 1)
 
         # Git diff tool
         diff_label = QLabel('Git diff tool:')
@@ -204,22 +218,22 @@ class SettingsDialog(QDialog):
             'Tool name for git difftool --tool=<name>. Leave blank to use '
             'gitconfig default. Examples: pycharm, vscode, meld, opendiff'
         )
-        grid.addWidget(diff_label, 4, 0)
+        grid.addWidget(diff_label, 5, 0)
         self._diff_tool_edit = QLineEdit()
         self._diff_tool_edit.setPlaceholderText('(use git default)')
         self._diff_tool_edit.setToolTip(diff_label.toolTip())
         if current_diff_tool:
             self._diff_tool_edit.setText(current_diff_tool)
-        grid.addWidget(self._diff_tool_edit, 4, 1)
+        grid.addWidget(self._diff_tool_edit, 5, 1)
         diff_browse_btn = QPushButton('Browse...')
         diff_browse_btn.setToolTip('Select a diff application')
         diff_browse_btn.clicked.connect(self._browse_diff_tool)
-        grid.addWidget(diff_browse_btn, 4, 2)
+        grid.addWidget(diff_browse_btn, 5, 2)
 
         # Show tooltips
         self._tooltips_check = QCheckBox('Show hover explanations')
         self._tooltips_check.setChecked(show_tooltips)
-        grid.addWidget(self._tooltips_check, 5, 0, 1, 2)
+        grid.addWidget(self._tooltips_check, 6, 0, 1, 2)
 
         # New change indicator duration
         new_status_label = QLabel('New change indicator (\U0001f525):')
@@ -228,7 +242,7 @@ class SettingsDialog(QDialog):
             'when the value recently changed.\n'
             'Set to 0 to disable.'
         )
-        grid.addWidget(new_status_label, 6, 0)
+        grid.addWidget(new_status_label, 7, 0)
         new_status_layout = QHBoxLayout()
         self._new_status_spin = QSpinBox()
         self._new_status_spin.setRange(0, 999)
@@ -239,28 +253,28 @@ class SettingsDialog(QDialog):
         new_status_layout.addWidget(self._new_status_spin)
         new_status_layout.addWidget(QLabel('seconds'))
         new_status_layout.addStretch()
-        grid.addLayout(new_status_layout, 6, 1)
+        grid.addLayout(new_status_layout, 7, 1)
 
         # Notifications
         notif_btn = QPushButton('Notifications')
         notif_btn.setToolTip('Configure dock badge and banner notifications per event type')
         notif_btn.clicked.connect(self._open_notifications)
-        grid.addWidget(notif_btn, 7, 0)
+        grid.addWidget(notif_btn, 8, 0)
 
         # Global focus shortcut
         shortcut_label = QLabel('Global focus shortcut:')
         shortcut_label.setToolTip(
             'System-wide keyboard shortcut to bring the monitor to the foreground'
         )
-        grid.addWidget(shortcut_label, 8, 0)
+        grid.addWidget(shortcut_label, 9, 0)
         self._shortcut_edit = _ShortcutEdit()
         self._shortcut_edit.setToolTip(shortcut_label.toolTip())
         if current_global_shortcut:
             self._shortcut_edit.setKeySequence(QKeySequence(current_global_shortcut))
-        grid.addWidget(self._shortcut_edit, 8, 1)
+        grid.addWidget(self._shortcut_edit, 9, 1)
         clear_shortcut_btn = QPushButton('Clear')
         clear_shortcut_btn.clicked.connect(self._shortcut_edit.clear)
-        grid.addWidget(clear_shortcut_btn, 8, 2)
+        grid.addWidget(clear_shortcut_btn, 9, 2)
 
         # Accessibility permission hint (always visible)
         shortcut_hint = QLabel(
@@ -270,7 +284,7 @@ class SettingsDialog(QDialog):
         )
         shortcut_hint.setStyleSheet('color: grey; font-size: 11px;')
         shortcut_hint.setWordWrap(True)
-        grid.addWidget(shortcut_hint, 9, 0, 1, 4)
+        grid.addWidget(shortcut_hint, 10, 0, 1, 4)
 
         layout.addLayout(grid)
         layout.addStretch()
@@ -472,8 +486,20 @@ class SettingsDialog(QDialog):
         """Return the new-status fire indicator duration in seconds."""
         return self._new_status_spin.value()
 
+    def selected_theme(self) -> str:
+        """Return the selected theme name."""
+        return self._theme_combo.currentText()
+
+    def _on_theme_combo_changed(self, theme_name: str) -> None:
+        """Live-preview theme change."""
+        if self._on_theme_change:
+            self._on_theme_change(theme_name)
+
     def done(self, result: int) -> None:
-        """Save dialog size on close."""
+        """Save dialog size on close. Revert theme on cancel."""
+        if result != QDialog.Accepted and self._on_theme_change:
+            # Revert to original theme
+            self._on_theme_change(self._original_theme)
         save_dialog_geometry('settings', self.width(), self.height())
         super().done(result)
 

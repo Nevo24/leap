@@ -18,13 +18,14 @@ from PyQt5.QtWidgets import (
     QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QPoint, QProcess, QTimer, Qt
-from PyQt5.QtGui import QCursor, QIcon, QCloseEvent, QResizeEvent
+from PyQt5.QtGui import QColor, QCursor, QIcon, QCloseEvent, QPalette, QResizeEvent
 
 from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
 from claudeq.monitor.mr_tracking.config import (
     load_monitor_prefs, load_notification_seen,
     load_pinned_sessions, save_monitor_prefs,
 )
+from claudeq.monitor.themes import THEMES, current_theme, set_theme
 from claudeq.monitor.scm_polling import (
     CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
     SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
@@ -392,7 +393,9 @@ class MonitorWindow(
         status_layout.addWidget(full_log_btn)
 
         self._log_label = QLabel('')
-        self._log_label.setStyleSheet('color: gray; font-size: 11px;')
+        self._log_label.setStyleSheet(
+            f'color: {current_theme().text_secondary}; font-size: 11px;'
+        )
         self._log_label.setOpenExternalLinks(True)
         status_layout.addWidget(self._log_label)
 
@@ -609,6 +612,90 @@ class MonitorWindow(
             self._prefs['dialog_geometry'] = disk_geom
         save_monitor_prefs(self._prefs)
 
+    def _apply_theme(self, theme_name: str) -> None:
+        """Switch the active theme and rebuild the UI to reflect new colors.
+
+        Uses QPalette for base colors so native macOS widget rendering
+        (buttons, checkboxes, spinbox arrows, etc.) is preserved.  Only
+        applies minimal QSS for things the palette can't control (table
+        grid, tooltips, header sections).
+        """
+        if theme_name not in THEMES:
+            return
+        set_theme(theme_name)
+        t = current_theme()
+
+        # Set macOS appearance (dark/light) — must come before palette
+        try:
+            from AppKit import NSAppearance, NSApplication
+            appearance_name = (
+                'NSAppearanceNameDarkAqua' if t.is_dark
+                else 'NSAppearanceNameAqua'
+            )
+            appearance = NSAppearance.appearanceNamed_(appearance_name)
+            if appearance:
+                NSApplication.sharedApplication().setAppearance_(appearance)
+        except Exception:
+            pass
+
+        app = QApplication.instance()
+
+        # Set palette — this controls native widget colors without
+        # replacing the platform style engine the way QSS does.
+        pal = QPalette()
+        pal.setColor(QPalette.Window, QColor(t.window_bg))
+        pal.setColor(QPalette.WindowText, QColor(t.text_primary))
+        pal.setColor(QPalette.Base, QColor(t.input_bg))
+        pal.setColor(QPalette.AlternateBase, QColor(t.cell_bg_alt))
+        pal.setColor(QPalette.Text, QColor(t.text_primary))
+        pal.setColor(QPalette.Button, QColor(t.window_bg))
+        pal.setColor(QPalette.ButtonText, QColor(t.text_primary))
+        pal.setColor(QPalette.Highlight, QColor(t.accent_blue))
+        pal.setColor(QPalette.HighlightedText, QColor('#ffffff' if t.is_dark else '#000000'))
+        pal.setColor(QPalette.ToolTipBase, QColor(t.popup_bg))
+        pal.setColor(QPalette.ToolTipText, QColor(t.text_primary))
+        pal.setColor(QPalette.PlaceholderText, QColor(t.text_muted))
+        pal.setColor(QPalette.Link, QColor(t.accent_blue))
+        # Disabled state
+        pal.setColor(QPalette.Disabled, QPalette.WindowText, QColor(t.text_muted))
+        pal.setColor(QPalette.Disabled, QPalette.Text, QColor(t.text_muted))
+        pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(t.text_muted))
+        app.setPalette(pal)
+
+        # Minimal QSS — only for things QPalette can't control.
+        # NO QWidget/QPushButton/QCheckBox rules so native rendering
+        # is fully preserved.
+        app.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {t.cell_bg};
+                alternate-background-color: {t.cell_bg_alt};
+                gridline-color: transparent;
+            }}
+            QHeaderView::section {{
+                border: none;
+                padding: 4px;
+            }}
+            QToolTip {{
+                background-color: {t.popup_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.popup_border};
+                padding: 4px;
+            }}
+        """)
+
+        # Clear cell cache to force full rebuild with new colors
+        self._cell_cache.clear()
+        self._update_table()
+
+        # Re-apply SCM button styles
+        self._update_scm_buttons()
+        self._update_slack_bot_button()
+
+        # Update status log label color
+        self._log_label.setStyleSheet(
+            f'color: {t.text_secondary}; font-size: 11px;'
+        )
+
     # ------------------------------------------------------------------
     #  Global keyboard shortcut
     # ------------------------------------------------------------------
@@ -778,12 +865,22 @@ def main() -> None:
     app.setApplicationName('ClaudeQ Monitor')
     app.setStyle(PersistentTooltipStyle(app.style()))
 
-    # Force dark theme regardless of OS appearance
+    # Load saved theme before creating the window
+    prefs = load_monitor_prefs()
+    saved_theme = prefs.get('theme', 'Midnight')
+    set_theme(saved_theme)
+
+    # Set macOS appearance based on theme (dark/light)
+    t = current_theme()
     try:
         from AppKit import NSAppearance, NSApplication
-        dark = NSAppearance.appearanceNamed_('NSAppearanceNameDarkAqua')
-        if dark:
-            NSApplication.sharedApplication().setAppearance_(dark)
+        appearance_name = (
+            'NSAppearanceNameDarkAqua' if t.is_dark
+            else 'NSAppearanceNameAqua'
+        )
+        appearance = NSAppearance.appearanceNamed_(appearance_name)
+        if appearance:
+            NSApplication.sharedApplication().setAppearance_(appearance)
     except Exception:
         pass
 
@@ -802,6 +899,8 @@ def main() -> None:
     window = MonitorWindow()
     window._tooltip_app = app
     window._apply_tooltips_setting()
+    # Apply the theme stylesheet (sets global QSS + rebuilds table)
+    window._apply_theme(saved_theme)
     window.show()
 
     # Enable proportional column scaling after the window is fully shown
