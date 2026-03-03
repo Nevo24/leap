@@ -124,6 +124,7 @@ class MonitorWindow(
         self._dismissed_new_status: set[str] = set()  # tags where user dismissed fire icon
         self._mr_changed_at: dict[str, tuple[tuple, float]] = {}  # tag -> (snapshot, timestamp)
         self._dismissed_mr_new_status: set[str] = set()  # tags where user dismissed MR fire
+        self._row_colors: dict[str, str] = self._prefs.get('row_colors', {})
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
@@ -295,6 +296,9 @@ class MonitorWindow(
 
         # Row hover highlight — poll cursor position to track hovered row
         self.table.setProperty('_hovered_row', -1)
+        # Row color state for SeparatorDelegate and cell contrast
+        self.table.setProperty('_row_colors', self._row_colors)
+        self.table.setProperty('_row_tags', [])
         self._hover_timer = QTimer()
         self._hover_timer.timeout.connect(self._check_row_hover)
         self._hover_timer.start(50)

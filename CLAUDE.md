@@ -88,7 +88,7 @@ src/
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
     │   │   ├── dock_badge.py    # Dock icon badge overlay + notification event detection
     │   │   ├── log_history.py   # Log history (in-memory + dialog)
-    │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides)
+    │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides, ColorPickerPopup)
     │   │
     │   ├── mr_tracking/         # MR tracking subsystem
     │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus, MRDetails
@@ -138,6 +138,7 @@ assets/
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
+| `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (6 built-in themes) |
 | `ensure_contrast()` | `monitor/themes.py` | WCAG contrast safety-net (returns black/white if ratio < 4.5:1) |
@@ -280,6 +281,15 @@ Rows are ordered by insertion time (not alphabetical). Users can drag any cell t
 - **Drop indicator**: A 2px theme-colored line shows the drop position during drag
 - **Auto-refresh paused** during drag (`timer.stop()` / `timer.start()`) to prevent table rebuilds from interrupting the gesture
 - **Cleanup**: When rows are deleted, `_remove_from_row_order()` in `session_mixin.py` removes the tag from the persisted list
+
+### Row Colors
+
+Per-row background colors selectable via a droplet icon button in the Tag column. Persisted as `row_colors: {tag: "#hex"}` in `monitor_prefs.json`.
+
+- **Picker**: `ColorPickerPopup` (in `table_helpers.py`) — 4x4 grid of muted color swatches + Clear button, opened via `_show_color_picker()` in `table_builder_mixin.py`
+- **Rendering**: `SeparatorDelegate.paint()` reads `_row_colors` / `_row_tags` table properties and `fillRect`s the row background before the hover overlay
+- **Text contrast**: `ensure_contrast()` adjusts text foreground against the row color for both `QTableWidgetItem` cells and child `QLabel`s in widget cells (skips `PulsingLabel`/`IndicatorLabel`)
+- **Cleanup**: `_remove_pinned_session()` in `session_mixin.py` deletes the color entry when a row is removed
 
 ## Slack Integration
 

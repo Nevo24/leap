@@ -8,8 +8,9 @@ from typing import Any, Optional
 
 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QHeaderView, QPushButton, QProxyStyle, QStyle,
-    QStyledItemDelegate, QWidget,
+    QApplication, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+    QLabel, QPushButton, QProxyStyle, QStyle, QStyledItemDelegate,
+    QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
@@ -59,6 +60,38 @@ _SEND_SVG = (
     b' stroke="#aaa" stroke-width="40" stroke-linecap="round"/>'
     b'</svg>'
 )
+
+_PALETTE_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    b'<defs><clipPath id="r"><rect x="256" y="0" width="256" height="512"/></clipPath></defs>'
+    b'<path d="M256 16C192 128 80 224 80 336c0 97 79 176 176 176s176-79 176-176'
+    b'C432 224 320 128 256 16z" fill="none" stroke="#aaa" stroke-width="36"'
+    b' stroke-linejoin="round"/>'
+    b'<path d="M256 16C192 128 80 224 80 336c0 97 79 176 176 176s176-79 176-176'
+    b'C432 224 320 128 256 16z" fill="#aaa" clip-path="url(#r)"/>'
+    b'</svg>'
+)
+
+# Muted background colors that work well with both dark and light themes.
+# 16 presets — 4 columns x 4 rows in the picker popup.
+ROW_COLOR_PRESETS: list[str] = [
+    '#8b0000',  # dark red
+    '#a0522d',  # sienna
+    '#b8860b',  # dark goldenrod
+    '#556b2f',  # dark olive green
+    '#2e8b57',  # sea green
+    '#008080',  # teal
+    '#4682b4',  # steel blue
+    '#483d8b',  # dark slate blue
+    '#6a5acd',  # slate blue
+    '#8b008b',  # dark magenta
+    '#800020',  # burgundy
+    '#704214',  # sepia
+    '#36454f',  # charcoal
+    '#2f4f4f',  # dark slate grey
+    '#191970',  # midnight blue
+    '#3c1414',  # dark bean
+]
 
 _HOVER_COLOR = b'#ff4444'
 
@@ -124,6 +157,61 @@ def git_branch_icon(size: int = 16) -> QIcon:
 def send_icon(size: int = 16) -> QIcon:
     """Return a small paper-plane send icon."""
     return _render_svg(_SEND_SVG, size)
+
+
+class ColorPickerPopup(QFrame):
+    """Popup with a grid of color swatches and a Clear button."""
+
+    def __init__(
+        self,
+        current_color: Optional[str],
+        on_color_selected: Any,  # Callable[[Optional[str]], None]
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent, Qt.Popup)
+        self._callback = on_color_selected
+        t = current_theme()
+        self.setStyleSheet(
+            f'ColorPickerPopup {{'
+            f'  background-color: {t.popup_bg};'
+            f'  border: 1px solid {t.popup_border};'
+            f'  border-radius: 4px;'
+            f'}}'
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        grid = QGridLayout()
+        grid.setSpacing(3)
+        cols = 4
+        for i, color in enumerate(ROW_COLOR_PRESETS):
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            border = f'2px solid {t.text_primary}' if color == current_color else '1px solid #555'
+            btn.setStyleSheet(
+                f'QPushButton {{ background-color: {color}; border: {border};'
+                f' border-radius: 3px; }}'
+                f'QPushButton:hover {{ border: 2px solid {t.accent_blue}; }}'
+            )
+            btn.setToolTip(color)
+            btn.clicked.connect(lambda checked, c=color: self._pick(c))
+            grid.addWidget(btn, i // cols, i % cols)
+        layout.addLayout(grid)
+
+        clear_btn = QPushButton('Clear')
+        clear_btn.setStyleSheet(
+            f'QPushButton {{ color: {t.text_primary}; font-size: 11px;'
+            f' background: transparent; border: 1px solid {t.popup_border};'
+            f' border-radius: 3px; padding: 2px 8px; }}'
+            f'QPushButton:hover {{ border-color: {t.accent_blue}; }}'
+        )
+        clear_btn.clicked.connect(lambda: self._pick(None))
+        layout.addWidget(clear_btn)
+
+    def _pick(self, color: Optional[str]) -> None:
+        self._callback(color)
+        self.close()
 
 
 # Template UI strings (single source of truth for labels, tooltips, hints).
@@ -508,6 +596,16 @@ class SeparatorDelegate(QStyledItemDelegate):
 
     def paint(self, painter: Any, option: Any, index: QModelIndex) -> None:
         table = self.parent()
+        # Draw row background color (if any) before everything else
+        if table is not None:
+            row_colors = table.property('_row_colors')
+            row_tags = table.property('_row_tags')
+            if row_colors and row_tags:
+                row = index.row()
+                if 0 <= row < len(row_tags):
+                    rc = row_colors.get(row_tags[row])
+                    if rc:
+                        painter.fillRect(option.rect, QColor(rc))
         if table is not None and index.row() == table.property('_hovered_row'):
             painter.fillRect(option.rect, row_hover_bg())
         super().paint(painter, option, index)

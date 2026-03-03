@@ -29,14 +29,15 @@ from claudeq.monitor.session_manager import get_active_sessions
 from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
-from claudeq.monitor.themes import current_theme
+from claudeq.monitor.themes import current_theme, ensure_contrast
 from claudeq.monitor.ui.table_helpers import (
     BORDER_GROUP, BORDER_INTRA,
     MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
-    HoverIconButton, column_border_type,
+    ColorPickerPopup, HoverIconButton, column_border_type,
     active_btn_style, close_btn_style, menu_btn_style,
-    _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _SEND_SVG, _THREE_DOT_SVG,
+    _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _PALETTE_SVG, _SEND_SVG,
+    _THREE_DOT_SVG,
 )
 
 if TYPE_CHECKING:
@@ -153,7 +154,8 @@ class TableBuilderMixin(_Base):
                     if orig is not None:
                         child.setStyleSheet(orig)
 
-    def _set_cell_text(self, row: int, col: int, text: str) -> None:
+    def _set_cell_text(self, row: int, col: int, text: str,
+                       row_color: Optional[str] = None) -> None:
         """Set cell text only if it changed, to avoid flicker."""
         item = self.table.item(row, col)
         center = col in self._CENTER_COLS or text == 'N/A'
@@ -170,6 +172,13 @@ class TableBuilderMixin(_Base):
             alignment = Qt.AlignCenter if center else int(Qt.AlignLeft | Qt.AlignVCenter)
             if item.textAlignment() != alignment:
                 item.setTextAlignment(alignment)
+        # Adjust foreground for row background color contrast
+        if row_color:
+            t = current_theme()
+            fg = ensure_contrast(t.text_primary, row_color)
+            item.setForeground(QColor(fg))
+        else:
+            item.setForeground(QColor(current_theme().text_primary))
 
     def _cell_cached(self, tag: str, col: str, state: tuple,
                      row: int, table_col: int) -> bool:
@@ -207,14 +216,93 @@ class TableBuilderMixin(_Base):
         ago = int(time.time() - entry[1])
         return f'MR status changed {ago}s ago \u2014 click to dismiss'
 
-    def _build_path_cell(self, row: int, tag: str, path_text: str) -> None:
+    def _build_tag_cell(self, row: int, tag: str,
+                        row_color: Optional[str] = None) -> None:
+        """Build the Tag column cell: elided label + palette icon button."""
+        tag_state = (tag, row_color)
+        if self._cell_cached(tag, 'tag', tag_state, row, self.COL_TAG):
+            return
+
+        tag_container = QWidget()
+        tag_layout = QHBoxLayout(tag_container)
+        tag_layout.setContentsMargins(0, 0, 0, 0)
+        tag_layout.setSpacing(2)
+
+        tag_label = ElidedLabel(tag)
+        tag_label.setAlignment(Qt.AlignCenter)
+        tag_layout.addWidget(tag_label, 1)
+
+        palette_btn = HoverIconButton(_PALETTE_SVG, 14)
+        palette_btn.setFixedSize(22, palette_btn.sizeHint().height())
+        palette_btn.setStyleSheet(menu_btn_style())
+        palette_btn.setToolTip('Set row color')
+        palette_btn.clicked.connect(
+            lambda checked, t=tag, btn=palette_btn:
+                self._show_color_picker(t, btn)
+        )
+        tag_layout.addWidget(palette_btn, 0, Qt.AlignVCenter)
+
+        # Ensure a table item exists with the tooltip
+        item = self.table.item(row, self.COL_TAG)
+        if not item:
+            item = QTableWidgetItem('')
+            self.table.setItem(row, self.COL_TAG, item)
+        item.setText('')
+        item.setToolTip(tag)
+        self._set_cell_widget(row, self.COL_TAG, tag_container)
+        self._apply_row_color_to_widget(tag_container, row_color)
+        self._cache_cell(tag, 'tag', tag_state, row, self.COL_TAG)
+
+    def _show_color_picker(self, tag: str, anchor: QWidget) -> None:
+        """Show the color picker popup anchored below the palette button."""
+        current = self._row_colors.get(tag)
+        popup = ColorPickerPopup(
+            current,
+            lambda color, t=tag: self._set_row_color(t, color),
+            parent=self,
+        )
+        # Position below the anchor button
+        pos = anchor.mapToGlobal(anchor.rect().bottomLeft())
+        popup.move(pos)
+        popup.show()
+
+    def _set_row_color(self, tag: str, color: Optional[str]) -> None:
+        """Set or clear the row color for a tag and persist."""
+        if color:
+            self._row_colors[tag] = color
+        else:
+            self._row_colors.pop(tag, None)
+        self._prefs['row_colors'] = self._row_colors
+        self._save_prefs()
+        # Invalidate tag cell cache so it rebuilds with new color
+        self._cell_cache.pop((tag, 'tag'), None)
+        # Update table property and rebuild
+        self.table.setProperty('_row_colors', self._row_colors)
+        self._update_table()
+
+    def _apply_row_color_to_widget(self, widget: QWidget,
+                                   row_color: Optional[str]) -> None:
+        """Adjust child QLabel text colors for contrast against row_color."""
+        if not row_color:
+            return
+        t = current_theme()
+        fg = ensure_contrast(t.text_primary, row_color)
+        for child in widget.findChildren(QLabel):
+            if isinstance(child, (PulsingLabel, IndicatorLabel)):
+                continue
+            pal = child.palette()
+            pal.setColor(QPalette.WindowText, QColor(fg))
+            child.setPalette(pal)
+
+    def _build_path_cell(self, row: int, tag: str, path_text: str,
+                         row_color: Optional[str] = None) -> None:
         """Build the Path column cell: elided label + 3-dot menu button.
 
         The 3-dot button and right-click on the label both open the path
         actions menu (Open in Terminal, Open with IDE).  Disabled when
         path_text is 'N/A'.
         """
-        path_state = (path_text,)
+        path_state = (path_text, row_color)
         if self._cell_cached(tag, 'path', path_state, row, self.COL_PATH):
             return
 
@@ -254,15 +342,17 @@ class TableBuilderMixin(_Base):
         item.setText('')
         item.setToolTip(path_text)
         self._set_cell_widget(row, self.COL_PATH, path_container)
+        self._apply_row_color_to_widget(path_container, row_color)
         self._cache_cell(tag, 'path', path_state, row, self.COL_PATH)
 
-    def _build_branch_cell(self, row: int, tag: str, branch_text: str) -> None:
+    def _build_branch_cell(self, row: int, tag: str, branch_text: str,
+                           row_color: Optional[str] = None) -> None:
         """Build the Server Branch column cell: label + git icon button.
 
         The git icon button and right-click on the label both open the git
         changes menu.  Disabled when branch_text is 'N/A'.
         """
-        branch_state = (branch_text,)
+        branch_state = (branch_text, row_color)
         if self._cell_cached(tag, 'server_branch', branch_state,
                              row, self.COL_SERVER_BRANCH):
             return
@@ -303,6 +393,7 @@ class TableBuilderMixin(_Base):
         item.setText('')
         item.setToolTip(branch_text)
         self._set_cell_widget(row, self.COL_SERVER_BRANCH, branch_container)
+        self._apply_row_color_to_widget(branch_container, row_color)
         self._cache_cell(tag, 'server_branch', branch_state,
                          row, self.COL_SERVER_BRANCH)
 
@@ -366,6 +457,10 @@ class TableBuilderMixin(_Base):
 
             self.table.setRowCount(new_count)
 
+            # Update row_tags property for SeparatorDelegate row coloring
+            self.table.setProperty(
+                '_row_tags', [s['tag'] for s in self.sessions])
+
             # Clear starting guard for tags whose server is now running
             if self._starting_tags:
                 alive = {s['tag'] for s in self.sessions if s.get('server_pid')}
@@ -373,6 +468,7 @@ class TableBuilderMixin(_Base):
 
             for row, session in enumerate(self.sessions):
                 tag = session['tag']
+                row_color = self._row_colors.get(tag)
                 server_pid = session.get('server_pid')
                 is_dead = server_pid is None
                 client_pid = session.get('client_pid')
@@ -400,8 +496,8 @@ class TableBuilderMixin(_Base):
                     self._cache_cell(tag, 'del', del_state,
                                      row, self.COL_DELETE)
 
-                # ── Text cells ─────────────────────────────────────
-                self._set_cell_text(row, self.COL_TAG, tag)
+                # ── Tag cell (elided label + palette icon) ──────────
+                self._build_tag_cell(row, tag, row_color)
 
                 # Server Branch always shows the live branch
                 server_branch = session['branch']
@@ -417,21 +513,24 @@ class TableBuilderMixin(_Base):
                     dead_project = (remote_path.rsplit('/', 1)[-1]
                                     if remote_path
                                     else 'N/A')
-                    self._set_cell_text(row, self.COL_PROJECT, dead_project)
-                    self._build_path_cell(row, tag, 'N/A')
-                    self._build_branch_cell(row, tag, 'N/A')
+                    self._set_cell_text(row, self.COL_PROJECT, dead_project,
+                                        row_color)
+                    self._build_path_cell(row, tag, 'N/A', row_color)
+                    self._build_branch_cell(row, tag, 'N/A', row_color)
                     # Remove the live status cell widget (coloured
                     # indicator + label) before switching to plain text,
                     # otherwise the old widget renders on top of "N/A".
                     self.table.removeCellWidget(row, self.COL_STATUS)
                     self._cell_cache.pop((tag, 'status'), None)
-                    self._set_cell_text(row, self.COL_STATUS, 'N/A')
+                    self._set_cell_text(row, self.COL_STATUS, 'N/A',
+                                        row_color)
                     status_item = self.table.item(row, self.COL_STATUS)
-                    if status_item:
+                    if status_item and not row_color:
                         status_item.setForeground(QColor(current_theme().text_primary))
 
                     # Queue N/A with menu button
-                    dead_q_state = ('dead', session.get('auto_send_mode', 'pause'))
+                    dead_q_state = ('dead', session.get('auto_send_mode', 'pause'),
+                                    row_color)
                     if not self._cell_cached(tag, 'queue', dead_q_state,
                                              row, self.COL_QUEUE):
                         dq_container = QWidget()
@@ -470,13 +569,18 @@ class TableBuilderMixin(_Base):
                             item.setText('')
                         self._set_cell_widget(
                             row, self.COL_QUEUE, dq_container)
+                        self._apply_row_color_to_widget(
+                            dq_container, row_color)
                         self._cache_cell(tag, 'queue', dead_q_state,
                                          row, self.COL_QUEUE)
                 else:
-                    self._set_cell_text(row, self.COL_PROJECT, session['project'])
+                    self._set_cell_text(row, self.COL_PROJECT,
+                                        session['project'], row_color)
                     live_path = session.get('project_path', '') or ''
-                    self._build_path_cell(row, tag, live_path or 'N/A')
-                    self._build_branch_cell(row, tag, server_branch)
+                    self._build_path_cell(row, tag, live_path or 'N/A',
+                                         row_color)
+                    self._build_branch_cell(row, tag, server_branch,
+                                            row_color)
 
                     claude_state = session.get('claude_state', 'idle')
                     t = current_theme()
@@ -519,8 +623,12 @@ class TableBuilderMixin(_Base):
                         'interrupted': 'Claude was interrupted — will accept next queued message',
                     }
 
+                    # Adjust status color for row background contrast
+                    if row_color:
+                        adjusted = ensure_contrast(color.name(), row_color)
+                        color = QColor(adjusted)
                     color_key = color.name()
-                    status_state = (text, show_fire, color_key)
+                    status_state = (text, show_fire, color_key, row_color)
                     if not self._cell_cached(tag, 'status', status_state,
                                              row, self.COL_STATUS):
                         container = QWidget()
@@ -637,7 +745,7 @@ class TableBuilderMixin(_Base):
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', 'pause')
                     queue_size = session['queue_size']
-                    q_state = (queue_size, auto_send_mode)
+                    q_state = (queue_size, auto_send_mode, row_color)
                     if not self._cell_cached(tag, 'queue', q_state,
                                              row, self.COL_QUEUE):
                         q_container = QWidget()
@@ -681,6 +789,8 @@ class TableBuilderMixin(_Base):
                             item.setText('')
                         self._set_cell_widget(
                             row, self.COL_QUEUE, q_container)
+                        self._apply_row_color_to_widget(
+                            q_container, row_color)
                         self._cache_cell(tag, 'queue', q_state,
                                          row, self.COL_QUEUE)
 
@@ -883,7 +993,8 @@ class TableBuilderMixin(_Base):
                         self._cache_cell(tag, 'mr', mr_state,
                                          row, self.COL_MR)
                     self.table.removeCellWidget(row, self.COL_MR_BRANCH)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
+                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch,
+                                        row_color)
 
                 elif tag in self._tracked_tags:
                     stale_mr_tags.discard(tag)
@@ -1002,7 +1113,8 @@ class TableBuilderMixin(_Base):
                         self._prefs.get('auto_fetch_cq', True)
                     )
                     self.table.removeCellWidget(row, self.COL_MR_BRANCH)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch)
+                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch,
+                                        row_color)
 
                 else:
                     # Not tracked — "Track MR" button
@@ -1036,7 +1148,8 @@ class TableBuilderMixin(_Base):
                         and mr_branch != 'N/A'
                     )
                     if is_mr_pinned:
-                        mr_br_state = ('untracked_pinned', mr_branch)
+                        mr_br_state = ('untracked_pinned', mr_branch,
+                                       row_color)
                         if not self._cell_cached(tag, 'mr_branch', mr_br_state,
                                                  row, self.COL_MR_BRANCH):
                             mr_br_container = QWidget()
@@ -1074,12 +1187,15 @@ class TableBuilderMixin(_Base):
                             item.setToolTip(mr_branch)
                             self._set_cell_widget(
                                 row, self.COL_MR_BRANCH, mr_br_container)
+                            self._apply_row_color_to_widget(
+                                mr_br_container, row_color)
                             self._cache_cell(
                                 tag, 'mr_branch', mr_br_state,
                                 row, self.COL_MR_BRANCH)
                     else:
                         self.table.removeCellWidget(row, self.COL_MR_BRANCH)
-                        self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A')
+                        self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A',
+                                            row_color)
 
             # Clean up stale MR widgets for tags no longer shown
             for stale_tag in stale_mr_tags:
@@ -1112,6 +1228,14 @@ class TableBuilderMixin(_Base):
         if self._refresh_worker and self._refresh_worker.isRunning():
             return  # skip this cycle
 
+        # Ensure the previous worker's thread has fully stopped before we
+        # orphan the reference.  isRunning() can return False while the
+        # underlying OS thread is still winding down; wait() blocks until
+        # the thread is truly finished, preventing QThread::~QThread() from
+        # aborting on a still-running thread (SIGABRT after sleep/wake).
+        if self._refresh_worker is not None:
+            self._refresh_worker.wait(500)  # ms – should be near-instant
+
         self._refresh_worker = SessionRefreshWorker(self)
         self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
         self._refresh_worker.finished.connect(self._on_refresh_worker_finished)
@@ -1126,6 +1250,7 @@ class TableBuilderMixin(_Base):
         """
         worker = self.sender()
         if worker is not None:
+            worker.wait()  # ensure OS thread is fully stopped before deletion
             worker.deleteLater()
         if self._refresh_worker is worker:
             self._refresh_worker = None

@@ -455,6 +455,13 @@ class SessionMixin(_Base):
         self._pinned_sessions.pop(tag, None)
         save_pinned_sessions(self._pinned_sessions)
 
+        # Clean up row color
+        if tag in self._row_colors:
+            del self._row_colors[tag]
+            self._prefs['row_colors'] = self._row_colors
+            save_monitor_prefs(self._prefs)
+            self.table.setProperty('_row_colors', self._row_colors)
+
         # Clean up row order
         self._remove_from_row_order({tag})
 
