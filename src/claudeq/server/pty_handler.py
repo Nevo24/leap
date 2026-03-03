@@ -119,17 +119,31 @@ class PTYHandler:
 
         Must be called with _send_lock held.
 
-        After sending multi-line input, Claude CLI enters paste-mode
-        detection and produces rendering output in chunks.  This method
-        loops until there is a quiet period of *settle_time* seconds
-        with no output, which signals that the CLI has finished
-        processing and is ready for new input (e.g. the submit CR).
+        After sending input, Claude CLI echoes it back (Ink TUI renders
+        the text at the prompt).  This method first waits for the echo
+        to *start* (at least one output event), then waits for it to
+        *finish* (no output for *settle_time* seconds).
+
+        The two-phase approach prevents a false "settled" when the echo
+        hasn't arrived yet — e.g. on a freshly started server where
+        Ink's event loop may be slow to process the first input burst.
 
         Args:
             settle_time: Quiet-period duration in seconds.
             timeout: Overall maximum wait in seconds.
         """
         deadline = time.monotonic() + timeout
+
+        # Phase 1: wait for the first echo output to confirm the PTY
+        # has received our input and started rendering it.
+        self._output_received.clear()
+        if not self._output_received.wait(timeout=2.0):
+            # No echo at all within 2s — PTY may not be echoing
+            # (e.g. raw mode without render).  Fall through to send CR.
+            return
+
+        # Phase 2: wait for the echo to settle (no new output for
+        # settle_time seconds).
         while time.monotonic() < deadline:
             self._output_received.clear()
             if not self._output_received.wait(timeout=settle_time):
