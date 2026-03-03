@@ -1776,6 +1776,40 @@ class TableBuilderMixin(_Base):
             self._dismissed_new_status.add(tag)
             self._update_table()
 
+    def _extract_cell_text(self, row: int, col: int) -> str:
+        """Extract the displayed text from a cell (item or widget)."""
+        # Try QTableWidgetItem text first
+        item = self.table.item(row, col)
+        if item and item.text():
+            return item.text()
+        # For widget-based cells, extract text from child labels
+        widget = self.table.cellWidget(row, col)
+        if not widget:
+            return ''
+        # Check for ElidedLabel (has _full_text with the non-elided value)
+        elided = widget.findChild(ElidedLabel)
+        if elided and elided._full_text:
+            return elided._full_text
+        # Check for PulsingLabel / QLabel children (skip fire icons)
+        for label in widget.findChildren(QLabel):
+            label_text = label.text()
+            if label_text and label.objectName() not in (
+                '_fireLabel', '_mrFireLabel',
+            ):
+                return label_text
+        if isinstance(widget, QLabel) and widget.text():
+            return widget.text()
+        return ''
+
+    def _copy_cell_to_clipboard(self, row: int, col: int) -> bool:
+        """Copy cell text to clipboard. Return True if something was copied."""
+        text = self._extract_cell_text(row, col)
+        if not text:
+            return False
+        QApplication.clipboard().setText(text)
+        self._show_status(f'Copied: {text}')
+        return True
+
     def _apply_header_tooltips(self) -> None:
         """Set or clear column header tooltips based on show_tooltips preference."""
         enabled = self._prefs.get('show_tooltips', True)

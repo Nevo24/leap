@@ -273,6 +273,10 @@ class MonitorWindow(
         self.table.setSelectionMode(QTableWidget.NoSelection)
         self.table.cellClicked.connect(self._on_cell_clicked)
 
+        # Double-click-to-copy: install app-level event filter so we can
+        # intercept double-clicks on cell widgets (which bypass cellDoubleClicked).
+        QApplication.instance().installEventFilter(self)
+
         # Row hover highlight — poll cursor position to track hovered row
         self.table.setProperty('_hovered_row', -1)
         self._hover_timer = QTimer()
@@ -548,6 +552,32 @@ class MonitorWindow(
         self._save_prefs()
 
         self._apply_equal_column_widths()
+
+    # ------------------------------------------------------------------
+    #  Double-click-to-copy (app-level event filter)
+    # ------------------------------------------------------------------
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:
+        """Intercept double-clicks on table cell widgets to copy text."""
+        if event.type() != QEvent.MouseButtonDblClick:
+            return super().eventFilter(obj, event)
+        # Walk up widget tree to check if the target is inside the table
+        widget = obj
+        while widget is not None:
+            if widget is self.table:
+                break
+            widget = widget.parent() if hasattr(widget, 'parent') else None
+        else:
+            return super().eventFilter(obj, event)
+        # Find which cell was double-clicked by mapping global position
+        pos = self.table.viewport().mapFromGlobal(event.globalPos())
+        row = self.table.rowAt(pos.y())
+        col = self.table.columnAt(pos.x())
+        if row < 0 or col < 0 or col == self.COL_DELETE:
+            return super().eventFilter(obj, event)
+        if self._copy_cell_to_clipboard(row, col):
+            return True  # consume event — don't trigger widget actions
+        return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
     #  Window lifecycle
