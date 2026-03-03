@@ -438,8 +438,8 @@ class TestEscapeRace:
         tracker.on_output(b'Interrupted')
         assert tracker.current_state == 'interrupted'
 
-    def test_escape_race_only_within_3s_of_input(self, tmp_path: Path) -> None:
-        """'Interrupted' in idle state ignored if >3s after input."""
+    def test_escape_race_only_within_10s_of_input(self, tmp_path: Path) -> None:
+        """'Interrupted' in idle state ignored if >10s after input."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -449,8 +449,8 @@ class TestEscapeRace:
         # User pressed Escape
         t[0] = 1.5
         tracker.on_input(b'\x1b')
-        # PTY outputs "Interrupted" after >3s
-        t[0] = 5.0
+        # PTY outputs "Interrupted" after >10s
+        t[0] = 12.0
         tracker.on_output(b'Interrupted')
         # Should stay idle — too late for the race window
         assert tracker.current_state == 'idle'

@@ -272,6 +272,12 @@ class ClaudeStateTracker:
         output.  Ignores multi-byte escape sequences (terminal focus
         events, cursor position reports) that are not real user input.
 
+        However, when Claude is running, multi-byte escape sequences
+        starting with ``\\x1b`` still update ``_last_input_time`` because
+        ``os.read()`` may bundle a real Escape keypress with a subsequent
+        terminal event (focus report, cursor position) into one chunk.
+        Without this, the interrupt-detection time window never opens.
+
         Args:
             data: Raw input bytes from the keyboard.
         """
@@ -279,7 +285,20 @@ class ClaudeStateTracker:
         # (focus in/out \x1b[I/O, cursor reports \x1b[row;colR, etc.),
         # not user keystrokes.  Single ESC byte is the actual Escape key.
         if len(data) > 1 and data[0] == 0x1b:
-            _log.debug('ON_INPUT filtered escape seq len=%d', len(data))
+            # While running, the user may press Escape to interrupt.
+            # pexpect can bundle the \x1b with a subsequent terminal
+            # event into one read.  Update _last_input_time so the
+            # "Interrupted" detection window opens, but don't set
+            # _seen_user_input to avoid false idle→running triggers.
+            if self._state == 'running':
+                _log.debug(
+                    'ON_INPUT filtered escape seq len=%d '
+                    '(updating _last_input_time for interrupt detection)',
+                    len(data),
+                )
+                self._last_input_time = self._clock()
+            else:
+                _log.debug('ON_INPUT filtered escape seq len=%d', len(data))
             return
         _log.debug(
             'ON_INPUT state=%s data=%r len=%d',
@@ -372,7 +391,10 @@ class ClaudeStateTracker:
             # Checked before _seen_user_input guard because the signal-file
             # idle transition may have reset _seen_user_input indirectly
             # (via _idle_since), but the Escape race still needs to work.
-            if now - self._last_input_time < 3.0:
+            # Window is 10s (not 3s) because complex operations (code review,
+            # multi-tool-call chains) may take several seconds to respond to
+            # an interrupt signal.
+            if now - self._last_input_time < 10.0:
                 # Strip ANSI before checking — raw PTY bytes may contain
                 # "Interrupted" inside escape sequences (e.g. hyperlink OSC).
                 stripped_chunk = self._ANSI_RE.sub(b'', data)
@@ -445,7 +467,7 @@ class ClaudeStateTracker:
                     len(data), len(self._output_buf),
                     has_interrupted, stripped_preview[:80],
                 )
-            if has_interrupted and (now - self._last_input_time) < 3.0:
+            if has_interrupted and (now - self._last_input_time) < 10.0:
                 _log.debug('ON_OUTPUT running→interrupted (Interrupted)')
                 self._output_buf.clear()
                 with self._lock:
