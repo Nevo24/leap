@@ -46,6 +46,46 @@ else:
 logger = logging.getLogger(__name__)
 
 
+def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
+    """Extract numbered menu options from prompt output.
+
+    The prompt may contain numbered content (e.g. plan steps) above the
+    actual Ink TUI options.  Both match the ``N. label`` pattern, so we
+    return only the **last** contiguous 1..n sequence — the real menu.
+    """
+    all_matches: list[tuple[int, str]] = []
+    for line in prompt_output.split('\n'):
+        m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
+        if m:
+            all_matches.append((int(m.group(1)), m.group(2).strip()))
+
+    if not all_matches:
+        return []
+
+    # Walk backwards to the last match numbered "1".
+    last_one_idx = -1
+    for i in range(len(all_matches) - 1, -1, -1):
+        if all_matches[i][0] == 1:
+            last_one_idx = i
+            break
+
+    if last_one_idx == -1:
+        return all_matches  # no "1" found — return all as fallback
+
+    # Take the contiguous ascending sequence from that point.
+    result: list[tuple[int, str]] = []
+    expected = 1
+    for i in range(last_one_idx, len(all_matches)):
+        num, label = all_matches[i]
+        if num == expected:
+            result.append((num, label))
+            expected += 1
+        else:
+            break
+
+    return result
+
+
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and template editor."""
 
@@ -1387,14 +1427,9 @@ class TableBuilderMixin(_Base):
             self._show_status(f'No prompt output for {tag}')
             return
 
-        # Parse numbered options from prompt output.
-        # The ❯ cursor marks the currently-selected option in the
-        # Ink TUI, so allow optional ❯ + whitespace before the digit.
-        options: list[tuple[int, str]] = []
-        for line in prompt_output.split('\n'):
-            m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
-            if m:
-                options.append((int(m.group(1)), m.group(2).strip()))
+        # Parse the actual menu options (last 1..n sequence),
+        # ignoring numbered plan/content lines above the menu.
+        options = _extract_menu_options(prompt_output)
 
         if not options:
             self._show_status(f'No options found in prompt for {tag}')

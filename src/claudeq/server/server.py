@@ -30,6 +30,46 @@ from claudeq.slack.output_capture import OutputCapture
 from claudeq.server.validation import validate_pinned_session
 
 
+def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
+    """Extract numbered menu options from prompt output.
+
+    The prompt may contain numbered content (e.g. plan steps) above the
+    actual Ink TUI options.  Both match the ``N. label`` pattern, so we
+    return only the **last** contiguous 1..n sequence — the real menu.
+    """
+    all_matches: list[tuple[int, str]] = []
+    for line in prompt_output.split('\n'):
+        m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
+        if m:
+            all_matches.append((int(m.group(1)), m.group(2).strip()))
+
+    if not all_matches:
+        return []
+
+    # Walk backwards to the last match numbered "1".
+    last_one_idx = -1
+    for i in range(len(all_matches) - 1, -1, -1):
+        if all_matches[i][0] == 1:
+            last_one_idx = i
+            break
+
+    if last_one_idx == -1:
+        return all_matches  # no "1" found — return all as fallback
+
+    # Take the contiguous ascending sequence from that point.
+    result: list[tuple[int, str]] = []
+    expected = 1
+    for i in range(last_one_idx, len(all_matches)):
+        num, label = all_matches[i]
+        if num == expected:
+            result.append((num, label))
+            expected += 1
+        else:
+            break
+
+    return result
+
+
 class ClaudeQServer:
     """
     ClaudeQ PTY Server.
@@ -194,40 +234,36 @@ class ClaudeQServer:
                 return {'status': 'error', 'error': 'invalid option number'}
             if option_num < 1:
                 return {'status': 'error', 'error': 'option must be >= 1'}
-            # Check for special options that need different PTY handling.
-            # The ❯ cursor marks the currently-selected option in the
-            # Ink TUI, so allow optional ❯ + whitespace before the digit.
+            # Parse the actual menu options (last 1..n sequence),
+            # ignoring numbered plan/content lines above the menu.
             prompt = self.state.get_prompt_output()
-            for line in prompt.split('\n'):
-                m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
-                if m and int(m.group(1)) == option_num:
-                    label = m.group(2).strip()
-                    if label.startswith('Type something'):
-                        return {
-                            'status': 'error',
-                            'error': 'type your answer as text instead',
-                        }
-                    if label.startswith('Chat about this'):
-                        # "Chat about this" is below the separator —
-                        # number shortcuts don't work.  Navigate with
-                        # individual arrow-down keys (one at a time
-                        # with delays so Ink processes each one).
-                        self.state.on_send()
-                        for _ in range(option_num - 1):
-                            self.pty.send('\x1b[B')
-                            time.sleep(0.1)
-                        time.sleep(0.2)
-                        self.pty.send('\r')
-                        return {'status': 'sent'}
+            options = _extract_menu_options(prompt)
+            options_dict = {num: label for num, label in options}
+
+            label = options_dict.get(option_num)
+            if label is not None:
+                if label.startswith('Type something'):
+                    return {
+                        'status': 'error',
+                        'error': 'type your answer as text instead',
+                    }
+                if label.startswith('Chat about this'):
+                    # "Chat about this" is below the separator —
+                    # number shortcuts don't work.  Navigate with
+                    # individual arrow-down keys (one at a time
+                    # with delays so Ink processes each one).
+                    self.state.on_send()
+                    for _ in range(option_num - 1):
+                        self.pty.send('\x1b[B')
+                        time.sleep(0.1)
+                    time.sleep(0.2)
+                    self.pty.send('\r')
+                    return {'status': 'sent'}
+
             # Validate that the option exists in the prompt before sending.
             # Sending an unknown number + CR to Ink would silently confirm
             # whichever option the cursor happens to be on.
-            valid_nums = set()
-            for line in prompt.split('\n'):
-                vm = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+', line)
-                if vm:
-                    valid_nums.add(int(vm.group(1)))
-            if option_num not in valid_nums:
+            if option_num not in options_dict:
                 return {
                     'status': 'error',
                     'error': f'option {option_num} not found in prompt',
@@ -246,11 +282,11 @@ class ClaudeQServer:
                     'error': f'not in permission/question state (state={current})',
                 }
             prompt = self.state.get_prompt_output()
+            options = _extract_menu_options(prompt)
             type_option = None
-            for line in prompt.split('\n'):
-                m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+Type something', line)
-                if m:
-                    type_option = m.group(1)
+            for num, label in options:
+                if label.startswith('Type something'):
+                    type_option = str(num)
                     break
             if not type_option:
                 return {
