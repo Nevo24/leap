@@ -118,19 +118,18 @@ class GitLabProvider(SCMProvider):
         approved_by: list[str] = []
         try:
             approvals = mr_full.approvals.get()
-            approved = getattr(approvals, 'approved', False)
             for entry in getattr(approvals, 'approved_by', []):
                 name = self._extract_user_name(entry)
                 if name:
                     approved_by.append(name)
             # Fallback 1: check MR object's approved_by attribute
-            if approved and not approved_by:
+            if not approved_by:
                 for entry in getattr(mr_full, 'approved_by', []):
                     name = self._extract_user_name(entry)
                     if name and name not in approved_by:
                         approved_by.append(name)
             # Fallback 2: check approval_state for approver names
-            if approved and not approved_by:
+            if not approved_by:
                 try:
                     state = mr_full.approval_state.get()
                     for rule in getattr(state, 'rules', []):
@@ -141,6 +140,10 @@ class GitLabProvider(SCMProvider):
                                 approved_by.append(name)
                 except Exception:
                     pass
+            # Only mark as approved if someone actually approved — GitLab
+            # returns approved=True when zero approvals are required, which
+            # is misleading in the UI.
+            approved = len(approved_by) > 0
             logger.debug("Approvals for MR !%s: approved=%s approved_by=%s",
                          mr_iid, approved, approved_by)
             self._approval_cache[cache_key] = (approved, list(approved_by))
