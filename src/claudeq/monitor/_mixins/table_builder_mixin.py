@@ -1251,6 +1251,7 @@ class TableBuilderMixin(_Base):
 
         clear_action = menu.addAction('Clear queue')
         clear_action.setToolTip('Delete all queued messages without sending them')
+        clear_action.setEnabled(queue_size > 0)
         clear_action.triggered.connect(
             lambda _checked, t=tag: self._clear_queue(t)
         )
@@ -1350,6 +1351,19 @@ class TableBuilderMixin(_Base):
         from claudeq.utils.constants import SOCKET_DIR
         from claudeq.monitor.dialogs.queue_edit_dialog import QueueEditDialog
 
+        # Race condition guard: queue may have drained since menu was opened
+        queue_size = 0
+        for s in self.sessions:
+            if s['tag'] == tag:
+                queue_size = s.get('queue_size', 0)
+                break
+        if queue_size == 0:
+            QMessageBox.warning(
+                self, 'Queue Empty',
+                f'The queue for "{tag}" is now empty.',
+            )
+            return
+
         socket_path = SOCKET_DIR / f"{tag}.sock"
         dialog = QueueEditDialog(tag, socket_path, parent=self)
         dialog.exec_()
@@ -1359,6 +1373,19 @@ class TableBuilderMixin(_Base):
     def _clear_queue(self, tag: str) -> None:
         """Clear all queued messages for a session without sending them."""
         from claudeq.utils.constants import SOCKET_DIR
+
+        # Race condition guard: queue may have drained since menu was opened
+        queue_size = 0
+        for s in self.sessions:
+            if s['tag'] == tag:
+                queue_size = s.get('queue_size', 0)
+                break
+        if queue_size == 0:
+            QMessageBox.warning(
+                self, 'Queue Empty',
+                f'The queue for "{tag}" is now empty.',
+            )
+            return
 
         reply = QMessageBox.question(
             self, 'Clear Queue',
