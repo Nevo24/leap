@@ -349,6 +349,7 @@ class MonitorWindow(
 
         # Bottom controls
         bottom_layout = QHBoxLayout()
+        bottom_layout.setContentsMargins(8, 0, 0, 0)
 
         self.bots_check = QCheckBox('Include git bots')
         self.bots_check.setToolTip('Count bot comments as responses in MR thread detection')
