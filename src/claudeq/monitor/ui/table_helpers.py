@@ -164,10 +164,7 @@ def close_btn_style() -> str:
 def active_btn_style() -> str:
     """Return stylesheet for active/connected indicator buttons."""
     t = current_theme()
-    return (
-        f'QPushButton {{ color: {t.accent_green}; }} '
-        f'QToolTip {{ color: {t.text_primary}; }}'
-    )
+    return f'QPushButton {{ color: {t.accent_green}; }}'
 
 
 def menu_btn_style() -> str:
@@ -184,10 +181,7 @@ CLOSE_BTN_STYLE = (
     'QPushButton { color: #999; font-size: 11px; padding: 0 0 2px 0; }'
     'QPushButton:hover { color: #ff4444; font-weight: bold; }'
 )
-ACTIVE_BTN_STYLE = (
-    'QPushButton { color: #00ff00; } '
-    'QToolTip { color: #e0e0e0; }'
-)
+ACTIVE_BTN_STYLE = 'QPushButton { color: #00ff00; }'
 MENU_BTN_STYLE = (
     'QPushButton { color: #aaa; font-size: 14px; padding: 0; }'
     'QPushButton:hover { color: #ffffff; }'

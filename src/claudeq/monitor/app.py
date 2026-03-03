@@ -675,12 +675,6 @@ class MonitorWindow(
                 border: none;
                 padding: 4px;
             }}
-            QToolTip {{
-                background-color: {t.popup_bg};
-                color: {t.text_primary};
-                border: 1px solid {t.popup_border};
-                padding: 4px;
-            }}
         """)
 
         # Clear cell cache to force full rebuild with new colors

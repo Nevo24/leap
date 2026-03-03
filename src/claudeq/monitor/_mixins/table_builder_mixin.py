@@ -732,8 +732,7 @@ class TableBuilderMixin(_Base):
                         if branch_mismatch:
                             server_btn = QPushButton('\u26a0 Server')
                             server_btn.setStyleSheet(
-                                f'QPushButton {{ color: {current_theme().accent_orange}; }} '
-                                f'QToolTip {{ color: {current_theme().text_primary}; }}')
+                                f'QPushButton {{ color: {current_theme().accent_orange}; }}')
                             server_btn.setToolTip(
                                 f"Branch mismatch: expected '{pinned_branch}', "
                                 f"got '{session['branch']}'"
