@@ -18,6 +18,7 @@ from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from claudeq.monitor.mr_tracking.config import save_pinned_sessions
+from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
 from claudeq.monitor.navigation import open_terminal_with_command
 from claudeq.monitor.scm_polling import BackgroundCallWorker
 from claudeq.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR
@@ -223,11 +224,9 @@ class ServerLauncher:
             w.start()
             return
 
-        # Project exists and no CQ server using it
+        # Project exists and no CQ server using it — force-align to branch
         if not branch:
-            # Project-URL row (no specific branch) — skip force-align
-            self._server_finish(tag, pinned, project_dir)
-            return
+            branch = detect_default_branch(str(project_dir))
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
         self._server_force_align(tag, pinned, project_dir, branch)
 
@@ -252,9 +251,7 @@ class ServerLauncher:
             self._server_checkout_commit(tag, pinned, project_dir, commit)
             return
         if not branch:
-            # Project-URL row (no specific branch) — skip force-align
-            self._server_finish(tag, pinned, project_dir)
-            return
+            branch = detect_default_branch(str(project_dir))
         self._w._show_status(f"Cloned. Checking out branch '{branch}'...")
         self._server_force_align(tag, pinned, project_dir, branch)
 
