@@ -274,15 +274,17 @@ class TableBuilderMixin(_Base):
             self._row_colors.pop(tag, None)
         self._prefs['row_colors'] = self._row_colors
         self._save_prefs()
-        # Invalidate tag cell cache so it rebuilds with new color
-        self._cell_cache.pop((tag, 'tag'), None)
+        # Invalidate all cell caches for this tag so they rebuild with new color
+        stale = [k for k in self._cell_cache if k[0] == tag]
+        for k in stale:
+            self._cell_cache.pop(k, None)
         # Update table property and rebuild
         self.table.setProperty('_row_colors', self._row_colors)
         self._update_table()
 
     def _apply_row_color_to_widget(self, widget: QWidget,
                                    row_color: Optional[str]) -> None:
-        """Adjust child QLabel text colors for contrast against row_color."""
+        """Adjust child QLabel text and icon button colors for contrast."""
         if not row_color:
             return
         t = current_theme()
@@ -293,6 +295,16 @@ class TableBuilderMixin(_Base):
             pal = child.palette()
             pal.setColor(QPalette.WindowText, QColor(fg))
             child.setPalette(pal)
+        icon_fg = ensure_contrast(t.icon_color, row_color)
+        if icon_fg != t.icon_color:
+            for btn in widget.findChildren(HoverIconButton):
+                btn.set_icon_color(icon_fg)
+        muted_fg = ensure_contrast(t.text_muted, row_color)
+        if muted_fg != t.text_muted:
+            for btn in widget.findChildren(QPushButton):
+                if isinstance(btn, HoverIconButton):
+                    continue
+                btn.setStyleSheet(close_btn_style(muted_fg))
 
     def _build_path_cell(self, row: int, tag: str, path_text: str,
                          row_color: Optional[str] = None) -> None:
@@ -493,6 +505,7 @@ class TableBuilderMixin(_Base):
                     )
                     del_layout.addWidget(del_btn, 0, Qt.AlignCenter)
                     self._set_cell_widget(row, self.COL_DELETE, del_container)
+                    self._apply_row_color_to_widget(del_container, row_color)
                     self._cache_cell(tag, 'del', del_state,
                                      row, self.COL_DELETE)
 
@@ -861,6 +874,8 @@ class TableBuilderMixin(_Base):
 
                     self._set_cell_widget(row, self.COL_SERVER,
                                           server_container)
+                    self._apply_row_color_to_widget(
+                        server_container, row_color)
                     self._cache_cell(tag, 'server', srv_state,
                                      row, self.COL_SERVER)
 
@@ -904,6 +919,8 @@ class TableBuilderMixin(_Base):
                     client_layout.addWidget(client_btn)
                     self._set_cell_widget(row, self.COL_CLIENT,
                                           client_container)
+                    self._apply_row_color_to_widget(
+                        client_container, row_color)
                     self._cache_cell(tag, 'client', cli_state,
                                      row, self.COL_CLIENT)
 
@@ -965,6 +982,8 @@ class TableBuilderMixin(_Base):
                         slack_layout.addWidget(slack_btn)
                         self._set_cell_widget(
                             row, self.COL_SLACK, slack_container)
+                        self._apply_row_color_to_widget(
+                            slack_container, row_color)
                     else:
                         slack_btn = QPushButton('Slack')
                         slack_btn.setToolTip(
@@ -1077,6 +1096,8 @@ class TableBuilderMixin(_Base):
 
                         self._set_cell_widget(row, self.COL_MR,
                                               mr_container)
+                        self._apply_row_color_to_widget(
+                            mr_container, row_color)
                         self._cache_cell(tag, 'mr', mr_state,
                                          row, self.COL_MR)
 

@@ -116,11 +116,20 @@ class HoverIconButton(QPushButton):
     def __init__(self, svg_data: bytes, size: int = 14,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self._svg_data = svg_data
+        self._svg_size = size
         self._normal_icon = _render_svg(svg_data, size)
         self._hover_icon = _render_svg(svg_data, size, _HOVER_COLOR)
         self.setIcon(self._normal_icon)
         self._hover_timer = QTimer(self)
         self._hover_timer.timeout.connect(self._check_hover)
+
+    def set_icon_color(self, color: str) -> None:
+        """Re-render the normal icon with a specific color for contrast."""
+        self._normal_icon = _render_svg(
+            self._svg_data, self._svg_size, color.encode())
+        if not self.underMouse():
+            self.setIcon(self._normal_icon)
 
     def enterEvent(self, event: Any) -> None:
         self.setIcon(self._hover_icon)
@@ -240,11 +249,12 @@ MAX_COMBO_DISPLAY = 40
 
 # Theme-aware stylesheet functions for cell buttons
 
-def close_btn_style() -> str:
+def close_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for close/delete buttons."""
     t = current_theme()
+    fg = fg_override or t.text_muted
     return (
-        f'QPushButton {{ color: {t.text_muted}; font-size: 11px; padding: 0 0 2px 0; }}'
+        f'QPushButton {{ color: {fg}; font-size: 11px; padding: 0 0 2px 0; }}'
         f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold; }}'
     )
 
