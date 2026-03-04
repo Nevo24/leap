@@ -113,7 +113,7 @@ class ServerLauncher:
                     self._start_server_from_mr(tag, pinned)
                 else:
                     # Local path free — force-align to remote
-                    branch = pinned.get('branch', '')
+                    branch = pinned.get('branch', '') or detect_default_branch(str(project_dir))
                     self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
                     self._server_force_align(tag, pinned, project_dir, branch)
             return
@@ -303,9 +303,7 @@ class ServerLauncher:
         changes are always discarded in favour of the remote state.
         """
         if not branch:
-            # Project-URL row (no specific branch) — skip force-align
-            self._server_finish(tag, pinned, project_dir)
-            return
+            branch = detect_default_branch(str(project_dir))
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
         fetch_err: list[str] = ['']
         align_err: list[str] = ['']

@@ -19,8 +19,8 @@ from claudeq.monitor.mr_tracking.config import (
     save_pinned_sessions,
 )
 from claudeq.monitor.mr_tracking.git_utils import (
-    ParsedProjectUrl, SCMType, get_git_remote_info, parse_mr_url,
-    parse_project_url, refine_scm_type,
+    ParsedProjectUrl, SCMType, detect_default_branch, get_git_remote_info,
+    parse_mr_url, parse_project_url, refine_scm_type,
 )
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker,
@@ -84,6 +84,25 @@ class MRTrackingMixin(_Base):
             scm_project_path = remote_project
             scm_branch = branch
             # Store context for enriching pinned session on result
+            self._pending_tracking_context[tag] = {
+                'remote_project_path': remote_project,
+                'host_url': session.get('host_url', ''),
+                'scm_type': session.get('scm_type', ''),
+                'branch': scm_branch,
+            }
+        elif remote_project and (not branch or branch == 'N/A'):
+            # Project-URL row with no specific branch — detect from local repo
+            project_path = session.get('project_path')
+            if project_path:
+                scm_branch = detect_default_branch(project_path)
+            else:
+                if not _silent:
+                    QMessageBox.information(
+                        self, 'No MR Found',
+                        'No branch info and no local project path to detect it from.',
+                    )
+                return
+            scm_project_path = remote_project
             self._pending_tracking_context[tag] = {
                 'remote_project_path': remote_project,
                 'host_url': session.get('host_url', ''),
