@@ -315,7 +315,7 @@ def _adjust_lightness(fg_hex: str, bg_hex: str, min_ratio: float) -> str:
     if sat < 0.05:
         return '#000000' if lum_bg > 0.5 else '#ffffff'
 
-    def _search(target: float) -> Optional[str]:
+    def _search(target: float, ratio: float) -> Optional[str]:
         """Binary-search lightness from *lig* toward *target*, return best."""
         # Always keep lo < hi so midpoint math is consistent
         lo, hi = min(lig, target), max(lig, target)
@@ -333,7 +333,7 @@ def _adjust_lightness(fg_hex: str, bg_hex: str, min_ratio: float) -> str:
                 min(255, max(0, round(cb * 255))),
             )
             lum_cand = _relative_luminance(candidate)
-            if _contrast_ratio(lum_cand, lum_bg) >= min_ratio:
+            if _contrast_ratio(lum_cand, lum_bg) >= ratio:
                 found = candidate
                 # Narrow toward original lightness (minimize shift)
                 if toward_higher:
@@ -348,19 +348,33 @@ def _adjust_lightness(fg_hex: str, bg_hex: str, min_ratio: float) -> str:
                     hi = mid
         return found
 
-    lighter_result = _search(1.0) if lig < 1.0 else None
-    darker_result = _search(0.0) if lig > 0.0 else None
+    def _best_of(ratio: float) -> Optional[str]:
+        """Search both directions at the given ratio, return closest match."""
+        lighter = _search(1.0, ratio) if lig < 1.0 else None
+        darker = _search(0.0, ratio) if lig > 0.0 else None
+        if lighter and darker:
+            l_lum = _relative_luminance(lighter)
+            d_lum = _relative_luminance(darker)
+            fg_lum = _relative_luminance(fg_hex)
+            return lighter if abs(l_lum - fg_lum) <= abs(d_lum - fg_lum) else darker
+        return lighter or darker
 
-    # Pick the result closest to the original lightness
-    if lighter_result and darker_result:
-        l_lum = _relative_luminance(lighter_result)
-        d_lum = _relative_luminance(darker_result)
-        lum_fg = _relative_luminance(fg_hex)
-        return lighter_result if abs(l_lum - lum_fg) <= abs(d_lum - lum_fg) else darker_result
-    if lighter_result:
-        return lighter_result
-    if darker_result:
-        return darker_result
+    strict = _best_of(min_ratio)
+    if strict is not None:
+        strict_lum = _relative_luminance(strict)
+        # If the strict result still looks colored, use it directly
+        if 0.05 <= strict_lum <= 0.85:
+            return strict
+        # Strict result is near-black/white — try a relaxed ratio (WCAG AA
+        # large-text = 3:1) for a more vivid, recognizable alternative.
+        relaxed = _best_of(min(min_ratio, 3.0))
+        if relaxed is not None:
+            rl = _relative_luminance(relaxed)
+            if 0.05 <= rl <= 0.85:
+                return relaxed
+        # Relaxed also washed out — use the strict result (still better than
+        # plain black/white since it preserves hue at least slightly).
+        return strict
     # Hue cannot reach contrast — fall back to black/white
     return '#000000' if lum_bg > 0.5 else '#ffffff'
 
