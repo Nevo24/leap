@@ -299,12 +299,27 @@ class TableBuilderMixin(_Base):
         if icon_fg != t.icon_color:
             for btn in widget.findChildren(HoverIconButton):
                 btn.set_icon_color(icon_fg)
-        muted_fg = ensure_contrast(t.text_muted, row_color)
-        if muted_fg != t.text_muted:
-            for btn in widget.findChildren(QPushButton):
-                if isinstance(btn, HoverIconButton):
-                    continue
-                btn.setStyleSheet(close_btn_style(muted_fg))
+        for btn in widget.findChildren(QPushButton):
+            if isinstance(btn, HoverIconButton):
+                continue
+            role = btn.property('_btn_role')
+            if role == 'active':
+                green_fg = ensure_contrast(t.accent_green, row_color)
+                if green_fg != t.accent_green:
+                    btn.setStyleSheet(active_btn_style(green_fg))
+            elif role == 'orange':
+                orange_fg = ensure_contrast(t.accent_orange, row_color)
+                if orange_fg != t.accent_orange:
+                    btn.setStyleSheet(
+                        f'QPushButton {{ color: {orange_fg}; }}')
+            elif role == 'menu':
+                menu_fg = ensure_contrast(t.icon_color, row_color)
+                if menu_fg != t.icon_color:
+                    btn.setStyleSheet(menu_btn_style(menu_fg))
+            else:
+                muted_fg = ensure_contrast(t.text_muted, row_color)
+                if muted_fg != t.text_muted:
+                    btn.setStyleSheet(close_btn_style(muted_fg))
 
     def _build_path_cell(self, row: int, tag: str, path_text: str,
                          row_color: Optional[str] = None) -> None:
@@ -861,9 +876,11 @@ class TableBuilderMixin(_Base):
                                 f"got '{session['branch']}'"
                             )
                             server_btn.setProperty('always_tooltip', True)
+                            server_btn.setProperty('_btn_role', 'orange')
                         else:
                             server_btn = QPushButton('Server')
                             server_btn.setStyleSheet(active_btn_style())
+                            server_btn.setProperty('_btn_role', 'active')
                             server_btn.setToolTip(
                                 f'Jump to server terminal for {tag}')
                         server_btn.clicked.connect(
@@ -907,6 +924,7 @@ class TableBuilderMixin(_Base):
                     else:
                         if has_client:
                             client_btn.setStyleSheet(active_btn_style())
+                            client_btn.setProperty('_btn_role', 'active')
                             client_btn.setToolTip(
                                 f'Jump to client terminal for {tag}')
                         else:
@@ -973,6 +991,7 @@ class TableBuilderMixin(_Base):
 
                         slack_btn = QPushButton('Slack')
                         slack_btn.setStyleSheet(active_btn_style())
+                        slack_btn.setProperty('_btn_role', 'active')
                         slack_btn.setToolTip(
                             f'Open Slack thread for {tag}')
                         slack_btn.clicked.connect(

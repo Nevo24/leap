@@ -259,18 +259,21 @@ def close_btn_style(fg_override: Optional[str] = None) -> str:
     )
 
 
-def active_btn_style() -> str:
+def active_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for active/connected indicator buttons."""
     t = current_theme()
-    return f'QPushButton {{ color: {t.accent_green}; }}'
+    fg = fg_override or t.accent_green
+    return f'QPushButton {{ color: {fg}; }}'
 
 
-def menu_btn_style() -> str:
+def menu_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for three-dot menu buttons."""
     t = current_theme()
+    fg = fg_override or t.icon_color
+    hover = fg_override or t.text_primary
     return (
-        f'QPushButton {{ color: {t.icon_color}; font-size: 14px; padding: 0; }}'
-        f'QPushButton:hover {{ color: {t.text_primary}; }}'
+        f'QPushButton {{ color: {fg}; font-size: 14px; padding: 0; }}'
+        f'QPushButton:hover {{ color: {hover}; }}'
     )
 
 
