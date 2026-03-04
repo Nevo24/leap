@@ -4,6 +4,7 @@ Provides named themes with full color palettes, a current/get/set API,
 and a WCAG contrast safety-net utility.
 """
 
+import colorsys
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -290,18 +291,89 @@ def _relative_luminance(hex_color: str) -> float:
     return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
 
 
+def _contrast_ratio(lum1: float, lum2: float) -> float:
+    """Return the WCAG contrast ratio between two relative luminances."""
+    lighter = max(lum1, lum2)
+    darker = min(lum1, lum2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _adjust_lightness(fg_hex: str, bg_hex: str, min_ratio: float) -> str:
+    """Shift the foreground color's lightness (HLS) to meet *min_ratio*.
+
+    Preserves hue.  Boosts saturation as lightness shifts to keep the color
+    vivid.  Tries both lighter and darker directions and picks the one closest
+    to the original.  Falls back to black/white only when no lightness value
+    can satisfy the ratio.
+    """
+    h_str = fg_hex.lstrip('#')
+    r, g, b = int(h_str[0:2], 16) / 255.0, int(h_str[2:4], 16) / 255.0, int(h_str[4:6], 16) / 255.0
+    hue, lig, sat = colorsys.rgb_to_hls(r, g, b)
+    lum_bg = _relative_luminance(bg_hex)
+
+    # Achromatic colors (no saturation) → fall back to black/white
+    if sat < 0.05:
+        return '#000000' if lum_bg > 0.5 else '#ffffff'
+
+    def _search(target: float) -> Optional[str]:
+        """Binary-search lightness from *lig* toward *target*, return best."""
+        # Always keep lo < hi so midpoint math is consistent
+        lo, hi = min(lig, target), max(lig, target)
+        toward_higher = target > lig  # are we searching toward higher L?
+        found: Optional[str] = None
+        for _ in range(30):
+            mid = (lo + hi) / 2.0
+            # Boost saturation proportionally to lightness shift
+            shift = abs(mid - lig)
+            boosted_sat = min(1.0, sat + shift * (1.0 - sat))
+            cr, cg, cb = colorsys.hls_to_rgb(hue, mid, boosted_sat)
+            candidate = '#{:02x}{:02x}{:02x}'.format(
+                min(255, max(0, round(cr * 255))),
+                min(255, max(0, round(cg * 255))),
+                min(255, max(0, round(cb * 255))),
+            )
+            lum_cand = _relative_luminance(candidate)
+            if _contrast_ratio(lum_cand, lum_bg) >= min_ratio:
+                found = candidate
+                # Narrow toward original lightness (minimize shift)
+                if toward_higher:
+                    hi = mid
+                else:
+                    lo = mid
+            else:
+                # Need more shift
+                if toward_higher:
+                    lo = mid
+                else:
+                    hi = mid
+        return found
+
+    lighter_result = _search(1.0) if lig < 1.0 else None
+    darker_result = _search(0.0) if lig > 0.0 else None
+
+    # Pick the result closest to the original lightness
+    if lighter_result and darker_result:
+        l_lum = _relative_luminance(lighter_result)
+        d_lum = _relative_luminance(darker_result)
+        lum_fg = _relative_luminance(fg_hex)
+        return lighter_result if abs(l_lum - lum_fg) <= abs(d_lum - lum_fg) else darker_result
+    if lighter_result:
+        return lighter_result
+    if darker_result:
+        return darker_result
+    # Hue cannot reach contrast — fall back to black/white
+    return '#000000' if lum_bg > 0.5 else '#ffffff'
+
+
 def ensure_contrast(fg_hex: str, bg_hex: str, min_ratio: float = 4.5) -> str:
     """Return *fg_hex* if it has sufficient contrast against *bg_hex*.
 
-    If the contrast ratio is below *min_ratio* (WCAG AA = 4.5:1), returns
-    ``'#000000'`` or ``'#ffffff'`` depending on which provides better contrast.
+    If the contrast ratio is below *min_ratio* (WCAG AA = 4.5:1), adjusts the
+    foreground color's lightness while preserving its hue and saturation.  Only
+    falls back to black/white if no lightness adjustment can satisfy the ratio.
     """
     lum_fg = _relative_luminance(fg_hex)
     lum_bg = _relative_luminance(bg_hex)
-    lighter = max(lum_fg, lum_bg)
-    darker = min(lum_fg, lum_bg)
-    ratio = (lighter + 0.05) / (darker + 0.05)
-    if ratio >= min_ratio:
+    if _contrast_ratio(lum_fg, lum_bg) >= min_ratio:
         return fg_hex
-    # Pick black or white based on bg luminance
-    return '#000000' if lum_bg > 0.5 else '#ffffff'
+    return _adjust_lightness(fg_hex, bg_hex, min_ratio)
