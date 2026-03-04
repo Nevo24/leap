@@ -361,19 +361,17 @@ def _adjust_lightness(fg_hex: str, bg_hex: str, min_ratio: float) -> str:
 
     strict = _best_of(min_ratio)
     if strict is not None:
-        strict_lum = _relative_luminance(strict)
-        # If the strict result still looks colored, use it directly
-        if 0.05 <= strict_lum <= 0.85:
+        # Check if the strict result looks visibly colored (not near-black/white)
+        s_h = strict.lstrip('#')
+        s_r, s_g, s_b = int(s_h[0:2], 16) / 255.0, int(s_h[2:4], 16) / 255.0, int(s_h[4:6], 16) / 255.0
+        _, s_lig, s_sat = colorsys.rgb_to_hls(s_r, s_g, s_b)
+        if s_sat >= 0.3 and 0.12 <= s_lig <= 0.88:
             return strict
-        # Strict result is near-black/white — try a relaxed ratio (WCAG AA
+        # Strict result lost its color identity — try a relaxed ratio (WCAG AA
         # large-text = 3:1) for a more vivid, recognizable alternative.
         relaxed = _best_of(min(min_ratio, 3.0))
         if relaxed is not None:
-            rl = _relative_luminance(relaxed)
-            if 0.05 <= rl <= 0.85:
-                return relaxed
-        # Relaxed also washed out — use the strict result (still better than
-        # plain black/white since it preserves hue at least slightly).
+            return relaxed
         return strict
     # Hue cannot reach contrast — fall back to black/white
     return '#000000' if lum_bg > 0.5 else '#ffffff'
