@@ -463,7 +463,42 @@ IDE.application.invokeLater {{
         if (terminalWindow != null) {{
             try {{
                 var contentManager = terminalWindow.getContentManager()
-                var content = contentManager.findContent("{_escape_groovy(terminal_title)}")
+                var tabName = "{_escape_groovy(terminal_title)}"
+                var content = contentManager.findContent(tabName)
+                if (content == null) {{
+                    var contents = contentManager.getContents()
+                    var bestLen = 0
+                    var matchCount = 0
+                    for (var i = 0; i < contents.length; i++) {{
+                        var c = contents[i]
+                        var name = c.getDisplayName()
+                        if (name == null) continue
+                        var matched = false
+                        var matchLen = name.length()
+                        var ellIdx = name.indexOf("\u2026")
+                        if (ellIdx >= 0) {{
+                            var prefix = name.substring(0, ellIdx)
+                            var suffix = name.substring(ellIdx + 1)
+                                .replaceFirst("\\\\s+\\\\(\\\\d+\\\\)\\$", "")
+                            matched = tabName.startsWith(prefix) && tabName.endsWith(suffix)
+                            matchLen = prefix.length() + suffix.length()
+                        }} else {{
+                            matched = tabName.contains(name)
+                        }}
+                        if (matched) {{
+                            if (matchLen > bestLen) {{
+                                content = c
+                                bestLen = matchLen
+                                matchCount = 1
+                            }} else if (matchLen == bestLen) {{
+                                matchCount++
+                            }}
+                        }}
+                    }}
+                    if (matchCount > 1) {{
+                        content = null
+                    }}
+                }}
                 if (content != null) {{
                     contentManager.removeContent(content, true)
                 }}
