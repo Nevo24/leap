@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QProxyStyle, QStyle, QStyledItemDelegate,
     QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer
+from PyQt5.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt, QTimer
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
 from PyQt5.QtSvg import QSvgRenderer
 
@@ -430,6 +430,16 @@ class TooltipApp(QApplication):
         except RuntimeError:
             return True
 
+    def _show_tip(self, global_pos: QPoint, text: str,
+                  widget: QWidget, rect: 'Any' = None,
+                  duration: int = 2_147_483_647) -> None:
+        """Show a tooltip with max duration so it persists while hovered."""
+        from PyQt5.QtWidgets import QToolTip as _QToolTip
+        if rect is not None:
+            _QToolTip.showText(global_pos, text, widget, rect, duration)
+        else:
+            _QToolTip.showText(global_pos, text, widget)
+
     def _handle_tooltip(self, obj: QObject, event: QEvent) -> bool:
         """Handle tooltip events, returning True to consume the event."""
         if sip.isdeleted(obj):
@@ -438,7 +448,7 @@ class TooltipApp(QApplication):
         if not widget:
             return False
 
-        from PyQt5.QtWidgets import QAbstractItemView, QToolTip as _QToolTip
+        from PyQt5.QtWidgets import QAbstractItemView
         parent = widget.parent()
         if sip.isdeleted(parent) if parent is not None else False:
             return True
@@ -456,9 +466,9 @@ class TooltipApp(QApplication):
                             tip = header_item.toolTip()
                             if tip:
                                 if self.tooltips_enabled:
-                                    _QToolTip.showText(
+                                    self._show_tip(
                                         event.globalPos(), tip, widget,
-                                        parent.rect(), 2_147_483_647,
+                                        parent.rect(),
                                     )
                                 return True
             return True
@@ -480,10 +490,9 @@ class TooltipApp(QApplication):
                         text_w = parent.fontMetrics().horizontalAdvance(str(display))
                         show = text_w > col_w - 16
                     if show:
-                        _QToolTip.showText(
+                        self._show_tip(
                             event.globalPos(), str(tip), widget,
                             parent.visualRect(index),
-                            2_147_483_647,
                         )
             return True
 
@@ -505,10 +514,9 @@ class TooltipApp(QApplication):
                             text_w = widget.fontMetrics().horizontalAdvance(str(display))
                             show = text_w > col_w - 16
                         if show:
-                            _QToolTip.showText(
+                            self._show_tip(
                                 event.globalPos(), str(tip), vp,
                                 widget.visualRect(index),
-                                2_147_483_647,
                             )
             return True
 
@@ -557,11 +565,9 @@ class TooltipApp(QApplication):
                                     if extra:
                                         final_tip = f'{tip} | {extra}'
                         if not sip.isdeleted(viewport):
-                            from PyQt5.QtWidgets import QToolTip as _QToolTip
-                            _QToolTip.showText(
+                            self._show_tip(
                                 event.globalPos(), final_tip, viewport,
                                 table_view.visualRect(index),
-                                2_147_483_647,
                             )
                         return True
             # Fall through to normal widget tooltip handling
@@ -577,10 +583,9 @@ class TooltipApp(QApplication):
             idx = combo.currentIndex()
             full_name = combo.itemData(idx, Qt.UserRole)
             if full_name:
-                from PyQt5.QtWidgets import QToolTip as _QToolTip
-                _QToolTip.showText(
+                self._show_tip(
                     event.globalPos(), full_name, combo,
-                    combo.rect(), 2_147_483_647,
+                    combo.rect(),
                 )
                 return True
             # Not truncated — fall through to normal tooltips_enabled check
@@ -595,10 +600,9 @@ class TooltipApp(QApplication):
             parent = widget.parent()
             if parent is not None and sip.isdeleted(parent):
                 return True
-            from PyQt5.QtWidgets import QToolTip as _QToolTip
-            _QToolTip.showText(
+            self._show_tip(
                 event.globalPos(), widget.toolTip(), widget,
-                widget.rect(), 2_147_483_647,
+                widget.rect(),
             )
             return True
         return False
