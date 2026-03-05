@@ -139,7 +139,7 @@ class SessionMixin(_Base):
         # Include any active sessions not yet pinned (shouldn't happen, but safe)
         pinned_tags = set(self._pinned_sessions.keys())
         for s in active_sessions:
-            if s['tag'] not in pinned_tags:
+            if s['tag'] not in pinned_tags and s['tag'] not in self._deleted_tags:
                 merged.append(s)
 
         # Sort by persisted row order (not alphabetical); new tags go to end
