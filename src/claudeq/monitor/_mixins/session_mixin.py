@@ -299,44 +299,50 @@ class SessionMixin(_Base):
         find_worker.finished.connect(find_worker.deleteLater)
         find_worker.start()
 
-    def _close_server(self, tag: str, server_pid: Optional[int]) -> None:
+    def _close_server(self, tag: str, server_pid: Optional[int],
+                      _from_delete: bool = False) -> None:
         """Close a server session (non-blocking).
 
         If the session has no MR tracking, warns that closing the server
         will remove the row.
-        """
-        # Check if this row will survive without a server
-        pin = self._pinned_sessions.get(tag, {})
-        has_mr = (
-            pin.get('remote_project_path')
-            or tag in self._tracked_tags
-            or tag in self._checking_tags
-        )
-        if not has_mr:
-            reply = QMessageBox.question(
-                self, 'Close Server',
-                f"'{tag}' has no MR tracking.\n"
-                f"Closing the server will remove this row.\n\nContinue?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-            # Pre-schedule removal — row will disappear on next refresh
-            self._pinned_sessions.pop(tag, None)
-            save_pinned_sessions(self._pinned_sessions)
-            self._deleted_tags.add(tag)
 
-            # Offer to close the client too
-            session = next((s for s in self.sessions if s['tag'] == tag), None)
-            if session and session.get('has_client', False):
-                client_reply = QMessageBox.question(
-                    self, 'Close Client',
-                    f"A client is connected to '{tag}'.\n"
-                    f"Do you also want to close the client?",
+        Args:
+            tag: Session tag.
+            server_pid: Server process ID (or None).
+            _from_delete: If True, skip confirmation and client prompt
+                (caller already handled those).
+        """
+        will_remove = False
+        if not _from_delete:
+            # Check if this row will survive without a server
+            pin = self._pinned_sessions.get(tag, {})
+            has_mr = (
+                pin.get('remote_project_path')
+                or tag in self._tracked_tags
+                or tag in self._checking_tags
+            )
+            if not has_mr:
+                reply = QMessageBox.question(
+                    self, 'Close Server',
+                    f"'{tag}' has no MR tracking.\n"
+                    f"Closing the server will remove this row.\n\nContinue?",
                     QMessageBox.Yes | QMessageBox.No,
                 )
-                if client_reply == QMessageBox.Yes:
-                    self._close_client(tag, session.get('client_pid'))
+                if reply != QMessageBox.Yes:
+                    return
+                will_remove = True
+
+                # Offer to close the client too
+                session = next((s for s in self.sessions if s['tag'] == tag), None)
+                if session and session.get('has_client', False):
+                    client_reply = QMessageBox.question(
+                        self, 'Close Client',
+                        f"A client is connected to '{tag}'.\n"
+                        f"Do you also want to close the client?",
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if client_reply == QMessageBox.Yes:
+                        self._close_client(tag, session.get('client_pid'))
 
         metadata = load_session_metadata(tag)
         preferred_ide = metadata.get('ide') if metadata else None
@@ -355,11 +361,20 @@ class SessionMixin(_Base):
                 f"cq-server {tag}", preferred_ide, project_path, f"cq-server {tag}"
             )
 
+        def _on_closed() -> None:
+            self._set_busy(False)
+            self._show_status(f"Server '{tag}' closed")
+            # Unpin after shutdown completes (not before) to avoid
+            # zombie rows if shutdown is slow
+            if will_remove:
+                self._pinned_sessions.pop(tag, None)
+                save_pinned_sessions(self._pinned_sessions)
+                self._deleted_tags.add(tag)
+
         self._show_status(f"Closing server '{tag}'...")
         self._set_busy(True)
         worker = BackgroundCallWorker(_do_close, self)
-        worker.finished.connect(lambda: self._set_busy(False))
-        worker.finished.connect(lambda: self._show_status(f"Server '{tag}' closed"))
+        worker.finished.connect(_on_closed)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
@@ -407,14 +422,21 @@ class SessionMixin(_Base):
         client_pid = session.get('client_pid')
         has_server = server_pid is not None
 
+        has_mr = (
+            tag in self._tracked_tags
+            or tag in self._checking_tags
+        )
+
         parts = []
         if has_server:
             parts.append('server')
         if has_client:
             parts.append('client')
+        if has_mr:
+            parts.append('MR tracking')
 
         if parts:
-            what = ' and '.join(parts)
+            what = ', '.join(parts[:-1]) + (' and ' if len(parts) > 1 else '') + parts[-1]
             msg = f"This will also close the running {what}.\n\nAre you sure?"
         else:
             msg = "Are you sure you want to delete this row?"
@@ -427,7 +449,7 @@ class SessionMixin(_Base):
 
         self._show_status(f"Deleted row '{tag}'")
         if has_server:
-            self._close_server(tag, server_pid)
+            self._close_server(tag, server_pid, _from_delete=True)
         if has_client:
             self._close_client(tag, client_pid)
 
