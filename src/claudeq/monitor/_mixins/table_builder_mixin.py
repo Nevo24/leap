@@ -316,7 +316,7 @@ class TableBuilderMixin(_Base):
                 menu_fg = ensure_contrast(t.icon_color, row_color)
                 if menu_fg != t.icon_color:
                     btn.setStyleSheet(menu_btn_style(menu_fg))
-            else:
+            elif role == 'close':
                 muted_fg = ensure_contrast(t.text_muted, row_color)
                 if muted_fg != t.text_muted:
                     btn.setStyleSheet(close_btn_style(muted_fg))
@@ -514,6 +514,7 @@ class TableBuilderMixin(_Base):
                     del_btn = QPushButton('X')
                     del_btn.setFixedSize(24, del_btn.sizeHint().height())
                     del_btn.setStyleSheet(close_btn_style())
+                    del_btn.setProperty('_btn_role', 'close')
                     del_btn.setToolTip(f'Remove row for {tag}')
                     del_btn.clicked.connect(
                         lambda checked, t=tag: self._delete_row(t)
@@ -847,6 +848,7 @@ class TableBuilderMixin(_Base):
                         server_x = QPushButton('X')
                         server_x.setFixedSize(24, server_x.sizeHint().height())
                         server_x.setStyleSheet(close_btn_style())
+                        server_x.setProperty('_btn_role', 'close')
                         server_x.setToolTip(f'Close server {tag}')
                         server_x.clicked.connect(
                             lambda checked, t=tag, spid=server_pid:
@@ -910,6 +912,7 @@ class TableBuilderMixin(_Base):
                         client_x = QPushButton('X')
                         client_x.setFixedSize(24, client_x.sizeHint().height())
                         client_x.setStyleSheet(close_btn_style())
+                        client_x.setProperty('_btn_role', 'close')
                         client_x.setToolTip(f'Close client {tag}')
                         client_x.clicked.connect(
                             lambda checked, t=tag, pid=client_pid:
@@ -982,6 +985,7 @@ class TableBuilderMixin(_Base):
                         slack_x = QPushButton('X')
                         slack_x.setFixedSize(24, slack_x.sizeHint().height())
                         slack_x.setStyleSheet(close_btn_style())
+                        slack_x.setProperty('_btn_role', 'close')
                         slack_x.setToolTip(f'Disconnect Slack for {tag}')
                         slack_x.clicked.connect(
                             lambda checked, t=tag:
@@ -1079,6 +1083,7 @@ class TableBuilderMixin(_Base):
                         mr_x = QPushButton('X')
                         mr_x.setFixedSize(24, mr_x.sizeHint().height())
                         mr_x.setStyleSheet(close_btn_style())
+                        mr_x.setProperty('_btn_role', 'close')
                         mr_x.setToolTip(f'Stop tracking MR for {tag}')
                         mr_x.clicked.connect(
                             lambda checked, t=tag: self._stop_tracking(t)
@@ -1200,6 +1205,7 @@ class TableBuilderMixin(_Base):
                             mr_br_x = QPushButton('X')
                             mr_br_x.setFixedSize(24, mr_br_x.sizeHint().height())
                             mr_br_x.setStyleSheet(close_btn_style())
+                            mr_br_x.setProperty('_btn_role', 'close')
                             mr_br_x.setToolTip(
                                 f'Clear pinned MR data for {tag}')
                             mr_br_x.clicked.connect(
