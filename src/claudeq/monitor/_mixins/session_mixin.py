@@ -131,9 +131,17 @@ class SessionMixin(_Base):
 
         # Remove dead rows without MR tracking
         if tags_to_remove:
+            colors_changed = False
             for tag in tags_to_remove:
                 self._pinned_sessions.pop(tag, None)
+                if tag in self._row_colors:
+                    del self._row_colors[tag]
+                    colors_changed = True
             save_pinned_sessions(self._pinned_sessions)
+            if colors_changed:
+                self._prefs['row_colors'] = self._row_colors
+                save_monitor_prefs(self._prefs)
+                self.table.setProperty('_row_colors', self._row_colors)
             self._remove_from_row_order(set(tags_to_remove))
 
         # Include any active sessions not yet pinned (shouldn't happen, but safe)
