@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # JetBrains IDE names used across navigation functions
 _JETBRAINS_IDE_NAMES: list[str] = [
     'PyCharm', 'IntelliJ', 'GoLand', 'WebStorm', 'PhpStorm',
-    'RubyMine', 'CLion', 'DataGrip', 'JetBrains',
+    'RubyMine', 'CLion', 'DataGrip', 'JetBrains', 'Android Studio',
 ]
 
 # Maps IDE display names to their CLI command names
@@ -31,6 +31,7 @@ _IDE_CMD_MAP: dict[str, str] = {
     'GoLand': 'goland',
     'WebStorm': 'webstorm',
     'PhpStorm': 'phpstorm',
+    'Android Studio': 'studio',
 }
 
 # Glob patterns for JetBrains .app bundles
@@ -38,6 +39,7 @@ _JETBRAINS_APP_PATTERNS: list[str] = [
     'IntelliJ*.app', 'PyCharm*.app', 'WebStorm*.app',
     'PhpStorm*.app', 'GoLand*.app', 'RubyMine*.app',
     'CLion*.app', 'DataGrip*.app', 'Rider*.app', 'Fleet*.app',
+    'Android Studio*.app',
 ]
 
 # Directories to search for JetBrains .app bundles

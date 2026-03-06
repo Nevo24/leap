@@ -101,6 +101,7 @@ JETBRAINS_IDES: Final[dict[str, str]] = {
     'clion': 'CLion',
     'datagrip': 'DataGrip',
     'idea': 'IntelliJ IDEA',
+    'studio': 'Android Studio',
 }
 
 

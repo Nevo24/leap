@@ -453,6 +453,57 @@ configure-shell:
 			fi; \
 		fi; \
 	fi
+	@# Configure Android Studio (config lives under Google/, not JetBrains/)
+	@if [ -d "$$HOME/Library/Application Support/Google" ]; then \
+		for IDE_DIR in "$$HOME/Library/Application Support/Google"/AndroidStudio*; do \
+			if [ -d "$$IDE_DIR/options" ]; then \
+				IDE_NAME=$$(basename "$$IDE_DIR"); \
+				TERMINAL_XML="$$IDE_DIR/options/terminal.xml"; \
+				ADVANCED_XML="$$IDE_DIR/options/advancedSettings.xml"; \
+				NEEDS_UPDATE=false; \
+				\
+				if [ -f "$$TERMINAL_XML" ]; then \
+					CURRENT_ENGINE=$$(grep 'name="terminalEngine"' "$$TERMINAL_XML" 2>/dev/null | grep -o 'value="[^"]*"' | head -1 | cut -d'"' -f2); \
+					if [ "$$CURRENT_ENGINE" != "CLASSIC" ]; then \
+						NEEDS_UPDATE=true; \
+					fi; \
+				else \
+					NEEDS_UPDATE=true; \
+				fi; \
+				\
+				if [ -f "$$ADVANCED_XML" ]; then \
+					SHOW_TITLE=$$(grep 'terminal.show.application.title' "$$ADVANCED_XML" 2>/dev/null | grep -o 'value="[^"]*"' | cut -d'"' -f2); \
+					if [ "$$SHOW_TITLE" != "true" ]; then \
+						NEEDS_UPDATE=true; \
+					fi; \
+				else \
+					NEEDS_UPDATE=true; \
+				fi; \
+				\
+				if [ "$$NEEDS_UPDATE" = "true" ]; then \
+					echo "$(PROMPT_PREFIX) Configuring Android Studio..."; \
+					mkdir -p "$$IDE_DIR/options"; \
+					\
+					if [ -f "$$TERMINAL_XML" ]; then \
+						cp "$$TERMINAL_XML" "$$TERMINAL_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
+					fi; \
+					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
+					\
+					if [ -f "$$ADVANCED_XML" ]; then \
+						cp "$$ADVANCED_XML" "$$ADVANCED_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
+					fi; \
+					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
+					\
+					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
+					if ps aux | grep -i "studio" | grep -v grep > /dev/null 2>&1; then \
+						echo "  $(YELLOW)⚠ Please restart Android Studio for changes to take effect$(NC)"; \
+					fi; \
+				else \
+					echo "  ✓ $$IDE_NAME already configured"; \
+				fi; \
+			fi; \
+		done; \
+	fi
 
 .PHONY: .configure-claude-hooks
 .configure-claude-hooks:
