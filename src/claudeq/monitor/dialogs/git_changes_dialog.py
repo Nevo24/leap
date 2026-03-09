@@ -223,10 +223,15 @@ class CommitListDialog(QDialog):
                 cwd=self._project_path,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=10,
             )
             if result.returncode != 0:
                 self._has_more = False
+                if self._loaded == 0:
+                    stderr = result.stderr.strip()
+                    self._show_error(stderr or 'git log failed')
                 return
 
             chunks = result.stdout.split(_sep)
@@ -258,13 +263,30 @@ class CommitListDialog(QDialog):
                 self._list.setItemWidget(item, widget)
                 self._commits.append(sha)
                 count += 1
-        except Exception:
+        except Exception as exc:
             logger.debug("Failed to load git log", exc_info=True)
+            if self._loaded == 0:
+                self._show_error(str(exc))
 
         self._loaded += count
         self._has_more = count >= self._PAGE_SIZE
         if self._has_more:
             self._add_load_more_item()
+
+    def _show_error(self, message: str) -> None:
+        """Show an error message inside the list widget."""
+        t = current_theme()
+        label = QLabel(
+            f'<span style="color: {t.accent_red};">Failed to load commits</span>'
+            f'<br><span style="color: #aaa; font-size: 12px;">{message}</span>'
+            f'<br><br><span style="color: #aaa; font-size: 12px;">Path: {self._project_path}</span>'
+        )
+        label.setWordWrap(True)
+        label.setContentsMargins(12, 12, 12, 12)
+        item = QListWidgetItem(self._list)
+        item.setFlags(Qt.NoItemFlags)
+        item.setSizeHint(label.sizeHint() + QSize(24, 24))
+        self._list.setItemWidget(item, label)
 
     def _add_load_more_item(self) -> None:
         """Append a 'Load more commits...' button at the bottom of the list."""

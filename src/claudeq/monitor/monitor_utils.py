@@ -33,10 +33,24 @@ def load_shell_env() -> None:
             if not entry:
                 continue
             key, sep, value = entry.partition('=')
-            if sep and key and key not in os.environ:
+            if not sep or not key:
+                continue
+            if key == 'PATH':
+                # Merge: prepend shell PATH entries that the app env is missing
+                current = set(os.environ.get('PATH', '').split(':'))
+                extra = [p for p in value.split(':') if p and p not in current]
+                if extra:
+                    os.environ['PATH'] = ':'.join(extra) + ':' + os.environ.get('PATH', '')
+            elif key not in os.environ:
                 os.environ[key] = value
     except Exception:
         logger.debug("Failed to load shell environment", exc_info=True)
+
+    # Ensure UTF-8 locale — bundled .app may default to ASCII
+    if not os.environ.get('LANG'):
+        os.environ['LANG'] = 'en_US.UTF-8'
+    if not os.environ.get('LC_ALL'):
+        os.environ['LC_ALL'] = 'en_US.UTF-8'
 
 
 def find_icon() -> Optional[Path]:
