@@ -29,6 +29,7 @@ class ActionsMenuMixin(_Base):
     def _show_git_menu(self, tag: str) -> None:
         """Show the git changes menu with all three options directly."""
         project_path = self._resolve_project_path(tag)
+        path_missing = self._last_path_missing
         has_path = bool(project_path)
         has_git = has_path and self._has_git_project(tag)
 
@@ -36,7 +37,8 @@ class ActionsMenuMixin(_Base):
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
 
-        no_git_tip = 'No git project detected'
+        no_git_tip = ('Project directory no longer exists' if path_missing
+                      else 'No git project detected')
 
         local_action = menu.addAction('See local uncommitted changes')
         local_action.setEnabled(has_git)
@@ -75,7 +77,11 @@ class ActionsMenuMixin(_Base):
     def _show_path_menu(self, tag: str) -> None:
         """Show the path actions menu (Open in Terminal, Open with IDE)."""
         project_path = self._resolve_project_path(tag)
+        path_missing = self._last_path_missing
         has_path = bool(project_path)
+
+        no_path_tip = ('Project directory no longer exists' if path_missing
+                       else 'No project path available')
 
         menu = QMenu(self)
         if self._prefs.get('show_tooltips', True):
@@ -85,14 +91,14 @@ class ActionsMenuMixin(_Base):
         terminal_action.setEnabled(has_path)
         terminal_action.setToolTip(
             'Open default terminal and cd to project path' if has_path
-            else 'No project path available'
+            else no_path_tip
         )
 
         ide_action = menu.addAction('Open with IDE')
         ide_action.setEnabled(has_path)
         ide_action.setToolTip(
             'Open project in a selected .app' if has_path
-            else 'No project path available'
+            else no_path_tip
         )
 
         chosen = menu.exec_(QCursor.pos())
@@ -107,14 +113,28 @@ class ActionsMenuMixin(_Base):
     # ── Helpers ───────────────────────────────────────────────────────
 
     def _resolve_project_path(self, tag: str) -> Optional[str]:
-        """Resolve the project path for a session tag."""
+        """Resolve the project path for a session tag.
+
+        Returns None if no path is configured or the directory no longer exists.
+        Sets ``_last_path_missing`` flag so callers can distinguish the two cases.
+        """
+        self._last_path_missing = False
+        path: Optional[str] = None
         # Try active sessions first
         for s in self.sessions:
             if s['tag'] == tag and s.get('project_path'):
-                return s['project_path']
-        # Fall back to pinned sessions
-        pin = self._pinned_sessions.get(tag, {})
-        return pin.get('project_path') or None
+                path = s['project_path']
+                break
+        if not path:
+            # Fall back to pinned sessions
+            pin = self._pinned_sessions.get(tag, {})
+            path = pin.get('project_path') or None
+        # Guard: verify the directory still exists on disk
+        if path and not os.path.isdir(path):
+            logger.warning("Project path no longer exists for '%s': %s", tag, path)
+            self._last_path_missing = True
+            return None
+        return path
 
     def _has_git_project(self, tag: str) -> bool:
         """Return True if the session has a git project (Project column is not N/A)."""

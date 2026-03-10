@@ -118,6 +118,12 @@ def open_terminal_with_command(
     Returns:
         True if a new terminal was opened successfully.
     """
+    # Guard: if project_path doesn't exist on disk, treat as None to avoid
+    # IDE crashes (e.g. JetBrains "Could not determine current working directory").
+    if project_path and not Path(project_path).is_dir():
+        logger.warning("project_path does not exist, ignoring: %s", project_path)
+        project_path = None
+
     if preferred_ide:
         # Try the specific IDE first. If it fails, fall through to generic
         # fallback so that a terminal always opens somewhere.
