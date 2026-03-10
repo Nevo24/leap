@@ -333,6 +333,13 @@ make uninstall-slack-app # Remove Slack integration only
 make clean             # Remove build artifacts
 ```
 
+## Self-Verification
+
+After writing any fix or feature, **always re-read your own changes and verify there are no bugs** before presenting them as done. Specifically:
+- Check edge cases and off-by-one errors
+- Verify that conditional branches do what they claim (e.g., a reset that should only trigger on condition A doesn't also trigger on unrelated condition B)
+- Trace the flow end-to-end: how is the new code reached, what state does it depend on, and what happens in the common/idle case (not just the interesting case)
+
 ## Commit & Push Checklist
 
 When the user asks to commit and push, **before committing**:

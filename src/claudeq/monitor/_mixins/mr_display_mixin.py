@@ -153,15 +153,29 @@ class MRDisplayMixin(_Base):
     def _clear_dock_badge(self) -> None:
         """Clear the dock badge and snapshot current MR statuses as seen."""
         self._dock_badge.clear(self._mr_statuses)
+        self._banner_notified = set()
 
     def _send_banner_notifications(self, events: list[NotificationEvent]) -> None:
-        """Send macOS banner notifications for events where banner is enabled."""
-        if not events or self.isActiveWindow():
+        """Send macOS banner notifications for events where banner is enabled.
+
+        Coalesces repeated (tag, type) combos while the window is inactive —
+        only the first occurrence triggers a banner.
+        """
+        if self.isActiveWindow():
+            self._banner_notified: set[tuple[str, str]] = set()
             return
+        if not events:
+            return
+        if not hasattr(self, '_banner_notified'):
+            self._banner_notified = set()
         notif_prefs = get_notification_prefs(self._prefs)
         for ev in events:
             if not notif_prefs.get(ev.type.value, {}).get('banner', False):
                 continue
+            key = (ev.tag, ev.type.value)
+            if key in self._banner_notified:
+                continue
+            self._banner_notified.add(key)
             subtitle, body = self._format_banner_text(ev)
             self._send_macos_notification(subtitle, body)
 

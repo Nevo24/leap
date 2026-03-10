@@ -59,6 +59,9 @@ class DockBadge:
         self._mr_changed: int = 0
         self._session_changed: int = 0
         self._notification_changed: int = 0
+        # Coalescing: track (tag, NotificationType) already counted while inactive
+        self._session_notified: set[tuple[str, NotificationType]] = set()
+        self._mr_notified: set[tuple[str, NotificationType]] = set()
 
     def update(
         self,
@@ -80,6 +83,7 @@ class DockBadge:
         if window_active:
             self._seen_mr_statuses = dict(mr_statuses)
             self._mr_changed = 0
+            self._mr_notified.clear()
             self._render_total()
             return []
 
@@ -92,9 +96,13 @@ class DockBadge:
             events.extend(tag_events)
 
             # Count toward dock badge only for types where dock is enabled
+            # and not already counted for this tag while window inactive
             for ev in tag_events:
-                if dock_enabled is None or dock_enabled.get(ev.type.value, True):
-                    dock_count += 1
+                key = (ev.tag, ev.type)
+                if key not in self._mr_notified:
+                    if dock_enabled is None or dock_enabled.get(ev.type.value, True):
+                        dock_count += 1
+                        self._mr_notified.add(key)
 
         self._seen_mr_statuses = dict(mr_statuses)
         self._mr_changed += dock_count
@@ -170,6 +178,7 @@ class DockBadge:
         if window_active:
             self._seen_session_states = dict(current)
             self._session_changed = 0
+            self._session_notified.clear()
             self._render_total()
             return []
 
@@ -195,8 +204,13 @@ class DockBadge:
                     if notif_type:
                         ev = NotificationEvent(type=notif_type, tag=tag)
                         events.append(ev)
-                        if dock_enabled is None or dock_enabled.get(ev.type.value, True):
-                            dock_count += 1
+                        # Only count toward dock badge if not already counted
+                        # for this tag+type while window is inactive
+                        key = (tag, notif_type)
+                        if key not in self._session_notified:
+                            if dock_enabled is None or dock_enabled.get(ev.type.value, True):
+                                dock_count += 1
+                                self._session_notified.add(key)
             elif state != 'running':
                 self._busy_since.pop(tag, None)
 
@@ -236,6 +250,8 @@ class DockBadge:
         self._session_changed = 0
         self._notification_changed = 0
         self._seen_mr_statuses = dict(mr_statuses)
+        self._session_notified.clear()
+        self._mr_notified.clear()
         self._render_total()
 
     def discard_tag(self, tag: str) -> None:
