@@ -187,14 +187,33 @@ class ClaudeStateTracker:
                     self._clock() - self._waiting_since,
                 )
             else:
+                # Check if user answered the prompt (typed after entering
+                # the waiting state).  If so, preserve timing so that
+                # on_output() resume / idle→running detection still works
+                # after the stale signal is accepted.  Without this, the
+                # timing reset (_idle_since / _waiting_since = now) makes
+                # _last_input_time older than the threshold, permanently
+                # blocking resume detection.
+                user_answered = (
+                    current in ('interrupted', 'has_question')
+                    and new_state in ('idle', 'has_question')
+                    and self._waiting_since is not None
+                    and self._last_input_time > self._waiting_since
+                )
+                old_waiting_since = self._waiting_since
+
                 _log.debug(
-                    'GET_STATE signal transition %s→%s',
+                    'GET_STATE signal transition %s→%s%s',
                     current, new_state,
+                    ' (user_answered, preserving timing)' if user_answered else '',
                 )
                 with self._lock:
                     self._state = new_state
                     if new_state in ('needs_permission', 'has_question'):
-                        self._waiting_since = self._clock()
+                        if user_answered:
+                            pass  # preserve existing _waiting_since
+                        else:
+                            self._waiting_since = self._clock()
                     else:
                         self._waiting_since = None
                 self._idle_output_acc = 0
@@ -205,7 +224,13 @@ class ClaudeStateTracker:
                         self._last_prompt_buf = b''
                     self._output_buf.clear()
                 if new_state == 'idle':
-                    self._idle_since = self._clock()
+                    if user_answered and old_waiting_since is not None:
+                        # Set _idle_since to original waiting time so
+                        # _last_input_time > _idle_since remains true
+                        # and idle→running accumulation can proceed.
+                        self._idle_since = old_waiting_since
+                    else:
+                        self._idle_since = self._clock()
                     self._trust_dialog_phase = False
                 return new_state
 

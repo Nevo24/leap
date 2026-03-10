@@ -1028,3 +1028,161 @@ class TestInterruptedState:
         t[0] = 1.2
         tracker.on_output(b'Interrupted \xc2\xb7 What should Claude do instead?')
         assert tracker.current_state == 'interrupted'
+
+    def test_interrupted_user_answered_resumes_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """After 5s protection expires with stale idle signal, if the user
+        typed after the interrupt, timing is preserved so on_output()
+        can detect the resume when printable output arrives."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # User presses Escape
+        tracker.on_input(b'\x1b')
+        # PTY outputs "Interrupted"
+        t[0] = 1.2
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        # Stop hook writes idle
+        write_signal(tracker, 'idle')
+        # Within 5s protection, idle is blocked
+        t[0] = 3.0
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        # User types an answer at T=3.5
+        t[0] = 3.5
+        tracker.on_input(b'do something else')
+        # Claude produces output (ANSI-only during protection window)
+        t[0] = 4.0
+        tracker.on_output(b'\x1b[2K\x1b[1G')  # ANSI only, no printable text
+        # Protection expires at T=6.2 (1.2 + 5.0) — stale idle accepted
+        # but timing preserved (user_answered)
+        t[0] = 7.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Now Claude produces printable output — idle→running fires
+        # because _idle_since was preserved (not reset to T=7.0)
+        t[0] = 7.5
+        tracker.on_output(b'Here is my response...')
+        t[0] = 8.0
+        tracker.on_output(b'x' * 201)  # exceed 200-byte threshold
+        assert tracker.current_state == 'running'
+
+    def test_interrupted_user_answered_without_preserve_would_be_stuck(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify the fix: without timing preservation, _idle_since would
+        be set to now (T=7.0), making _last_input_time (T=3.5) < _idle_since,
+        which would block idle→running accumulation permanently."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.2
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        write_signal(tracker, 'idle')
+        # User types
+        t[0] = 3.5
+        tracker.on_input(b'do something else')
+        # Protection expires, timing preserved
+        t[0] = 7.0
+        tracker.get_state(pty_alive=True)
+        # Key assertion: _idle_since should be the old _waiting_since (1.2),
+        # NOT 7.0.  This ensures _last_input_time (3.5) > _idle_since (1.2).
+        assert tracker._idle_since < tracker._last_input_time
+
+    def test_interrupted_no_input_accepts_stale_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """If user didn't type after interrupt, stale idle is accepted
+        after the 5s window (existing behavior preserved)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.2
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        write_signal(tracker, 'idle')
+        # No user input after interrupt — stale idle accepted after 5s
+        t[0] = 7.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # _idle_since is set to now (normal behavior)
+        assert tracker._idle_since == 7.0
+
+    def test_interrupted_to_has_question_preserves_timing(
+        self, tmp_path: Path,
+    ) -> None:
+        """When interrupted→has_question after 5s with user input,
+        _waiting_since is preserved so on_output() resume works."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.2
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        # User types at T=3
+        t[0] = 3.0
+        tracker.on_input(b'answer')
+        # Notification hook writes has_question (stale, from interrupt dialog)
+        write_signal(tracker, 'has_question')
+        # Protection expires
+        t[0] = 7.0
+        assert tracker.get_state(pty_alive=True) == 'has_question'
+        # _waiting_since should be preserved (not reset to T=7.0)
+        assert tracker._waiting_since < tracker._last_input_time
+        # Now printable output triggers resume
+        t[0] = 7.5
+        tracker.on_output(b'Processing your request...')
+        assert tracker.current_state == 'running'
+
+    def test_has_question_user_answered_resumes_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """on_output() resume works when user types after has_question
+        and printable output follows (existing behavior, no get_state involved)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Signal has_question directly
+        write_signal(tracker, 'has_question')
+        t[0] = 0.5
+        assert tracker.get_state(pty_alive=True) == 'has_question'
+        # User answers at T=3
+        t[0] = 3.0
+        tracker.on_input(b'yes')
+        # Output follows (Claude starts processing) — after 2s grace
+        t[0] = 3.5
+        tracker.on_output(b'\x1b[2Kprocessing...')
+        assert tracker.current_state == 'running'
+
+    def test_interrupted_fresh_needs_permission_honored(
+        self, tmp_path: Path,
+    ) -> None:
+        """A fresh needs_permission signal should be honored with fresh
+        timing — user_answered should NOT apply for non-stale signals."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.2
+        tracker.on_output(b'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        # User types at T=3
+        t[0] = 3.0
+        tracker.on_input(b'run bash command')
+        # Output follows (ANSI only)
+        t[0] = 4.0
+        tracker.on_output(b'\x1b[2K\x1b[1G')
+        # Claude hits permission prompt — fresh signal
+        t[0] = 7.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # _waiting_since should be reset to now (fresh timing),
+        # NOT preserved from the old interrupt
+        assert tracker._waiting_since == 7.0
