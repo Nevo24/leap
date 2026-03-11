@@ -498,11 +498,15 @@ class CLIStateTracker:
                         return
 
                 # Detect permission/question dialogs from PTY output.
-                # Check the compact (ANSI-stripped, space-removed) buffer
-                # for provider-specific dialog patterns.
+                # Only check the most recent output chunk (current data)
+                # joined with a small tail of previous output, to avoid
+                # false positives when dialog pattern strings appear
+                # spread across Claude's streamed conversation output.
+                # Real dialogs render as a single Ink TUI screen burst.
                 if dialog_patterns:
+                    check_buf = bytes(self._output_buf[-512:])
                     compact = self._ANSI_RE.sub(
-                        b'', bytes(self._output_buf),
+                        b'', check_buf,
                     ).replace(b' ', b'')
                     if all(p in compact for p in dialog_patterns):
                         _log.debug(

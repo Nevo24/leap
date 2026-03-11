@@ -935,6 +935,25 @@ class TestPTYDialogDetection:
         tracker.on_output(b'Esc to cancel\n')
         assert tracker.current_state == 'needs_permission'
 
+    def test_no_false_positive_from_conversation_text(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dialog patterns in streamed conversation text (e.g. code
+        discussion) should not trigger false needs_permission if they
+        appear spread across a large output buffer."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate Claude streaming a conversation about dialog patterns.
+        # The patterns appear spread across >1KB of output — this should
+        # NOT trigger false positive detection.
+        tracker.on_output(b'x' * 800 + b' Enter to select ')
+        assert tracker.current_state == 'running'
+        t[0] = 1.1
+        tracker.on_output(b'y' * 800 + b' Esc to cancel ')
+        assert tracker.current_state == 'running'
+
     def test_interrupted_takes_priority_over_dialog(
         self, tmp_path: Path,
     ) -> None:
