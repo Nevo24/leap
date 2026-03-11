@@ -114,6 +114,19 @@ claudeq() {
 }
 
 alias cq='claudeq'
+
+codexq() {
+    if [ $# -eq 0 ]; then
+        echo "Error: Tag is required"
+        echo "Usage: codexq <tag> [message]"
+        echo "Example (server): codexq my-feature"
+        echo "Example (client): codexq my-feature 'hello Codex'"
+        return 1
+    fi
+    "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh" --cli codex "$@"
+}
+
+alias cc='codexq'
 # ===== ClaudeQ Configuration END - DO NOT REMOVE (needed for uninstall) =====
 EOF
 

@@ -69,6 +69,7 @@ class SessionMixin(_Base):
                     if is_pr_pinned
                     else s.get('branch') or ''
                 ),
+                'cli_provider': s.get('cli_provider') or 'claude',
             }
             if self._pinned_sessions.get(tag) != pin_data:
                 self._pinned_sessions[tag] = pin_data

@@ -226,6 +226,8 @@ def get_active_sessions() -> list[dict[str, Any]]:
             except (OSError, ValueError):
                 pass
 
+        cli_provider = status_response.get('cli_provider', 'claude')
+
         sessions.append({
             'tag': tag,
             'claude_state': claude_state,
@@ -239,6 +241,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'client_pid': client_pid,
             'has_client': has_client,
             'slack_enabled': slack_enabled,
+            'cli_provider': cli_provider,
         })
 
     # Evict stale cache entries for sockets that no longer exist

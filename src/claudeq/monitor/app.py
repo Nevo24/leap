@@ -71,20 +71,21 @@ class MonitorWindow(
     # Column indices
     COL_DELETE = 0
     COL_TAG = 1
-    COL_PROJECT = 2
-    COL_SERVER = 3
-    COL_PATH = 4
-    COL_SERVER_BRANCH = 5
-    COL_STATUS = 6
-    COL_QUEUE = 7
-    COL_CLIENT = 8
-    COL_SLACK = 9
-    COL_PR = 10
-    COL_PR_BRANCH = 11
+    COL_CLI = 2
+    COL_PROJECT = 3
+    COL_SERVER = 4
+    COL_PATH = 5
+    COL_SERVER_BRANCH = 6
+    COL_STATUS = 7
+    COL_QUEUE = 8
+    COL_CLIENT = 9
+    COL_SLACK = 10
+    COL_PR = 11
+    COL_PR_BRANCH = 12
 
     _HEADER_LABELS = [
-        '', 'Tag', 'Project', 'Server', 'Path', 'Server Branch', 'Status',
-        'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
+        '', 'Tag', 'CLI', 'Project', 'Server', 'Path', 'Server Branch',
+        'Status', 'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
 
@@ -206,12 +207,13 @@ class MonitorWindow(
         self.table.setHorizontalHeader(SeparatorHeaderView(Qt.Horizontal, self.table))
         self.table.setItemDelegate(SeparatorDelegate(self.table))
         self.table.setShowGrid(False)
-        self.table.setColumnCount(12)
+        self.table.setColumnCount(13)
         self.table.setHorizontalHeaderLabels(self._HEADER_LABELS)
 
         # Column header tooltip descriptions (applied via _apply_header_tooltips)
         self._col_tooltip_descriptions = {
             self.COL_TAG: 'CQ session name',
+            self.COL_CLI: 'AI CLI backend (Claude or Codex)',
             self.COL_PROJECT: 'Git project name',
             self.COL_SERVER: 'CQ server process (green = running)',
             self.COL_PATH: 'Directory where the server is running',

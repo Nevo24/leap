@@ -528,6 +528,15 @@ class TableBuilderMixin(_Base):
                 # ── Tag cell (elided label + palette icon) ──────────
                 self._build_tag_cell(row, tag, row_color)
 
+                # ── CLI cell ────────────────────────────────────────
+                cli_provider = session.get('cli_provider', 'claude')
+                cli_display = cli_provider.capitalize() if cli_provider else 'Claude'
+                if is_dead:
+                    # For dead rows, try metadata fallback
+                    pinned_cli = pinned_data.get('cli_provider', '')
+                    cli_display = pinned_cli.capitalize() if pinned_cli else 'N/A'
+                self._set_cell_text(row, self.COL_CLI, cli_display, row_color)
+
                 # Server Branch always shows the live branch
                 server_branch = session['branch']
 
