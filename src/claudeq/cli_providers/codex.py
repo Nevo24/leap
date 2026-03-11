@@ -54,10 +54,10 @@ class CodexProvider(CLIProvider):
 
     @property
     def interrupted_pattern(self) -> bytes:
-        # Codex shows interrupt feedback in the Ratatui TUI.
-        # The exact text may vary; this is a best-guess pattern.
-        # TODO: Verify with actual Codex CLI output.
-        return b'Interrupted'
+        # Codex outputs: "■ Conversation interrupted - tell the model
+        # what to do differently."
+        # After ANSI stripping (no space removal), "interrupted" appears.
+        return b'interrupted'
 
     @property
     def dialog_patterns(self) -> list[bytes]:
