@@ -1,0 +1,1 @@
+"""Leap Slack integration package."""

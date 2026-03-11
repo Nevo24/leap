@@ -13,7 +13,7 @@ from typing import Optional
 import pexpect
 import pytest
 
-from claudeq.server.state_tracker import ClaudeStateTracker
+from leap.server.state_tracker import ClaudeStateTracker
 
 
 # ---------------------------------------------------------------------------

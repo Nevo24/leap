@@ -1,0 +1,90 @@
+#!/bin/bash
+#
+# Leap Cleanup - Remove dead/stale sessions
+#
+
+# Find the storage directory (in project root)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+STORAGE_DIR="$PROJECT_DIR/.storage"
+SOCKET_DIR="$STORAGE_DIR/sockets"
+QUEUE_DIR="$STORAGE_DIR/queues"
+
+echo "🧹 Cleaning up dead Leap sessions..."
+echo ""
+
+removed_count=0
+
+if [ -d "$SOCKET_DIR" ]; then
+    for socket_file in "$SOCKET_DIR"/*.sock; do
+        [ -e "$socket_file" ] || continue
+
+        tag=$(basename "$socket_file" .sock)
+
+        # Check if server process is running for this tag (allow flags after tag)
+        if ps aux | grep -E "leap-server.py $tag(\s|$)" | grep -v grep > /dev/null 2>&1; then
+            # Server process exists - socket is alive, skip it
+            continue
+        fi
+
+        # No server process - socket is dead, remove it
+        echo "  Removing dead session: $tag"
+        rm -f "$socket_file"
+        rm -f "$QUEUE_DIR/$tag.queue" 2>/dev/null
+        rm -f "$SOCKET_DIR/$tag.meta" 2>/dev/null
+        rm -f "$SOCKET_DIR/$tag.signal" 2>/dev/null
+        rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
+        rmdir "$SOCKET_DIR/$tag.server.lock" 2>/dev/null
+        ((removed_count++))
+    done
+fi
+
+# Second pass: orphaned .client.lock files whose socket is gone
+if [ -d "$SOCKET_DIR" ]; then
+    for lock_file in "$SOCKET_DIR"/*.client.lock; do
+        [ -e "$lock_file" ] || continue
+        tag=$(basename "$lock_file" .client.lock)
+        # If the socket still exists, the first pass already handled it
+        [ -S "$SOCKET_DIR/$tag.sock" ] && continue
+        # No socket — check if the lock holder is still alive
+        pid=$(cat "$lock_file" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            continue  # Process still alive (unusual but don't touch it)
+        fi
+        echo "  Removing orphaned client lock: $tag"
+        rm -f "$lock_file"
+        ((removed_count++))
+    done
+fi
+
+# Third pass: orphaned .server.lock dirs whose socket is gone
+if [ -d "$SOCKET_DIR" ]; then
+    for lock_dir in "$SOCKET_DIR"/*.server.lock; do
+        [ -d "$lock_dir" ] || continue
+        tag=$(basename "$lock_dir" .server.lock)
+        [ -S "$SOCKET_DIR/$tag.sock" ] && continue
+        if ps aux | grep -E "leap-server.py $tag(\s|$)" | grep -v grep > /dev/null 2>&1; then
+            continue  # Server is starting up
+        fi
+        echo "  Removing orphaned server lock: $tag"
+        rmdir "$lock_dir" 2>/dev/null
+        ((removed_count++))
+    done
+fi
+
+# Orphaned Slack bot lock (no slack bot process running)
+SLACK_LOCK="$STORAGE_DIR/slack/slack-bot.lock"
+if [ -d "$SLACK_LOCK" ]; then
+    if ! ps aux | grep "leap-slack.py" | grep -v grep > /dev/null 2>&1; then
+        echo "  Removing orphaned Slack bot lock"
+        rmdir "$SLACK_LOCK" 2>/dev/null
+        ((removed_count++))
+    fi
+fi
+
+echo ""
+if [ $removed_count -eq 0 ]; then
+    echo "✓ No dead sessions found"
+else
+    echo "✓ Removed $removed_count dead session(s)"
+fi

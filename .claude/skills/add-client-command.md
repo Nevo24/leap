@@ -1,10 +1,10 @@
 # Add a New Client Command
 
-When adding a new client command to ClaudeQ, update ALL of these locations to keep them in sync.
+When adding a new client command to Leap, update ALL of these locations to keep them in sync.
 
 ## Files to Update
 
-### 1. Command Handler — `src/claudeq/client/client.py`
+### 1. Command Handler — `src/leap/client/client.py`
 
 **`_process_command()` method** — Add the command logic:
 
@@ -52,7 +52,7 @@ Update the Client Commands table (includes emoji):
 | 🔮 `!mycmd <arg>` or `!mycommand <arg>` | Description here |
 ```
 
-### 4. Shell Help — `src/scripts/claudeq-main.sh`
+### 4. Shell Help — `src/scripts/leap-main.sh`
 
 Update the CLIENT COMMANDS section:
 
@@ -66,7 +66,7 @@ Update the CLIENT COMMANDS section:
 - [ ] `client.py` `_print_commands_help()` — help list entry with 2-col-wide emoji
 - [ ] `CLAUDE.md` — command table
 - [ ] `README.md` — command table with emoji
-- [ ] `src/scripts/claudeq-main.sh` — help text
+- [ ] `src/scripts/leap-main.sh` — help text
 - [ ] Test alignment in JetBrains terminal
 - [ ] Test alignment in iTerm2 / Terminal.app
 - [ ] Test `!h` command shows the new entry correctly

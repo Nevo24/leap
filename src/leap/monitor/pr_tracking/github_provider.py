@@ -1,0 +1,552 @@
+"""GitHub provider for PR tracking."""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+
+from github import Github, GithubException
+
+from leap.monitor.pr_tracking.base import PRDetails, PRState, PRStatus, SCMProvider, UserNotification
+from leap.monitor.pr_tracking.leap_command import CqCommand
+
+logger = logging.getLogger(__name__)
+
+LEAP_BOT_PREFIX = "[Leap bot]"
+LEAP_ACK_MESSAGE = f"{LEAP_BOT_PREFIX} on it!"
+LEAP_NO_SESSION_MESSAGE = f"{LEAP_BOT_PREFIX} No matching Leap session found for this project."
+
+
+class GitHubProvider(SCMProvider):
+    """GitHub provider with review thread tracking."""
+
+    def __init__(self, token: str, username: str, github_url: Optional[str] = None,
+                 filter_bots: bool = True) -> None:
+        # Normalize: treat github.com URLs as default (PyGithub needs api.github.com)
+        base_url = github_url or ''
+        if base_url:
+            stripped = base_url.lower().rstrip('/')
+            if stripped in ('https://github.com', 'http://github.com', 'github.com'):
+                base_url = ''
+        if base_url:
+            self._gh = Github(login_or_token=token, base_url=base_url, timeout=15)
+        else:
+            self._gh = Github(login_or_token=token, timeout=15)
+        self._token = token
+        self._username = username
+        self._filter_bots = filter_bots
+        self._repo_cache: dict[str, object] = {}
+        # Caches to avoid phantom state changes on transient API failures
+        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str]]] = {}
+        self._status_cache: dict[tuple[str, str], PRStatus] = {}
+
+    def test_connection(self) -> tuple[bool, str]:
+        try:
+            user = self._gh.get_user()
+            return True, user.login
+        except Exception as e:
+            return False, str(e)
+
+    def get_username(self) -> Optional[str]:
+        return self._username
+
+    def _get_repo(self, project_path: str):
+        """Get a GitHub repo object, with caching."""
+        if project_path in self._repo_cache:
+            return self._repo_cache[project_path]
+        try:
+            repo = self._gh.get_repo(project_path)
+            self._repo_cache[project_path] = repo
+            return repo
+        except Exception:
+            logger.debug("Failed to get repo: %s", project_path)
+            return None
+
+    def get_pr_details(self, project_path: str, pr_iid: int) -> Optional[PRDetails]:
+        repo = self._get_repo(project_path)
+        if not repo:
+            return None
+        try:
+            pr = repo.get_pull(pr_iid)
+            branch_deleted = False
+            try:
+                repo.get_branch(pr.head.ref)
+            except Exception:
+                branch_deleted = True
+            return PRDetails(
+                source_branch=pr.head.ref,
+                pr_title=pr.title,
+                pr_url=pr.html_url,
+                source_branch_deleted=branch_deleted,
+            )
+        except Exception:
+            logger.debug("Failed to get PR #%s in %s", pr_iid, project_path)
+            return None
+
+    def get_pr_status(self, project_path: str, branch: str) -> PRStatus:
+        cache_key = (project_path, branch)
+        repo = self._get_repo(project_path)
+        if not repo:
+            return PRStatus(state=PRState.NO_PR)
+
+        try:
+            pulls = repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}')
+            if pulls.totalCount == 0:
+                return PRStatus(state=PRState.NO_PR)
+            pr = pulls[0]
+        except Exception:
+            logger.debug("Failed to list PRs for %s branch %s", project_path, branch)
+            return PRStatus(state=PRState.NO_PR)
+        pr_number = pr.number
+        pr_url = pr.html_url
+        pr_title = pr.title
+
+        # Check approval status
+        approval_failed = False
+        approved = False
+        approved_by: list[str] = []
+        try:
+            reviews = list(pr.get_reviews())
+            # Track latest review state per reviewer
+            latest_reviews: dict[str, str] = {}
+            for review in reviews:
+                if review.user and review.state in ('APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'):
+                    latest_reviews[review.user.login] = review.state
+            for reviewer, state in latest_reviews.items():
+                if state == 'APPROVED':
+                    approved = True
+                    approved_by.append(reviewer)
+            self._approval_cache[cache_key] = (approved, list(approved_by))
+        except Exception:
+            logger.debug("Failed to fetch review status for PR #%s", pr_number)
+            approval_failed = True
+            cached_approval = self._approval_cache.get(cache_key)
+            if cached_approval is not None:
+                approved, approved_by = cached_approval[0], list(cached_approval[1])
+
+        # Count unresponded review comment threads
+        try:
+            unresponded, first_comment_id = self._count_unresponded_threads(repo, pr)
+        except Exception:
+            logger.debug("Failed to count unresponded threads for PR #%s", pr_number)
+            cached = self._status_cache.get(cache_key)
+            if cached is not None:
+                if not approval_failed:
+                    return PRStatus(
+                        state=cached.state,
+                        unresponded_count=cached.unresponded_count,
+                        pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
+                        first_unresponded_note_id=cached.first_unresponded_note_id,
+                        approved=approved, approved_by=approved_by or None,
+                    )
+                return cached
+            return PRStatus(
+                state=PRState.ALL_RESPONDED,
+                pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
+                approved=approved, approved_by=approved_by or None,
+            )
+
+        if unresponded > 0:
+            result = PRStatus(
+                state=PRState.UNRESPONDED,
+                unresponded_count=unresponded,
+                pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
+                first_unresponded_note_id=first_comment_id,
+                approved=approved, approved_by=approved_by or None,
+            )
+        else:
+            result = PRStatus(
+                state=PRState.ALL_RESPONDED,
+                pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
+                approved=approved, approved_by=approved_by or None,
+            )
+
+        self._status_cache[cache_key] = result
+        return result
+
+    def _count_unresponded_threads(self, repo, pr) -> tuple[int, Optional[int]]:
+        """Count unresponded review comment threads on a PR.
+
+        Returns (count, first_unresponded_comment_id).
+        """
+        comments = list(pr.get_review_comments())
+        if not comments:
+            return 0, None
+
+        # Group comments into threads by in_reply_to_id
+        threads = self._group_into_threads(comments)
+
+        unresponded = 0
+        first_comment_id: Optional[int] = None
+        for thread_comments in threads.values():
+            if self._is_unresponded_thread(thread_comments):
+                unresponded += 1
+                if first_comment_id is None:
+                    first_comment_id = thread_comments[0].id
+
+        return unresponded, first_comment_id
+
+    def _group_into_threads(self, comments: list) -> dict[int, list]:
+        """Group review comments into threads.
+
+        Each thread is keyed by the root comment ID.
+        """
+        threads: dict[int, list] = {}
+        for comment in comments:
+            reply_to = comment.in_reply_to_id
+            if reply_to:
+                # This is a reply — add to existing thread
+                if reply_to in threads:
+                    threads[reply_to].append(comment)
+                else:
+                    # Root comment might not be in threads yet; create thread
+                    threads[reply_to] = [comment]
+            else:
+                # Root comment
+                if comment.id not in threads:
+                    threads[comment.id] = [comment]
+                else:
+                    threads[comment.id].insert(0, comment)
+
+        return threads
+
+    def _is_unresponded_thread(self, comments: list) -> bool:
+        """Check if a thread of review comments is unresponded.
+
+        A thread is "unresponded" if:
+        - It has comments from someone other than the user
+        - The last human comment is from someone else (user hasn't replied after it)
+        """
+        # Filter out bot comments if enabled
+        human_comments = [
+            c for c in comments
+            if not c.user or (not self._filter_bots or c.user.type != 'Bot')
+        ]
+        if not human_comments:
+            return False
+
+        # Check if only the user commented
+        other_comments = [
+            c for c in human_comments
+            if c.user and c.user.login != self._username
+        ]
+        if not other_comments:
+            return False
+
+        # Find the last comment by someone other than the user
+        last_other_idx = -1
+        for i, comment in enumerate(human_comments):
+            if comment.user and comment.user.login != self._username:
+                last_other_idx = i
+
+        # Check if user replied after the last other person's comment
+        # (/leap commands don't count as a real reply)
+        for comment in human_comments[last_other_idx + 1:]:
+            if comment.user and comment.user.login == self._username \
+                    and (comment.body or '').strip() != '/leap':
+                return False
+
+        return True
+
+    def scan_leap_commands(self, project_path: str, branch: str) -> list[CqCommand]:
+        """Scan open PRs for /leap commands from the configured user."""
+        repo = self._get_repo(project_path)
+        if not repo:
+            return []
+
+        try:
+            pulls = list(repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}'))
+        except Exception:
+            logger.debug("Failed to list PRs for /leap scan: %s branch %s", project_path, branch)
+            return []
+
+        commands: list[CqCommand] = []
+        for pr in pulls:
+            try:
+                comments = list(pr.get_review_comments())
+            except Exception:
+                logger.debug("Failed to fetch review comments for PR #%s", pr.number)
+                continue
+
+            threads = self._group_into_threads(comments)
+            for root_id, thread_comments in threads.items():
+                cmd = self._check_thread_for_leap(
+                    repo, project_path, pr, root_id, thread_comments, branch
+                )
+                if cmd:
+                    commands.append(cmd)
+
+        return commands
+
+    def _check_thread_for_leap(
+        self, repo, project_path: str, pr, root_id: int,
+        thread_comments: list, branch: str
+    ) -> Optional[CqCommand]:
+        """Check a single review comment thread for a /leap trigger."""
+        if not thread_comments:
+            return None
+
+        # Find the last /leap trigger and last bot acknowledgment.
+        # An ack only covers /leap commands that appear before it.
+        last_leap_index = -1
+        last_ack_index = -1
+        for i, comment in enumerate(thread_comments):
+            body = (comment.body or '').strip()
+            author = comment.user.login if comment.user else ''
+            if body == '/leap' and author == self._username:
+                last_leap_index = i
+            if LEAP_ACK_MESSAGE in (comment.body or ''):
+                last_ack_index = i
+
+        if last_leap_index < 0 or last_leap_index < last_ack_index:
+            return None
+
+        # Extract thread notes (excluding bot comments)
+        thread_notes = []
+        for comment in thread_comments:
+            author = comment.user.login if comment.user else ''
+            thread_notes.append({
+                'author': author,
+                'body': comment.body or '',
+                'created_at': str(comment.created_at) if comment.created_at else '',
+            })
+
+        # Extract code context from the first comment's position
+        file_path = None
+        old_line = None
+        new_line = None
+        code_snippet = None
+
+        first_comment = thread_comments[0]
+        file_path = first_comment.path
+        new_line = first_comment.line or first_comment.original_line
+        old_line = first_comment.original_line
+
+        if file_path:
+            code_snippet = self._fetch_code_snippet(
+                repo, file_path, branch, new_line or old_line
+            )
+
+        return CqCommand(
+            project_path=project_path,
+            pr_iid=pr.number,
+            pr_title=pr.title,
+            pr_url=pr.html_url,
+            discussion_id=str(root_id),
+            thread_notes=thread_notes,
+            file_path=file_path,
+            old_line=old_line,
+            new_line=new_line,
+            code_snippet=code_snippet,
+        )
+
+    def _fetch_code_snippet(
+        self, repo, file_path: str, branch: str, target_line: Optional[int]
+    ) -> Optional[str]:
+        """Fetch a code snippet around the target line from GitHub."""
+        if not target_line:
+            return None
+        try:
+            content_file = repo.get_contents(file_path, ref=branch)
+            content = content_file.decoded_content.decode('utf-8')
+            lines = content.splitlines()
+
+            # Extract ~5 lines around target (2 before, target, 2 after)
+            start = max(0, target_line - 3)
+            end = min(len(lines), target_line + 2)
+            return "\n".join(lines[start:end])
+        except Exception:
+            logger.debug("Failed to fetch code snippet for %s:%s", file_path, target_line)
+            return None
+
+    def acknowledge_leap_command(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
+        """Post '[Leap bot] on it!' reply to the review comment thread."""
+        repo = self._get_repo(project_path)
+        if not repo:
+            return False
+        try:
+            pr = repo.get_pull(pr_iid)
+            # Reply to the root comment of the thread
+            root_comment = pr.get_review_comment(int(discussion_id))
+            pr.create_review_comment_reply(root_comment.id, LEAP_ACK_MESSAGE)
+            return True
+        except Exception:
+            logger.debug("Failed to acknowledge /leap on PR #%s thread %s",
+                         pr_iid, discussion_id, exc_info=True)
+            return False
+
+    def report_no_session(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
+        """Post error reply when no matching Leap session is found."""
+        repo = self._get_repo(project_path)
+        if not repo:
+            return False
+        try:
+            pr = repo.get_pull(pr_iid)
+            root_comment = pr.get_review_comment(int(discussion_id))
+            pr.create_review_comment_reply(root_comment.id, LEAP_NO_SESSION_MESSAGE)
+            return True
+        except Exception:
+            logger.debug("Failed to post no-session reply on PR #%s thread %s",
+                         pr_iid, discussion_id, exc_info=True)
+            return False
+
+    def supports_notifications(self) -> bool:
+        return True
+
+    def get_user_notifications(self) -> list[UserNotification]:
+        """Fetch pending GitHub notifications as user notifications."""
+        try:
+            raw = self._gh.get_user().get_notifications(all=False)
+            # Slice to at most 50
+            items = []
+            for i, n in enumerate(raw):
+                if i >= 50:
+                    break
+                items.append(n)
+        except Exception as exc:
+            # Let 403 propagate so the poll worker can detect auth errors
+            status_code = getattr(exc, 'status', None)
+            if status_code == 403:
+                raise
+            logger.debug("Failed to fetch GitHub notifications", exc_info=True)
+            return []
+
+        notifications: list[UserNotification] = []
+        for n in items:
+            reason = self._normalize_github_reason(n.reason or '')
+            subject = n.subject
+            title = (subject.title or '') if subject else ''
+            target_url = self._resolve_notification_url(n)
+            repo = n.repository
+
+            notifications.append(UserNotification(
+                id=str(n.id),
+                scm_type='github',
+                reason=reason,
+                title=title,
+                target_url=target_url,
+                project_name=repo.full_name if repo else '',
+                created_at=str(n.updated_at) if n.updated_at else '',
+            ))
+        return notifications
+
+    @staticmethod
+    def _normalize_github_reason(reason: str) -> str:
+        """Normalize a GitHub notification reason to a standard reason."""
+        reason = reason.lower()
+        if reason == 'review_requested':
+            return 'review_requested'
+        elif reason == 'assign':
+            return 'assigned'
+        elif reason in ('mention', 'team_mention'):
+            return 'mentioned'
+        return 'other'
+
+    @staticmethod
+    def _resolve_notification_url(notification) -> str:
+        """Convert a GitHub notification's API URL to an HTML URL."""
+        subject = notification.subject
+        if not subject:
+            return ''
+        api_url = subject.url or ''
+        if not api_url:
+            return ''
+        # Convert API URL to HTML URL:
+        # github.com:  https://api.github.com/repos/owner/repo/pulls/123
+        #           -> https://github.com/owner/repo/pull/123
+        # GHE:        https://ghe.example.com/api/v3/repos/owner/repo/pulls/123
+        #           -> https://ghe.example.com/owner/repo/pull/123
+        try:
+            # Handle github.com API URLs
+            url = api_url.replace('https://api.github.com/repos/', 'https://github.com/')
+            # Handle GitHub Enterprise API URLs (/api/v3/repos/)
+            if '/api/v3/repos/' in url:
+                url = url.replace('/api/v3/repos/', '/')
+            url = url.replace('/pulls/', '/pull/')
+            return url
+        except Exception:
+            return ''
+
+    def collect_unresponded_threads(self, project_path: str, branch: str) -> list[CqCommand]:
+        """Collect all unresponded review comment threads from a PR as CqCommand objects."""
+        repo = self._get_repo(project_path)
+        if not repo:
+            return []
+
+        try:
+            pulls = list(repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}'))
+        except Exception:
+            logger.debug("Failed to list PRs for collect_unresponded: %s branch %s",
+                         project_path, branch)
+            return []
+
+        if not pulls:
+            return []
+
+        pr = pulls[0]
+        try:
+            comments = list(pr.get_review_comments())
+        except Exception:
+            logger.debug("Failed to fetch review comments for PR #%s", pr.number)
+            return []
+
+        threads = self._group_into_threads(comments)
+
+        commands: list[CqCommand] = []
+        for root_id, thread_comments in threads.items():
+            if not self._is_unresponded_thread(thread_comments):
+                continue
+
+            cmd = self._build_leap_command_from_thread(
+                repo, project_path, pr, root_id, thread_comments, branch
+            )
+            if cmd:
+                commands.append(cmd)
+
+        return commands
+
+    def _build_leap_command_from_thread(
+        self, repo, project_path: str, pr, root_id: int,
+        thread_comments: list, branch: str
+    ) -> Optional[CqCommand]:
+        """Build a CqCommand from an unresponded review comment thread."""
+        if not thread_comments:
+            return None
+
+        thread_notes = []
+        for comment in thread_comments:
+            author = comment.user.login if comment.user else ''
+            thread_notes.append({
+                'author': author,
+                'body': comment.body or '',
+                'created_at': str(comment.created_at) if comment.created_at else '',
+            })
+
+        # Extract code context from the first comment
+        file_path = None
+        old_line = None
+        new_line = None
+        code_snippet = None
+
+        first_comment = thread_comments[0]
+        file_path = first_comment.path
+        new_line = first_comment.line or first_comment.original_line
+        old_line = first_comment.original_line
+
+        if file_path:
+            code_snippet = self._fetch_code_snippet(
+                repo, file_path, branch, new_line or old_line
+            )
+
+        return CqCommand(
+            project_path=project_path,
+            pr_iid=pr.number,
+            pr_title=pr.title,
+            pr_url=pr.html_url,
+            discussion_id=str(root_id),
+            thread_notes=thread_notes,
+            file_path=file_path,
+            old_line=old_line,
+            new_line=new_line,
+            code_snippet=code_snippet,
+        )

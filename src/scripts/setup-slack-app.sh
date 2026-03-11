@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Interactive Slack app setup wizard for ClaudeQ.
+# Interactive Slack app setup wizard for Leap.
 #
 # Usage: setup-slack-app.sh <REPO_PATH>
 #
@@ -19,7 +19,7 @@ NC='\033[0m'
 
 echo ""
 echo "╔═══════════════════════════════════════╗"
-echo "║     ClaudeQ Slack App Setup Wizard    ║"
+echo "║     Leap Slack App Setup Wizard    ║"
 echo "╚═══════════════════════════════════════╝"
 echo ""
 
@@ -50,7 +50,7 @@ echo ""
 
 MANIFEST='{
   "display_information": {
-    "name": "ClaudeQ",
+    "name": "Leap",
     "description": "Bidirectional Claude Code integration",
     "background_color": "#2c2c2c"
   },
@@ -61,7 +61,7 @@ MANIFEST='{
       "messages_tab_read_only_enabled": false
     },
     "bot_user": {
-      "display_name": "ClaudeQ",
+      "display_name": "Leap",
       "always_online": true
     }
   },
@@ -192,11 +192,11 @@ echo "Step 4: Your Slack Member ID"
 echo "────────────────────────────"
 echo ""
 echo -e "  ${YELLOW}IMPORTANT: Use the SAME workspace where you installed"
-echo -e "  the ClaudeQ app! If you have multiple workspaces,"
+echo -e "  the Leap app! If you have multiple workspaces,"
 echo -e "  switch to the correct one first.${NC}"
 echo ""
 echo "  1. Open the Slack app (desktop or web)"
-echo "     Make sure you're on the workspace where ClaudeQ is installed"
+echo "     Make sure you're on the workspace where Leap is installed"
 echo ""
 echo "  2. Click your profile picture (bottom-left of the sidebar)"
 echo "     then click  \"Profile\""
@@ -281,6 +281,6 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║       Slack app configured!           ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════╝${NC}"
 echo ""
-echo "To start the bot:  cq --slack"
+echo "To start the bot:  claudel --slack"
 echo "To enable Slack on a session:  !slack on"
 echo ""

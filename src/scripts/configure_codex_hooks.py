@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Configure Codex CLI hooks for ClaudeQ state detection.
+"""Configure Codex CLI hooks for Leap state detection.
 
-Merges ClaudeQ hook entries into ~/.codex/hooks.json so that
-Codex calls claudeq-hook.sh on Stop events.
+Merges Leap hook entries into ~/.codex/hooks.json so that
+Codex calls leap-hook.sh on Stop events.
 
 Codex hook format:
     { "Stop": [{ "hooks": [{ "type": "command", "command": "...", "timeout": 60 }] }] }
@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 CODEX_HOOKS_FILE = Path.home() / ".codex" / "hooks.json"
-HOOK_MARKER = "claudeq-hook.sh"
+HOOK_MARKER = "leap-hook.sh"
 
 
 def _load_hooks() -> dict:
@@ -53,8 +53,8 @@ def _make_entry(hook_path: str, state: str) -> dict:
     }
 
 
-def _is_claudeq_entry(entry: dict) -> bool:
-    """Check if a hook entry belongs to ClaudeQ."""
+def _is_leap_entry(entry: dict) -> bool:
+    """Check if a hook entry belongs to Leap."""
     for h in entry.get("hooks", []):
         if HOOK_MARKER in h.get("command", ""):
             return True
@@ -62,14 +62,14 @@ def _is_claudeq_entry(entry: dict) -> bool:
 
 
 def _upsert_entries(hooks_list: list, new_entries: list) -> list:
-    """Remove all existing ClaudeQ entries and append new ones."""
-    cleaned = [e for e in hooks_list if not _is_claudeq_entry(e)]
+    """Remove all existing Leap entries and append new ones."""
+    cleaned = [e for e in hooks_list if not _is_leap_entry(e)]
     cleaned.extend(new_entries)
     return cleaned
 
 
 def configure_hooks(hook_path: str) -> None:
-    """Merge ClaudeQ hook entries into Codex hooks."""
+    """Merge Leap hook entries into Codex hooks."""
     hooks = _load_hooks()
 
     # Stop hook → writes "idle" state
@@ -84,7 +84,7 @@ def configure_hooks(hook_path: str) -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: configure_codex_hooks.py <path-to-claudeq-hook.sh>")
+        print("Usage: configure_codex_hooks.py <path-to-leap-hook.sh>")
         sys.exit(1)
 
     hook_path = sys.argv[1]

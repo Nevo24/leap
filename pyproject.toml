@@ -1,12 +1,12 @@
 [tool.poetry]
-name = "claudeq"
+name = "leap"
 version = "1.0.0"
 description = "Multi-session Claude Code with message queueing and image support"
 authors = ["Nevo Mashiach"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/nevo24/claudeq"
-repository = "https://github.com/nevo24/claudeq"
+homepage = "https://github.com/nevo24/leap"
+repository = "https://github.com/nevo24/leap"
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -37,11 +37,11 @@ slack-bolt = "^1.18"
 slack-sdk = "^3.27"
 
 [tool.poetry.scripts]
-cq = "claudeq.main:main"
-cq-server = "claudeq.server.server:main"
-cq-client = "claudeq.client.client:main"
-cq-monitor = "claudeq.monitor.app:main"
-cq-slack = "claudeq.slack.bot:main"
+claudel = "leap.main:main"
+leap-server = "leap.server.server:main"
+leap-client = "leap.client.client:main"
+leap-monitor = "leap.monitor.app:main"
+leap-slack = "leap.slack.bot:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

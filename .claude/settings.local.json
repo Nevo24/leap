@@ -10,8 +10,6 @@
       "Bash(source:*)",
       "Bash(pip install:*)",
       "Bash(python -c:*)",
-      "Bash(/Users/Nevo.Mashiach/Library/Caches/pypoetry/virtualenvs/claudeq-9gU99MCw-py3.10/bin/python -m pip install pyfiglet -q)",
-      "Bash(/Users/Nevo.Mashiach/Library/Caches/pypoetry/virtualenvs/claudeq-9gU99MCw-py3.10/bin/python << 'EOF'\nimport pyfiglet\nfonts = ['standard', 'slant', 'banner', 'big', 'block']\nfor font in fonts:\n    print\\(f\"\\\\n=== {font.upper\\(\\)} ===\"\\)\n    print\\(pyfiglet.figlet_format\\('ClaudeQ', font=font\\)\\)\nEOF)",
       "Bash(/tmp/font_test.sh:*)",
       "Bash(chmod:*)",
       "Bash(python3:*)",
@@ -21,8 +19,8 @@
       "Bash(/tmp/tab_test.sh)",
       "Bash(poetry show:*)",
       "Bash(echo:*)",
-      "Bash(bash -c 'export CLAUDEQ_PROJECT_DIR=\"\"/Users/Nevo.Mashiach/workspace/claudeq\"\"; $CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh --debug-python')",
-      "Bash(/Users/Nevo.Mashiach/workspace/claudeq/src/scripts/claudeq-main.sh:*)",
+      "Bash(bash -c 'export LEAP_PROJECT_DIR=\"\"/Users/Nevo.Mashiach/workspace/claudeq\"\"; $LEAP_PROJECT_DIR/src/scripts/leap-main.sh --debug-python')",
+      "Bash(/Users/Nevo.Mashiach/workspace/claudeq/src/scripts/leap-main.sh:*)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:www.jeffquast.com)",
       "WebFetch(domain:wcwidth.readthedocs.io)",
@@ -37,7 +35,7 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(poetry run pytest tests/ -v 2>&1 | tail -5)",
-      "Bash(grep -n \"_merge_sessions\" src/claudeq/monitor/_mixins/*.py)"
+      "Bash(grep -n \"_merge_sessions\" src/leap/monitor/_mixins/*.py)"
     ]
   }
 }

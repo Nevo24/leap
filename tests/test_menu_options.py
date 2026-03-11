@@ -5,7 +5,7 @@ both the server (select_option/custom_answer handlers) and the monitor
 
 import pytest
 
-from claudeq.server.server import _extract_menu_options
+from leap.server.server import _extract_menu_options
 
 
 class TestExtractMenuOptions:

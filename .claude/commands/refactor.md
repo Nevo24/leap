@@ -62,7 +62,7 @@ Perform a comprehensive codebase refactor, bug-fix sweep, and documentation sync
   - Functions: `process_message()`
   - Variables: `queue_manager`
   - Files: `socket_handler.py`
-- Class names: `PascalCase` (e.g., `ClaudeQServer`)
+- Class names: `PascalCase` (e.g., `LeapServer`)
 - Constants: `UPPER_SNAKE_CASE` (e.g., `QUEUE_DIR`)
 
 ### Code Style

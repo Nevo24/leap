@@ -1,0 +1,26 @@
+{
+  "name": "leap-terminal-selector",
+  "displayName": "Leap Terminal Selector",
+  "description": "Allows Leap Monitor to select terminal tabs by name",
+  "version": "1.2.1",
+  "publisher": "leap",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "leap.selectTerminal",
+        "title": "Leap: Select Terminal by Name"
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nevo24/leap"
+  },
+  "license": "MIT"
+}

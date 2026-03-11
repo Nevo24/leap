@@ -1,1 +1,0 @@
-"""ClaudeQ Slack integration package."""

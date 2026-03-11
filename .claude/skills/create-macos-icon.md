@@ -1,6 +1,6 @@
 # Create macOS App Icon
 
-Convert a PNG image to a proper macOS .icns icon file for ClaudeQ Monitor.
+Convert a PNG image to a proper macOS .icns icon file for Leap Monitor.
 
 ## Prerequisites
 
@@ -28,33 +28,33 @@ This method ensures:
 ### 2. Create Icon Set
 
 ```bash
-cd /Users/Nevo.Mashiach/workspace/claudeq/assets
+cd /Users/Nevo.Mashiach/workspace/leap/assets
 
 # Copy your extracted image
-cp ~/Downloads/your-extracted-image.png claudeq-icon.png
+cp ~/Downloads/your-extracted-image.png leap-icon.png
 
 # Create iconset directory
-rm -rf claudeq-icon.iconset
-mkdir claudeq-icon.iconset
+rm -rf leap-icon.iconset
+mkdir leap-icon.iconset
 
 # Generate all required sizes
 for size in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" "128 128x128" "256 128x128@2x" "256 256x256" "512 256x256@2x" "512 512x512" "1024 512x512@2x"; do
   pixels=$(echo $size | cut -d' ' -f1)
   name=$(echo $size | cut -d' ' -f2)
-  magick claudeq-icon.png -resize ${pixels}x${pixels} "claudeq-icon.iconset/icon_${name}.png"
+  magick leap-icon.png -resize ${pixels}x${pixels} "leap-icon.iconset/icon_${name}.png"
 done
 
 # Convert to ICNS
-iconutil -c icns claudeq-icon.iconset
+iconutil -c icns leap-icon.iconset
 
 # Cleanup
-rm -rf claudeq-icon.iconset
+rm -rf leap-icon.iconset
 ```
 
 ### 3. Install and Clear Cache
 
 ```bash
-cd /Users/Nevo.Mashiach/workspace/claudeq
+cd /Users/Nevo.Mashiach/workspace/leap
 
 # Rebuild app
 make install-monitor
@@ -67,7 +67,7 @@ killall Dock
 
 ## Alternative: Full-Bleed Icon (No Transparency Needed)
 
-If your icon fills the entire canvas edge-to-edge (like the current ClaudeQ space icon), you don't need transparency - macOS will apply its own rounded mask.
+If your icon fills the entire canvas edge-to-edge (like the current Leap space icon), you don't need transparency - macOS will apply its own rounded mask.
 
 Just ensure the image is square (1024x1024 recommended) and follow steps 2-3 above.
 
@@ -126,13 +126,13 @@ macOS .icns format requires these sizes:
 ```bash
 # Full workflow after extracting via Photos "Copy Subject"
 cd assets
-cp ~/Downloads/extracted-icon.png claudeq-icon.png
-rm -rf claudeq-icon.iconset && mkdir claudeq-icon.iconset
+cp ~/Downloads/extracted-icon.png leap-icon.png
+rm -rf leap-icon.iconset && mkdir leap-icon.iconset
 for size in "16 16x16" "32 16x16@2x" "32 32x32" "64 32x32@2x" "128 128x128" "256 128x128@2x" "256 256x256" "512 256x256@2x" "512 512x512" "1024 512x512@2x"; do
   pixels=$(echo $size | cut -d' ' -f1); name=$(echo $size | cut -d' ' -f2)
-  magick claudeq-icon.png -resize ${pixels}x${pixels} "claudeq-icon.iconset/icon_${name}.png"
+  magick leap-icon.png -resize ${pixels}x${pixels} "leap-icon.iconset/icon_${name}.png"
 done
-iconutil -c icns claudeq-icon.iconset && rm -rf claudeq-icon.iconset
+iconutil -c icns leap-icon.iconset && rm -rf leap-icon.iconset
 
 # Install and clear cache
 cd .. && make install-monitor

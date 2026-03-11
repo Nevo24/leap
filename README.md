@@ -1,4 +1,4 @@
-# ClaudeQ
+# Leap
 
 **A queueing system and dashboard for managing multiple Claude CLI sessions.**
 
@@ -8,8 +8,8 @@ Run Claude Code in any terminal (JetBrains, VS Code, iTerm2, and more). Queue me
 
 - **Smart message queueing** — Auto-sends when Claude is ready
 - **Real-time GUI monitoring** — See all sessions, jump across IDEs and projects
-- **PR tracking** — GitLab & GitHub thread detection with `/cq` command support
-- **Slack integration** — Bidirectional messaging between Slack and CQ sessions
+- **PR tracking** — GitLab & GitHub thread detection with `/leap` command support
+- **Slack integration** — Bidirectional messaging between Slack and Leap sessions
 
 ## Installation
 
@@ -18,26 +18,26 @@ Run Claude Code in any terminal (JetBrains, VS Code, iTerm2, and more). Queue me
 **Prerequisites:** Python 3.11+, [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
 
 ```bash
-git clone https://github.com/nevo24/claudeq.git
-cd claudeq
+git clone https://github.com/nevo24/leap.git
+cd leap
 make install
 source ~/.zshrc  # or ~/.bashrc
 ```
 
-Already installed? Run `claudeq --update` to pull the latest version and rebuild.
+Already installed? Run `leap --update` to pull the latest version and rebuild.
 
 ## Usage
 
-Just run `cq <tag>` instead of `claude` — that's it! ClaudeQ wraps Claude Code with queueing and session tracking.
+Just run `claudel <tag>` instead of `claude` — that's it! Leap wraps Claude Code with queueing and session tracking.
 
 ```bash
-cq my-feature      # First run starts the server (Claude runs here)
-cq my-feature      # Second run connects a client (queue messages here)
+claudel my-feature      # First run starts the server (Claude runs here)
+claudel my-feature      # Second run connects a client (queue messages here)
 ```
 
-The **Monitor** is a native macOS app installed alongside ClaudeQ. Just open it from your Applications folder or Spotlight to see all your sessions at a glance:
+The **Monitor** is a native macOS app installed alongside Leap. Just open it from your Applications folder or Spotlight to see all your sessions at a glance:
 
-![ClaudeQ Monitor](assets/claudeq-monitor.png)
+![Leap Monitor](assets/leap-monitor.png)
 
 ## License
 
@@ -45,4 +45,4 @@ MIT License - see [LICENSE](LICENSE)
 
 ---
 
-**Links:** [GitHub](https://github.com/nevo24/claudeq) • [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+**Links:** [GitHub](https://github.com/nevo24/leap) • [Claude Code](https://docs.anthropic.com/en/docs/claude-code)

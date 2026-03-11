@@ -45,7 +45,7 @@ build/
 .dist/
 
 # VS Code extension packaging
-src/claudeq/vscode-extension/*.vsix
+src/leap/vscode-extension/*.vsix
 
 # Storage directory (user data: settings, queues, history, sockets)
 .storage/

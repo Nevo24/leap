@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Configure Claude Code hooks for ClaudeQ state detection.
+"""Configure Claude Code hooks for Leap state detection.
 
-Merges ClaudeQ hook entries into ~/.claude/settings.json so that
-Claude Code calls claudeq-hook.sh on Stop and Notification events.
+Merges Leap hook entries into ~/.claude/settings.json so that
+Claude Code calls leap-hook.sh on Stop and Notification events.
 
 Hook entries use the nested format required by Claude Code:
     {matcher: "...", hooks: [{type: "command", command: "..."}]}
 
 Three entries are created:
-    Stop           -> claudeq-hook.sh idle
-    Notification   -> claudeq-hook.sh needs_permission  (matcher: permission_prompt)
-    Notification   -> claudeq-hook.sh has_question       (matcher: elicitation_dialog)
+    Stop           -> leap-hook.sh idle
+    Notification   -> leap-hook.sh needs_permission  (matcher: permission_prompt)
+    Notification   -> leap-hook.sh has_question       (matcher: elicitation_dialog)
 """
 
 import json
@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
-HOOK_MARKER = "claudeq-hook.sh"
+HOOK_MARKER = "leap-hook.sh"
 
 
 def _load_settings() -> dict:
@@ -57,8 +57,8 @@ def _make_entry(hook_path: str, state: str, matcher: str = "") -> dict:
     return entry
 
 
-def _is_claudeq_entry(entry: dict) -> bool:
-    """Check if a hook entry belongs to ClaudeQ."""
+def _is_leap_entry(entry: dict) -> bool:
+    """Check if a hook entry belongs to Leap."""
     for h in entry.get("hooks", []):
         if HOOK_MARKER in h.get("command", ""):
             return True
@@ -66,17 +66,17 @@ def _is_claudeq_entry(entry: dict) -> bool:
 
 
 def _upsert_entries(hooks_list: list, new_entries: list) -> list:
-    """Remove all existing ClaudeQ entries and append new ones.
+    """Remove all existing Leap entries and append new ones.
 
-    Preserves all non-ClaudeQ entries (e.g. user's sound hooks).
+    Preserves all non-Leap entries (e.g. user's sound hooks).
     """
-    cleaned = [e for e in hooks_list if not _is_claudeq_entry(e)]
+    cleaned = [e for e in hooks_list if not _is_leap_entry(e)]
     cleaned.extend(new_entries)
     return cleaned
 
 
 def configure_hooks(hook_path: str) -> None:
-    """Merge ClaudeQ hook entries into Claude settings."""
+    """Merge Leap hook entries into Claude settings."""
     settings = _load_settings()
 
     if "hooks" not in settings:
@@ -104,7 +104,7 @@ def configure_hooks(hook_path: str) -> None:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: configure_claude_hooks.py <path-to-claudeq-hook.sh>")
+        print("Usage: configure_claude_hooks.py <path-to-leap-hook.sh>")
         sys.exit(1)
 
     hook_path = sys.argv[1]

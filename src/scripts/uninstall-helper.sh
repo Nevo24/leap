@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# ClaudeQ Uninstall Helper
+# Leap Uninstall Helper
 # Called by: make uninstall
 #
 set -e
@@ -32,12 +32,12 @@ remove_shell_config() {
         return
     fi
 
-    if ! grep -q "ClaudeQ Configuration" "$RC_FILE" 2>/dev/null; then
-        echo "  No ClaudeQ configuration found in $RC_FILE"
+    if ! grep -q "Leap Configuration" "$RC_FILE" 2>/dev/null; then
+        echo "  No Leap configuration found in $RC_FILE"
         return
     fi
 
-    echo -e "${YELLOW}⚠ ClaudeQ configuration found in $RC_FILE${NC}"
+    echo -e "${YELLOW}⚠ Leap configuration found in $RC_FILE${NC}"
     read -p "  Remove shell configuration? (y/N) " -n 1 -r REPLY
     echo
 
@@ -46,21 +46,21 @@ remove_shell_config() {
         cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
 
         # Remove config
-        if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
-            sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
-        elif grep -q "# ClaudeQ" "$RC_FILE"; then
-            sed -i.bak '/# ClaudeQ/,/# End ClaudeQ/d' "$RC_FILE"
-            sed -i.bak '/# ClaudeQ/,/^alias cq/d' "$RC_FILE"
+        if grep -q "Leap Configuration START" "$RC_FILE"; then
+            sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
+        elif grep -q "# Leap" "$RC_FILE"; then
+            sed -i.bak '/# Leap/,/# End Leap/d' "$RC_FILE"
+            sed -i.bak '/# Leap/,/^alias claudel/d' "$RC_FILE"
         fi
         rm -f "$RC_FILE.bak"
 
-        echo -e "${GREEN}✓ Removed ClaudeQ configuration from $RC_FILE${NC}"
+        echo -e "${GREEN}✓ Removed Leap configuration from $RC_FILE${NC}"
         echo "  Backup created: $RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
     else
         echo "  Skipped shell configuration removal."
         echo "  To manually remove later, delete lines between:"
-        echo "    '# ===== ClaudeQ Configuration START =====' and"
-        echo "    '# ===== ClaudeQ Configuration END ====='"
+        echo "    '# ===== Leap Configuration START =====' and"
+        echo "    '# ===== Leap Configuration END ====='"
     fi
 }
 

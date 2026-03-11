@@ -6,8 +6,8 @@ from typing import List
 
 import pytest
 
-from claudeq.server.state_tracker import ClaudeStateTracker
-from claudeq.utils.constants import OUTPUT_SILENCE_TIMEOUT
+from leap.server.state_tracker import ClaudeStateTracker
+from leap.utils.constants import OUTPUT_SILENCE_TIMEOUT
 
 
 # ---------------------------------------------------------------------------

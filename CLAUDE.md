@@ -1,4 +1,4 @@
-# ClaudeQ
+# Leap
 
 PTY-based client-server system for managing AI CLI sessions (Claude Code, OpenAI Codex) with message queueing, image support, and native IDE scrolling.
 
@@ -9,11 +9,10 @@ make install                # Install core
 make install-monitor        # Install GUI (optional)
 source ~/.zshrc             # Reload shell
 
-cq mytag                    # Terminal 1: Start Claude server
-cq mytag                    # Terminal 2: Connect client
+claudel mytag                    # Terminal 1: Start Claude server
+claudel mytag                    # Terminal 2: Connect client
 
-cc mytag                    # Start Codex server (alias for codexq)
-codexq mytag                # Same as: cq mytag --cli codex
+codexl mytag                # Start Codex server (same as: claudel mytag --cli codex)
 ```
 
 ## Project Structure
@@ -21,20 +20,20 @@ codexq mytag                # Same as: cq mytag --cli codex
 ```
 src/
 ├── scripts/                     # Entry point scripts
-│   ├── claudeq-main.sh          # Main launcher (called by 'cq' alias)
-│   ├── claudeq-cleanup.sh       # Dead session cleanup
-│   ├── claudeq-server.py        # Thin launcher → ClaudeQServer
-│   ├── claudeq-client.py        # Thin launcher → ClaudeQClient
-│   ├── claudeq-monitor.py       # Thin launcher → MonitorWindow
-│   ├── claudeq-slack.py         # Thin launcher → SlackBot
-│   ├── claudeq_monitor_launcher.py  # py2app entry point
+│   ├── leap-main.sh          # Main launcher (called by 'claudel' alias)
+│   ├── leap-cleanup.sh       # Dead session cleanup
+│   ├── leap-server.py        # Thin launcher → LeapServer
+│   ├── leap-client.py        # Thin launcher → LeapClient
+│   ├── leap-monitor.py       # Thin launcher → MonitorWindow
+│   ├── leap-slack.py         # Thin launcher → SlackBot
+│   ├── leap_monitor_launcher.py  # py2app entry point
 │   ├── setup-slack-app.sh       # Interactive Slack app setup wizard
 │   ├── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
-│   ├── configure_claude_hooks.py    # Merge ClaudeQ hooks into ~/.claude/settings.json
-│   ├── configure_codex_hooks.py    # Merge ClaudeQ hooks into ~/.codex/hooks.json
-│   └── claudeq-hook.sh             # CLI hook script (writes state to signal file)
+│   ├── configure_claude_hooks.py    # Merge Leap hooks into ~/.claude/settings.json
+│   ├── configure_codex_hooks.py    # Merge Leap hooks into ~/.codex/hooks.json
+│   └── leap-hook.sh             # CLI hook script (writes state to signal file)
 │
-└── claudeq/                     # Main Python package
+└── leap/                     # Main Python package
     ├── __init__.py              # Version, exports
     ├── main.py                  # Package entry point
     │
@@ -52,14 +51,14 @@ src/
     │   └── socket_utils.py     # Shared Unix socket send/recv helper
     │
     ├── server/                  # PTY Server
-    │   ├── server.py            # ClaudeQServer - main orchestrator
+    │   ├── server.py            # LeapServer - main orchestrator
     │   ├── pty_handler.py       # CLI PTY (pexpect, provider-driven)
     │   ├── socket_handler.py    # Unix socket server
     │   ├── queue_manager.py     # Message queue persistence
     │   └── metadata.py          # Session metadata (IDE, project, branch, cli_provider)
     │
     ├── client/                  # Interactive Client
-    │   ├── client.py            # ClaudeQClient - main class
+    │   ├── client.py            # LeapClient - main class
     │   ├── socket_client.py     # Unix socket client
     │   ├── input_handler.py     # Prompt toolkit / readline
     │   └── image_handler.py     # Clipboard image handling
@@ -69,7 +68,7 @@ src/
     │   ├── server_launcher.py   # PR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
-    │   ├── cq_sender.py         # Socket sender for /cq commands + message bundles
+    │   ├── leap_sender.py         # Socket sender for /leap commands + message bundles
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   ├── themes.py            # Visual theme definitions (6 built-in themes, manager API)
@@ -107,7 +106,7 @@ src/
     │   │   ├── gitlab_provider.py # GitLab API implementation
     │   │   ├── github_provider.py # GitHub API implementation
     │   │   ├── git_utils.py     # Git remote URL parsing + PR URL parsing
-    │   │   └── cq_command.py    # /cq command data model + formatting
+    │   │   └── leap_command.py    # /leap command data model + formatting
     │   └── resources/
     │       └── activate_terminal.groovy  # JetBrains script
     │
@@ -117,7 +116,7 @@ src/
     │   ├── config.py            # Slack config + session persistence
     │   ├── output_capture.py    # Capture hook response, write .last_response for Slack bot
     │   ├── output_watcher.py    # Poll .last_response files → post to Slack
-    │   └── message_router.py    # Route Slack messages → CQ sessions
+    │   └── message_router.py    # Route Slack messages → Leap sessions
     │
     └── vscode-extension/        # VS Code Extension
         ├── package.json         # Extension metadata
@@ -129,8 +128,8 @@ tests/
 └── test_state_tracker.py        # CLIStateTracker state machine tests
 
 assets/
-├── claudeq-icon.png             # Source icon (1024x1024)
-└── claudeq-icon.icns            # macOS icon bundle
+├── leap-icon.png             # Source icon (1024x1024)
+└── leap-icon.icns            # macOS icon bundle
 ```
 
 ## Key Classes
@@ -141,8 +140,8 @@ assets/
 | `ClaudeProvider` | `cli_providers/claude.py` | Claude Code CLI (Ink TUI, numbered menus, Notification hooks) |
 | `CodexProvider` | `cli_providers/codex.py` | OpenAI Codex CLI (Ratatui TUI, y/n approval, Stop hook only) |
 | `get_provider()` | `cli_providers/registry.py` | Provider lookup by name (`'claude'`, `'codex'`) |
-| `ClaudeQServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
-| `ClaudeQClient` | `client/client.py` | Interactive client with image support |
+| `LeapServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
+| `LeapClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI core window (uses mixins for methods) |
 | `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow |
@@ -162,7 +161,7 @@ assets/
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `resolve_scm_token()` | `monitor/pr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `parse_pr_url()` | `monitor/pr_tracking/git_utils.py` | Parse GitLab/GitHub PR URLs |
-| `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends PR context) |
+| `send_to_leap_session()` | `monitor/leap_sender.py` | Send message to Leap session (prepends PR context) |
 
 ## Runtime Data Files
 
@@ -180,9 +179,9 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`) |
 | Notification seen state | `.storage/notification_seen.json` |
-| PR context preset selection | `.storage/cq_selected_template` |
-| Message bundle preset selection | `.storage/cq_selected_direct_template` |
-| Preset definitions | `.storage/cq_templates.json` |
+| PR context preset selection | `.storage/leap_selected_template` |
+| Message bundle preset selection | `.storage/leap_selected_direct_template` |
+| Preset definitions | `.storage/leap_templates.json` |
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Slack config | `.storage/slack/config.json` |
@@ -205,11 +204,11 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 
 ## Adding Features
 
-- **Utils** → `src/claudeq/utils/`
-- **Server** → `src/claudeq/server/`, update `ClaudeQServer`
-- **Client** → `src/claudeq/client/`, update `ClaudeQClient`
-- **Monitor** → `src/claudeq/monitor/`, update `MonitorWindow`
-- **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a CQ server via Unix socket. Do not duplicate the connect/send/recv pattern. Incoming messages are capped at `MAX_MESSAGE_SIZE` (1 MB) in `socket_handler.py`; larger payloads are rejected.
+- **Utils** → `src/leap/utils/`
+- **Server** → `src/leap/server/`, update `LeapServer`
+- **Client** → `src/leap/client/`, update `LeapClient`
+- **Monitor** → `src/leap/monitor/`, update `MonitorWindow`
+- **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a Leap server via Unix socket. Do not duplicate the connect/send/recv pattern. Incoming messages are capped at `MAX_MESSAGE_SIZE` (1 MB) in `socket_handler.py`; larger payloads are rejected.
 - **New third-party dependencies** → Add to `pyproject.toml` under the appropriate group: `[tool.poetry.dependencies]` for core, `[tool.poetry.group.monitor.dependencies]` for GUI-only deps. Run `poetry lock && poetry install` after. All imports must be at module top level (no inline imports except optional deps).
 - **New dialogs** → All new resizable dialogs (except simple warning/error/info popups) must save/restore their size using `load_dialog_geometry(key)` / `save_dialog_geometry(key, w, h)` from `monitor/pr_tracking/config.py`. Call `load_dialog_geometry()` in `__init__` to restore. For persistence: if the dialog closes via `accept()`/`reject()`, save in `done()`. If it closes via `close()` or the X button, save in `closeEvent()` instead — `done()` is **not** called for `close()`/X.
 - **New `.storage` subdirectories** → If you add a new subdirectory under `.storage/`, you **must** update three places:
@@ -233,7 +232,7 @@ poetry run pytest tests/ -v     # Run all tests
 
 - **Type hints**: 100% coverage on all function signatures and return types. Use `Optional[X]` (not `X | None`) for consistency.
 - **Imports**: All imports at module top level. No inline imports except for optional dependencies (`prompt_toolkit`, `gitlab`).
-- **Client commands**: Each command handler is extracted into a private `_handle_*` method on `ClaudeQClient`. The `_process_command` dispatcher delegates to these handlers.
+- **Client commands**: Each command handler is extracted into a private `_handle_*` method on `LeapClient`. The `_process_command` dispatcher delegates to these handlers.
 - **Socket pattern**: `SocketClient._send_request()` is the single source of truth for client→server socket communication. `send_socket_request()` in `utils/socket_utils.py` is the lightweight variant for monitor/session_manager code that doesn't need rate-limited error reporting.
 
 ## SCM Polling & PR Tracking
@@ -247,13 +246,13 @@ The monitor polls GitLab/GitHub for PR status updates and user notifications. Ke
 
 Polling flow: `_scm_poll_timer` → `_start_scm_poll()` → `SCMPollerWorker` (QThread) → `get_pr_status()` per session → `_on_scm_results()` → `_update_pr_column()`.
 
-### Sending Threads to CQ
+### Sending Threads to Leap
 
-Right-click PR status label for send modes: individual threads, combined into one message, or filtered to `/cq` commands only. Both share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge threads on SCM side after send.
+Right-click PR status label for send modes: individual threads, combined into one message, or filtered to `/leap` commands only. Both share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge threads on SCM side after send.
 
-### /cq Auto-Fetch
+### /leap Auto-Fetch
 
-"Auto '/cq' fetch" checkbox: when ON, `SCMPollerWorker` auto-scans for `/cq` commands each poll cycle. A `/cq` comment does **not** count as a user response — only the bot ack (`[ClaudeQ bot] on it!`) marks a thread as handled. Setting persisted as `auto_fetch_cq` in monitor prefs.
+"Auto '/leap' fetch" checkbox: when ON, `SCMPollerWorker` auto-scans for `/leap` commands each poll cycle. A `/leap` comment does **not** count as a user response — only the bot ack (`[Leap bot] on it!`) marks a thread as handled. Setting persisted as `auto_fetch_leap` in monitor prefs.
 
 ### Environment Variable Token Mode
 
@@ -308,11 +307,11 @@ Per-row background colors selectable via a droplet icon button in the Tag column
 
 ## Slack Integration
 
-Optional Slack app for bidirectional CQ ↔ Slack communication. Each session gets a thread in the user's DM.
+Optional Slack app for bidirectional Leap ↔ Slack communication. Each session gets a thread in the user's DM.
 
 ```bash
 make install-slack-app   # Install deps + guided setup wizard
-cq --slack               # Start the bot daemon
+claudel --slack               # Start the bot daemon
 ```
 
 **Data flow**: Claude finishes → hook reads transcript JSONL → writes to signal file → `OutputCapture` writes `.last_response` → `OutputWatcher` posts to Slack. Replies: Slack thread → `MessageRouter` → queue or direct message via socket.
@@ -331,7 +330,7 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 
 **"Another client already connected"** → `rm .storage/sockets/<tag>.client.lock`
 
-**Stale sockets** → `cq-cleanup`
+**Stale sockets** → `leap-cleanup`
 
 ## Make Commands
 

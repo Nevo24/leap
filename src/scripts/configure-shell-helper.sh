@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# ClaudeQ Shell Configuration Helper
+# Leap Shell Configuration Helper
 # Called by: make install, make update
 #
 set -e
@@ -24,17 +24,17 @@ else
 fi
 
 # Check if config already exists
-if grep -q "# ClaudeQ" "$RC_FILE" 2>/dev/null; then
-    echo -e "${YELLOW}⚠ ClaudeQ configuration already exists in $RC_FILE${NC}"
+if grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
+    echo -e "${YELLOW}⚠ Leap configuration already exists in $RC_FILE${NC}"
     read -p "  Overwrite? (y/N) " -n 1 -r REPLY
     echo
 
     if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
         # Remove old config
-        if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
-            sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
+        if grep -q "Leap Configuration START" "$RC_FILE"; then
+            sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
         else
-            sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$RC_FILE"
+            sed -i.bak '/# Leap/,/^alias claudel=/d' "$RC_FILE"
         fi
         rm -f "$RC_FILE.bak"
         echo -e "${GREEN}✓ Removed old configuration${NC}"
@@ -55,22 +55,22 @@ fi
 # Get Poetry venv path
 POETRY_VENV=$(cd "$REPO_PATH" && poetry env info --path 2>/dev/null || echo "")
 
-# Add ClaudeQ configuration
+# Add Leap configuration
 cat >> "$RC_FILE" <<'EOF'
 
-# ===== ClaudeQ Configuration START - DO NOT REMOVE (needed for uninstall) =====
-# ClaudeQ - Scrollable in JetBrains IDEs! 🎯
+# ===== Leap Configuration START - DO NOT REMOVE (needed for uninstall) =====
+# Leap - Scrollable in JetBrains IDEs! 🎯
 # Uses PTY (no tmux) with native scrolling
 # Server in JetBrains, client in any terminal
 #
-# Usage: claudeq <tag> [message] (or: cq)
-#        claudeq-cleanup (or: cqc)
+# Usage: claudel <tag> [message]
+#        leap-cleanup
 #
 # You can modify the content below, but keep the START/END marker lines
 # for proper uninstallation.
 EOF
 
-echo "export CLAUDEQ_PROJECT_DIR=\"$REPO_PATH\"" >> "$RC_FILE"
+echo "export LEAP_PROJECT_DIR=\"$REPO_PATH\"" >> "$RC_FILE"
 echo "" >> "$RC_FILE"
 
 # Add JetBrains IDE CLI tools to PATH
@@ -98,37 +98,36 @@ if [ -n "$JETBRAINS_PATHS" ]; then
 fi
 echo "" >> "$RC_FILE"
 
-# Add claudeq function
+# Add leap function
 cat >> "$RC_FILE" <<'EOF'
-claudeq() {
+leap() {
     if [ $# -eq 0 ]; then
         echo "Error: Tag is required"
-        echo "Usage: claudeq <tag> [message]"
-        echo "Example (server): claudeq my-feature"
-        echo "Example (client): claudeq my-feature 'hello Claude'"
+        echo "Usage: leap <tag> [message]"
+        echo "Example (server): leap my-feature"
+        echo "Example (client): leap my-feature 'hello Claude'"
         return 1
     fi
     # Flags (starting with --) can be passed and will be used by server only
-    # Example: claudeq my-tag --dangerously-skip-permissions
-    "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh" "$@"
+    # Example: leap my-tag --dangerously-skip-permissions
+    "$LEAP_PROJECT_DIR/src/scripts/leap-main.sh" "$@"
 }
 
-alias cq='claudeq'
+alias claudel='leap'
 
-codexq() {
+codexl() {
     if [ $# -eq 0 ]; then
         echo "Error: Tag is required"
-        echo "Usage: codexq <tag> [message]"
-        echo "Example (server): codexq my-feature"
-        echo "Example (client): codexq my-feature 'hello Codex'"
+        echo "Usage: codexl <tag> [message]"
+        echo "Example (server): codexl my-feature"
+        echo "Example (client): codexl my-feature 'hello Codex'"
         return 1
     fi
-    "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh" "$@" --cli codex
+    "$LEAP_PROJECT_DIR/src/scripts/leap-main.sh" "$@" --cli codex
 }
 
-alias cc='codexq'
-# ===== ClaudeQ Configuration END - DO NOT REMOVE (needed for uninstall) =====
+# ===== Leap Configuration END - DO NOT REMOVE (needed for uninstall) =====
 EOF
 
-echo -e "${GREEN}✓ Added ClaudeQ configuration to $RC_FILE${NC}"
+echo -e "${GREEN}✓ Added Leap configuration to $RC_FILE${NC}"
 echo "  Using Poetry venv: $POETRY_VENV"

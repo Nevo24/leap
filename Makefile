@@ -1,4 +1,4 @@
-PACKAGE_NAME     := claudeq
+PACKAGE_NAME     := leap
 PYTHON_VERSION   := "3.12"
 REPO_PATH        := $(shell git rev-parse --show-toplevel)
 PROMPT_PREFIX    := "→"
@@ -22,30 +22,30 @@ else \
 fi
 endef
 
-# Shell helper: remove ClaudeQ config from RC file
+# Shell helper: remove Leap config from RC file
 define REMOVE_SHELL_CONFIG
-if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
+if grep -q "Leap Configuration START" "$$RC_FILE"; then \
 	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
-	sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
+	sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$$RC_FILE"; \
 	rm -f "$$RC_FILE.bak"; \
-elif grep -q "# ClaudeQ" "$$RC_FILE"; then \
+elif grep -q "# Leap" "$$RC_FILE"; then \
 	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
-	sed -i.bak '/# ClaudeQ/,/# End ClaudeQ/d' "$$RC_FILE"; \
-	sed -i.bak '/# ClaudeQ/,/^alias cq/d' "$$RC_FILE"; \
+	sed -i.bak '/# Leap/,/# End Leap/d' "$$RC_FILE"; \
+	sed -i.bak '/# Leap/,/^alias claudel/d' "$$RC_FILE"; \
 	rm -f "$$RC_FILE.bak"; \
 fi
 endef
 
 # Shell helper: build and install monitor app
 define BUILD_MONITOR_APP
-echo "$(PROMPT_PREFIX) Building ClaudeQ Monitor.app with py2app..."; \
+echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
-echo "$(PROMPT_PREFIX) Installing ClaudeQ Monitor.app to /Applications..."; \
-if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
-	sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
+echo "$(PROMPT_PREFIX) Installing Leap Monitor.app to /Applications..."; \
+if [ -d "/Applications/Leap Monitor.app" ]; then \
+	sudo rm -rf "/Applications/Leap Monitor.app"; \
 fi; \
-sudo cp -R "$(REPO_PATH)/.dist/ClaudeQ Monitor.app" /Applications/; \
-tccutil reset Accessibility com.claudeq.monitor 2>/dev/null || true
+sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/; \
+tccutil reset Accessibility com.leap.monitor 2>/dev/null || true
 endef
 
 .PHONY: default
@@ -54,7 +54,7 @@ default: install
 .PHONY: check-macos
 check-macos:
 	@if [ "$$(uname)" != "Darwin" ]; then \
-		echo "$(YELLOW)⚠ ClaudeQ is only supported on macOS$(NC)"; \
+		echo "$(YELLOW)⚠ Leap is only supported on macOS$(NC)"; \
 		exit 1; \
 	fi
 
@@ -102,13 +102,13 @@ check-python:
 
 .PHONY: install
 install: check-macos check-python .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks .configure-codex-hooks
-	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
+	@echo "$(GREEN)✓ Leap installed successfully!$(NC)"
 	@echo ""
-	@echo "To start using ClaudeQ:"
+	@echo "To start using Leap:"
 	@echo "  1. Reload your shell: source ~/.zshrc  (or ~/.bashrc)"
 	@echo "  2. Run: cq <tag-name>"
 	@echo ""
-	@echo "Note: The venv is automatically used by claudeq commands."
+	@echo "Note: The venv is automatically used by leap commands."
 	@echo ""
 	@printf "Would you like to install the Monitor GUI? [Y/n] "; \
 	read answer; \
@@ -168,15 +168,15 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "$(PROMPT_PREFIX) Installing monitor dependencies..."
 	@poetry install --no-root --with monitor
 	@$(BUILD_MONITOR_APP)
-	@if [ ! -f "$(REPO_PATH)/.storage/cq_contexts.json" ]; then \
+	@if [ ! -f "$(REPO_PATH)/.storage/leap_contexts.json" ]; then \
 		echo '{"default": "Please try to solve all the issues that are discussed in the following threads:"}' \
-			> "$(REPO_PATH)/.storage/cq_contexts.json"; \
+			> "$(REPO_PATH)/.storage/leap_contexts.json"; \
 	fi
 	@echo "$(GREEN)✓ Monitor installed successfully!$(NC)"
 	@echo ""
-	@echo "Launch ClaudeQ Monitor from:"
-	@echo "  • Spotlight: Search 'ClaudeQ Monitor'"
-	@echo "  • Applications: Double-click ClaudeQ Monitor.app"
+	@echo "Launch Leap Monitor from:"
+	@echo "  • Spotlight: Search 'Leap Monitor'"
+	@echo "  • Applications: Double-click Leap Monitor.app"
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
 
@@ -190,11 +190,11 @@ install-slack-app: .env ensure-storage write-install-metadata
 
 .PHONY: run-monitor
 run-monitor:
-	@PYTHONPATH=$(SRC_DIR) poetry run python -c "from claudeq.monitor.app import main; main()"
+	@PYTHONPATH=$(SRC_DIR) poetry run python -c "from leap.monitor.app import main; main()"
 
 .PHONY: run-cleanup-sessions
 run-cleanup-sessions:
-	@$(SCRIPTS_DIR)/claudeq-cleanup.sh
+	@$(SCRIPTS_DIR)/leap-cleanup.sh
 
 .PHONY: clean
 clean:
@@ -212,13 +212,13 @@ lock: .env
 
 .PHONY: update
 update:
-	@echo "$(PROMPT_PREFIX) Updating ClaudeQ..."
+	@echo "$(PROMPT_PREFIX) Updating Leap..."
 	@$(GET_RC_FILE); \
-	if [ ! -f "$$RC_FILE" ] || ! grep -q "ClaudeQ Configuration" "$$RC_FILE"; then \
-		echo "$(YELLOW)⚠ ClaudeQ does not appear to be installed$(NC)"; \
-		echo "  No ClaudeQ configuration found in $$RC_FILE"; \
+	if [ ! -f "$$RC_FILE" ] || ! grep -q "Leap Configuration" "$$RC_FILE"; then \
+		echo "$(YELLOW)⚠ Leap does not appear to be installed$(NC)"; \
+		echo "  No Leap configuration found in $$RC_FILE"; \
 		echo ""; \
-		echo "Please run 'make install' first to install ClaudeQ."; \
+		echo "Please run 'make install' first to install Leap."; \
 		echo "After installation, you can use 'make update' to update to newer versions."; \
 		exit 1; \
 	fi
@@ -264,9 +264,9 @@ update:
 		echo ""; \
 		echo "  Slack not installed. To install it, run: make install-slack-app"; \
 	fi
-	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+	@if [ -d "/Applications/Leap Monitor.app" ]; then \
 		echo ""; \
-		echo "$(PROMPT_PREFIX) Detected ClaudeQ Monitor installation"; \
+		echo "$(PROMPT_PREFIX) Detected Leap Monitor installation"; \
 		echo "$(PROMPT_PREFIX) Updating monitor dependencies..."; \
 		poetry install --no-root --with monitor; \
 		$(BUILD_MONITOR_APP); \
@@ -283,15 +283,15 @@ update:
 	@$(MAKE) .configure-claude-hooks
 	@echo ""
 	@$(GET_RC_FILE); \
-	if [ -f "$$RC_FILE" ] && grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
+	if [ -f "$$RC_FILE" ] && grep -q "Leap Configuration START" "$$RC_FILE"; then \
 		echo "$(YELLOW)⚠ Shell configuration detected$(NC)"; \
 		echo "  Your shell config is managed between START/END markers."; \
-		echo "  If the claudeq function has changed, you may want to update it."; \
+		echo "  If the leap function has changed, you may want to update it."; \
 		echo ""; \
 		read -p "  Update shell configuration? (y/N) " -n 1 -r REPLY; \
 		echo; \
 		if [ "$$REPLY" = "y" ] || [ "$$REPLY" = "Y" ]; then \
-			sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
+			sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$$RC_FILE"; \
 			rm -f "$$RC_FILE.bak"; \
 			echo "$(GREEN)  Removed old configuration$(NC)"; \
 			$(MAKE) .detect-shell; \
@@ -301,11 +301,11 @@ update:
 		fi; \
 	fi; \
 	echo ""; \
-	echo "$(GREEN)✓ ClaudeQ updated successfully!$(NC)"; \
+	echo "$(GREEN)✓ Leap updated successfully!$(NC)"; \
 	echo ""; \
 	echo "Changes applied:"; \
 	echo "  • Core code and dependencies updated"; \
-	if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+	if [ -d "/Applications/Leap Monitor.app" ]; then \
 		echo "  • Monitor app rebuilt"; \
 	fi; \
 	if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
@@ -338,10 +338,10 @@ update-deps: .env
 .PHONY: configure-shell
 configure-shell:
 	@echo "$(PROMPT_PREFIX) Configuring shell..."
-	@chmod +x $(SCRIPTS_DIR)/claudeq-main.sh
-	@chmod +x $(SCRIPTS_DIR)/claudeq-server.py
-	@chmod +x $(SCRIPTS_DIR)/claudeq-client.py
-	@chmod +x $(SCRIPTS_DIR)/claudeq-monitor.py
+	@chmod +x $(SCRIPTS_DIR)/leap-main.sh
+	@chmod +x $(SCRIPTS_DIR)/leap-server.py
+	@chmod +x $(SCRIPTS_DIR)/leap-client.py
+	@chmod +x $(SCRIPTS_DIR)/leap-monitor.py
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .configure-jetbrains
 	@$(MAKE) .detect-shell
@@ -392,26 +392,26 @@ configure-shell:
 			echo "$(YELLOW)  ⚠ Could not create settings.json$(NC)"; \
 		fi; \
 		\
-		echo "  Installing ClaudeQ Terminal Selector extension..."; \
+		echo "  Installing Leap Terminal Selector extension..."; \
 		CODE_PATH=$$(which code 2>/dev/null); \
 		NPM_PATH=$$(which npm 2>/dev/null); \
 		if [ -n "$$CODE_PATH" ]; then \
-			REPO_VERSION=$$(python3 -c "import json; print(json.load(open('$(REPO_PATH)/src/claudeq/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
-			INSTALLED_VERSION=$$($$CODE_PATH --list-extensions --show-versions 2>/dev/null | grep "claudeq.claudeq-terminal-selector@" | sed 's/.*@//' || echo "0.0.0"); \
+			REPO_VERSION=$$(python3 -c "import json; print(json.load(open('$(REPO_PATH)/src/leap/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
+			INSTALLED_VERSION=$$($$CODE_PATH --list-extensions --show-versions 2>/dev/null | grep "leap.leap-terminal-selector@" | sed 's/.*@//' || echo "0.0.0"); \
 			if [ "$$REPO_VERSION" != "$$INSTALLED_VERSION" ]; then \
 				if [ -n "$$NPM_PATH" ]; then \
-					cd "$(REPO_PATH)/src/claudeq/vscode-extension" && \
-					python3 -c "import subprocess,sys; sys.exit(subprocess.run(['npx','--yes','@vscode/vsce','package','--out','claudeq-terminal-selector.vsix'],capture_output=True,timeout=60).returncode)" 2>/dev/null && \
-					$$CODE_PATH --install-extension claudeq-terminal-selector.vsix --force < /dev/null >/dev/null 2>&1 && \
-					rm -f claudeq-terminal-selector.vsix && \
-					echo "$(GREEN)  ✓ ClaudeQ extension installed (v$$REPO_VERSION)$(NC)" && \
+					cd "$(REPO_PATH)/src/leap/vscode-extension" && \
+					python3 -c "import subprocess,sys; sys.exit(subprocess.run(['npx','--yes','@vscode/vsce','package','--out','leap-terminal-selector.vsix'],capture_output=True,timeout=60).returncode)" 2>/dev/null && \
+					$$CODE_PATH --install-extension leap-terminal-selector.vsix --force < /dev/null >/dev/null 2>&1 && \
+					rm -f leap-terminal-selector.vsix && \
+					echo "$(GREEN)  ✓ Leap extension installed (v$$REPO_VERSION)$(NC)" && \
 					echo "$(YELLOW)    → Reload VS Code: Cmd+Shift+P → 'Developer: Reload Window'$(NC)" || \
 					echo "$(YELLOW)  ⚠ Could not install extension$(NC)"; \
 				else \
 					echo "$(YELLOW)  ⚠ npm not found, skipping extension install$(NC)"; \
 				fi; \
 			else \
-				echo "  ✓ ClaudeQ extension up to date (v$$INSTALLED_VERSION)"; \
+				echo "  ✓ Leap extension up to date (v$$INSTALLED_VERSION)"; \
 			fi; \
 		else \
 			echo "$(YELLOW)  ⚠ code command not found, skipping extension install$(NC)"; \
@@ -558,9 +558,9 @@ configure-shell:
 .configure-claude-hooks:
 	@echo "$(PROMPT_PREFIX) Configuring Claude Code hooks..."
 	@mkdir -p "$$HOME/.claude/hooks"
-	@cp "$(SCRIPTS_DIR)/claudeq-hook.sh" "$$HOME/.claude/hooks/claudeq-hook.sh"
-	@chmod +x "$$HOME/.claude/hooks/claudeq-hook.sh"
-	@python3 "$(SCRIPTS_DIR)/configure_claude_hooks.py" "$$HOME/.claude/hooks/claudeq-hook.sh"
+	@cp "$(SCRIPTS_DIR)/leap-hook.sh" "$$HOME/.claude/hooks/leap-hook.sh"
+	@chmod +x "$$HOME/.claude/hooks/leap-hook.sh"
+	@python3 "$(SCRIPTS_DIR)/configure_claude_hooks.py" "$$HOME/.claude/hooks/leap-hook.sh"
 	@echo "$(GREEN)  ✓ Claude Code hooks configured$(NC)"
 
 .PHONY: .configure-codex-hooks
@@ -568,9 +568,9 @@ configure-shell:
 	@if command -v codex >/dev/null 2>&1; then \
 		echo "$(PROMPT_PREFIX) Configuring Codex hooks..."; \
 		mkdir -p "$$HOME/.codex"; \
-		cp "$(SCRIPTS_DIR)/claudeq-hook.sh" "$$HOME/.codex/claudeq-hook.sh"; \
-		chmod +x "$$HOME/.codex/claudeq-hook.sh"; \
-		python3 "$(SCRIPTS_DIR)/configure_codex_hooks.py" "$$HOME/.codex/claudeq-hook.sh"; \
+		cp "$(SCRIPTS_DIR)/leap-hook.sh" "$$HOME/.codex/leap-hook.sh"; \
+		chmod +x "$$HOME/.codex/leap-hook.sh"; \
+		python3 "$(SCRIPTS_DIR)/configure_codex_hooks.py" "$$HOME/.codex/leap-hook.sh"; \
 		echo "$(GREEN)  ✓ Codex hooks configured$(NC)"; \
 	fi
 
@@ -581,12 +581,12 @@ configure-shell:
 
 .PHONY: uninstall-monitor
 uninstall-monitor:
-	@echo "$(PROMPT_PREFIX) Uninstalling ClaudeQ Monitor..."
-	@if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
-		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
-		echo "$(GREEN)✓ Removed ClaudeQ Monitor.app from /Applications$(NC)"; \
+	@echo "$(PROMPT_PREFIX) Uninstalling Leap Monitor..."
+	@if [ -d "/Applications/Leap Monitor.app" ]; then \
+		sudo rm -rf "/Applications/Leap Monitor.app"; \
+		echo "$(GREEN)✓ Removed Leap Monitor.app from /Applications$(NC)"; \
 	else \
-		echo "  ClaudeQ Monitor.app not found in /Applications"; \
+		echo "  Leap Monitor.app not found in /Applications"; \
 	fi
 	@rm -rf build .dist
 	@echo "$(GREEN)✓ Monitor uninstalled successfully!$(NC)"
@@ -599,7 +599,7 @@ uninstall-slack-app:
 		echo "$(GREEN)✓ Removed Slack config and session data$(NC)"; \
 		echo ""; \
 		echo "$(YELLOW)⚠ Slack app still exists on Slack's side$(NC)"; \
-		echo "  To remove: visit https://api.slack.com/apps and delete the ClaudeQ app"; \
+		echo "  To remove: visit https://api.slack.com/apps and delete the Leap app"; \
 	else \
 		echo "  Slack integration not found (no .storage/slack/)"; \
 	fi
@@ -607,7 +607,7 @@ uninstall-slack-app:
 
 .PHONY: uninstall
 uninstall:
-	@echo "$(PROMPT_PREFIX) Uninstalling ClaudeQ..."
+	@echo "$(PROMPT_PREFIX) Uninstalling Leap..."
 	@chmod +x $(SCRIPTS_DIR)/uninstall-helper.sh
 	@$(SCRIPTS_DIR)/uninstall-helper.sh $(REPO_PATH)
 	@echo "$(PROMPT_PREFIX) Removing Poetry virtual environment..."
@@ -628,10 +628,10 @@ uninstall:
 	fi; \
 	VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
 	if [ -f "$$VSCODE_SETTINGS" ] && grep -q "terminal.integrated.tabs.title" "$$VSCODE_SETTINGS"; then \
-		echo "$(YELLOW)⚠ VS Code settings.json still contains ClaudeQ setting$(NC)"; \
+		echo "$(YELLOW)⚠ VS Code settings.json still contains Leap setting$(NC)"; \
 		echo "  To remove: Open VS Code settings.json and delete 'terminal.integrated.tabs.title' line"; \
 		echo "  (Backup files: $$VSCODE_SETTINGS.backup-*)"; \
 	fi
 	@echo ""
-	@echo "$(GREEN)✓ ClaudeQ fully uninstalled!$(NC)"
+	@echo "$(GREEN)✓ Leap fully uninstalled!$(NC)"
 	@echo "Project is now in clean state (like just cloned)"
