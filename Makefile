@@ -58,8 +58,50 @@ check-macos:
 		exit 1; \
 	fi
 
+.PHONY: check-python
+check-python:
+	@REQUIRED=$(PYTHON_VERSION); \
+	FOUND_PYTHON=""; \
+	for BIN in python$$REQUIRED python3; do \
+		if command -v $$BIN &>/dev/null; then \
+			VER=$$($$BIN -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null); \
+			if [ "$$VER" = "$$REQUIRED" ]; then \
+				FOUND_PYTHON="$$BIN"; \
+				break; \
+			fi; \
+		fi; \
+	done; \
+	if [ -n "$$FOUND_PYTHON" ]; then \
+		echo "  ✓ Python $$REQUIRED found ($$FOUND_PYTHON)"; \
+	else \
+		echo "$(YELLOW)⚠ Python $$REQUIRED is required but not found$(NC)"; \
+		CURRENT=$$(python3 --version 2>/dev/null || echo "not installed"); \
+		echo "  Current: $$CURRENT"; \
+		echo ""; \
+		if command -v brew &>/dev/null; then \
+			printf "  Install Python $$REQUIRED via Homebrew? [Y/n] "; \
+			read answer; \
+			case "$${answer}" in \
+				[nN]*) \
+					echo ""; \
+					echo "Please install Python $$REQUIRED manually and retry."; \
+					exit 1; \
+					;; \
+				*) \
+					echo "$(PROMPT_PREFIX) Installing Python $$REQUIRED via Homebrew..."; \
+					brew install python@$$REQUIRED; \
+					echo "$(GREEN)✓ Python $$REQUIRED installed$(NC)"; \
+					;; \
+			esac; \
+		else \
+			echo "  Install Homebrew first: https://brew.sh"; \
+			echo "  Then run: brew install python@$$REQUIRED"; \
+			exit 1; \
+		fi; \
+	fi
+
 .PHONY: install
-install: check-macos .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks
+install: check-macos check-python .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks
 	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using ClaudeQ:"
