@@ -53,11 +53,6 @@ class CodexProvider(CLIProvider):
     # -- State detection patterns ----------------------------------------
 
     @property
-    def trust_dialog_pattern(self) -> Optional[bytes]:
-        # Codex doesn't have a workspace trust dialog.
-        return None
-
-    @property
     def interrupted_pattern(self) -> bytes:
         # Codex shows interrupt feedback in the Ratatui TUI.
         # The exact text may vary; this is a best-guess pattern.

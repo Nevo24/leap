@@ -44,7 +44,7 @@ class CLIProvider(ABC):
 
         Return None if the CLI has no trust dialog.
         """
-        return None
+        return b'Doyoutrustthecontentsofthisdirectory?'
 
     @property
     @abstractmethod
