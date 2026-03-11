@@ -224,10 +224,10 @@ class ColorPickerPopup(QFrame):
 
 
 # Template UI strings (single source of truth for labels, tooltips, hints).
-MR_TEMPLATE_LABEL = 'MR thread context:'
-MR_TEMPLATE_TOOLTIP = 'Context attached to every MR thread message sent to CQ (single-message only)'
-MR_TEMPLATE_HINT = (
-    'MR thread context: This preset is attached to every MR thread message sent to CQ. '
+PR_TEMPLATE_LABEL = 'PR thread context:'
+PR_TEMPLATE_TOOLTIP = 'Context attached to every PR thread message sent to CQ (single-message only)'
+PR_TEMPLATE_HINT = (
+    'PR thread context: This preset is attached to every PR thread message sent to CQ. '
     'Only single-message presets can be used.'
 )
 
@@ -241,7 +241,7 @@ QUICK_MSG_TEMPLATE_HINT = (
 QUICK_MSG_SEND_NEXT = 'Send message-bundle next'
 QUICK_MSG_SEND_AT_END = 'Send message-bundle to end'
 
-APPLY_MR_BTN = 'Apply to MR Thread Context && Close'
+APPLY_PR_BTN = 'Apply to PR Thread Context && Close'
 APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'
 
 # Max characters shown in template combo items before truncation with ellipsis
@@ -289,13 +289,13 @@ MENU_BTN_STYLE = (
 )
 
 # Column groups for vertical separators.
-# Groups: [X, Tag, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [MR, MRBranch]
+# Groups: [X, Tag, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
 COLUMN_GROUPS: list[list[int]] = [
     [0, 1, 2],          # Info
     [3, 4, 5, 6, 7],    # Server
     [8],                 # Client
     [9],                 # Slack
-    [10, 11],            # MR
+    [10, 11],            # PR
 ]
 
 # Precomputed: column index → group index (for fast lookup)

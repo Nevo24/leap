@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from claudeq.utils.socket_utils import send_socket_request
 
 

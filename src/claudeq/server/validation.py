@@ -2,7 +2,7 @@
 Pinned session validation for ClaudeQ server startup.
 
 Validates that the current working directory matches the expected repo
-and branch for MR-pinned sessions before starting the server.
+and branch for PR-pinned sessions before starting the server.
 """
 
 import json
@@ -76,7 +76,7 @@ def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[
 def validate_pinned_session(tag: str, storage_dir: Path) -> None:
     """Validate current repo/branch against monitor pinned session data.
 
-    If this tag corresponds to an MR-pinned row (has remote_project_path),
+    If this tag corresponds to a PR-pinned row (has remote_project_path),
     verify that we're in the right repo, on the right branch, and not
     behind the remote.  Calls ``sys.exit(1)`` if validation fails.
 

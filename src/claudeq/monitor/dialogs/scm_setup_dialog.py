@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import (
 )
 
 from claudeq.utils.constants import SCM_POLL_INTERVAL
-from claudeq.monitor.mr_tracking.base import ConnectionTestResult
-from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.pr_tracking.base import ConnectionTestResult
+from claudeq.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from claudeq.monitor.scm_polling import TestConnectionWorker
 
 

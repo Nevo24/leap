@@ -5,7 +5,7 @@ from typing import Optional
 
 from claudeq.utils.constants import SOCKET_DIR
 from claudeq.utils.socket_utils import send_socket_request
-from claudeq.monitor.mr_tracking.config import load_cq_template
+from claudeq.monitor.pr_tracking.config import load_cq_template
 
 logger = logging.getLogger(__name__)
 

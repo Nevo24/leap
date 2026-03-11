@@ -14,14 +14,14 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from claudeq.monitor.mr_tracking.config import (
+from claudeq.monitor.pr_tracking.config import (
     delete_named_template, load_dialog_geometry, load_saved_templates,
     load_selected_direct_template_name, load_selected_template_name,
     save_dialog_geometry, save_named_template,
     save_selected_direct_template_name, save_selected_template_name,
 )
 from claudeq.monitor.ui.table_helpers import (
-    APPLY_MR_BTN, APPLY_QUICK_MSG_BTN, MR_TEMPLATE_HINT,
+    APPLY_PR_BTN, APPLY_QUICK_MSG_BTN, PR_TEMPLATE_HINT,
     QUICK_MSG_TEMPLATE_HINT,
 )
 
@@ -114,11 +114,11 @@ class TemplateEditorDialog(QDialog):
 
         dlg_layout = QVBoxLayout(self)
 
-        hint_mr = QLabel(MR_TEMPLATE_HINT)
-        hint_mr.setWordWrap(True)
-        hint_mr.setIndent(0)
-        hint_mr.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 0px;')
-        dlg_layout.addWidget(hint_mr)
+        hint_pr = QLabel(PR_TEMPLATE_HINT)
+        hint_pr.setWordWrap(True)
+        hint_pr.setIndent(0)
+        hint_pr.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 0px;')
+        dlg_layout.addWidget(hint_pr)
 
         hint_quick = QLabel(QUICK_MSG_TEMPLATE_HINT)
         hint_quick.setWordWrap(True)
@@ -170,10 +170,10 @@ class TemplateEditorDialog(QDialog):
         # Bottom buttons: two Apply & Close buttons + Cancel
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        apply_mr_btn = QPushButton(APPLY_MR_BTN)
+        apply_pr_btn = QPushButton(APPLY_PR_BTN)
         apply_direct_btn = QPushButton(APPLY_QUICK_MSG_BTN)
         cancel_btn = QPushButton('Cancel')
-        btn_layout.addWidget(apply_mr_btn)
+        btn_layout.addWidget(apply_pr_btn)
         btn_layout.addWidget(apply_direct_btn)
         btn_layout.addWidget(cancel_btn)
         dlg_layout.addLayout(btn_layout)
@@ -184,7 +184,7 @@ class TemplateEditorDialog(QDialog):
         self._save_btn.clicked.connect(self._on_save)
         save_as_btn.clicked.connect(self._on_save_as)
         self._delete_btn.clicked.connect(self._on_delete)
-        apply_mr_btn.clicked.connect(self._on_apply_mr)
+        apply_pr_btn.clicked.connect(self._on_apply_pr)
         apply_direct_btn.clicked.connect(self._on_apply_direct)
         cancel_btn.clicked.connect(self.reject)
 
@@ -442,17 +442,17 @@ class TemplateEditorDialog(QDialog):
                     save_named_template(name, list(self._messages))
         return True
 
-    def _on_apply_mr(self) -> None:
-        """Apply the current preset to the MR thread context combo and close.
+    def _on_apply_pr(self) -> None:
+        """Apply the current preset to the PR thread context combo and close.
 
-        Rejects multi-message presets — MR thread context must be single-message.
+        Rejects multi-message presets — PR thread context must be single-message.
         """
         if len(self._messages) > 1 and any(m.strip() for m in self._messages[1:]):
             QMessageBox.warning(
                 self, 'Multi-Message Preset',
-                'MR thread context must be a single-message preset.\n\n'
+                'PR thread context must be a single-message preset.\n\n'
                 'This preset has multiple messages. Only single-message '
-                'presets can be used as MR thread context.',
+                'presets can be used as PR thread context.',
             )
             return
         if not self._maybe_save_unsaved():

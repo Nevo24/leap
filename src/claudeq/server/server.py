@@ -99,7 +99,7 @@ class ClaudeQServer:
         # Ensure storage directories exist
         ensure_storage_dirs()
 
-        # Validate against monitor pinned sessions (MR-pinned rows).
+        # Validate against monitor pinned sessions (PR-pinned rows).
         # Release the startup lock on failure so another server can start.
         lock_dir = SOCKET_DIR / f"{tag}.server.lock"
         try:

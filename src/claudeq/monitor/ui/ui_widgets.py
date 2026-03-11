@@ -33,7 +33,7 @@ class ElidedLabel(QLabel):
 
 
 class IndicatorPopup(QLabel):
-    """Floating popup that explains MR indicator icons."""
+    """Floating popup that explains PR indicator icons."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent, Qt.ToolTip)
@@ -53,7 +53,7 @@ class IndicatorPopup(QLabel):
 
 
 class IndicatorLabel(QLabel):
-    """A small label with its own hover popup for individual MR indicators."""
+    """A small label with its own hover popup for individual PR indicators."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -124,7 +124,7 @@ class PulsingLabel(QLabel):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._pulsing: bool = False
-        self._mr_url: Optional[str] = None
+        self._pr_url: Optional[str] = None
         self._phase: float = 0.0
         self._on_send_to_cq: Optional[callable] = None
         self._on_send_combined_to_cq: Optional[callable] = None
@@ -152,8 +152,8 @@ class PulsingLabel(QLabel):
             self._pulse_timer.stop()
             self.setStyleSheet('')
 
-    def set_mr_url(self, url: Optional[str]) -> None:
-        self._mr_url = url
+    def set_pr_url(self, url: Optional[str]) -> None:
+        self._pr_url = url
         if url:
             self.setCursor(QCursor(Qt.PointingHandCursor))
         else:
@@ -232,15 +232,15 @@ class PulsingLabel(QLabel):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if self._mr_url and event.button() == Qt.LeftButton:
+        if self._pr_url and event.button() == Qt.LeftButton:
             if self._has_unresponded:
                 self._show_context_menu(event.pos())
             else:
-                webbrowser.open(self._mr_url)
+                webbrowser.open(self._pr_url)
 
     def _show_context_menu(self, pos) -> None:
-        """Show context menu on the MR status label (left click)."""
-        url = self._mr_url
+        """Show context menu on the PR status label (left click)."""
+        url = self._pr_url
         if not url:
             return
 
@@ -261,7 +261,7 @@ class PulsingLabel(QLabel):
             menu.setToolTipsVisible(True)
 
         go_action = QAction('Go to first thread', menu)
-        go_action.setToolTip('Open the first unresponded MR thread in your browser')
+        go_action.setToolTip('Open the first unresponded PR thread in your browser')
         go_action.triggered.connect(lambda: webbrowser.open(url))
         menu.addAction(go_action)
 

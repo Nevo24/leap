@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QWidget
 
-from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 
 
 @dataclass

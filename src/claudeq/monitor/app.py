@@ -22,8 +22,8 @@ from PyQt5.QtGui import (
     QColor, QCursor, QDrag, QIcon, QCloseEvent, QPalette, QResizeEvent,
 )
 
-from claudeq.monitor.mr_tracking.base import MRStatus, SCMProvider
-from claudeq.monitor.mr_tracking.config import (
+from claudeq.monitor.pr_tracking.base import PRStatus, SCMProvider
+from claudeq.monitor.pr_tracking.config import (
     load_monitor_prefs, load_notification_seen,
     load_pinned_sessions, save_monitor_prefs,
 )
@@ -38,7 +38,7 @@ from claudeq.monitor.server_launcher import ServerLauncher
 from claudeq.monitor.ui.dock_badge import DockBadge
 from claudeq.monitor.ui.log_history import LogHistory, LogHistoryDialog
 from claudeq.monitor.ui.table_helpers import (
-    MR_TEMPLATE_LABEL, MR_TEMPLATE_TOOLTIP,
+    PR_TEMPLATE_LABEL, PR_TEMPLATE_TOOLTIP,
     QUICK_MSG_TEMPLATE_LABEL, QUICK_MSG_TEMPLATE_TOOLTIP,
     PersistentTooltipStyle, SeparatorDelegate, SeparatorHeaderView, TooltipApp,
 )
@@ -48,8 +48,8 @@ from claudeq.slack.config import is_slack_installed
 from claudeq.monitor._mixins.actions_menu_mixin import ActionsMenuMixin
 from claudeq.monitor._mixins.scm_config_mixin import SCMConfigMixin
 from claudeq.monitor._mixins.session_mixin import SessionMixin
-from claudeq.monitor._mixins.mr_tracking_mixin import MRTrackingMixin
-from claudeq.monitor._mixins.mr_display_mixin import MRDisplayMixin
+from claudeq.monitor._mixins.pr_tracking_mixin import PRTrackingMixin
+from claudeq.monitor._mixins.pr_display_mixin import PRDisplayMixin
 from claudeq.monitor._mixins.notifications_mixin import NotificationsMixin
 from claudeq.monitor._mixins.table_builder_mixin import TableBuilderMixin
 
@@ -60,8 +60,8 @@ class MonitorWindow(
     ActionsMenuMixin,
     SCMConfigMixin,
     SessionMixin,
-    MRTrackingMixin,
-    MRDisplayMixin,
+    PRTrackingMixin,
+    PRDisplayMixin,
     NotificationsMixin,
     TableBuilderMixin,
     QMainWindow,
@@ -79,12 +79,12 @@ class MonitorWindow(
     COL_QUEUE = 7
     COL_CLIENT = 8
     COL_SLACK = 9
-    COL_MR = 10
-    COL_MR_BRANCH = 11
+    COL_PR = 10
+    COL_PR_BRANCH = 11
 
     _HEADER_LABELS = [
         '', 'Tag', 'Project', 'Server', 'Path', 'Server Branch', 'Status',
-        'Queue', 'Client', 'Slack', 'MR', 'MR Branch',
+        'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
 
@@ -92,9 +92,9 @@ class MonitorWindow(
         """Initialize the monitor window."""
         super().__init__()
         self.sessions: list[dict] = []
-        self._mr_statuses: dict[str, MRStatus] = {}
-        self._mr_widgets: dict[str, PulsingLabel] = {}
-        self._mr_approval_widgets: dict[str, IndicatorLabel] = {}
+        self._pr_statuses: dict[str, PRStatus] = {}
+        self._pr_widgets: dict[str, PulsingLabel] = {}
+        self._pr_approval_widgets: dict[str, IndicatorLabel] = {}
         self._cell_cache: dict[tuple[str, str], tuple[tuple, QWidget]] = {}
         self._scm_providers: dict[str, SCMProvider] = {}  # SCMType.value -> provider
         self._scm_worker: Optional[SCMPollerWorker] = None
@@ -122,8 +122,8 @@ class MonitorWindow(
         self._ui_ready = False  # suppress resizeEvent during init
         self._state_changed_at: dict[str, tuple[str, float]] = {}  # tag -> (state, timestamp)
         self._dismissed_new_status: set[str] = set()  # tags where user dismissed fire icon
-        self._mr_changed_at: dict[str, tuple[tuple, float]] = {}  # tag -> (snapshot, timestamp)
-        self._dismissed_mr_new_status: set[str] = set()  # tags where user dismissed MR fire
+        self._pr_changed_at: dict[str, tuple[tuple, float]] = {}  # tag -> (snapshot, timestamp)
+        self._dismissed_pr_new_status: set[str] = set()  # tags where user dismissed PR fire
         self._row_colors: dict[str, str] = self._prefs.get('row_colors', {})
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
@@ -161,7 +161,7 @@ class MonitorWindow(
         self.sessions = self._merge_sessions(get_active_sessions())
         self._update_table()
         self._init_scm_providers()
-        self._auto_track_mr_pinned()
+        self._auto_track_pr_pinned()
         self._maybe_start_notification_poll()
 
         # Auto-start Slack bot if it was enabled and isn't already running
@@ -228,8 +228,8 @@ class MonitorWindow(
             self.COL_QUEUE: 'Number of messages waiting in the queue',
             self.COL_CLIENT: 'CQ client process (green = connected)',
             self.COL_SLACK: 'Slack integration (output to DM thread)',
-            self.COL_MR: 'Merge/pull request tracking status',
-            self.COL_MR_BRANCH: 'MR/PR source branch',
+            self.COL_PR: 'Pull request tracking status',
+            self.COL_PR_BRANCH: 'PR source branch',
         }
         self._apply_header_tooltips()
 
@@ -321,14 +321,14 @@ class MonitorWindow(
         template_grid = QGridLayout()
         template_grid.setSpacing(4)
 
-        tpl_label = QLabel(MR_TEMPLATE_LABEL)
+        tpl_label = QLabel(PR_TEMPLATE_LABEL)
         template_grid.addWidget(tpl_label, 0, 0)
 
         self.template_combo = QComboBox()
         self.template_combo.setObjectName('template_combo')
         self.template_combo.setMinimumWidth(180)
         self.template_combo.setMaximumWidth(300)
-        self.template_combo.setToolTip(MR_TEMPLATE_TOOLTIP)
+        self.template_combo.setToolTip(PR_TEMPLATE_TOOLTIP)
         self._populate_template_combo()
         self.template_combo.currentIndexChanged.connect(
             self._on_template_combo_changed)
@@ -372,14 +372,14 @@ class MonitorWindow(
         bottom_layout.setContentsMargins(8, 0, 0, 0)
 
         self.bots_check = QCheckBox('Include git bots')
-        self.bots_check.setToolTip('Count bot comments as responses in MR thread detection')
+        self.bots_check.setToolTip('Count bot comments as responses in PR thread detection')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
         bottom_layout.addWidget(self.bots_check)
 
         self.auto_cq_check = QCheckBox("Auto '/cq' fetch")
         self.auto_cq_check.setToolTip(
-            'Automatically send /cq-tagged MR threads to CQ sessions each poll cycle'
+            'Automatically send /cq-tagged PR threads to CQ sessions each poll cycle'
         )
         self.auto_cq_check.setChecked(self._prefs.get('auto_fetch_cq', True))
         self.auto_cq_check.stateChanged.connect(self._toggle_auto_fetch_cq)
@@ -389,7 +389,7 @@ class MonitorWindow(
 
         # SCM connect buttons
         self.gitlab_btn = QPushButton('Connect GitLab')
-        self.gitlab_btn.setToolTip('Configure GitLab connection for MR tracking')
+        self.gitlab_btn.setToolTip('Configure GitLab connection for PR tracking')
         self.gitlab_btn.clicked.connect(self._open_gitlab_setup)
         bottom_layout.addWidget(self.gitlab_btn)
 

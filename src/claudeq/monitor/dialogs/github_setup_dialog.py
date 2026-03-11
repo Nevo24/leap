@@ -6,8 +6,8 @@ from typing import Any, Optional
 import requests as _requests
 from PyQt5.QtWidgets import QWidget
 
-from claudeq.monitor.mr_tracking.base import ConnectionTestResult
-from claudeq.monitor.mr_tracking.config import load_github_config, save_github_config
+from claudeq.monitor.pr_tracking.base import ConnectionTestResult
+from claudeq.monitor.pr_tracking.config import load_github_config, save_github_config
 from claudeq.monitor.dialogs.scm_setup_dialog import SCMSetupDialog
 
 logger = logging.getLogger(__name__)

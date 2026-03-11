@@ -8,7 +8,7 @@ Run Claude Code in any terminal (JetBrains, VS Code, iTerm2, and more). Queue me
 
 - **Smart message queueing** — Auto-sends when Claude is ready
 - **Real-time GUI monitoring** — See all sessions, jump across IDEs and projects
-- **MR/PR tracking** — GitLab & GitHub thread detection with `/cq` command support
+- **PR tracking** — GitLab & GitHub thread detection with `/cq` command support
 - **Slack integration** — Bidirectional messaging between Slack and CQ sessions
 
 ## Installation

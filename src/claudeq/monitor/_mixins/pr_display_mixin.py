@@ -1,4 +1,4 @@
-"""MR display, dock badge, and banner notification methods."""
+"""PR display, dock badge, and banner notification methods."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Optional
 from PyQt5 import sip
 from PyQt5.QtWidgets import QLabel
 
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus
-from claudeq.monitor.mr_tracking.config import get_dock_enabled, get_notification_prefs
+from claudeq.monitor.pr_tracking.base import PRState, PRStatus
+from claudeq.monitor.pr_tracking.config import get_dock_enabled, get_notification_prefs
 from claudeq.monitor.themes import current_theme
 from claudeq.monitor.ui.dock_badge import NotificationEvent, NotificationType
 from claudeq.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
@@ -21,50 +21,50 @@ else:
     _Base = object
 
 
-class MRDisplayMixin(_Base):
-    """Methods for MR column styling, dock badge updates, and banner notifications."""
+class PRDisplayMixin(_Base):
+    """Methods for PR column styling, dock badge updates, and banner notifications."""
 
-    def _update_mr_column(self) -> None:
-        """Update just the MR column widgets without rebuilding the whole table."""
+    def _update_pr_column(self) -> None:
+        """Update just the PR column widgets without rebuilding the whole table."""
         for row in range(self.table.rowCount()):
             tag_item = self.table.item(row, self.COL_TAG)
             if not tag_item:
                 continue
             tag = tag_item.text()
-            mr_widget = self._mr_widgets.get(tag)
-            if not mr_widget or sip.isdeleted(mr_widget):
-                self._mr_widgets.pop(tag, None)
-                self._mr_approval_widgets.pop(tag, None)
+            pr_widget = self._pr_widgets.get(tag)
+            if not pr_widget or sip.isdeleted(pr_widget):
+                self._pr_widgets.pop(tag, None)
+                self._pr_approval_widgets.pop(tag, None)
                 continue
-            approval_label = self._mr_approval_widgets.get(tag)
+            approval_label = self._pr_approval_widgets.get(tag)
             if approval_label and sip.isdeleted(approval_label):
-                self._mr_approval_widgets.pop(tag, None)
+                self._pr_approval_widgets.pop(tag, None)
                 approval_label = None
             try:
-                status = self._mr_statuses.get(tag)
-                self._apply_mr_status(mr_widget, approval_label, status)
-                mr_widget.set_has_unresponded(
-                    status is not None and status.state == MRState.UNRESPONDED
+                status = self._pr_statuses.get(tag)
+                self._apply_pr_status(pr_widget, approval_label, status)
+                pr_widget.set_has_unresponded(
+                    status is not None and status.state == PRState.UNRESPONDED
                 )
                 # Update fire label on the fast path
-                cell_widget = self.table.cellWidget(row, self.COL_MR)
+                cell_widget = self.table.cellWidget(row, self.COL_PR)
                 if cell_widget and not sip.isdeleted(cell_widget):
-                    fire_label = cell_widget.findChild(QLabel, '_mrFireLabel')
+                    fire_label = cell_widget.findChild(QLabel, '_prFireLabel')
                     if fire_label and not sip.isdeleted(fire_label):
-                        show = self._should_show_mr_fire(tag)
+                        show = self._should_show_pr_fire(tag)
                         fire_label.setText('\U0001f525' if show else '')
                         fire_label.setToolTip(
-                            self._mr_fire_tooltip(tag) if show else '')
+                            self._pr_fire_tooltip(tag) if show else '')
             except RuntimeError:
                 # Widget was deleted, remove from cache
-                self._mr_widgets.pop(tag, None)
-                self._mr_approval_widgets.pop(tag, None)
+                self._pr_widgets.pop(tag, None)
+                self._pr_approval_widgets.pop(tag, None)
 
-    def _apply_mr_status(
+    def _apply_pr_status(
         self, widget: PulsingLabel, approval_widget: Optional[IndicatorLabel],
-        status: Optional[MRStatus]
+        status: Optional[PRStatus]
     ) -> None:
-        """Apply MR status to the status and approval indicator widgets."""
+        """Apply PR status to the status and approval indicator widgets."""
         # Hide approval label by default
         if approval_widget:
             approval_widget.setVisible(False)
@@ -74,7 +74,7 @@ class MRDisplayMixin(_Base):
             widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('No SCM provider configured')
             widget.set_pulsing(False)
-            widget.set_mr_url(None)
+            widget.set_pr_url(None)
             widget.set_indicator_help(None)
             return
 
@@ -82,58 +82,58 @@ class MRDisplayMixin(_Base):
         if approval_widget and status.approved:
             approval_widget.setText('\U0001f44d')
             approval_widget.setVisible(True)
-            approval_widget.set_click_url(status.mr_url)
+            approval_widget.set_click_url(status.pr_url)
             if status.approved_by:
                 names = ', '.join(status.approved_by)
                 approval_widget.set_indicator_help(f'Approved by {names}')
             else:
-                approval_widget.set_indicator_help('MR approved')
+                approval_widget.set_indicator_help('PR approved')
 
-        if status.state == MRState.NOT_CONFIGURED:
+        if status.state == PRState.NOT_CONFIGURED:
             widget.setText('N/A')
             widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('')
             widget.set_pulsing(False)
-            widget.set_mr_url(None)
+            widget.set_pr_url(None)
             widget.set_indicator_help('No SCM provider configured')
 
-        elif status.state == MRState.NO_MR:
-            widget.setText('No MR')
+        elif status.state == PRState.NO_PR:
+            widget.setText('No PR')
             widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('')
             widget.set_pulsing(False)
-            widget.set_mr_url(None)
-            widget.set_indicator_help('No open MR for this branch')
+            widget.set_pr_url(None)
+            widget.set_indicator_help('No open PR for this branch')
 
-        elif status.state == MRState.ALL_RESPONDED:
+        elif status.state == PRState.ALL_RESPONDED:
             widget.setText('\u2713')
             widget.setStyleSheet(f'color: {current_theme().accent_green}; font-weight: bold;')
             approval_line = self._format_approval_line(status)
             widget.setToolTip('')
             widget.set_pulsing(False)
-            widget.set_mr_url(status.mr_url)
+            widget.set_pr_url(status.pr_url)
             widget.set_indicator_help(
-                f'MR !{status.mr_iid}: {status.mr_title}\n'
+                f'PR !{status.pr_iid}: {status.pr_title}\n'
                 f'All threads responded.{approval_line}'
             )
 
-        elif status.state == MRState.UNRESPONDED:
+        elif status.state == PRState.UNRESPONDED:
             widget.setText(f'\U0001f4ac {status.unresponded_count}')
             approval_line = self._format_approval_line(status)
             widget.setToolTip('')
             widget.set_pulsing(True)
             # Jump directly to first unresolved comment thread
-            url = status.mr_url
+            url = status.pr_url
             if url and status.first_unresponded_note_id:
                 url = f'{url}#note_{status.first_unresponded_note_id}'
-            widget.set_mr_url(url)
+            widget.set_pr_url(url)
             widget.set_indicator_help(
-                f'MR !{status.mr_iid}: {status.mr_title}\n'
+                f'PR !{status.pr_iid}: {status.pr_title}\n'
                 f'{status.unresponded_count} unresponded thread(s).{approval_line}'
             )
 
     @staticmethod
-    def _format_approval_line(status: MRStatus) -> str:
+    def _format_approval_line(status: PRStatus) -> str:
         """Format an approval line for tooltips, including approver names."""
         if not status.approved:
             return ''
@@ -143,16 +143,16 @@ class MRDisplayMixin(_Base):
         return '\nApproved'
 
     def _update_dock_badge(self) -> None:
-        """Update the dock badge with number of MRs changed since last window focus."""
+        """Update the dock badge with number of PRs changed since last window focus."""
         dock_enabled = get_dock_enabled(self._prefs)
         events = self._dock_badge.update(
-            self._mr_statuses, self.isActiveWindow(), dock_enabled,
+            self._pr_statuses, self.isActiveWindow(), dock_enabled,
         )
         self._send_banner_notifications(events)
 
     def _clear_dock_badge(self) -> None:
-        """Clear the dock badge and snapshot current MR statuses as seen."""
-        self._dock_badge.clear(self._mr_statuses)
+        """Clear the dock badge and snapshot current PR statuses as seen."""
+        self._dock_badge.clear(self._pr_statuses)
         self._banner_notified = set()
 
     def _send_banner_notifications(self, events: list[NotificationEvent]) -> None:
@@ -183,22 +183,22 @@ class MRDisplayMixin(_Base):
     def _format_banner_text(event: NotificationEvent) -> tuple[str, str]:
         """Format subtitle and body for a macOS banner notification."""
         tag = event.tag
-        mr_ref = ''
-        if event.mr_iid:
-            title = event.mr_title or ''
-            mr_ref = f"MR !{event.mr_iid}"
+        pr_ref = ''
+        if event.pr_iid:
+            title = event.pr_title or ''
+            pr_ref = f"PR !{event.pr_iid}"
             if title:
-                mr_ref += f" '{title}'"
+                pr_ref += f" '{title}'"
 
-        if event.type == NotificationType.MR_UNRESPONDED:
-            return (tag, f"{mr_ref} has {event.unresponded_count} unresponded thread(s)")
-        elif event.type == NotificationType.MR_ALL_RESPONDED:
-            return (tag, f"{mr_ref} — all threads responded")
-        elif event.type == NotificationType.MR_APPROVED:
+        if event.type == NotificationType.PR_UNRESPONDED:
+            return (tag, f"{pr_ref} has {event.unresponded_count} unresponded thread(s)")
+        elif event.type == NotificationType.PR_ALL_RESPONDED:
+            return (tag, f"{pr_ref} — all threads responded")
+        elif event.type == NotificationType.PR_APPROVED:
             if event.approved_by:
                 names = ', '.join(event.approved_by)
-                return (tag, f"{mr_ref} approved by {names}")
-            return (tag, f"{mr_ref} approved")
+                return (tag, f"{pr_ref} approved by {names}")
+            return (tag, f"{pr_ref} approved")
         elif event.type == NotificationType.SESSION_COMPLETED:
             return (tag, 'Claude finished processing')
         elif event.type == NotificationType.SESSION_NEEDS_PERMISSION:

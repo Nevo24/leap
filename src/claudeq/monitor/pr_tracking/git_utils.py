@@ -28,41 +28,41 @@ class GitRemoteInfo:
 
 
 @dataclass
-class ParsedMRUrl:
-    """Parsed MR/PR URL information."""
+class ParsedPRUrl:
+    """Parsed PR URL information."""
     scm_type: SCMType
     host_url: str
     project_path: str
-    mr_iid: int
+    pr_iid: int
 
 
 @dataclass
 class ParsedProjectUrl:
-    """Parsed project URL information (no MR/PR number)."""
+    """Parsed project URL information (no PR number)."""
     scm_type: SCMType
     host_url: str
     project_path: str
     commit: Optional[str] = None  # Commit SHA if parsed from a commit URL
 
 
-def parse_mr_url(
+def parse_pr_url(
     url: str,
     gitlab_config: Optional[dict[str, Any]] = None,
     github_config: Optional[dict[str, Any]] = None,
-) -> Optional[ParsedMRUrl]:
-    """Parse a GitLab MR or GitHub PR URL.
+) -> Optional[ParsedPRUrl]:
+    """Parse a GitLab PR or GitHub PR URL.
 
     Supported formats:
         GitLab: https://gitlab.com/group/project/-/merge_requests/42
         GitHub: https://github.com/owner/repo/pull/42
 
     Args:
-        url: The MR/PR URL.
+        url: The PR URL.
         gitlab_config: Optional GitLab config dict for custom host detection.
         github_config: Optional GitHub config dict for custom host detection.
 
     Returns:
-        ParsedMRUrl or None if the URL cannot be parsed.
+        ParsedPRUrl or None if the URL cannot be parsed.
     """
     # GitLab: https://<host>/<project_path>/-/merge_requests/<iid>
     m = re.match(r'https?://([^/]+)/(.+?)/-/merge_requests/(\d+)', url)
@@ -72,11 +72,11 @@ def parse_mr_url(
         # URL structure is exclusively GitLab
         if scm_type == SCMType.UNKNOWN:
             scm_type = SCMType.GITLAB
-        return ParsedMRUrl(
+        return ParsedPRUrl(
             scm_type=scm_type,
             host_url=host_url,
             project_path=m.group(2),
-            mr_iid=int(m.group(3)),
+            pr_iid=int(m.group(3)),
         )
 
     # GitHub: https://<host>/<owner>/<repo>/pull/<number>
@@ -87,11 +87,11 @@ def parse_mr_url(
         # URL structure is exclusively GitHub
         if scm_type == SCMType.UNKNOWN:
             scm_type = SCMType.GITHUB
-        return ParsedMRUrl(
+        return ParsedPRUrl(
             scm_type=scm_type,
             host_url=host_url,
             project_path=m.group(2),
-            mr_iid=int(m.group(3)),
+            pr_iid=int(m.group(3)),
         )
 
     return None
@@ -153,7 +153,7 @@ def refine_scm_type(host_url: str, scm_type: SCMType) -> SCMType:
         return scm_type
 
     # Import here to avoid circular import (config imports are lightweight)
-    from claudeq.monitor.mr_tracking.config import (
+    from claudeq.monitor.pr_tracking.config import (
         load_github_config, load_gitlab_config,
     )
 

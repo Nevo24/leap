@@ -88,7 +88,7 @@ IMAGE_EXTENSIONS: Final[tuple[str, ...]] = (
 )
 
 # SCM polling
-SCM_POLL_INTERVAL: Final[int] = 30  # seconds between MR/PR status polls
+SCM_POLL_INTERVAL: Final[int] = 30  # seconds between PR status polls
 SCM_MAX_CONCURRENT_POLLS: Final[int] = 10  # max parallel API requests per poll cycle
 
 # JetBrains IDE process names

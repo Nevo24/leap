@@ -18,8 +18,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPalette
 
-from claudeq.monitor.mr_tracking.base import MRState
-from claudeq.monitor.mr_tracking.config import (
+from claudeq.monitor.pr_tracking.base import PRState
+from claudeq.monitor.pr_tracking.config import (
     get_dock_enabled, get_notification_prefs, load_cq_direct_template,
     load_saved_templates, load_selected_direct_template_name,
     load_selected_template_name,
@@ -32,7 +32,7 @@ from claudeq.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLa
 from claudeq.monitor.themes import current_theme, ensure_contrast
 from claudeq.monitor.ui.table_helpers import (
     BORDER_GROUP, BORDER_INTRA,
-    MAX_COMBO_DISPLAY, MR_TEMPLATE_TOOLTIP,
+    MAX_COMBO_DISPLAY, PR_TEMPLATE_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
     ColorPickerPopup, HoverIconButton, column_border_type,
     active_btn_style, close_btn_style, menu_btn_style,
@@ -195,26 +195,26 @@ class TableBuilderMixin(_Base):
         self._cell_cache[(tag, col)] = (
             state, self.table.cellWidget(row, table_col))
 
-    def _should_show_mr_fire(self, tag: str) -> bool:
-        """Return True if the MR fire indicator should be shown for *tag*."""
+    def _should_show_pr_fire(self, tag: str) -> bool:
+        """Return True if the PR fire indicator should be shown for *tag*."""
         threshold = self._prefs.get('new_status_seconds', 60)
         if threshold <= 0:
             return False
-        if tag in self._dismissed_mr_new_status:
+        if tag in self._dismissed_pr_new_status:
             return False
-        entry = self._mr_changed_at.get(tag)
+        entry = self._pr_changed_at.get(tag)
         if entry is None:
             return False
         changed_at = entry[1]
         return (time.time() - changed_at) < threshold
 
-    def _mr_fire_tooltip(self, tag: str) -> str:
-        """Build tooltip text for the MR fire indicator."""
-        entry = self._mr_changed_at.get(tag)
+    def _pr_fire_tooltip(self, tag: str) -> str:
+        """Build tooltip text for the PR fire indicator."""
+        entry = self._pr_changed_at.get(tag)
         if not entry:
             return ''
         ago = int(time.time() - entry[1])
-        return f'MR status changed {ago}s ago \u2014 click to dismiss'
+        return f'PR status changed {ago}s ago \u2014 click to dismiss'
 
     def _build_tag_cell(self, row: int, tag: str,
                         row_color: Optional[str] = None) -> None:
@@ -427,14 +427,14 @@ class TableBuilderMixin(_Base):
     def _update_table(self) -> None:
         """Update table with current sessions.
 
-        Cell widgets for button columns (Delete, Server, Client, MR) are
+        Cell widgets for button columns (Delete, Server, Client, PR) are
         cached by ``(tag, column)`` with a state key.  When the state key
         matches and the widget is still at the correct row, the cell is
         left untouched — preserving active tooltips.  When the state
         changes, the cell is rebuilt from scratch and re-cached.
 
-        MR status widgets (PulsingLabel, IndicatorLabel) are additionally
-        cached in ``_mr_widgets`` / ``_mr_approval_widgets`` to preserve
+        PR status widgets (PulsingLabel, IndicatorLabel) are additionally
+        cached in ``_pr_widgets`` / ``_pr_approval_widgets`` to preserve
         hover popups via ``set_preserve_popup()``.
         """
         new_count = len(self.sessions)
@@ -447,20 +447,20 @@ class TableBuilderMixin(_Base):
         tooltips_were_enabled = getattr(app, 'tooltips_enabled', True)
         app.tooltips_enabled = False
         try:
-            # Track which cached MR widgets are stale (tag no longer in table).
+            # Track which cached PR widgets are stale (tag no longer in table).
             # Widgets for still-present tracked tags are reused to preserve
             # hover popups across table rebuilds.
-            stale_mr_tags = set(self._mr_widgets.keys())
+            stale_pr_tags = set(self._pr_widgets.keys())
 
             if not self.sessions:
-                # All MR widgets are stale — stop pulsing and clear
-                for w in self._mr_widgets.values():
+                # All PR widgets are stale — stop pulsing and clear
+                for w in self._pr_widgets.values():
                     try:
                         w.set_pulsing(False)
                     except RuntimeError:
                         pass
-                self._mr_widgets.clear()
-                self._mr_approval_widgets.clear()
+                self._pr_widgets.clear()
+                self._pr_approval_widgets.clear()
                 self._cell_cache.clear()
                 self.table.setRowCount(1)
                 for col in range(self.table.columnCount()):
@@ -531,11 +531,11 @@ class TableBuilderMixin(_Base):
                 # Server Branch always shows the live branch
                 server_branch = session['branch']
 
-                # MR Branch shows the MR's source branch if tracked
+                # PR Branch shows the PR's source branch if tracked
                 if pinned_data.get('remote_project_path'):
-                    mr_branch = pinned_branch or 'N/A'
+                    pr_branch = pinned_branch or 'N/A'
                 else:
-                    mr_branch = 'N/A'
+                    pr_branch = 'N/A'
 
                 if is_dead:
                     remote_path = pinned_data.get('remote_project_path', '')
@@ -1019,239 +1019,239 @@ class TableBuilderMixin(_Base):
                     self._cache_cell(tag, 'slack', slack_state,
                                      row, self.COL_SLACK)
 
-                # ── MR column: "Track MR" → "Checking..." → tracked
+                # ── PR column: "Track PR" → "Checking..." → tracked
                 if tag in self._checking_tags:
-                    mr_state = ('checking',)
-                    if not self._cell_cached(tag, 'mr', mr_state,
-                                             row, self.COL_MR):
-                        if self.table.columnSpan(row, self.COL_MR) > 1:
-                            self.table.setSpan(row, self.COL_MR, 1, 1)
+                    pr_state = ('checking',)
+                    if not self._cell_cached(tag, 'pr', pr_state,
+                                             row, self.COL_PR):
+                        if self.table.columnSpan(row, self.COL_PR) > 1:
+                            self.table.setSpan(row, self.COL_PR, 1, 1)
                         checking_label = PulsingLabel()
                         checking_label.setText('Checking...')
                         checking_label.setStyleSheet(
                             'color: grey; font-style: italic;')
-                        self._set_cell_widget(row, self.COL_MR,
+                        self._set_cell_widget(row, self.COL_PR,
                                               checking_label)
-                        self._cache_cell(tag, 'mr', mr_state,
-                                         row, self.COL_MR)
-                    self.table.removeCellWidget(row, self.COL_MR_BRANCH)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch,
+                        self._cache_cell(tag, 'pr', pr_state,
+                                         row, self.COL_PR)
+                    self.table.removeCellWidget(row, self.COL_PR_BRANCH)
+                    self._set_cell_text(row, self.COL_PR_BRANCH, pr_branch,
                                         row_color)
 
                 elif tag in self._tracked_tags:
-                    stale_mr_tags.discard(tag)
+                    stale_pr_tags.discard(tag)
 
-                    # Get or create MR widgets
-                    mr_widget = self._mr_widgets.get(tag)
-                    if mr_widget and not sip.isdeleted(mr_widget):
-                        reused_mr = True
+                    # Get or create PR widgets
+                    pr_widget = self._pr_widgets.get(tag)
+                    if pr_widget and not sip.isdeleted(pr_widget):
+                        reused_pr = True
                     else:
-                        mr_widget = PulsingLabel()
-                        self._mr_widgets[tag] = mr_widget
-                        reused_mr = False
+                        pr_widget = PulsingLabel()
+                        self._pr_widgets[tag] = pr_widget
+                        reused_pr = False
 
-                    approval_label = self._mr_approval_widgets.get(tag)
+                    approval_label = self._pr_approval_widgets.get(tag)
                     if approval_label and not sip.isdeleted(approval_label):
                         reused_approval = True
                     else:
                         approval_label = IndicatorLabel()
-                        self._mr_approval_widgets[tag] = approval_label
+                        self._pr_approval_widgets[tag] = approval_label
                         reused_approval = False
 
-                    # Reuse MR container if widgets survived and cell is
+                    # Reuse PR container if widgets survived and cell is
                     # still at the right row.
-                    mr_state = ('tracked', self._should_show_mr_fire(tag))
-                    mr_cached = (
-                        reused_mr and reused_approval
-                        and self._cell_cached(tag, 'mr', mr_state,
-                                              row, self.COL_MR)
+                    pr_state = ('tracked', self._should_show_pr_fire(tag))
+                    pr_cached = (
+                        reused_pr and reused_approval
+                        and self._cell_cached(tag, 'pr', pr_state,
+                                              row, self.COL_PR)
                     )
-                    if not mr_cached:
-                        if self.table.columnSpan(row, self.COL_MR) > 1:
-                            self.table.setSpan(row, self.COL_MR, 1, 1)
+                    if not pr_cached:
+                        if self.table.columnSpan(row, self.COL_PR) > 1:
+                            self.table.setSpan(row, self.COL_PR, 1, 1)
 
-                        if reused_mr:
-                            mr_widget.set_preserve_popup(True)
+                        if reused_pr:
+                            pr_widget.set_preserve_popup(True)
                         if reused_approval:
                             approval_label.set_preserve_popup(True)
 
-                        mr_container = QWidget()
-                        mr_layout = QHBoxLayout(mr_container)
-                        mr_layout.setContentsMargins(0, 0, 0, 0)
-                        mr_layout.setSpacing(2)
+                        pr_container = QWidget()
+                        pr_layout = QHBoxLayout(pr_container)
+                        pr_layout.setContentsMargins(0, 0, 0, 0)
+                        pr_layout.setSpacing(2)
 
-                        mr_x = QPushButton('X')
-                        mr_x.setFixedSize(24, mr_x.sizeHint().height())
-                        mr_x.setStyleSheet(close_btn_style())
-                        mr_x.setProperty('_btn_role', 'close')
-                        mr_x.setToolTip(f'Stop tracking MR for {tag}')
-                        mr_x.clicked.connect(
+                        pr_x = QPushButton('X')
+                        pr_x.setFixedSize(24, pr_x.sizeHint().height())
+                        pr_x.setStyleSheet(close_btn_style())
+                        pr_x.setProperty('_btn_role', 'close')
+                        pr_x.setToolTip(f'Stop tracking PR for {tag}')
+                        pr_x.clicked.connect(
                             lambda checked, t=tag: self._stop_tracking(t)
                         )
-                        mr_layout.addWidget(mr_x, 0, Qt.AlignVCenter)
+                        pr_layout.addWidget(pr_x, 0, Qt.AlignVCenter)
 
-                        mr_layout.addStretch()
-                        mr_layout.addWidget(approval_label)
-                        mr_layout.addWidget(mr_widget)
-                        mr_layout.addStretch()
+                        pr_layout.addStretch()
+                        pr_layout.addWidget(approval_label)
+                        pr_layout.addWidget(pr_widget)
+                        pr_layout.addStretch()
 
                         # Right-aligned fire icon (matches Status column
                         # pattern — always occupies space; text hidden when
                         # inactive to keep the centered label stable)
-                        show_mr_fire = self._should_show_mr_fire(tag)
-                        mr_fire_label = QLabel(
-                            '\U0001f525' if show_mr_fire else '')
-                        mr_fire_label.setObjectName('_mrFireLabel')
-                        mr_fire_label.setFixedWidth(24)
-                        mr_fire_label.setAlignment(
+                        show_pr_fire = self._should_show_pr_fire(tag)
+                        pr_fire_label = QLabel(
+                            '\U0001f525' if show_pr_fire else '')
+                        pr_fire_label.setObjectName('_prFireLabel')
+                        pr_fire_label.setFixedWidth(24)
+                        pr_fire_label.setAlignment(
                             Qt.AlignRight | Qt.AlignVCenter)
-                        if show_mr_fire:
-                            mr_fire_label.setToolTip(
-                                self._mr_fire_tooltip(tag))
+                        if show_pr_fire:
+                            pr_fire_label.setToolTip(
+                                self._pr_fire_tooltip(tag))
 
-                        def _make_mr_dismiss(t: str = tag) -> Callable:
+                        def _make_pr_dismiss(t: str = tag) -> Callable:
                             def _dismiss(event: object) -> None:
-                                if t not in self._dismissed_mr_new_status:
-                                    self._dismissed_mr_new_status.add(t)
+                                if t not in self._dismissed_pr_new_status:
+                                    self._dismissed_pr_new_status.add(t)
                                     self._update_table()
                             return _dismiss
-                        mr_fire_label.mousePressEvent = _make_mr_dismiss()
-                        mr_layout.addWidget(mr_fire_label)
+                        pr_fire_label.mousePressEvent = _make_pr_dismiss()
+                        pr_layout.addWidget(pr_fire_label)
 
-                        self._set_cell_widget(row, self.COL_MR,
-                                              mr_container)
+                        self._set_cell_widget(row, self.COL_PR,
+                                              pr_container)
                         self._apply_row_color_to_widget(
-                            mr_container, row_color)
-                        self._cache_cell(tag, 'mr', mr_state,
-                                         row, self.COL_MR)
+                            pr_container, row_color)
+                        self._cache_cell(tag, 'pr', pr_state,
+                                         row, self.COL_PR)
 
-                        if reused_mr:
-                            mr_widget.set_preserve_popup(False)
+                        if reused_pr:
+                            pr_widget.set_preserve_popup(False)
                         if reused_approval:
                             approval_label.set_preserve_popup(False)
 
-                    # Always update MR widget properties (change each poll)
-                    mr_status = self._mr_statuses.get(tag)
-                    self._apply_mr_status(mr_widget, approval_label,
-                                          mr_status)
-                    mr_widget.set_has_unresponded(
-                        mr_status is not None
-                        and mr_status.state == MRState.UNRESPONDED
+                    # Always update PR widget properties (change each poll)
+                    pr_status = self._pr_statuses.get(tag)
+                    self._apply_pr_status(pr_widget, approval_label,
+                                          pr_status)
+                    pr_widget.set_has_unresponded(
+                        pr_status is not None
+                        and pr_status.state == PRState.UNRESPONDED
                     )
-                    mr_widget.set_server_running(not is_dead)
-                    if not reused_mr:
-                        mr_widget.set_send_to_cq_callback(
+                    pr_widget.set_server_running(not is_dead)
+                    if not reused_pr:
+                        pr_widget.set_send_to_cq_callback(
                             lambda t=tag: self._send_all_threads_to_cq(t)
                         )
-                        mr_widget.set_send_combined_to_cq_callback(
+                        pr_widget.set_send_combined_to_cq_callback(
                             lambda t=tag:
                                 self._send_all_threads_combined_to_cq(t)
                         )
-                        mr_widget.set_send_cq_threads_callback(
+                        pr_widget.set_send_cq_threads_callback(
                             lambda t=tag: self._send_cq_threads_to_cq(t)
                         )
-                        mr_widget.set_send_cq_threads_combined_callback(
+                        pr_widget.set_send_cq_threads_combined_callback(
                             lambda t=tag:
                                 self._send_cq_threads_combined_to_cq(t)
                         )
-                    mr_widget.set_auto_fetch_cq(
+                    pr_widget.set_auto_fetch_cq(
                         self._prefs.get('auto_fetch_cq', True)
                     )
-                    self.table.removeCellWidget(row, self.COL_MR_BRANCH)
-                    self._set_cell_text(row, self.COL_MR_BRANCH, mr_branch,
+                    self.table.removeCellWidget(row, self.COL_PR_BRANCH)
+                    self._set_cell_text(row, self.COL_PR_BRANCH, pr_branch,
                                         row_color)
 
                 else:
-                    # Not tracked — "Track MR" button
-                    mr_state = ('untracked', is_dead,
+                    # Not tracked — "Track PR" button
+                    pr_state = ('untracked', is_dead,
                                     bool(pinned_data.get('remote_project_path')))
-                    if not self._cell_cached(tag, 'mr', mr_state,
-                                             row, self.COL_MR):
-                        if self.table.columnSpan(row, self.COL_MR) > 1:
-                            self.table.setSpan(row, self.COL_MR, 1, 1)
-                        is_mr_pinned_row = bool(
+                    if not self._cell_cached(tag, 'pr', pr_state,
+                                             row, self.COL_PR):
+                        if self.table.columnSpan(row, self.COL_PR) > 1:
+                            self.table.setSpan(row, self.COL_PR, 1, 1)
+                        is_pr_pinned_row = bool(
                             pinned_data.get('remote_project_path'))
-                        track_btn = QPushButton('Track MR')
-                        if is_dead and not is_mr_pinned_row:
+                        track_btn = QPushButton('Track PR')
+                        if is_dead and not is_pr_pinned_row:
                             track_btn.setToolTip(
-                                'Start a server first to discover MR from branch')
+                                'Start a server first to discover PR from branch')
                             track_btn.setEnabled(False)
                         else:
                             track_btn.setToolTip(
-                                f'Start tracking MR/PR for {tag}')
+                                f'Start tracking PR for {tag}')
                         track_btn.setStyleSheet('font-size: 11px;')
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
                         )
-                        self._set_cell_widget(row, self.COL_MR, track_btn)
-                        self._cache_cell(tag, 'mr', mr_state,
-                                         row, self.COL_MR)
+                        self._set_cell_widget(row, self.COL_PR, track_btn)
+                        self._cache_cell(tag, 'pr', pr_state,
+                                         row, self.COL_PR)
 
-                    # MR Branch: show stored branch + X button if MR-pinned
-                    is_mr_pinned = (
+                    # PR Branch: show stored branch + X button if PR-pinned
+                    is_pr_pinned = (
                         pinned_data.get('remote_project_path')
-                        and mr_branch != 'N/A'
+                        and pr_branch != 'N/A'
                     )
-                    if is_mr_pinned:
-                        mr_br_state = ('untracked_pinned', mr_branch,
+                    if is_pr_pinned:
+                        pr_br_state = ('untracked_pinned', pr_branch,
                                        row_color)
-                        if not self._cell_cached(tag, 'mr_branch', mr_br_state,
-                                                 row, self.COL_MR_BRANCH):
-                            mr_br_container = QWidget()
-                            mr_br_layout = QHBoxLayout(mr_br_container)
-                            mr_br_layout.setContentsMargins(0, 0, 0, 0)
-                            mr_br_layout.setSpacing(4)
+                        if not self._cell_cached(tag, 'pr_branch', pr_br_state,
+                                                 row, self.COL_PR_BRANCH):
+                            pr_br_container = QWidget()
+                            pr_br_layout = QHBoxLayout(pr_br_container)
+                            pr_br_layout.setContentsMargins(0, 0, 0, 0)
+                            pr_br_layout.setSpacing(4)
 
-                            mr_br_x = QPushButton('X')
-                            mr_br_x.setFixedSize(24, mr_br_x.sizeHint().height())
-                            mr_br_x.setStyleSheet(close_btn_style())
-                            mr_br_x.setProperty('_btn_role', 'close')
-                            mr_br_x.setToolTip(
-                                f'Clear pinned MR data for {tag}')
-                            mr_br_x.clicked.connect(
+                            pr_br_x = QPushButton('X')
+                            pr_br_x.setFixedSize(24, pr_br_x.sizeHint().height())
+                            pr_br_x.setStyleSheet(close_btn_style())
+                            pr_br_x.setProperty('_btn_role', 'close')
+                            pr_br_x.setToolTip(
+                                f'Clear pinned PR data for {tag}')
+                            pr_br_x.clicked.connect(
                                 lambda checked, t=tag:
-                                    self._clear_pinned_mr_data(t)
+                                    self._clear_pinned_pr_data(t)
                             )
-                            mr_br_layout.addWidget(
-                                mr_br_x, 0, Qt.AlignVCenter)
+                            pr_br_layout.addWidget(
+                                pr_br_x, 0, Qt.AlignVCenter)
 
-                            mr_br_label = ElidedLabel(mr_branch)
-                            mr_br_label.setAlignment(Qt.AlignCenter)
-                            mr_br_label.setToolTip(mr_branch)
-                            mr_br_layout.addWidget(mr_br_label, 1)
+                            pr_br_label = ElidedLabel(pr_branch)
+                            pr_br_label.setAlignment(Qt.AlignCenter)
+                            pr_br_label.setToolTip(pr_branch)
+                            pr_br_layout.addWidget(pr_br_label, 1)
 
                             # Ensure a table item exists with the tooltip
                             # so the cell-widget tooltip path can find it.
                             # Clear display text so it doesn't render
                             # through behind the widget.
-                            item = self.table.item(row, self.COL_MR_BRANCH)
+                            item = self.table.item(row, self.COL_PR_BRANCH)
                             if not item:
                                 item = QTableWidgetItem('')
                                 self.table.setItem(
-                                    row, self.COL_MR_BRANCH, item)
+                                    row, self.COL_PR_BRANCH, item)
                             item.setText('')
-                            item.setToolTip(mr_branch)
+                            item.setToolTip(pr_branch)
                             self._set_cell_widget(
-                                row, self.COL_MR_BRANCH, mr_br_container)
+                                row, self.COL_PR_BRANCH, pr_br_container)
                             self._apply_row_color_to_widget(
-                                mr_br_container, row_color)
+                                pr_br_container, row_color)
                             self._cache_cell(
-                                tag, 'mr_branch', mr_br_state,
-                                row, self.COL_MR_BRANCH)
+                                tag, 'pr_branch', pr_br_state,
+                                row, self.COL_PR_BRANCH)
                     else:
-                        self.table.removeCellWidget(row, self.COL_MR_BRANCH)
-                        self._set_cell_text(row, self.COL_MR_BRANCH, 'N/A',
+                        self.table.removeCellWidget(row, self.COL_PR_BRANCH)
+                        self._set_cell_text(row, self.COL_PR_BRANCH, 'N/A',
                                             row_color)
 
-            # Clean up stale MR widgets for tags no longer shown
-            for stale_tag in stale_mr_tags:
-                w = self._mr_widgets.pop(stale_tag, None)
+            # Clean up stale PR widgets for tags no longer shown
+            for stale_tag in stale_pr_tags:
+                w = self._pr_widgets.pop(stale_tag, None)
                 if w:
                     try:
                         w.set_pulsing(False)
                     except RuntimeError:
                         pass
-                self._mr_approval_widgets.pop(stale_tag, None)
+                self._pr_approval_widgets.pop(stale_tag, None)
 
             # Clean up stale cell cache entries for tags no longer shown
             current_tags = {s['tag'] for s in self.sessions}
@@ -1501,7 +1501,7 @@ class TableBuilderMixin(_Base):
     def _set_auto_send_mode(self, tag: str, mode: str) -> None:
         """Send set_auto_send_mode to the CQ server."""
         from claudeq.utils.constants import SOCKET_DIR
-        from claudeq.monitor.mr_tracking.config import save_pinned_sessions
+        from claudeq.monitor.pr_tracking.config import save_pinned_sessions
 
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
@@ -1812,7 +1812,7 @@ class TableBuilderMixin(_Base):
         self._populate_template_combo()
         self._populate_direct_template_combo()
 
-    # -- Template combo helpers (shared logic for MR and direct combos) ----
+    # -- Template combo helpers (shared logic for PR and direct combos) ----
 
     @staticmethod
     def _populate_combo(
@@ -1882,14 +1882,14 @@ class TableBuilderMixin(_Base):
         """Reload template combo items from saved presets and selection."""
         self._populate_combo(
             self.template_combo, load_selected_template_name,
-            MR_TEMPLATE_TOOLTIP,
+            PR_TEMPLATE_TOOLTIP,
         )
 
     def _on_template_combo_changed(self) -> None:
-        """Handle MR thread context combo selection change.
+        """Handle PR thread context combo selection change.
 
         Rejects multi-message presets with a popup and reverts to the
-        previous selection, since MR thread context must be single-message.
+        previous selection, since PR thread context must be single-message.
         """
         text = self.template_combo.currentText()
         idx = self.template_combo.currentIndex()
@@ -1901,7 +1901,7 @@ class TableBuilderMixin(_Base):
                 QMessageBox.warning(
                     self, 'Multi-Message Preset',
                     f"'{name}' has {len(messages)} messages.\n\n"
-                    'MR thread context must be a single-message preset. '
+                    'PR thread context must be a single-message preset. '
                     'Use the Message bundle combo for multi-message presets.',
                 )
                 # Revert to previous selection
@@ -1920,7 +1920,7 @@ class TableBuilderMixin(_Base):
                 return
         self._on_combo_changed(
             self.template_combo, save_selected_template_name,
-            MR_TEMPLATE_TOOLTIP,
+            PR_TEMPLATE_TOOLTIP,
         )
 
     def _populate_direct_template_combo(self) -> None:
@@ -1966,7 +1966,7 @@ class TableBuilderMixin(_Base):
         for label in widget.findChildren(QLabel):
             label_text = label.text()
             if label_text and label.objectName() not in (
-                '_fireLabel', '_mrFireLabel',
+                '_fireLabel', '_prFireLabel',
             ):
                 return label_text
         if isinstance(widget, QLabel) and widget.text():

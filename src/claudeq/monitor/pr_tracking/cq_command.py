@@ -1,4 +1,4 @@
-"""Data model and message formatting for /cq commands from SCM MR/PR discussion threads."""
+"""Data model and message formatting for /cq commands from SCM PR discussion threads."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from typing import Optional
 
 @dataclass
 class CqCommand:
-    """A /cq command detected in an SCM MR/PR discussion thread."""
+    """A /cq command detected in an SCM PR discussion thread."""
     project_path: str
-    mr_iid: int
-    mr_title: str
-    mr_url: str
+    pr_iid: int
+    pr_title: str
+    pr_url: str
     discussion_id: str
     thread_notes: list[dict[str, str]]  # [{author, body, created_at}, ...]
     file_path: Optional[str] = None
@@ -26,7 +26,7 @@ def format_cq_message(cmd: CqCommand) -> str:
     parts = []
 
     # Header
-    header = f"MR !{cmd.mr_iid}: \"{cmd.mr_title}\""
+    header = f"PR !{cmd.pr_iid}: \"{cmd.pr_title}\""
     if cmd.thread_notes:
         first_author = cmd.thread_notes[0].get('author', 'unknown')
         header += f" — Thread from @{first_author}"
@@ -60,7 +60,7 @@ def format_cq_message(cmd: CqCommand) -> str:
         parts.append("")
 
     # Closing instruction
-    parts.append(f"Please address the review feedback above from MR !{cmd.mr_iid}.")
-    parts.append(f"MR URL: {cmd.mr_url}")
+    parts.append(f"Please address the review feedback above from PR !{cmd.pr_iid}.")
+    parts.append(f"PR URL: {cmd.pr_url}")
 
     return "\n".join(parts)

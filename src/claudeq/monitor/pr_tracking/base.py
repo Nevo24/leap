@@ -6,31 +6,31 @@ from enum import Enum
 from typing import Optional
 
 
-class MRState(Enum):
-    """State of a merge/pull request."""
+class PRState(Enum):
+    """State of a pull request."""
     NOT_CONFIGURED = "not_configured"
-    NO_MR = "no_mr"
+    NO_PR = "no_pr"
     ALL_RESPONDED = "all_responded"
     UNRESPONDED = "unresponded"
 
 
 @dataclass
-class MRDetails:
-    """Basic details of a merge/pull request."""
+class PRDetails:
+    """Basic details of a pull request."""
     source_branch: str
-    mr_title: str
-    mr_url: str
+    pr_title: str
+    pr_url: str
     source_branch_deleted: bool = False
 
 
 @dataclass
-class MRStatus:
-    """Status of a merge/pull request for a session."""
-    state: MRState
+class PRStatus:
+    """Status of a pull request for a session."""
+    state: PRState
     unresponded_count: int = 0
-    mr_url: Optional[str] = None
-    mr_title: Optional[str] = None
-    mr_iid: Optional[int] = None
+    pr_url: Optional[str] = None
+    pr_title: Optional[str] = None
+    pr_iid: Optional[int] = None
     first_unresponded_note_id: Optional[int] = None
     approved: bool = False
     approved_by: Optional[list[str]] = None
@@ -42,7 +42,7 @@ class UserNotification:
     id: str
     scm_type: str  # "gitlab" or "github"
     reason: str  # "review_requested", "assigned", "mentioned", "other"
-    title: str  # Target title (MR/issue title)
+    title: str  # Target title (PR/issue title)
     target_url: str  # URL to open in browser
     project_name: Optional[str] = None
     author: Optional[str] = None
@@ -73,32 +73,32 @@ class SCMProvider(ABC):
         """Get the authenticated username."""
 
     @abstractmethod
-    def get_mr_details(self, project_path: str, mr_iid: int) -> Optional[MRDetails]:
-        """Get basic MR details by IID.
+    def get_pr_details(self, project_path: str, pr_iid: int) -> Optional[PRDetails]:
+        """Get basic PR details by IID.
 
         Args:
             project_path: The project path (e.g., 'user/repo').
-            mr_iid: The MR/PR number.
+            pr_iid: The PR number.
 
         Returns:
-            MRDetails or None if not found.
+            PRDetails or None if not found.
         """
 
     @abstractmethod
-    def get_mr_status(self, project_path: str, branch: str) -> MRStatus:
-        """Get MR status for a project/branch combination.
+    def get_pr_status(self, project_path: str, branch: str) -> PRStatus:
+        """Get PR status for a project/branch combination.
 
         Args:
             project_path: The project path (e.g., 'user/repo').
             branch: The source branch name.
 
         Returns:
-            MRStatus with current state and details.
+            PRStatus with current state and details.
         """
 
     @abstractmethod
     def scan_cq_commands(self, project_path: str, branch: str) -> list:
-        """Scan for /cq commands in MR discussion threads.
+        """Scan for /cq commands in PR discussion threads.
 
         Args:
             project_path: The project path (e.g., 'user/repo').
@@ -109,7 +109,7 @@ class SCMProvider(ABC):
         """
 
     @abstractmethod
-    def acknowledge_cq_command(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+    def acknowledge_cq_command(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
         """Post acknowledgment reply to a /cq thread.
 
         Returns:
@@ -117,7 +117,7 @@ class SCMProvider(ABC):
         """
 
     @abstractmethod
-    def report_no_session(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+    def report_no_session(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
         """Post error reply when no matching CQ session is found.
 
         Returns:
@@ -126,7 +126,7 @@ class SCMProvider(ABC):
 
     @abstractmethod
     def collect_unresponded_threads(self, project_path: str, branch: str) -> list:
-        """Collect all unresponded discussion threads from an MR as CqCommand objects.
+        """Collect all unresponded discussion threads from a PR as CqCommand objects.
 
         Args:
             project_path: The project path (e.g., 'user/repo').

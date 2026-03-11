@@ -5,8 +5,8 @@ from typing import Any, Optional
 
 from PyQt5.QtWidgets import QWidget
 
-from claudeq.monitor.mr_tracking.base import ConnectionTestResult
-from claudeq.monitor.mr_tracking.config import load_gitlab_config, save_gitlab_config
+from claudeq.monitor.pr_tracking.base import ConnectionTestResult
+from claudeq.monitor.pr_tracking.config import load_gitlab_config, save_gitlab_config
 from claudeq.monitor.dialogs.scm_setup_dialog import SCMSetupDialog
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,7 @@ def _check_gitlab_scopes(gl: Any) -> list[str]:
             return []  # Full access — no warnings
         if 'read_api' not in scopes:
             warnings.append(
-                'Missing read_api scope — MR tracking and code snippets will not work'
+                'Missing read_api scope — PR tracking and code snippets will not work'
             )
         else:
             # Has read_api but not api — can read but not write

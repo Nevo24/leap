@@ -1,4 +1,4 @@
-"""MR tracking, SCM polling, thread sending, and add-row methods."""
+"""PR tracking, SCM polling, thread sending, and add-row methods."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
 from claudeq.utils.constants import is_valid_tag
 from claudeq.monitor.dialogs.add_local_dialog import AddLocalDialog
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus
-from claudeq.monitor.mr_tracking.config import (
+from claudeq.monitor.pr_tracking.base import PRState, PRStatus
+from claudeq.monitor.pr_tracking.config import (
     load_github_config, load_gitlab_config, load_pinned_sessions,
     save_pinned_sessions,
 )
-from claudeq.monitor.mr_tracking.git_utils import (
+from claudeq.monitor.pr_tracking.git_utils import (
     ParsedProjectUrl, SCMType, detect_default_branch, get_git_remote_info,
-    parse_mr_url, parse_project_url, refine_scm_type,
+    parse_pr_url, parse_project_url, refine_scm_type,
 )
 from claudeq.monitor.scm_polling import (
     BackgroundCallWorker, CollectThreadsWorker, SCMOneShotWorker,
@@ -36,19 +36,19 @@ else:
 logger = logging.getLogger(__name__)
 
 
-class MRTrackingMixin(_Base):
-    """Methods for MR tracking, SCM polling, thread sending, and add-row."""
+class PRTrackingMixin(_Base):
+    """Methods for PR tracking, SCM polling, thread sending, and add-row."""
 
-    def _auto_track_mr_pinned(self) -> None:
-        """Auto-reconnect MR tracking for sessions that were tracked last time."""
+    def _auto_track_pr_pinned(self) -> None:
+        """Auto-reconnect PR tracking for sessions that were tracked last time."""
         if not self._scm_providers:
             return
         for tag, pin in self._pinned_sessions.items():
-            if pin.get('mr_tracked') and tag not in self._tracked_tags:
+            if pin.get('pr_tracked') and tag not in self._tracked_tags:
                 self._start_tracking(tag, _silent=True)
 
     def _start_tracking(self, tag: str, _silent: bool = False) -> None:
-        """Start MR tracking for a session via a background one-shot check."""
+        """Start PR tracking for a session via a background one-shot check."""
         # Find the session data for this tag
         session = next((s for s in self.sessions if s['tag'] == tag), None)
         if not session:
@@ -73,14 +73,14 @@ class MRTrackingMixin(_Base):
             return
 
         # Resolve project path and branch for the SCM query.
-        # MR-pinned rows have remote_project_path/branch stored directly;
+        # PR-pinned rows have remote_project_path/branch stored directly;
         # active sessions resolve from the local git remote.
-        # Prefer mr_branch (pinned MR branch) over the live branch.
+        # Prefer pr_branch (pinned PR branch) over the live branch.
         remote_project = session.get('remote_project_path')
-        branch = session.get('mr_branch') or session.get('branch')
+        branch = session.get('pr_branch') or session.get('branch')
 
         if remote_project and branch and branch != 'N/A':
-            # Use pinned MR data directly (no local repo needed)
+            # Use pinned PR data directly (no local repo needed)
             scm_project_path = remote_project
             scm_branch = branch
             # Store context for enriching pinned session on result
@@ -98,7 +98,7 @@ class MRTrackingMixin(_Base):
             else:
                 if not _silent:
                     QMessageBox.information(
-                        self, 'No MR Found',
+                        self, 'No PR Found',
                         'No branch info and no local project path to detect it from.',
                     )
                 return
@@ -115,7 +115,7 @@ class MRTrackingMixin(_Base):
             if not project_path:
                 if not _silent:
                     QMessageBox.information(
-                        self, 'No MR Found', 'No project path for this session.'
+                        self, 'No PR Found', 'No project path for this session.'
                     )
                 return
 
@@ -123,7 +123,7 @@ class MRTrackingMixin(_Base):
             if not remote_info:
                 if not _silent:
                     QMessageBox.information(
-                        self, 'No MR Found', 'Could not determine Git remote info.'
+                        self, 'No PR Found', 'Could not determine Git remote info.'
                     )
                 return
             scm_project_path = remote_info.project_path
@@ -140,7 +140,7 @@ class MRTrackingMixin(_Base):
         # Show "Checking..." while the API call runs in the background
         if _silent:
             self._silent_tracking_tags.add(tag)
-        self._show_status(f"Checking MR for '{tag}'...")
+        self._show_status(f"Checking PR for '{tag}'...")
         self._checking_tags.add(tag)
         self._set_busy(True)
         self._update_table()
@@ -162,56 +162,56 @@ class MRTrackingMixin(_Base):
             self._scm_oneshot_worker = None
 
     def _stop_tracking(self, tag: str, _skip_prompt: bool = False) -> None:
-        """Stop MR tracking for a session.
+        """Stop PR tracking for a session.
 
         Args:
             tag: Session tag.
             _skip_prompt: If True, skip the confirmation prompt for dead rows
                 (used when called from _remove_pinned_session which has its own).
         """
-        # If server is dead and row is NOT MR-pinned, warn that stopping
-        # tracking will remove the row.  MR-pinned rows survive without
+        # If server is dead and row is NOT PR-pinned, warn that stopping
+        # tracking will remove the row.  PR-pinned rows survive without
         # active tracking (they still have remote_project_path).
         if not _skip_prompt:
             session = next((s for s in self.sessions if s['tag'] == tag), None)
             pin = self._pinned_sessions.get(tag, {})
-            is_mr_pinned = bool(pin.get('remote_project_path'))
+            is_pr_pinned = bool(pin.get('remote_project_path'))
             if (session and session.get('server_pid') is None
-                    and not is_mr_pinned):
+                    and not is_pr_pinned):
                 reply = QMessageBox.question(
-                    self, 'Stop MR Tracking',
+                    self, 'Stop PR Tracking',
                     f"The server for '{tag}' is not running.\n"
-                    f"Stopping MR tracking will remove this row.\n\nContinue?",
+                    f"Stopping PR tracking will remove this row.\n\nContinue?",
                     QMessageBox.Yes | QMessageBox.No,
                 )
                 if reply != QMessageBox.Yes:
                     return
 
         if tag in self._tracked_tags:
-            self._show_status(f"Stopped MR tracking for '{tag}'")
+            self._show_status(f"Stopped PR tracking for '{tag}'")
         self._tracked_tags.discard(tag)
         self._checking_tags.discard(tag)
         self._silent_tracking_tags.discard(tag)
-        self._mr_statuses.pop(tag, None)
-        self._mr_widgets.pop(tag, None)
-        self._mr_approval_widgets.pop(tag, None)
+        self._pr_statuses.pop(tag, None)
+        self._pr_widgets.pop(tag, None)
+        self._pr_approval_widgets.pop(tag, None)
         self._pending_tracking_context.pop(tag, None)
-        self._mr_changed_at.pop(tag, None)
-        self._dismissed_mr_new_status.discard(tag)
+        self._pr_changed_at.pop(tag, None)
+        self._dismissed_pr_new_status.discard(tag)
         self._dock_badge.discard_tag(tag)
 
         # Persist tracking-off so auto-reconnect won't re-track on next startup
         pin = self._pinned_sessions.get(tag)
-        if pin and pin.get('mr_tracked'):
-            pin['mr_tracked'] = False
+        if pin and pin.get('pr_tracked'):
+            pin['pr_tracked'] = False
             save_pinned_sessions(self._pinned_sessions)
 
-        # If server is dead and not MR-pinned, remove the row entirely
+        # If server is dead and not PR-pinned, remove the row entirely
         session = next((s for s in self.sessions if s['tag'] == tag), None)
         is_dead = session and session.get('server_pid') is None
         pin = self._pinned_sessions.get(tag, {})
-        is_mr_pinned = bool(pin.get('remote_project_path'))
-        if is_dead and not _skip_prompt and not is_mr_pinned:
+        is_pr_pinned = bool(pin.get('remote_project_path'))
+        if is_dead and not _skip_prompt and not is_pr_pinned:
             # Offer to close the client too
             if session and session.get('has_client', False):
                 client_reply = QMessageBox.question(
@@ -237,15 +237,15 @@ class MRTrackingMixin(_Base):
         self._update_table()
         self._update_dock_badge()
 
-    def _clear_pinned_mr_data(self, tag: str) -> None:
-        """Clear pinned MR data so Track MR falls back to the server's live git info."""
+    def _clear_pinned_pr_data(self, tag: str) -> None:
+        """Clear pinned PR data so Track PR falls back to the server's live git info."""
         # If server is dead, warn that clearing will remove the row
         session = next((s for s in self.sessions if s['tag'] == tag), None)
         if session and session.get('server_pid') is None:
             reply = QMessageBox.question(
-                self, 'Clear Pinned MR Data',
+                self, 'Clear Pinned PR Data',
                 f"The server for '{tag}' is not running.\n"
-                f"Clearing pinned MR data will remove this row.\n\nContinue?",
+                f"Clearing pinned PR data will remove this row.\n\nContinue?",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply != QMessageBox.Yes:
@@ -254,19 +254,19 @@ class MRTrackingMixin(_Base):
         pin = self._pinned_sessions.get(tag)
         if pin:
             for key in ('remote_project_path', 'host_url', 'scm_type',
-                        'mr_title', 'mr_url', 'mr_tracked'):
+                        'pr_title', 'pr_url', 'pr_tracked'):
                 pin.pop(key, None)
             pin['branch'] = ''
             save_pinned_sessions(self._pinned_sessions)
 
-        # Invalidate the mr_branch cell cache
-        self._cell_cache.pop((tag, 'mr_branch'), None)
+        # Invalidate the pr_branch cell cache
+        self._cell_cache.pop((tag, 'pr_branch'), None)
 
-        self._show_status(f"Cleared pinned MR data for '{tag}'")
+        self._show_status(f"Cleared pinned PR data for '{tag}'")
         self._update_table()
 
-    def _on_tracking_result(self, tag: str, status: MRStatus) -> None:
-        """Handle the result of a one-shot MR check."""
+    def _on_tracking_result(self, tag: str, status: PRStatus) -> None:
+        """Handle the result of a one-shot PR check."""
         self._checking_tags.discard(tag)
         self._set_busy(False)
         silent = tag in self._silent_tracking_tags
@@ -277,20 +277,20 @@ class MRTrackingMixin(_Base):
             self._pending_tracking_context.pop(tag, None)
             return
 
-        if status.state == MRState.NO_MR:
+        if status.state == PRState.NO_PR:
             self._pending_tracking_context.pop(tag, None)
             if silent:
-                self._show_status(f"Auto-reconnect: no open MR found for '{tag}'")
+                self._show_status(f"Auto-reconnect: no open PR found for '{tag}'")
             self._remove_dead_untracked_row(tag)
             self._update_table()
             if not silent:
                 QMessageBox.information(
-                    self, 'No MR Found',
-                    'No open merge request found for this branch.'
+                    self, 'No PR Found',
+                    'No open PR found for this branch.'
                 )
             return
 
-        # MR found — promote to tracked and enrich pinned session
+        # PR found — promote to tracked and enrich pinned session
         ctx = self._pending_tracking_context.pop(tag, None)
         if ctx:
             pin = self._pinned_sessions.get(tag, {})
@@ -299,22 +299,22 @@ class MRTrackingMixin(_Base):
                 'host_url': ctx['host_url'],
                 'scm_type': ctx['scm_type'],
                 'branch': ctx['branch'],
-                'mr_title': status.mr_title or '',
-                'mr_url': status.mr_url or '',
-                'mr_tracked': True,
+                'pr_title': status.pr_title or '',
+                'pr_url': status.pr_url or '',
+                'pr_tracked': True,
             })
             self._pinned_sessions[tag] = pin
             save_pinned_sessions(self._pinned_sessions)
         else:
-            # No context but MR found (e.g. auto-reconnect) — persist flag
+            # No context but PR found (e.g. auto-reconnect) — persist flag
             pin = self._pinned_sessions.get(tag)
-            if pin and not pin.get('mr_tracked'):
-                pin['mr_tracked'] = True
+            if pin and not pin.get('pr_tracked'):
+                pin['pr_tracked'] = True
                 save_pinned_sessions(self._pinned_sessions)
 
-        self._show_status(f"MR found for '{tag}' — tracking started")
+        self._show_status(f"PR found for '{tag}' — tracking started")
         self._tracked_tags.add(tag)
-        self._mr_statuses[tag] = status
+        self._pr_statuses[tag] = status
         self._update_table()
         self._update_dock_badge()
 
@@ -322,7 +322,7 @@ class MRTrackingMixin(_Base):
             self._scm_poll_timer.start(self._get_poll_interval() * 1000)
 
     def _on_tracking_error(self, tag: str, message: str) -> None:
-        """Handle an error from a one-shot MR check."""
+        """Handle an error from a one-shot PR check."""
         self._checking_tags.discard(tag)
         self._set_busy(False)
         silent = tag in self._silent_tracking_tags
@@ -335,7 +335,7 @@ class MRTrackingMixin(_Base):
         if silent:
             self._remove_dead_untracked_row(tag)
         self._update_table()
-        self._show_status(f"MR tracking error for '{tag}': {message}")
+        self._show_status(f"PR tracking error for '{tag}': {message}")
         if not silent:
             QMessageBox.warning(self, 'Error', message)
 
@@ -413,7 +413,7 @@ class MRTrackingMixin(_Base):
             self._scm_polling = False
             self._scm_worker = None
 
-    def _on_scm_results(self, results: dict[str, MRStatus]) -> None:
+    def _on_scm_results(self, results: dict[str, PRStatus]) -> None:
         """Handle SCM poll results (runs in main thread via signal)."""
         if self._shutting_down:
             return
@@ -430,15 +430,15 @@ class MRTrackingMixin(_Base):
                     status.approved,
                     tuple(sorted(status.approved_by or [])),
                 )
-                prev = self._mr_changed_at.get(tag)
+                prev = self._pr_changed_at.get(tag)
                 if prev is None:
                     # First time — seed with epoch 0 (no fire on startup)
-                    self._mr_changed_at[tag] = (new_snap, 0)
+                    self._pr_changed_at[tag] = (new_snap, 0)
                 elif prev[0] != new_snap:
-                    self._mr_changed_at[tag] = (new_snap, now)
-                    self._dismissed_mr_new_status.discard(tag)
-            self._mr_statuses.update(results)
-            self._update_mr_column()
+                    self._pr_changed_at[tag] = (new_snap, now)
+                    self._dismissed_pr_new_status.discard(tag)
+            self._pr_statuses.update(results)
+            self._update_pr_column()
             self._update_dock_badge()
         except Exception:
             logger.exception("Error handling SCM results")
@@ -456,7 +456,7 @@ class MRTrackingMixin(_Base):
         )
 
     def _send_all_threads_to_cq(self, tag: str) -> None:
-        """Send all unresponded MR threads to the CQ session (non-blocking).
+        """Send all unresponded PR threads to the CQ session (non-blocking).
 
         Phase 1 (CollectThreadsWorker): resolve provider, collect threads, match sessions.
         Phase 2 (SendThreadsWorker): send each thread to CQ and acknowledge on SCM.
@@ -603,7 +603,7 @@ class MRTrackingMixin(_Base):
 
         QMessageBox.warning(
             self, '/cq Acknowledgment Failed',
-            'Failed to post "[ClaudeQ bot] on it!" reply to the MR thread.\n\n'
+            'Failed to post "[ClaudeQ bot] on it!" reply to the PR thread.\n\n'
             'Without this reply, the same /cq command will be re-detected '
             'each poll cycle, causing duplicate sends.\n\n'
             'Auto /cq fetch has been disabled to prevent this.\n\n'
@@ -619,7 +619,7 @@ class MRTrackingMixin(_Base):
             self._scm_poll_timer.start(self._get_poll_interval() * 1000)
 
     def _send_all_threads_combined_to_cq(self, tag: str) -> None:
-        """Send all unresponded MR threads as one concatenated message (non-blocking).
+        """Send all unresponded PR threads as one concatenated message (non-blocking).
 
         Reuses Phase 1 (CollectThreadsWorker) then sends a single combined message.
         """
@@ -717,7 +717,7 @@ class MRTrackingMixin(_Base):
         self._collect_threads_worker.start()
 
     # ------------------------------------------------------------------
-    #  Add row from Git URL, MR/PR URL, or local path
+    #  Add row from Git URL, PR URL, or local path
     # ------------------------------------------------------------------
 
     def _add_row_menu(self) -> None:
@@ -728,7 +728,7 @@ class MRTrackingMixin(_Base):
 
         git_action = menu.addAction('From Git URL...')
         git_action.setToolTip(
-            'Add a row from an MR/PR URL, commit URL,\n'
+            'Add a row from a PR URL, commit URL,\n'
             'or plain Git project URL')
         git_action.triggered.connect(self._add_row_from_git)
 
@@ -741,14 +741,14 @@ class MRTrackingMixin(_Base):
         menu.exec_(QCursor.pos())
 
     def _add_row_from_git(self) -> None:
-        """Add a row from a Git URL (MR/PR URL or plain project URL)."""
+        """Add a row from a Git URL (PR URL or plain project URL)."""
         gitlab_config = load_gitlab_config()
         github_config = load_github_config()
         prev_url = ''
         while True:
             dlg = QInputDialog(self)
             dlg.setWindowTitle('Add from Git URL')
-            dlg.setLabelText('Git URL (MR/PR URL, commit URL, or project URL):')
+            dlg.setLabelText('Git URL (PR URL, commit URL, or project URL):')
             dlg.setTextValue(prev_url)
             dlg.resize(800, dlg.sizeHint().height())
             ok = dlg.exec_() == QInputDialog.Accepted
@@ -757,10 +757,10 @@ class MRTrackingMixin(_Base):
                 return
             prev_url = url.strip()
 
-            # Try MR/PR URL first
-            parsed_mr = parse_mr_url(prev_url, gitlab_config, github_config)
-            if parsed_mr:
-                provider = self._scm_providers.get(parsed_mr.scm_type.value)
+            # Try PR URL first
+            parsed_pr = parse_pr_url(prev_url, gitlab_config, github_config)
+            if parsed_pr:
+                provider = self._scm_providers.get(parsed_pr.scm_type.value)
                 if not provider:
                     if not self._scm_providers:
                         QMessageBox.information(
@@ -771,10 +771,10 @@ class MRTrackingMixin(_Base):
                     else:
                         QMessageBox.warning(
                             self, 'No Provider',
-                            f'No connected provider for {parsed_mr.scm_type.value}.',
+                            f'No connected provider for {parsed_pr.scm_type.value}.',
                         )
                     continue
-                self._add_row_from_mr_url(parsed_mr, provider)
+                self._add_row_from_pr_url(parsed_pr, provider)
                 return
 
             # Try plain project URL
@@ -787,7 +787,7 @@ class MRTrackingMixin(_Base):
                 self, 'Invalid URL',
                 'Could not parse the URL.\n\n'
                 'Supported formats:\n'
-                '  MR:     https://gitlab.com/group/project/-/merge_requests/42\n'
+                '  PR:     https://gitlab.com/group/project/-/merge_requests/42\n'
                 '  PR:     https://github.com/owner/repo/pull/42\n'
                 '  Commit: https://gitlab.com/group/project/-/commit/abc123\n'
                 '  Git:    https://host/group/project\n'
@@ -795,29 +795,29 @@ class MRTrackingMixin(_Base):
             )
             continue
 
-    def _add_row_from_mr_url(self, parsed: Any, provider: Any) -> None:
-        """Fetch MR details in background, then ask for tag (MR flow)."""
+    def _add_row_from_pr_url(self, parsed: Any, provider: Any) -> None:
+        """Fetch PR details in background, then ask for tag (PR flow)."""
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         result_holder: list[Optional[Any]] = [None]
 
         def _fetch() -> None:
-            result_holder[0] = provider.get_mr_details(parsed.project_path, parsed.mr_iid)
+            result_holder[0] = provider.get_pr_details(parsed.project_path, parsed.pr_iid)
 
         worker = BackgroundCallWorker(_fetch, self)
-        worker.finished.connect(lambda: self._on_add_row_mr_details(
+        worker.finished.connect(lambda: self._on_add_row_pr_details(
             parsed, result_holder,
         ))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _on_add_row_mr_details(self, parsed: Any, result_holder: list) -> None:
-        """Handle MR details fetched — ask for tag and pin the row."""
+    def _on_add_row_pr_details(self, parsed: Any, result_holder: list) -> None:
+        """Handle PR details fetched — ask for tag and pin the row."""
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
         details = result_holder[0]
         if not details:
-            QMessageBox.warning(self, 'MR Not Found', 'Could not fetch MR/PR details.')
+            QMessageBox.warning(self, 'No PR Found', 'Could not fetch PR details.')
             return
 
         if details.source_branch_deleted:
@@ -825,33 +825,33 @@ class MRTrackingMixin(_Base):
                 self, 'Branch Deleted',
                 f"The source branch '{details.source_branch}' no longer exists "
                 f"on the remote.\n\n"
-                f"This usually means the MR/PR has been merged and the branch "
+                f"This usually means the PR has been merged and the branch "
                 f"was deleted.\n\n"
                 f"The row cannot be added to the monitor.",
             )
             return
 
         tag = self._ask_tag([
-            f"MR: {details.mr_title}",
+            f"PR: {details.pr_title}",
             f"Branch: {details.source_branch}",
         ])
         if not tag:
             return
 
-        # Pin the session with remote info and auto-start MR tracking
+        # Pin the session with remote info and auto-start PR tracking
         self._pinned_sessions[tag] = {
             'tag': tag,
             'remote_project_path': parsed.project_path,
             'host_url': parsed.host_url,
             'branch': details.source_branch,
-            'mr_title': details.mr_title,
-            'mr_url': details.mr_url,
+            'pr_title': details.pr_title,
+            'pr_url': details.pr_url,
             'scm_type': parsed.scm_type.value,
             'project_path': '',
             'ide': '',
         }
         save_pinned_sessions(self._pinned_sessions)
-        self._show_status(f"Added row '{tag}' from MR: {details.source_branch}")
+        self._show_status(f"Added row '{tag}' from PR: {details.source_branch}")
 
         self._refresh_and_show_row(tag)
         self._start_tracking(tag)

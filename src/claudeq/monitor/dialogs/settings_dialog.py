@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QKeySequence
 
 from claudeq.monitor.dialogs.notifications_dialog import NotificationsDialog
-from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from claudeq.monitor.themes import THEMES
 
 DEFAULT_REPOS_DIR = '/tmp/claudeq-repos'
@@ -238,7 +238,7 @@ class SettingsDialog(QDialog):
         # New change indicator duration
         new_status_label = QLabel('New change indicator (\U0001f525):')
         new_status_label.setToolTip(
-            'Show a fire icon in the Status and MR columns\n'
+            'Show a fire icon in the Status and PR columns\n'
             'when the value recently changed.\n'
             'Set to 0 to disable.'
         )

@@ -7,8 +7,8 @@ from typing import Optional
 
 from github import Github, GithubException
 
-from claudeq.monitor.mr_tracking.base import MRDetails, MRState, MRStatus, SCMProvider, UserNotification
-from claudeq.monitor.mr_tracking.cq_command import CqCommand
+from claudeq.monitor.pr_tracking.base import PRDetails, PRState, PRStatus, SCMProvider, UserNotification
+from claudeq.monitor.pr_tracking.cq_command import CqCommand
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class GitHubProvider(SCMProvider):
         self._repo_cache: dict[str, object] = {}
         # Caches to avoid phantom state changes on transient API failures
         self._approval_cache: dict[tuple[str, str], tuple[bool, list[str]]] = {}
-        self._status_cache: dict[tuple[str, str], MRStatus] = {}
+        self._status_cache: dict[tuple[str, str], PRStatus] = {}
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -62,41 +62,41 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to get repo: %s", project_path)
             return None
 
-    def get_mr_details(self, project_path: str, mr_iid: int) -> Optional[MRDetails]:
+    def get_pr_details(self, project_path: str, pr_iid: int) -> Optional[PRDetails]:
         repo = self._get_repo(project_path)
         if not repo:
             return None
         try:
-            pr = repo.get_pull(mr_iid)
+            pr = repo.get_pull(pr_iid)
             branch_deleted = False
             try:
                 repo.get_branch(pr.head.ref)
             except Exception:
                 branch_deleted = True
-            return MRDetails(
+            return PRDetails(
                 source_branch=pr.head.ref,
-                mr_title=pr.title,
-                mr_url=pr.html_url,
+                pr_title=pr.title,
+                pr_url=pr.html_url,
                 source_branch_deleted=branch_deleted,
             )
         except Exception:
-            logger.debug("Failed to get PR #%s in %s", mr_iid, project_path)
+            logger.debug("Failed to get PR #%s in %s", pr_iid, project_path)
             return None
 
-    def get_mr_status(self, project_path: str, branch: str) -> MRStatus:
+    def get_pr_status(self, project_path: str, branch: str) -> PRStatus:
         cache_key = (project_path, branch)
         repo = self._get_repo(project_path)
         if not repo:
-            return MRStatus(state=MRState.NO_MR)
+            return PRStatus(state=PRState.NO_PR)
 
         try:
             pulls = repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}')
             if pulls.totalCount == 0:
-                return MRStatus(state=MRState.NO_MR)
+                return PRStatus(state=PRState.NO_PR)
             pr = pulls[0]
         except Exception:
             logger.debug("Failed to list PRs for %s branch %s", project_path, branch)
-            return MRStatus(state=MRState.NO_MR)
+            return PRStatus(state=PRState.NO_PR)
         pr_number = pr.number
         pr_url = pr.html_url
         pr_title = pr.title
@@ -132,32 +132,32 @@ class GitHubProvider(SCMProvider):
             cached = self._status_cache.get(cache_key)
             if cached is not None:
                 if not approval_failed:
-                    return MRStatus(
+                    return PRStatus(
                         state=cached.state,
                         unresponded_count=cached.unresponded_count,
-                        mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
+                        pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                         first_unresponded_note_id=cached.first_unresponded_note_id,
                         approved=approved, approved_by=approved_by or None,
                     )
                 return cached
-            return MRStatus(
-                state=MRState.ALL_RESPONDED,
-                mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
+            return PRStatus(
+                state=PRState.ALL_RESPONDED,
+                pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 approved=approved, approved_by=approved_by or None,
             )
 
         if unresponded > 0:
-            result = MRStatus(
-                state=MRState.UNRESPONDED,
+            result = PRStatus(
+                state=PRState.UNRESPONDED,
                 unresponded_count=unresponded,
-                mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
+                pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 first_unresponded_note_id=first_comment_id,
                 approved=approved, approved_by=approved_by or None,
             )
         else:
-            result = MRStatus(
-                state=MRState.ALL_RESPONDED,
-                mr_url=pr_url, mr_title=pr_title, mr_iid=pr_number,
+            result = PRStatus(
+                state=PRState.ALL_RESPONDED,
+                pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 approved=approved, approved_by=approved_by or None,
             )
 
@@ -329,9 +329,9 @@ class GitHubProvider(SCMProvider):
 
         return CqCommand(
             project_path=project_path,
-            mr_iid=pr.number,
-            mr_title=pr.title,
-            mr_url=pr.html_url,
+            pr_iid=pr.number,
+            pr_title=pr.title,
+            pr_url=pr.html_url,
             discussion_id=str(root_id),
             thread_notes=thread_notes,
             file_path=file_path,
@@ -359,35 +359,35 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to fetch code snippet for %s:%s", file_path, target_line)
             return None
 
-    def acknowledge_cq_command(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+    def acknowledge_cq_command(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
         """Post '[ClaudeQ bot] on it!' reply to the review comment thread."""
         repo = self._get_repo(project_path)
         if not repo:
             return False
         try:
-            pr = repo.get_pull(mr_iid)
+            pr = repo.get_pull(pr_iid)
             # Reply to the root comment of the thread
             root_comment = pr.get_review_comment(int(discussion_id))
             pr.create_review_comment_reply(root_comment.id, CQ_ACK_MESSAGE)
             return True
         except Exception:
             logger.debug("Failed to acknowledge /cq on PR #%s thread %s",
-                         mr_iid, discussion_id, exc_info=True)
+                         pr_iid, discussion_id, exc_info=True)
             return False
 
-    def report_no_session(self, project_path: str, mr_iid: int, discussion_id: str) -> bool:
+    def report_no_session(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
         """Post error reply when no matching CQ session is found."""
         repo = self._get_repo(project_path)
         if not repo:
             return False
         try:
-            pr = repo.get_pull(mr_iid)
+            pr = repo.get_pull(pr_iid)
             root_comment = pr.get_review_comment(int(discussion_id))
             pr.create_review_comment_reply(root_comment.id, CQ_NO_SESSION_MESSAGE)
             return True
         except Exception:
             logger.debug("Failed to post no-session reply on PR #%s thread %s",
-                         mr_iid, discussion_id, exc_info=True)
+                         pr_iid, discussion_id, exc_info=True)
             return False
 
     def supports_notifications(self) -> bool:
@@ -540,9 +540,9 @@ class GitHubProvider(SCMProvider):
 
         return CqCommand(
             project_path=project_path,
-            mr_iid=pr.number,
-            mr_title=pr.title,
-            mr_url=pr.html_url,
+            pr_iid=pr.number,
+            pr_title=pr.title,
+            pr_url=pr.html_url,
             discussion_id=str(root_id),
             thread_notes=thread_notes,
             file_path=file_path,

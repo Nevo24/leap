@@ -8,12 +8,12 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from claudeq.utils.constants import SCM_MAX_CONCURRENT_POLLS
-from claudeq.monitor.mr_tracking.base import (
-    ConnectionTestResult, MRState, MRStatus, SCMProvider, UserNotification,
+from claudeq.monitor.pr_tracking.base import (
+    ConnectionTestResult, PRState, PRStatus, SCMProvider, UserNotification,
 )
-from claudeq.monitor.mr_tracking.cq_command import format_cq_message
-from claudeq.monitor.mr_tracking.config import load_gitlab_config
-from claudeq.monitor.mr_tracking.git_utils import (
+from claudeq.monitor.pr_tracking.cq_command import format_cq_message
+from claudeq.monitor.pr_tracking.config import load_gitlab_config
+from claudeq.monitor.pr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
 )
 from claudeq.monitor.cq_sender import send_to_cq_session
@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 class SCMOneShotWorker(QThread):
-    """Background worker for a single MR status check (non-blocking Track MR)."""
+    """Background worker for a single PR status check (non-blocking Track PR)."""
 
-    result_ready = pyqtSignal(str, object)  # (tag, MRStatus)
+    result_ready = pyqtSignal(str, object)  # (tag, PRStatus)
     error = pyqtSignal(str, str)  # (tag, error_message)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -48,15 +48,15 @@ class SCMOneShotWorker(QThread):
         if not self._provider:
             return
         try:
-            status = self._provider.get_mr_status(self._project_path, self._branch)
+            status = self._provider.get_pr_status(self._project_path, self._branch)
             self.result_ready.emit(self._tag, status)
         except Exception:
-            logger.debug("One-shot MR check failed for %s", self._tag, exc_info=True)
+            logger.debug("One-shot PR check failed for %s", self._tag, exc_info=True)
             self.error.emit(self._tag, 'Failed to query SCM provider.')
 
 
 class SCMPollerWorker(QThread):
-    """Background worker that polls SCM providers for MR statuses.
+    """Background worker that polls SCM providers for PR statuses.
 
     Also handles /cq commands entirely in the background — matching sessions,
     sending to CQ, and acknowledging on the SCM provider.
@@ -99,7 +99,7 @@ class SCMPollerWorker(QThread):
         if not self._providers:
             return
 
-        results: dict[str, MRStatus] = {}
+        results: dict[str, PRStatus] = {}
         all_cq_commands: list[tuple[Any, SCMProvider]] = []
         all_notifications: list[UserNotification] = []
 
@@ -135,7 +135,7 @@ class SCMPollerWorker(QThread):
                     except Exception as exc:
                         if kind == 'session':
                             logger.debug("Error polling session %s", key, exc_info=True)
-                            results[key] = MRStatus(state=MRState.NO_MR)
+                            results[key] = PRStatus(state=PRState.NO_PR)
                         else:
                             logger.debug("Error fetching notifications for %s", key,
                                          exc_info=True)
@@ -157,20 +157,20 @@ class SCMPollerWorker(QThread):
 
     def _poll_session(
         self, session: dict[str, Any]
-    ) -> tuple[MRStatus, list[tuple[Any, SCMProvider]]]:
-        """Poll a single session for MR status and /cq commands."""
+    ) -> tuple[PRStatus, list[tuple[Any, SCMProvider]]]:
+        """Poll a single session for PR status and /cq commands."""
         # Resolve SCM project path, branch, and provider.
-        # MR-pinned rows have remote_project_path/scm_type stored directly;
+        # PR-pinned rows have remote_project_path/scm_type stored directly;
         # active sessions resolve from the local git remote.
         remote_project = session.get('remote_project_path')
         scm_type_str = session.get('scm_type')
-        # Prefer the pinned MR branch over the live branch so polling
-        # keeps tracking the correct MR even when the user switches
+        # Prefer the pinned PR branch over the live branch so polling
+        # keeps tracking the correct PR even when the user switches
         # branches locally.
-        branch = session.get('mr_branch') or session.get('branch')
+        branch = session.get('pr_branch') or session.get('branch')
 
         if remote_project and scm_type_str and branch and branch != 'N/A':
-            # Use pinned MR data directly
+            # Use pinned PR data directly
             scm_project_path = remote_project
             scm_branch = branch
             provider = self._providers.get(scm_type_str)
@@ -179,13 +179,13 @@ class SCMPollerWorker(QThread):
             project_path = session.get('project_path')
             if not project_path:
                 logger.debug("Poll skip: no project_path for tag %s", session.get('tag'))
-                return MRStatus(state=MRState.NO_MR), []
+                return PRStatus(state=PRState.NO_PR), []
 
             remote_info = get_git_remote_info(project_path)
             if not remote_info:
                 logger.debug("Poll skip: no remote info for tag %s (path=%s)",
                              session.get('tag'), project_path)
-                return MRStatus(state=MRState.NO_MR), []
+                return PRStatus(state=PRState.NO_PR), []
 
             scm_project_path = remote_info.project_path
             scm_branch = remote_info.branch
@@ -194,15 +194,15 @@ class SCMPollerWorker(QThread):
 
         if not provider:
             logger.debug("Poll skip: no provider for tag %s", session.get('tag'))
-            return MRStatus(state=MRState.NO_MR), []
+            return PRStatus(state=PRState.NO_PR), []
 
-        logger.debug("Polling MR for tag %s: project=%s branch=%s",
+        logger.debug("Polling PR for tag %s: project=%s branch=%s",
                       session.get('tag'), scm_project_path, scm_branch)
         try:
-            status = provider.get_mr_status(scm_project_path, scm_branch)
+            status = provider.get_pr_status(scm_project_path, scm_branch)
         except Exception:
-            logger.debug("Error polling MR for tag %s", session['tag'], exc_info=True)
-            status = MRStatus(state=MRState.NO_MR)
+            logger.debug("Error polling PR for tag %s", session['tag'], exc_info=True)
+            status = PRStatus(state=PRState.NO_PR)
 
         cq_commands: list[tuple[Any, SCMProvider]] = []
         if self._auto_fetch_cq:
@@ -241,27 +241,27 @@ class SCMPollerWorker(QThread):
                     message = format_cq_message(cmd)
                     sent = send_to_cq_session(tag, message)
                     if sent:
-                        logger.debug("/cq from MR !%s sent to session '%s'",
-                                     cmd.mr_iid, tag)
+                        logger.debug("/cq from PR !%s sent to session '%s'",
+                                     cmd.pr_iid, tag)
                     else:
                         logger.debug("Failed to send /cq message to session '%s'", tag)
                     # Acknowledge to prevent re-processing
                     acked = provider.acknowledge_cq_command(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                        cmd.project_path, cmd.pr_iid, cmd.discussion_id
                     )
                     if not acked:
-                        logger.debug("Failed to acknowledge /cq on MR !%s", cmd.mr_iid)
+                        logger.debug("Failed to acknowledge /cq on PR !%s", cmd.pr_iid)
                         self.cq_ack_failed.emit()
                         return  # Stop processing — ack will fail for all
                 else:
                     provider.report_no_session(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                        cmd.project_path, cmd.pr_iid, cmd.discussion_id
                     )
-                    logger.debug("No session match for /cq from MR !%s (%s)",
-                                cmd.mr_iid, cmd.project_path)
+                    logger.debug("No session match for /cq from PR !%s (%s)",
+                                cmd.pr_iid, cmd.project_path)
             except Exception:
-                logger.debug("Error handling /cq command for MR !%s",
-                             cmd.mr_iid, exc_info=True)
+                logger.debug("Error handling /cq command for PR !%s",
+                             cmd.pr_iid, exc_info=True)
 
 
 class CollectThreadsWorker(QThread):
@@ -373,7 +373,7 @@ class _BaseSendWorker(QThread):
         ok = True
         for cmd in commands:
             if not self._provider.acknowledge_cq_command(
-                cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                cmd.project_path, cmd.pr_iid, cmd.discussion_id
             ):
                 ok = False
         return ok
@@ -393,7 +393,7 @@ class SendThreadsWorker(_BaseSendWorker):
                 sent = send_to_cq_session(self._matched_tag, message)
                 if sent:
                     if not self._provider.acknowledge_cq_command(
-                        cmd.project_path, cmd.mr_iid, cmd.discussion_id
+                        cmd.project_path, cmd.pr_iid, cmd.discussion_id
                     ):
                         ack_ok = False
                     sent_count += 1

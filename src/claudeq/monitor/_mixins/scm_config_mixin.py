@@ -12,13 +12,13 @@ from typing import TYPE_CHECKING, Any, Optional
 from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 
-from claudeq.monitor.mr_tracking.base import SCMProvider
-from claudeq.monitor.mr_tracking.config import (
+from claudeq.monitor.pr_tracking.base import SCMProvider
+from claudeq.monitor.pr_tracking.config import (
     load_github_config, load_gitlab_config, resolve_scm_token,
     save_github_config, save_gitlab_config,
 )
 from claudeq.monitor.themes import current_theme
-from claudeq.monitor.mr_tracking.git_utils import (
+from claudeq.monitor.pr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
 )
 from claudeq.slack.config import is_slack_installed
@@ -52,7 +52,7 @@ class SCMConfigMixin(_Base):
             gitlab_config, 'private_token', 'GitLab', save_gitlab_config)
         if gitlab_config and gitlab_token and 'username' in gitlab_config:
             try:
-                from claudeq.monitor.mr_tracking.gitlab_provider import GitLabProvider
+                from claudeq.monitor.pr_tracking.gitlab_provider import GitLabProvider
                 self._scm_providers[SCMType.GITLAB.value] = GitLabProvider(
                     gitlab_url=gitlab_config.get('gitlab_url', 'https://gitlab.com'),
                     private_token=gitlab_token,
@@ -71,7 +71,7 @@ class SCMConfigMixin(_Base):
             github_config, 'token', 'GitHub', save_github_config)
         if github_config and github_token and 'username' in github_config:
             try:
-                from claudeq.monitor.mr_tracking.github_provider import GitHubProvider
+                from claudeq.monitor.pr_tracking.github_provider import GitHubProvider
                 self._scm_providers[SCMType.GITHUB.value] = GitHubProvider(
                     token=github_token,
                     username=github_config['username'],
@@ -219,13 +219,13 @@ class SCMConfigMixin(_Base):
     def _get_provider_for_session(self, session: dict[str, Any]) -> Optional[SCMProvider]:
         """Get the appropriate SCM provider for a session based on its git remote.
 
-        For MR-pinned rows (added via '+'), uses the stored scm_type directly.
+        For PR-pinned rows (added via '+'), uses the stored scm_type directly.
         For active sessions, resolves from the local git remote.
 
         Returns:
             The matching SCMProvider, or None if no provider matches.
         """
-        # First try: use stored SCM type (MR-pinned rows)
+        # First try: use stored SCM type (PR-pinned rows)
         scm_type_str = session.get('scm_type')
         if scm_type_str:
             provider = self._scm_providers.get(scm_type_str)
@@ -267,12 +267,12 @@ class SCMConfigMixin(_Base):
             # Re-initialize providers after successful save — reset tracking
             self._scm_poll_timer.stop()
             self._scm_providers.pop(SCMType.GITLAB.value, None)
-            self._mr_statuses.clear()
+            self._pr_statuses.clear()
             self._tracked_tags.clear()
             self._pending_tracking_context.clear()
             self._silent_tracking_tags.clear()
             self._init_scm_providers()
-            self._auto_track_mr_pinned()
+            self._auto_track_pr_pinned()
             self._maybe_start_notification_poll()
             self._show_status('GitLab connection updated')
 
@@ -285,12 +285,12 @@ class SCMConfigMixin(_Base):
             # Re-initialize providers after successful save — reset tracking
             self._scm_poll_timer.stop()
             self._scm_providers.pop(SCMType.GITHUB.value, None)
-            self._mr_statuses.clear()
+            self._pr_statuses.clear()
             self._tracked_tags.clear()
             self._pending_tracking_context.clear()
             self._silent_tracking_tags.clear()
             self._init_scm_providers()
-            self._auto_track_mr_pinned()
+            self._auto_track_pr_pinned()
             self._maybe_start_notification_poll()
             self._show_status('GitHub connection updated')
 

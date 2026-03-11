@@ -55,7 +55,7 @@ src/
     │
     ├── monitor/                 # GUI Monitor (PyQt5)
     │   ├── app.py               # MonitorWindow (core window + UI init + lifecycle)
-    │   ├── server_launcher.py   # MR server clone/checkout/start flow
+    │   ├── server_launcher.py   # PR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
     │   ├── cq_sender.py         # Socket sender for /cq commands + message bundles
@@ -67,8 +67,8 @@ src/
     │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE)
     │   │   ├── scm_config_mixin.py    # SCM provider init, setup dialogs, toggles
     │   │   ├── session_mixin.py       # Session merge, navigate, close, delete
-    │   │   ├── mr_tracking_mixin.py   # MR tracking, polling, thread send, add-row
-    │   │   ├── mr_display_mixin.py    # MR column styling, dock badge, banners
+    │   │   ├── pr_tracking_mixin.py   # PR tracking, polling, thread send, add-row
+    │   │   ├── pr_display_mixin.py    # PR column styling, dock badge, banners
     │   │   ├── notifications_mixin.py # User notification handling
     │   │   └── table_builder_mixin.py # Table build, refresh, settings
     │   │
@@ -79,7 +79,7 @@ src/
     │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
-    │   │   ├── scm_template_dialog.py # Preset editor dialog (MR context + message bundles)
+    │   │   ├── scm_template_dialog.py # Preset editor dialog (PR context + message bundles)
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   └── queue_edit_dialog.py   # Queue message editor dialog
@@ -90,12 +90,12 @@ src/
     │   │   ├── log_history.py   # Log history (in-memory + dialog)
     │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides, ColorPickerPopup)
     │   │
-    │   ├── mr_tracking/         # MR tracking subsystem
-    │   │   ├── base.py          # Abstract SCMProvider, MRState, MRStatus, MRDetails
+    │   ├── pr_tracking/         # PR tracking subsystem
+    │   │   ├── base.py          # Abstract SCMProvider, PRState, PRStatus, PRDetails
     │   │   ├── config.py        # GitLab/monitor prefs + pinned sessions persistence
     │   │   ├── gitlab_provider.py # GitLab API implementation
     │   │   ├── github_provider.py # GitHub API implementation
-    │   │   ├── git_utils.py     # Git remote URL parsing + MR URL parsing
+    │   │   ├── git_utils.py     # Git remote URL parsing + PR URL parsing
     │   │   └── cq_command.py    # /cq command data model + formatting
     │   └── resources/
     │       └── activate_terminal.groovy  # JetBrains script
@@ -130,9 +130,9 @@ assets/
 | `ClaudeQClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI core window (uses mixins for methods) |
-| `ServerLauncher` | `monitor/server_launcher.py` | MR server clone/force-align/start flow |
-| `GitLabProvider` | `monitor/mr_tracking/gitlab_provider.py` | GitLab MR thread tracking + user notifications |
-| `GitHubProvider` | `monitor/mr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
+| `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow |
+| `GitLabProvider` | `monitor/pr_tracking/gitlab_provider.py` | GitLab PR thread tracking + user notifications |
+| `GitHubProvider` | `monitor/pr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
 | `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu (branch col) + Path menu (Open Terminal/IDE) |
 | `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
@@ -145,9 +145,9 @@ assets/
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
-| `resolve_scm_token()` | `monitor/mr_tracking/config.py` | Resolve token from config (supports env var mode) |
-| `parse_mr_url()` | `monitor/mr_tracking/git_utils.py` | Parse GitLab/GitHub MR/PR URLs |
-| `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends MR context) |
+| `resolve_scm_token()` | `monitor/pr_tracking/config.py` | Resolve token from config (supports env var mode) |
+| `parse_pr_url()` | `monitor/pr_tracking/git_utils.py` | Parse GitLab/GitHub PR URLs |
+| `send_to_cq_session()` | `monitor/cq_sender.py` | Send message to CQ session (prepends PR context) |
 
 ## Runtime Data Files
 
@@ -165,7 +165,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`) |
 | Notification seen state | `.storage/notification_seen.json` |
-| MR context preset selection | `.storage/cq_selected_template` |
+| PR context preset selection | `.storage/cq_selected_template` |
 | Message bundle preset selection | `.storage/cq_selected_direct_template` |
 | Preset definitions | `.storage/cq_templates.json` |
 | Signal file | `.storage/sockets/<tag>.signal` |
@@ -196,7 +196,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 - **Monitor** → `src/claudeq/monitor/`, update `MonitorWindow`
 - **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a CQ server via Unix socket. Do not duplicate the connect/send/recv pattern. Incoming messages are capped at `MAX_MESSAGE_SIZE` (1 MB) in `socket_handler.py`; larger payloads are rejected.
 - **New third-party dependencies** → Add to `pyproject.toml` under the appropriate group: `[tool.poetry.dependencies]` for core, `[tool.poetry.group.monitor.dependencies]` for GUI-only deps. Run `poetry lock && poetry install` after. All imports must be at module top level (no inline imports except optional deps).
-- **New dialogs** → All new resizable dialogs (except simple warning/error/info popups) must save/restore their size using `load_dialog_geometry(key)` / `save_dialog_geometry(key, w, h)` from `monitor/mr_tracking/config.py`. Call `load_dialog_geometry()` in `__init__` to restore. For persistence: if the dialog closes via `accept()`/`reject()`, save in `done()`. If it closes via `close()` or the X button, save in `closeEvent()` instead — `done()` is **not** called for `close()`/X.
+- **New dialogs** → All new resizable dialogs (except simple warning/error/info popups) must save/restore their size using `load_dialog_geometry(key)` / `save_dialog_geometry(key, w, h)` from `monitor/pr_tracking/config.py`. Call `load_dialog_geometry()` in `__init__` to restore. For persistence: if the dialog closes via `accept()`/`reject()`, save in `done()`. If it closes via `close()` or the X button, save in `closeEvent()` instead — `done()` is **not** called for `close()`/X.
 - **New `.storage` subdirectories** → If you add a new subdirectory under `.storage/`, you **must** update three places:
   1. Add the constant in `utils/constants.py` (next to `QUEUE_DIR`, `SOCKET_DIR`, `HISTORY_DIR`)
   2. Add a `.mkdir()` call in `ensure_storage_dirs()` in `utils/constants.py`
@@ -221,20 +221,20 @@ poetry run pytest tests/ -v     # Run all tests
 - **Client commands**: Each command handler is extracted into a private `_handle_*` method on `ClaudeQClient`. The `_process_command` dispatcher delegates to these handlers.
 - **Socket pattern**: `SocketClient._send_request()` is the single source of truth for client→server socket communication. `send_socket_request()` in `utils/socket_utils.py` is the lightweight variant for monitor/session_manager code that doesn't need rate-limited error reporting.
 
-## SCM Polling & MR Tracking
+## SCM Polling & PR Tracking
 
-The monitor polls GitLab/GitHub for MR status updates and user notifications. Key timeouts:
+The monitor polls GitLab/GitHub for PR status updates and user notifications. Key timeouts:
 
 - **GitLab client timeout**: 15s per HTTP request
 - **Poll cycle timeout**: 30s for all `ThreadPoolExecutor` futures
 - **Stuck-poll safeguard**: Force-resets `_scm_polling` after 60s
 - **Poll interval**: Configurable via `poll_interval` in config (default: 30s)
 
-Polling flow: `_scm_poll_timer` → `_start_scm_poll()` → `SCMPollerWorker` (QThread) → `get_mr_status()` per session → `_on_scm_results()` → `_update_mr_column()`.
+Polling flow: `_scm_poll_timer` → `_start_scm_poll()` → `SCMPollerWorker` (QThread) → `get_pr_status()` per session → `_on_scm_results()` → `_update_pr_column()`.
 
 ### Sending Threads to CQ
 
-Right-click MR status label for send modes: individual threads, combined into one message, or filtered to `/cq` commands only. Both share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge threads on SCM side after send.
+Right-click PR status label for send modes: individual threads, combined into one message, or filtered to `/cq` commands only. Both share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge threads on SCM side after send.
 
 ### /cq Auto-Fetch
 
@@ -242,7 +242,7 @@ Right-click MR status label for send modes: individual threads, combined into on
 
 ### Environment Variable Token Mode
 
-SCM tokens support two modes: `token_mode: "direct"` (stored in config) or `"env_var"` (resolved from `os.environ`). Resolution via `resolve_scm_token()` in `config.py`. On startup, env var tokens are validated — invalid ones disable the provider until re-tested via the setup dialog. MR-pinned rows survive provider disconnection (they retain `remote_project_path` in `pinned_sessions.json`).
+SCM tokens support two modes: `token_mode: "direct"` (stored in config) or `"env_var"` (resolved from `os.environ`). Resolution via `resolve_scm_token()` in `config.py`. On startup, env var tokens are validated — invalid ones disable the provider until re-tested via the setup dialog. PR-pinned rows survive provider disconnection (they retain `remote_project_path` in `pinned_sessions.json`).
 
 ### User Notifications
 
@@ -252,26 +252,26 @@ Per-provider enable/disable via setup dialog. Polls `get_user_notifications()` e
 
 Rows persist via `pinned_sessions.json`. Key rules:
 - Every active session is auto-pinned on discovery
-- Row survives if it has a running server OR `remote_project_path` (MR-pinned) OR active MR tracking
-- Dead rows without MR info are auto-removed
-- MR auto-reconnects on monitor restart for rows with `mr_tracked: True`
+- Row survives if it has a running server OR `remote_project_path` (PR-pinned) OR active PR tracking
+- Dead rows without PR info are auto-removed
+- PR auto-reconnects on monitor restart for rows with `pr_tracked: True`
 - `_deleted_tags` set prevents auto-refresh from re-pinning just-deleted rows
 
 ### Add Row (+ Button)
 
-Two options: **From Git URL** (MR/PR URLs or plain project URLs → parse, pin, clone/track) and **From Local Path** (clone to repos dir or open directly). Tag validation via shared `_ask_tag()` helper.
+Two options: **From Git URL** (PR URLs or plain project URLs → parse, pin, clone/track) and **From Local Path** (clone to repos dir or open directly). Tag validation via shared `_ask_tag()` helper.
 
 ### New Change Indicator
 
-A fire icon (🔥) appears on the far right of the Status and MR columns when the value recently changed. Controlled by `new_status_seconds` in monitor prefs (default: 60, 0 = disabled). Click the indicator to dismiss it; dismissal resets when the value changes again.
+A fire icon (🔥) appears on the far right of the Status and PR columns when the value recently changed. Controlled by `new_status_seconds` in monitor prefs (default: 60, 0 = disabled). Click the indicator to dismiss it; dismissal resets when the value changes again.
 
 - **Status column**: Never shown for `running` or `interrupted` states. Tracked in `_state_changed_at` and `_dismissed_new_status` on `MonitorWindow`.
-- **MR column**: Triggers on changes to MR state, unresponded count, approval status, or who approved. First-time discovery is seeded with epoch 0 (no fire on startup). Tracked in `_mr_changed_at` and `_dismissed_mr_new_status` on `MonitorWindow`.
+- **PR column**: Triggers on changes to PR state, unresponded count, approval status, or who approved. First-time discovery is seeded with epoch 0 (no fire on startup). Tracked in `_pr_changed_at` and `_dismissed_pr_new_status` on `MonitorWindow`.
 
 ### Branch Mismatch & Server Startup Validation
 
-- **Runtime mismatch**: Monitor shows `⚠ Server` in orange when live branch differs from expected MR branch
-- **Startup validation** (`_validate_pinned_session()` in `server.py`): Checks repo match, branch match, behind-remote status. Fails 1-3 block startup; ahead/dirty is a warning only. Skipped for non-MR-pinned rows
+- **Runtime mismatch**: Monitor shows `⚠ Server` in orange when live branch differs from expected PR branch
+- **Startup validation** (`_validate_pinned_session()` in `server.py`): Checks repo match, branch match, behind-remote status. Fails 1-3 block startup; ahead/dirty is a warning only. Skipped for non-PR-pinned rows
 
 ### Row Ordering (Drag-and-Drop)
 

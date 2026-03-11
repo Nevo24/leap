@@ -11,8 +11,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QTextDocument
 
-from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
-from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
+from claudeq.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.pr_tracking.git_utils import detect_default_branch
 from claudeq.monitor.themes import current_theme
 
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 """Dock icon badge overlay for macOS.
 
 Paints a red notification badge with a count onto the application's dock icon.
-Badge count tracks the number of MRs and session statuses that changed since
+Badge count tracks the number of PRs and session statuses that changed since
 the user last focused the monitor window.
 """
 
@@ -14,14 +14,14 @@ from PyQt5.QtCore import QRect, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import QApplication
 
-from claudeq.monitor.mr_tracking.base import MRState, MRStatus
+from claudeq.monitor.pr_tracking.base import PRState, PRStatus
 
 
 class NotificationType(Enum):
     """Types of notification events the monitor can fire."""
-    MR_UNRESPONDED = 'mr_unresponded'
-    MR_ALL_RESPONDED = 'mr_all_responded'
-    MR_APPROVED = 'mr_approved'
+    PR_UNRESPONDED = 'pr_unresponded'
+    PR_ALL_RESPONDED = 'pr_all_responded'
+    PR_APPROVED = 'pr_approved'
     SESSION_COMPLETED = 'session_completed'
     SESSION_NEEDS_PERMISSION = 'session_needs_permission'
     SESSION_HAS_QUESTION = 'session_has_question'
@@ -36,8 +36,8 @@ class NotificationEvent:
     """A notification event emitted by DockBadge detection logic."""
     type: NotificationType
     tag: str
-    mr_iid: Optional[int] = None
-    mr_title: Optional[str] = None
+    pr_iid: Optional[int] = None
+    pr_title: Optional[str] = None
     unresponded_count: int = 0
     approved_by: Optional[list[str]] = None
     url: Optional[str] = None
@@ -53,26 +53,26 @@ class DockBadge:
 
     def __init__(self) -> None:
         self._base_icon: Optional[QPixmap] = None
-        self._seen_mr_statuses: dict[str, MRStatus] = {}
+        self._seen_pr_statuses: dict[str, PRStatus] = {}
         self._seen_session_states: dict[str, str] = {}  # tag -> claude_state
         self._busy_since: dict[str, float] = {}  # tag -> monotonic timestamp
-        self._mr_changed: int = 0
+        self._pr_changed: int = 0
         self._session_changed: int = 0
         self._notification_changed: int = 0
         # Coalescing: track (tag, NotificationType) already counted while inactive
         self._session_notified: set[tuple[str, NotificationType]] = set()
-        self._mr_notified: set[tuple[str, NotificationType]] = set()
+        self._pr_notified: set[tuple[str, NotificationType]] = set()
 
     def update(
         self,
-        mr_statuses: dict[str, MRStatus],
+        pr_statuses: dict[str, PRStatus],
         window_active: bool,
         dock_enabled: Optional[dict[str, bool]] = None,
     ) -> list[NotificationEvent]:
-        """Recompute MR change count and render the badge.
+        """Recompute PR change count and render the badge.
 
         Args:
-            mr_statuses: Current MR statuses by tag.
+            pr_statuses: Current PR statuses by tag.
             window_active: Whether the monitor window is currently focused.
             dock_enabled: Map of NotificationType.value -> bool for dock counting.
                           If None, all types count toward the badge (legacy behavior).
@@ -81,38 +81,38 @@ class DockBadge:
             List of NotificationEvent for changes detected this cycle.
         """
         if window_active:
-            self._seen_mr_statuses = dict(mr_statuses)
-            self._mr_changed = 0
-            self._mr_notified.clear()
+            self._seen_pr_statuses = dict(pr_statuses)
+            self._pr_changed = 0
+            self._pr_notified.clear()
             self._render_total()
             return []
 
         events: list[NotificationEvent] = []
         dock_count = 0
 
-        for tag, status in mr_statuses.items():
-            seen = self._seen_mr_statuses.get(tag)
-            tag_events = self._detect_mr_events(tag, seen, status)
+        for tag, status in pr_statuses.items():
+            seen = self._seen_pr_statuses.get(tag)
+            tag_events = self._detect_pr_events(tag, seen, status)
             events.extend(tag_events)
 
             # Count toward dock badge only for types where dock is enabled
             # and not already counted for this tag while window inactive
             for ev in tag_events:
                 key = (ev.tag, ev.type)
-                if key not in self._mr_notified:
+                if key not in self._pr_notified:
                     if dock_enabled is None or dock_enabled.get(ev.type.value, True):
                         dock_count += 1
-                        self._mr_notified.add(key)
+                        self._pr_notified.add(key)
 
-        self._seen_mr_statuses = dict(mr_statuses)
-        self._mr_changed += dock_count
+        self._seen_pr_statuses = dict(pr_statuses)
+        self._pr_changed += dock_count
         self._render_total()
         return events
 
-    def _detect_mr_events(
-        self, tag: str, seen: Optional[MRStatus], current: MRStatus,
+    def _detect_pr_events(
+        self, tag: str, seen: Optional[PRStatus], current: PRStatus,
     ) -> list[NotificationEvent]:
-        """Detect notification events for a single MR status transition."""
+        """Detect notification events for a single PR status transition."""
         events: list[NotificationEvent] = []
 
         if seen is None:
@@ -120,34 +120,34 @@ class DockBadge:
             return events
 
         # State became UNRESPONDED or unresponded_count increased
-        if current.state == MRState.UNRESPONDED:
-            if (seen.state != MRState.UNRESPONDED
+        if current.state == PRState.UNRESPONDED:
+            if (seen.state != PRState.UNRESPONDED
                     or current.unresponded_count > seen.unresponded_count):
                 events.append(NotificationEvent(
-                    type=NotificationType.MR_UNRESPONDED,
+                    type=NotificationType.PR_UNRESPONDED,
                     tag=tag,
-                    mr_iid=current.mr_iid,
-                    mr_title=current.mr_title,
+                    pr_iid=current.pr_iid,
+                    pr_title=current.pr_title,
                     unresponded_count=current.unresponded_count,
                 ))
 
         # State changed from UNRESPONDED to ALL_RESPONDED
-        if (seen.state == MRState.UNRESPONDED
-                and current.state == MRState.ALL_RESPONDED):
+        if (seen.state == PRState.UNRESPONDED
+                and current.state == PRState.ALL_RESPONDED):
             events.append(NotificationEvent(
-                type=NotificationType.MR_ALL_RESPONDED,
+                type=NotificationType.PR_ALL_RESPONDED,
                 tag=tag,
-                mr_iid=current.mr_iid,
-                mr_title=current.mr_title,
+                pr_iid=current.pr_iid,
+                pr_title=current.pr_title,
             ))
 
         # Approved changed False -> True
         if not seen.approved and current.approved:
             events.append(NotificationEvent(
-                type=NotificationType.MR_APPROVED,
+                type=NotificationType.PR_APPROVED,
                 tag=tag,
-                mr_iid=current.mr_iid,
-                mr_title=current.mr_title,
+                pr_iid=current.pr_iid,
+                pr_title=current.pr_title,
                 approved_by=current.approved_by,
             ))
 
@@ -244,24 +244,24 @@ class DockBadge:
         self._notification_changed += count
         self._render_total()
 
-    def clear(self, mr_statuses: dict[str, MRStatus]) -> None:
+    def clear(self, pr_statuses: dict[str, PRStatus]) -> None:
         """Clear the badge and snapshot current statuses as seen."""
-        self._mr_changed = 0
+        self._pr_changed = 0
         self._session_changed = 0
         self._notification_changed = 0
-        self._seen_mr_statuses = dict(mr_statuses)
+        self._seen_pr_statuses = dict(pr_statuses)
         self._session_notified.clear()
-        self._mr_notified.clear()
+        self._pr_notified.clear()
         self._render_total()
 
     def discard_tag(self, tag: str) -> None:
         """Remove a tag from the seen snapshots."""
-        self._seen_mr_statuses.pop(tag, None)
+        self._seen_pr_statuses.pop(tag, None)
         self._seen_session_states.pop(tag, None)
 
     def _render_total(self) -> None:
         """Render the combined badge count."""
-        total = self._mr_changed + self._session_changed + self._notification_changed
+        total = self._pr_changed + self._session_changed + self._notification_changed
         self._render(str(total) if total > 0 else '')
 
     def _render(self, label: str) -> None:

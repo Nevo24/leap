@@ -7,14 +7,14 @@ from PyQt5.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QLabel, QVBoxLayout,
 )
 
-from claudeq.monitor.mr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from claudeq.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 
 
 # Display labels for each notification type
 _TYPE_LABELS = {
-    'mr_unresponded': 'New unresponded threads',
-    'mr_all_responded': 'All threads responded',
-    'mr_approved': 'MR approved',
+    'pr_unresponded': 'New unresponded threads',
+    'pr_all_responded': 'All threads responded',
+    'pr_approved': 'PR approved',
     'session_completed': 'Claude finished processing',
     'session_needs_permission': 'Claude needs permission',
     'session_has_question': 'Claude has a question',
@@ -26,8 +26,8 @@ _TYPE_LABELS = {
 
 # Grouped type keys with section titles.
 _SECTIONS: list[tuple[str, list[str]]] = [
-    ('MR / Session Tracking', [
-        'mr_unresponded', 'mr_all_responded', 'mr_approved', 'session_completed',
+    ('PR / Session Tracking', [
+        'pr_unresponded', 'pr_all_responded', 'pr_approved', 'session_completed',
         'session_needs_permission', 'session_has_question', 'session_interrupted',
     ]),
     ('GitLab / GitHub Notifications', [

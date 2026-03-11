@@ -29,9 +29,9 @@ _DEFAULT_PREFS = {
 # Default notification preferences per notification type.
 # Each type has independent 'dock' (badge count) and 'banner' (macOS banner) toggles.
 _DEFAULT_NOTIFICATIONS: dict[str, dict[str, bool]] = {
-    'mr_unresponded': {'dock': True, 'banner': False},
-    'mr_all_responded': {'dock': True, 'banner': False},
-    'mr_approved': {'dock': True, 'banner': False},
+    'pr_unresponded': {'dock': True, 'banner': False},
+    'pr_all_responded': {'dock': True, 'banner': False},
+    'pr_approved': {'dock': True, 'banner': False},
     'session_completed': {'dock': True, 'banner': False},
     'session_needs_permission': {'dock': True, 'banner': False},
     'session_has_question': {'dock': True, 'banner': False},
@@ -189,6 +189,27 @@ def save_github_config(config: dict[str, Any]) -> None:
     atomic_json_write(GITHUB_CONFIG_FILE, config)
 
 
+def _migrate_notification_keys(prefs: dict[str, Any]) -> bool:
+    """Migrate old mr_* notification keys to pr_* in prefs dict. Returns True if migrated."""
+    notifications = prefs.get('notifications')
+    if not isinstance(notifications, dict):
+        return False
+    renames = {
+        'mr_unresponded': 'pr_unresponded',
+        'mr_all_responded': 'pr_all_responded',
+        'mr_approved': 'pr_approved',
+    }
+    migrated = False
+    for old_key, new_key in renames.items():
+        if old_key in notifications and new_key not in notifications:
+            notifications[new_key] = notifications.pop(old_key)
+            migrated = True
+        elif old_key in notifications:
+            del notifications[old_key]
+            migrated = True
+    return migrated
+
+
 def load_monitor_prefs() -> dict[str, Any]:
     """Load monitor UI preferences from storage.
 
@@ -202,6 +223,8 @@ def load_monitor_prefs() -> dict[str, Any]:
                 prefs.update(json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
+    if _migrate_notification_keys(prefs):
+        atomic_json_write(MONITOR_PREFS_FILE, prefs)
     return prefs
 
 
@@ -299,10 +322,10 @@ def load_cq_direct_template() -> list[str]:
 
 
 def load_cq_template() -> str:
-    """Load the text of the currently selected MR template preset.
+    """Load the text of the currently selected PR template preset.
 
     Resolves the selected preset name to its first message from
-    cq_templates.json.  MR templates are enforced to be single-message
+    cq_templates.json.  PR templates are enforced to be single-message
     by the combo validation, so only the first element is returned.
 
     Returns:
@@ -366,6 +389,22 @@ def delete_named_template(name: str) -> None:
     _write_saved_templates(templates)
 
 
+def _migrate_mr_to_pr_keys(session: dict[str, Any]) -> dict[str, Any]:
+    """Migrate old mr_* keys to pr_* keys in a pinned session dict."""
+    renames = {
+        'mr_title': 'pr_title',
+        'mr_url': 'pr_url',
+        'mr_tracked': 'pr_tracked',
+        'mr_branch': 'pr_branch',
+    }
+    for old_key, new_key in renames.items():
+        if old_key in session and new_key not in session:
+            session[new_key] = session.pop(old_key)
+        elif old_key in session:
+            del session[old_key]
+    return session
+
+
 def load_pinned_sessions() -> dict[str, dict[str, Any]]:
     """Load pinned sessions from storage.
 
@@ -379,6 +418,13 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
         with open(PINNED_SESSIONS_FILE, 'r') as f:
             data = json.load(f)
         if isinstance(data, dict):
+            migrated = False
+            for tag, session in data.items():
+                if any(k in session for k in ('mr_title', 'mr_url', 'mr_tracked', 'mr_branch')):
+                    _migrate_mr_to_pr_keys(session)
+                    migrated = True
+            if migrated:
+                atomic_json_write(PINNED_SESSIONS_FILE, data)
             return data
     except (json.JSONDecodeError, OSError):
         pass

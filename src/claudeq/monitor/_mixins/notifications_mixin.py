@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from claudeq.monitor.mr_tracking.base import UserNotification
-from claudeq.monitor.mr_tracking.config import (
+from claudeq.monitor.pr_tracking.base import UserNotification
+from claudeq.monitor.pr_tracking.config import (
     get_dock_enabled, load_github_config, load_gitlab_config,
     save_github_config, save_gitlab_config, save_notification_seen,
 )
-from claudeq.monitor.mr_tracking.git_utils import SCMType
+from claudeq.monitor.pr_tracking.git_utils import SCMType
 from claudeq.monitor.ui.dock_badge import NotificationEvent, NotificationType
 
 if TYPE_CHECKING:

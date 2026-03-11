@@ -1,6 +1,6 @@
 """Server launcher for ClaudeQ Monitor.
 
-Handles the MR server startup flow: find/clone project directories,
+Handles the PR server startup flow: find/clone project directories,
 check git state, checkout branches, and open CQ in a terminal.
 """
 
@@ -17,8 +17,8 @@ from urllib.parse import quote
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-from claudeq.monitor.mr_tracking.config import save_pinned_sessions
-from claudeq.monitor.mr_tracking.git_utils import detect_default_branch
+from claudeq.monitor.pr_tracking.config import save_pinned_sessions
+from claudeq.monitor.pr_tracking.git_utils import detect_default_branch
 from claudeq.monitor.navigation import open_terminal_with_command
 from claudeq.monitor.scm_polling import BackgroundCallWorker
 from claudeq.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR
@@ -44,7 +44,7 @@ def _is_git_repo(path: Path) -> bool:
 class ServerLauncher:
     """Manages server start logic for pinned (dead) rows.
 
-    For MR-pinned rows: find/clone project, check branch, checkout if needed,
+    For PR-pinned rows: find/clone project, check branch, checkout if needed,
     then open CQ. For auto-pinned rows: open CQ directly.
     """
 
@@ -87,7 +87,7 @@ class ServerLauncher:
     def start_server(self, tag: str) -> None:
         """Start a new server for a pinned (dead) row.
 
-        For MR-pinned rows (with remote_project_path): find/clone project,
+        For PR-pinned rows (with remote_project_path): find/clone project,
         check branch, checkout if needed, then open CQ.
         For auto-pinned rows (with local project_path): open CQ directly.
         """
@@ -96,21 +96,21 @@ class ServerLauncher:
         if pinned.get('remote_project_path'):
             project_path = pinned.get('project_path')
             if not project_path:
-                # MR-pinned row, first time — needs clone + git setup
-                self._start_server_from_mr(tag, pinned)
+                # PR-pinned row, first time — needs clone + git setup
+                self._start_server_from_pr(tag, pinned)
             else:
                 # Check if another CQ server is already using this directory
                 resolved = str(Path(project_path).resolve())
                 active_paths = self._w._get_active_project_paths()
                 project_dir = Path(project_path)
                 if resolved in active_paths:
-                    # Path in use — clear it so _start_server_from_mr finds a free dir
+                    # Path in use — clear it so _start_server_from_pr finds a free dir
                     pinned['project_path'] = ''
-                    self._start_server_from_mr(tag, pinned)
+                    self._start_server_from_pr(tag, pinned)
                 elif not project_dir.is_dir() or not _is_git_repo(project_dir):
                     # Dir was deleted or isn't a valid git repo — clear and re-clone
                     pinned['project_path'] = ''
-                    self._start_server_from_mr(tag, pinned)
+                    self._start_server_from_pr(tag, pinned)
                 else:
                     # Local path free — force-align to remote
                     branch = pinned.get('branch', '') or detect_default_branch(str(project_dir))
@@ -189,8 +189,8 @@ class ServerLauncher:
         fallback = repos_dir / f'{project_name}_{100}'
         return fallback, True, in_use
 
-    def _start_server_from_mr(self, tag: str, pinned: dict[str, Any]) -> None:
-        """Start server for an MR-pinned row: find/clone project, checkout branch."""
+    def _start_server_from_pr(self, tag: str, pinned: dict[str, Any]) -> None:
+        """Start server for a PR-pinned row: find/clone project, checkout branch."""
         repos_dir = self._w._prefs.get('repos_dir', DEFAULT_REPOS_DIR).strip() or DEFAULT_REPOS_DIR
 
         remote_project = pinned['remote_project_path']
@@ -400,7 +400,7 @@ class ServerLauncher:
             if branch_gone:
                 reply = QMessageBox.question(
                     self._w, 'Branch Not Available',
-                    f"Branch '{branch}' was deleted on remote (MR merged?).\n\n"
+                    f"Branch '{branch}' was deleted on remote (PR merged?).\n\n"
                     f"CQ will start on the last local state of '{branch}' "
                     f"in {project_dir}.\n\n"
                     f"Open anyway?",

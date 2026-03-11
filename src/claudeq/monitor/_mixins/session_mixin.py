@@ -15,7 +15,7 @@ from claudeq.utils.socket_utils import send_socket_request
 from claudeq.monitor.session_manager import (
     is_client_lock_held, load_session_metadata, read_client_pid, session_exists,
 )
-from claudeq.monitor.mr_tracking.config import save_monitor_prefs, save_pinned_sessions
+from claudeq.monitor.pr_tracking.config import save_monitor_prefs, save_pinned_sessions
 from claudeq.monitor.scm_polling import BackgroundCallWorker
 from claudeq.monitor.monitor_utils import _remove_client_lock
 from claudeq.monitor.navigation import (
@@ -50,23 +50,23 @@ class SessionMixin(_Base):
         changed = False
 
         # Auto-pin all active sessions (skip explicitly deleted ones).
-        # Merge with existing pin data to preserve MR-pinned fields
+        # Merge with existing pin data to preserve PR-pinned fields
         # (remote_project_path, host_url, scm_type, etc.).
         for s in active_sessions:
             tag = s['tag']
             if tag in self._deleted_tags:
                 continue
             existing = self._pinned_sessions.get(tag, {})
-            # For MR-pinned rows, preserve the MR branch as source of truth
+            # For PR-pinned rows, preserve the PR branch as source of truth
             # so we can detect when the local branch drifts.
-            is_mr_pinned = bool(existing.get('remote_project_path'))
+            is_pr_pinned = bool(existing.get('remote_project_path'))
             pin_data = {**existing,
                 'tag': tag,
                 'project_path': s.get('project_path') or '',
                 'ide': s.get('ide') or '',
                 'branch': (
                     existing.get('branch', '')
-                    if is_mr_pinned
+                    if is_pr_pinned
                     else s.get('branch') or ''
                 ),
             }
@@ -80,32 +80,32 @@ class SessionMixin(_Base):
         # Prune deleted tags that are no longer active (server fully gone)
         self._deleted_tags -= self._deleted_tags - set(active_by_tag.keys())
 
-        # Build merged list — auto-remove dead rows without MR tracking
+        # Build merged list — auto-remove dead rows without PR tracking
         tags_to_remove: list[str] = []
         merged: list[dict[str, Any]] = []
         for tag, pin in self._pinned_sessions.items():
             if tag in active_by_tag:
                 session = active_by_tag[tag]
-                # Enrich active sessions with pinned SCM data (MR-pinned rows)
+                # Enrich active sessions with pinned SCM data (PR-pinned rows)
                 for key in ('remote_project_path', 'host_url', 'scm_type'):
                     if pin.get(key) and not session.get(key):
                         session[key] = pin[key]
-                # For MR-pinned rows, store the MR branch so the poller uses
+                # For PR-pinned rows, store the PR branch so the poller uses
                 # it instead of the live branch (which may have drifted).
                 if pin.get('remote_project_path') and pin.get('branch'):
-                    session['mr_branch'] = pin['branch']
+                    session['pr_branch'] = pin['branch']
                 merged.append(session)
             elif not (pin.get('remote_project_path')
                       or tag in self._tracked_tags
                       or tag in self._checking_tags):
-                # Dead row with no MR tracking — schedule for removal
+                # Dead row with no PR tracking — schedule for removal
                 tags_to_remove.append(tag)
                 continue
             else:
                 # Dead row — check for orphaned client
                 has_client = is_client_lock_held(tag)
                 client_pid = read_client_pid(tag) if has_client else None
-                # For MR-pinned rows, derive project name from remote path
+                # For PR-pinned rows, derive project name from remote path
                 if pin.get('remote_project_path'):
                     project_name = pin['remote_project_path'].rsplit('/', 1)[-1]
                 else:
@@ -117,19 +117,19 @@ class SessionMixin(_Base):
                     'auto_send_mode': pin.get('auto_send_mode', 'pause'),
                     'project': project_name,
                     'branch': pinned_branch,
-                    'mr_branch': pinned_branch if pin.get('remote_project_path') else None,
+                    'pr_branch': pinned_branch if pin.get('remote_project_path') else None,
                     'project_path': pin.get('project_path') or None,
                     'ide': pin.get('ide') or None,
                     'server_pid': None,
                     'client_pid': client_pid,
                     'has_client': has_client,
-                    # Pass through pinned SCM data for MR-pinned rows
+                    # Pass through pinned SCM data for PR-pinned rows
                     'remote_project_path': pin.get('remote_project_path'),
                     'host_url': pin.get('host_url'),
                     'scm_type': pin.get('scm_type'),
                 })
 
-        # Remove dead rows without MR tracking
+        # Remove dead rows without PR tracking
         if tags_to_remove:
             colors_changed = False
             for tag in tags_to_remove:
@@ -311,7 +311,7 @@ class SessionMixin(_Base):
                       _from_delete: bool = False) -> None:
         """Close a server session (non-blocking).
 
-        If the session has no MR tracking, warns that closing the server
+        If the session has no PR tracking, warns that closing the server
         will remove the row.
 
         Args:
@@ -324,15 +324,15 @@ class SessionMixin(_Base):
         if not _from_delete:
             # Check if this row will survive without a server
             pin = self._pinned_sessions.get(tag, {})
-            has_mr = (
+            has_pr = (
                 pin.get('remote_project_path')
                 or tag in self._tracked_tags
                 or tag in self._checking_tags
             )
-            if not has_mr:
+            if not has_pr:
                 reply = QMessageBox.question(
                     self, 'Close Server',
-                    f"'{tag}' has no MR tracking.\n"
+                    f"'{tag}' has no PR tracking.\n"
                     f"Closing the server will remove this row.\n\nContinue?",
                     QMessageBox.Yes | QMessageBox.No,
                 )
@@ -430,7 +430,7 @@ class SessionMixin(_Base):
         client_pid = session.get('client_pid')
         has_server = server_pid is not None
 
-        has_mr = (
+        has_pr = (
             tag in self._tracked_tags
             or tag in self._checking_tags
         )
@@ -440,8 +440,8 @@ class SessionMixin(_Base):
             parts.append('server')
         if has_client:
             parts.append('client')
-        if has_mr:
-            parts.append('MR tracking')
+        if has_pr:
+            parts.append('PR tracking')
 
         if parts:
             what = ', '.join(parts[:-1]) + (' and ' if len(parts) > 1 else '') + parts[-1]
@@ -465,9 +465,9 @@ class SessionMixin(_Base):
         self._remove_pinned_session(tag)
 
     def _remove_dead_untracked_row(self, tag: str) -> None:
-        """Silently remove a dead row that has no active MR tracking.
+        """Silently remove a dead row that has no active PR tracking.
 
-        Called during silent auto-reconnect when MR tracking fails and
+        Called during silent auto-reconnect when PR tracking fails and
         no server is running — the row serves no purpose.
         """
         session = next((s for s in self.sessions if s['tag'] == tag), None)
@@ -478,7 +478,7 @@ class SessionMixin(_Base):
         self._remove_from_row_order({tag})
         self._deleted_tags.add(tag)
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
-        self._show_status(f"Removed dead row '{tag}' (MR tracking failed, no server)")
+        self._show_status(f"Removed dead row '{tag}' (PR tracking failed, no server)")
 
     def _remove_pinned_session(self, tag: str) -> None:
         """Remove a pinned session and clean up all tracking state."""
@@ -495,7 +495,7 @@ class SessionMixin(_Base):
         # Clean up row order
         self._remove_from_row_order({tag})
 
-        # Clean up MR tracking (skip prompt — _delete_row already prompted)
+        # Clean up PR tracking (skip prompt — _delete_row already prompted)
         self._stop_tracking(tag, _skip_prompt=True)
 
         # Remove from sessions list and refresh table
