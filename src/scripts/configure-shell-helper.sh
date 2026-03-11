@@ -123,7 +123,7 @@ codexq() {
         echo "Example (client): codexq my-feature 'hello Codex'"
         return 1
     fi
-    "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh" --cli codex "$@"
+    "$CLAUDEQ_PROJECT_DIR/src/scripts/claudeq-main.sh" "$@" --cli codex
 }
 
 alias cc='codexq'

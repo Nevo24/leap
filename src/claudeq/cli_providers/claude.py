@@ -39,7 +39,7 @@ class ClaudeProvider(CLIProvider):
 
     @property
     def trust_dialog_pattern(self) -> Optional[bytes]:
-        return b'Itrustthisfolder'
+        return b'Doyoutrustthecontentsofthisdirectory?'
 
     @property
     def interrupted_pattern(self) -> bytes:

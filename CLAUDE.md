@@ -1,6 +1,6 @@
 # ClaudeQ
 
-PTY-based client-server system for managing Claude CLI sessions with message queueing, image support, and native IDE scrolling.
+PTY-based client-server system for managing AI CLI sessions (Claude Code, OpenAI Codex) with message queueing, image support, and native IDE scrolling.
 
 ## Quick Start
 
@@ -9,8 +9,11 @@ make install                # Install core
 make install-monitor        # Install GUI (optional)
 source ~/.zshrc             # Reload shell
 
-cq mytag                    # Terminal 1: Start server
+cq mytag                    # Terminal 1: Start Claude server
 cq mytag                    # Terminal 2: Connect client
+
+cc mytag                    # Start Codex server (alias for codexq)
+codexq mytag                # Same as: cq mytag --cli codex
 ```
 
 ## Project Structure
@@ -28,11 +31,19 @@ src/
 │   ├── setup-slack-app.sh       # Interactive Slack app setup wizard
 │   ├── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
 │   ├── configure_claude_hooks.py    # Merge ClaudeQ hooks into ~/.claude/settings.json
-│   └── claudeq-hook.sh             # Claude Code hook script (writes state to signal file)
+│   ├── configure_codex_hooks.py    # Merge ClaudeQ hooks into ~/.codex/hooks.json
+│   └── claudeq-hook.sh             # CLI hook script (writes state to signal file)
 │
 └── claudeq/                     # Main Python package
     ├── __init__.py              # Version, exports
     ├── main.py                  # Package entry point
+    │
+    ├── cli_providers/           # CLI backend abstraction (Strategy pattern)
+    │   ├── __init__.py          # Package exports, get_provider(), list_providers()
+    │   ├── base.py              # CLIProvider ABC (patterns, timings, hooks, input)
+    │   ├── claude.py            # Claude Code provider (Ink TUI, numbered menus)
+    │   ├── codex.py             # OpenAI Codex provider (Ratatui TUI, y/n approval)
+    │   └── registry.py          # Provider registry (name → class lookup)
     │
     ├── utils/                   # Shared utilities
     │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors, is_valid_tag()
@@ -42,10 +53,10 @@ src/
     │
     ├── server/                  # PTY Server
     │   ├── server.py            # ClaudeQServer - main orchestrator
-    │   ├── pty_handler.py       # Claude CLI PTY (pexpect)
+    │   ├── pty_handler.py       # CLI PTY (pexpect, provider-driven)
     │   ├── socket_handler.py    # Unix socket server
     │   ├── queue_manager.py     # Message queue persistence
-    │   └── metadata.py          # Session metadata (IDE, project, branch)
+    │   └── metadata.py          # Session metadata (IDE, project, branch, cli_provider)
     │
     ├── client/                  # Interactive Client
     │   ├── client.py            # ClaudeQClient - main class
@@ -115,7 +126,7 @@ src/
 
 tests/
 ├── __init__.py
-└── test_state_tracker.py        # ClaudeStateTracker state machine tests
+└── test_state_tracker.py        # CLIStateTracker state machine tests
 
 assets/
 ├── claudeq-icon.png             # Source icon (1024x1024)
@@ -126,6 +137,10 @@ assets/
 
 | Class / Function | File | Purpose |
 |------------------|------|---------|
+| `CLIProvider` | `cli_providers/base.py` | Abstract base for CLI backends (patterns, hooks, input) |
+| `ClaudeProvider` | `cli_providers/claude.py` | Claude Code CLI (Ink TUI, numbered menus, Notification hooks) |
+| `CodexProvider` | `cli_providers/codex.py` | OpenAI Codex CLI (Ratatui TUI, y/n approval, Stop hook only) |
+| `get_provider()` | `cli_providers/registry.py` | Provider lookup by name (`'claude'`, `'codex'`) |
 | `ClaudeQServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
 | `ClaudeQClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |

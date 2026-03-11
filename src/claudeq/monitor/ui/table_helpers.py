@@ -289,13 +289,13 @@ MENU_BTN_STYLE = (
 )
 
 # Column groups for vertical separators.
-# Groups: [X, Tag, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
+# Groups: [X, Tag, CLI, Project] | [Server, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
 COLUMN_GROUPS: list[list[int]] = [
-    [0, 1, 2],          # Info
-    [3, 4, 5, 6, 7],    # Server
-    [8],                 # Client
-    [9],                 # Slack
-    [10, 11],            # PR
+    [0, 1, 2, 3],       # Info
+    [4, 5, 6, 7, 8],    # Server
+    [9],                 # Client
+    [10],                # Slack
+    [11, 12],            # PR
 ]
 
 # Precomputed: column index → group index (for fast lookup)
@@ -304,8 +304,8 @@ _COL_TO_GROUP: dict[int, int] = {
 }
 
 # Legacy constants kept for backward compatibility (used by _set_cell_widget static fallback)
-GROUP_BOUNDARY_COLS = frozenset({0, 2, 7, 8, 9})    # Solid white (between groups)
-INTRA_GROUP_COLS = frozenset({1, 3, 4, 5, 6, 10})   # Semi-transparent white (within groups)
+GROUP_BOUNDARY_COLS = frozenset({0, 3, 8, 9, 10})    # Solid white (between groups)
+INTRA_GROUP_COLS = frozenset({1, 2, 4, 5, 6, 7, 11})  # Semi-transparent white (within groups)
 
 BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
 BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)

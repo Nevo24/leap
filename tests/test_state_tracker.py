@@ -651,24 +651,26 @@ class TestTrustDialog:
         assert tracker.get_state(pty_alive=True) == 'idle'
         t[0] = 1.0
         tracker.on_output(
-            b'Accessing workspace:\r\n/Users/test\r\n'
-            b'\xe2\x9d\xaf 1. Yes, I trust this folder\r\n'
-            b'  2. No, exit\r\n'
+            b'Do you trust the contents of this directory?\r\n'
+            b'\xe2\x9d\xaf 1. Yes, continue\r\n'
+            b'  2. No, quit\r\n'
         )
         assert tracker.current_state == 'needs_permission'
 
     def test_trust_dialog_cursor_positioned(self, tmp_path: Path) -> None:
         """Real TUI output: cursor positioning CSI sequences replace spaces.
-        After ANSI stripping, words merge (e.g. 'Itrustthisfolder')."""
+        After ANSI stripping, words merge (e.g. 'Doyoutrustthecontentsofthisdirectory?')."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         t[0] = 1.0
         # Realistic Ink rendering: each word positioned via CSI
         tracker.on_output(
-            b'\x1b[10;1H\xe2\x9d\xaf\x1b[10;3H1.\x1b[10;6HYes,'
-            b'\x1b[10;11HI\x1b[10;13Htrust\x1b[10;19Hthis'
-            b'\x1b[10;24Hfolder\r\n'
-            b'\x1b[11;3H2.\x1b[11;6HNo,\x1b[11;10Hexit\r\n'
+            b'\x1b[10;1HDo\x1b[10;4Hyou\x1b[10;8Htrust'
+            b'\x1b[10;14Hthe\x1b[10;18Hcontents'
+            b'\x1b[10;27Hof\x1b[10;30Hthis'
+            b'\x1b[10;35Hdirectory?\r\n'
+            b'\x1b[11;3H1.\x1b[11;6HYes,\x1b[11;11Hcontinue\r\n'
+            b'\x1b[12;3H2.\x1b[12;6HNo,\x1b[12;10Hquit\r\n'
         )
         assert tracker.current_state == 'needs_permission'
 
@@ -682,15 +684,16 @@ class TestTrustDialog:
             b'\x1b[2J\x1b[H' + b'\xe2\x94\x80' * 100
             + b'\x1b[5;1HAccessingworkspace:\r\n'
             + b'\x1b[7;1HQuicksafetycheck\r\n'
-            + b'\x1b[10;1H\xe2\x9d\xaf\x1b[10;3H1.\x1b[10;6HYes,'
-            + b'\x1b[10;11HI\x1b[10;13Htrus'  # split mid-word
+            + b'\x1b[10;1HDo\x1b[10;4Hyou\x1b[10;8Htrust'
+            + b'\x1b[10;14Hthe\x1b[10;18Hconte'  # split mid-word
         )
         assert tracker.current_state == 'idle'
         # Chunk 2: rest of dialog
         t[0] = 1.1
         tracker.on_output(
-            b't\x1b[10;18Hthis\x1b[10;23Hfolder\r\n'
-            b'\x1b[11;3H2.\x1b[11;6HNo,\x1b[11;10Hexit\r\n'
+            b'nts\x1b[10;27Hof\x1b[10;30Hthis'
+            b'\x1b[10;35Hdirectory?\r\n'
+            b'\x1b[11;3H1.\x1b[11;6HYes,\x1b[11;11Hcontinue\r\n'
         )
         assert tracker.current_state == 'needs_permission'
 
@@ -699,7 +702,7 @@ class TestTrustDialog:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         t[0] = 1.0
-        tracker.on_output(b'I trust this folder')
+        tracker.on_output(b'Do you trust the contents of this directory?')
         assert tracker.current_state == 'needs_permission'
         assert len(tracker._output_buf) == 0
         assert tracker._idle_output_acc == 0
@@ -709,7 +712,7 @@ class TestTrustDialog:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         t[0] = 5.0
-        tracker.on_output(b'I trust this folder')
+        tracker.on_output(b'Do you trust the contents of this directory?')
         assert tracker._waiting_since == 5.0
 
     def test_trust_dialog_resume_goes_to_idle(self, tmp_path: Path) -> None:
@@ -720,7 +723,7 @@ class TestTrustDialog:
         tracker = make_tracker(tmp_path, t)
         # Trust dialog detected
         t[0] = 1.0
-        tracker.on_output(b'I trust this folder')
+        tracker.on_output(b'Do you trust the contents of this directory?')
         assert tracker.current_state == 'needs_permission'
         assert tracker._trust_dialog_phase is True
         # User answers (presses Enter)
