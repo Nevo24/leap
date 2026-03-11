@@ -254,6 +254,12 @@ class ActionsMenuMixin(_Base):
             logger.debug("git diff --quiet check failed", exc_info=True)
 
         diff_tool = self._prefs.get('default_diff_tool', '')
+        # Tools that don't support directory diff mode (-d).
+        # VS Code opens temp left/right folders as a workspace instead of
+        # showing actual diffs, so we use file-by-file mode for it.
+        _NO_DIR_DIFF_TOOLS = {'vscode'}
+        use_dir_diff = diff_tool not in _NO_DIR_DIFF_TOOLS
+
         if diff_tool and '/' in diff_tool:
             # Full path to a CLI binary (e.g. JetBrains IDE).
             # git difftool --extcmd doesn't use shell expansion, so we
@@ -265,11 +271,16 @@ class ActionsMenuMixin(_Base):
             wrapper.write(f'#!/bin/sh\nexec "{diff_tool}" diff "$@"\n')
             wrapper.close()
             os.chmod(wrapper.name, 0o755)
-            cmd = ['git', 'difftool', '-d', '-y', f'--extcmd={wrapper.name}']
+            cmd = ['git', 'difftool', '-y', f'--extcmd={wrapper.name}']
+            if use_dir_diff:
+                cmd.insert(2, '-d')
             cmd.extend(diff_args)
-            display = f'git difftool -d (via {diff_tool.rsplit("/", 1)[-1]})'
+            bin_name = diff_tool.rsplit("/", 1)[-1]
+            display = f'git difftool{" -d" if use_dir_diff else ""} (via {bin_name})'
         else:
-            cmd = ['git', 'difftool', '-d', '-y']
+            cmd = ['git', 'difftool', '-y']
+            if use_dir_diff:
+                cmd.insert(2, '-d')
             if diff_tool:
                 cmd.append(f'--tool={diff_tool}')
             cmd.extend(diff_args)
