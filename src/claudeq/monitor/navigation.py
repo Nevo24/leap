@@ -332,10 +332,10 @@ def _navigate_vscode(project_path: Optional[str], terminal_name: str) -> bool:
         if not code_path:
             return False
 
-        # Open project (focuses the window)
+        # Open project (focuses the window, reuse existing window)
         if project_path:
             subprocess.run(
-                [code_path, project_path],
+                [code_path, '--reuse-window', project_path],
                 capture_output=True,
                 timeout=5,
                 env=env
@@ -552,7 +552,7 @@ def _close_vscode(project_path: Optional[str], terminal_name: str) -> bool:
 
         if project_path:
             subprocess.run(
-                [code_path, project_path],
+                [code_path, '--reuse-window', project_path],
                 capture_output=True,
                 timeout=5,
                 env=env
@@ -1318,7 +1318,7 @@ def _open_vscode_terminal(project_path: Optional[str], command: str) -> bool:
 
         if project_path:
             subprocess.run(
-                [code_path, project_path],
+                [code_path, '--reuse-window', project_path],
                 capture_output=True,
                 timeout=5,
                 env=env
