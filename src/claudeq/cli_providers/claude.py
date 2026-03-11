@@ -15,7 +15,7 @@ import pexpect
 from claudeq.cli_providers.base import CLIProvider
 
 
-_MENU_OPTION_RE: re.Pattern[str] = re.compile(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)')
+_MENU_OPTION_RE: re.Pattern[str] = re.compile(r'\s*(?:[❯›]\s*)?(\d+)\.\s+(.+)')
 
 
 class ClaudeProvider(CLIProvider):

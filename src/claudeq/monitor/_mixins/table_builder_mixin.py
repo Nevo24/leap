@@ -58,7 +58,7 @@ def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
     """
     all_matches: list[tuple[int, str]] = []
     for line in prompt_output.split('\n'):
-        m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
+        m = re.match(r'\s*(?:[❯›]\s*)?(\d+)\.\s+(.+)', line)
         if m:
             all_matches.append((int(m.group(1)), m.group(2).strip()))
 
