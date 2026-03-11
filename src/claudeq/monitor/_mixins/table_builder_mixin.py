@@ -858,7 +858,7 @@ class TableBuilderMixin(_Base):
 
                     if is_dead:
                         server_btn = QPushButton(
-                            'Starting...' if starting else 'Server')
+                            'Starting...' if starting else 'Terminal')
                         server_btn.setToolTip(
                             f'Server is starting for {tag}...' if starting
                             else f'Start server for {tag}'
@@ -870,7 +870,7 @@ class TableBuilderMixin(_Base):
                         )
                     else:
                         if branch_mismatch:
-                            server_btn = QPushButton('\u26a0 Server')
+                            server_btn = QPushButton('\u26a0 Terminal')
                             server_btn.setStyleSheet(
                                 f'QPushButton {{ color: {current_theme().accent_orange}; }}')
                             server_btn.setToolTip(
@@ -880,7 +880,7 @@ class TableBuilderMixin(_Base):
                             server_btn.setProperty('always_tooltip', True)
                             server_btn.setProperty('_btn_role', 'orange')
                         else:
-                            server_btn = QPushButton('Server')
+                            server_btn = QPushButton('Terminal')
                             server_btn.setStyleSheet(active_btn_style())
                             server_btn.setProperty('_btn_role', 'active')
                             server_btn.setToolTip(
@@ -920,7 +920,7 @@ class TableBuilderMixin(_Base):
                         )
                         client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
 
-                    client_btn = QPushButton('Client')
+                    client_btn = QPushButton('Terminal')
                     if is_dead and not has_client:
                         client_btn.setEnabled(False)
                         client_btn.setToolTip('No client connected')
