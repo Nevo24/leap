@@ -15,6 +15,8 @@ import time
 import traceback
 from typing import Any, Optional
 
+from claudeq.cli_providers.base import CLIProvider
+from claudeq.cli_providers.registry import get_provider
 from claudeq.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
     POLL_INTERVAL, TITLE_RESET_INTERVAL,
@@ -25,21 +27,37 @@ from claudeq.server.pty_handler import PTYHandler
 from claudeq.server.socket_handler import SocketHandler
 from claudeq.server.queue_manager import QueueManager
 from claudeq.server.metadata import SessionMetadata
-from claudeq.server.state_tracker import ClaudeStateTracker
+from claudeq.server.state_tracker import CLIStateTracker
 from claudeq.slack.output_capture import OutputCapture
 from claudeq.server.validation import validate_pinned_session
 
 
-def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
+def _extract_menu_options(
+    prompt_output: str,
+    provider: Optional[CLIProvider] = None,
+) -> list[tuple[int, str]]:
     """Extract numbered menu options from prompt output.
 
     The prompt may contain numbered content (e.g. plan steps) above the
-    actual Ink TUI options.  Both match the ``N. label`` pattern, so we
+    actual TUI options.  Both match the ``N. label`` pattern, so we
     return only the **last** contiguous 1..n sequence — the real menu.
+
+    Args:
+        prompt_output: Rendered prompt text.
+        provider: CLI provider (for custom regex). Defaults to Claude.
     """
+    if provider and not provider.has_numbered_menus:
+        return []
+
+    pattern = (
+        provider.menu_option_regex
+        if provider and provider.menu_option_regex
+        else re.compile(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)')
+    )
+
     all_matches: list[tuple[int, str]] = []
     for line in prompt_output.split('\n'):
-        m = re.match(r'\s*(?:❯\s*)?(\d+)\.\s+(.+)', line)
+        m = pattern.match(line)
         if m:
             all_matches.append((int(m.group(1)), m.group(2).strip()))
 
@@ -74,27 +92,35 @@ class ClaudeQServer:
     """
     ClaudeQ PTY Server.
 
-    Manages a Claude CLI session with message queueing and socket-based
-    client communication.
+    Manages a CLI session with message queueing and socket-based
+    client communication.  Supports multiple CLI backends via the
+    CLIProvider abstraction.
     """
 
     # Matches OSC escape sequences that set the terminal title (params 0, 1, 2),
     # terminated by BEL (\x07) or ST (\x1b\\).  Stripped from PTY output so
-    # Claude CLI cannot override the "cq-server <tag>" tab name.
+    # the CLI cannot override the "cq-server <tag>" tab name.
     _OSC_TITLE_RE: re.Pattern[bytes] = re.compile(
         rb'\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)'
     )
 
-    def __init__(self, tag: str, flags: Optional[list[str]] = None) -> None:
+    def __init__(
+        self,
+        tag: str,
+        flags: Optional[list[str]] = None,
+        cli: Optional[str] = None,
+    ) -> None:
         """
         Initialize ClaudeQ server.
 
         Args:
             tag: Session tag name.
-            flags: Optional flags to pass to Claude CLI.
+            flags: Optional flags to pass to the CLI.
+            cli: CLI provider name ('claude', 'codex'). Defaults to 'claude'.
         """
         self.tag = tag
         self.running = True
+        self._provider = get_provider(cli)
 
         # Ensure storage directories exist
         ensure_storage_dirs()
@@ -123,7 +149,10 @@ class ClaudeQServer:
                 pass
 
         # Initialize components
-        self.pty = PTYHandler(flags, tag=tag, signal_dir=SOCKET_DIR)
+        self.pty = PTYHandler(
+            flags, tag=tag, signal_dir=SOCKET_DIR,
+            provider=self._provider,
+        )
         self.queue = QueueManager(self.queue_file)
         self.metadata = SessionMetadata(tag, SOCKET_DIR)
         self.socket_handler = SocketHandler(self.socket_path, self._handle_message)
@@ -131,9 +160,10 @@ class ClaudeQServer:
         # State tracking — per-session pinned mode overrides global default
         global_mode = load_settings().get('auto_send_mode', 'pause')
         pinned_mode = self._load_pinned_auto_send_mode(tag, global_mode)
-        self.state = ClaudeStateTracker(
+        self.state = CLIStateTracker(
             signal_file=SOCKET_DIR / f"{tag}.signal",
             auto_send_mode=pinned_mode,
+            provider=self._provider,
         )
         self.output_capture = OutputCapture(tag)
         self.pending_notifications: list[str] = []
@@ -142,9 +172,9 @@ class ClaudeQServer:
         # Clean up old history files
         self._cleanup_old_history_files()
 
-        # Load existing queue and save metadata
+        # Load existing queue and save metadata (include CLI provider)
         self.queue.load()
-        self.metadata.save()
+        self.metadata.save(cli_provider=self._provider.name)
 
         # Prompt user about old queue messages
         if not self.queue.is_empty:
@@ -217,11 +247,11 @@ class ClaudeQServer:
             }
 
         elif msg_type == 'direct':
-            self._send_to_claude(message)
+            self._send_to_cli(message)
             return {'status': 'sent'}
 
         elif msg_type == 'select_option':
-            # Select a numbered option in a permission/question dialog.
+            # Select an option in a permission/question dialog.
             current = self.state.current_state
             if current not in ('needs_permission', 'has_question'):
                 return {
@@ -234,47 +264,27 @@ class ClaudeQServer:
                 return {'status': 'error', 'error': 'invalid option number'}
             if option_num < 1:
                 return {'status': 'error', 'error': 'option must be >= 1'}
-            # Parse the actual menu options (last 1..n sequence),
-            # ignoring numbered plan/content lines above the menu.
+
+            # Parse the actual menu options using the provider's regex.
             prompt = self.state.get_prompt_output()
-            options = _extract_menu_options(prompt)
+            options = _extract_menu_options(prompt, self._provider)
             options_dict = {num: label for num, label in options}
 
-            label = options_dict.get(option_num)
-            if label is not None:
-                if label.startswith('Type something'):
-                    return {
-                        'status': 'error',
-                        'error': 'type your answer as text instead',
-                    }
-                if label.startswith('Chat about this'):
-                    # "Chat about this" is below the separator —
-                    # number shortcuts don't work.  Navigate with
-                    # individual arrow-down keys (one at a time
-                    # with delays so Ink processes each one).
-                    self.state.on_send()
-                    for _ in range(option_num - 1):
-                        self.pty.send('\x1b[B')
-                        time.sleep(0.1)
-                    time.sleep(0.2)
-                    self.pty.send('\r')
-                    return {'status': 'sent'}
-
-            # Validate that the option exists in the prompt before sending.
-            # Sending an unknown number + CR to Ink would silently confirm
-            # whichever option the cursor happens to be on.
-            if option_num not in options_dict:
-                return {
-                    'status': 'error',
-                    'error': f'option {option_num} not found in prompt',
-                }
-            self.state.on_send()
-            self.pty.sendline(str(option_num))
-            return {'status': 'sent'}
+            # Delegate option selection to the provider (handles
+            # CLI-specific behaviors like arrow-key nav, y/n, etc.)
+            # Call on_send() only after the provider confirms it will
+            # actually send something — on_send() irreversibly clears
+            # state tracker buffers.
+            result = self._provider.select_option(
+                option_num, options_dict,
+                self.pty.send, self.pty.sendline,
+            )
+            if result.get('status') != 'error':
+                self.state.on_send()
+            return result
 
         elif msg_type == 'custom_answer':
-            # Select "Type something." in a question dialog, then enter
-            # the user's free-form text.
+            # Send free-form text to a question dialog.
             current = self.state.current_state
             if current not in ('needs_permission', 'has_question'):
                 return {
@@ -282,32 +292,15 @@ class ClaudeQServer:
                     'error': f'not in permission/question state (state={current})',
                 }
             prompt = self.state.get_prompt_output()
-            options = _extract_menu_options(prompt)
-            type_option = None
-            for num, label in options:
-                if label.startswith('Type something'):
-                    type_option = str(num)
-                    break
-            if not type_option:
-                return {
-                    'status': 'error',
-                    'error': 'no "Type something" option found',
-                }
-            self.state.on_send()
-            # Step 1: Send digit to navigate to "Type something."
-            self.pty.send(type_option)
-            time.sleep(0.5)
-            # Step 2: Start typing directly — Ink switches to text
-            # input mode when you type on the "Type something." option
-            # (no Enter needed to "open" it).  Type char-by-char for
-            # Ink raw-mode compatibility.
-            for ch in message:
-                self.pty.send(ch)
-                time.sleep(0.02)
-            time.sleep(0.1)
-            # Step 3: Submit the text.
-            self.pty.send('\r')
-            return {'status': 'sent'}
+            options = _extract_menu_options(prompt, self._provider)
+            options_dict = {num: label for num, label in options}
+
+            result = self._provider.send_custom_answer(
+                message, options_dict, self.pty.send,
+            )
+            if result.get('status') != 'error':
+                self.state.on_send()
+            return result
 
         elif msg_type == 'status':
             state = self.state.get_state(self.pty.is_alive())
@@ -320,6 +313,7 @@ class ClaudeQServer:
                 'auto_send_mode': self.state.auto_send_mode,
                 'claude_running': self.pty.is_alive(),
                 'slack_enabled': self.output_capture.is_enabled(),
+                'cli_provider': self._provider.name,
             }
 
         elif msg_type == 'set_slack':
@@ -337,7 +331,7 @@ class ClaudeQServer:
         elif msg_type == 'force_send':
             message = self.queue.pop()
             if message:
-                self._send_to_claude(message)
+                self._send_to_cli(message)
                 self.queue.track_sent(message)
                 with self._notification_lock:
                     remaining = self.queue.size
@@ -414,23 +408,25 @@ class ClaudeQServer:
 
         return {'status': 'error', 'message': f"Unknown message type: {msg_type}"}
 
-    def _send_to_claude(self, message: str) -> None:
+    def _send_to_cli(self, message: str) -> None:
         """
-        Send a message to Claude CLI.
+        Send a message to the CLI.
 
-        Uses atomic sendline() for regular messages (message + CR in one
-        locked write sequence) and event-driven send_image_message() for
-        @-prefixed image attachments.
+        Uses the provider to determine whether a message needs special
+        handling (e.g. image attachments).
 
         Args:
             message: Message to send.
         """
         self.state.on_send()
 
-        if message.startswith('@'):
+        if self._provider.is_image_message(message):
             self.pty.send_image_message(message)
         else:
             self.pty.sendline(message)
+
+    # Backwards-compatible alias
+    _send_to_claude = _send_to_cli
 
     def _prompt_load_old_queue(self) -> None:
         """Prompt user to load or discard old queued messages."""
@@ -584,10 +580,10 @@ class ClaudeQServer:
                     continue
 
                 try:
-                    self._send_to_claude(message)
+                    self._send_to_cli(message)
                     self.queue.track_sent(message)
                 except Exception as e:
-                    print(f"Error sending to Claude, requeuing: {e}", file=sys.stderr, flush=True)
+                    print(f"Error sending to CLI, requeuing: {e}", file=sys.stderr, flush=True)
                     self.queue.requeue(message)
             except Exception:
                 print(
@@ -657,7 +653,7 @@ class ClaudeQServer:
             Filtered output bytes with title sequences removed and
             notifications injected.
         """
-        # Strip OSC title-change sequences so Claude CLI cannot override
+        # Strip OSC title-change sequences so the CLI cannot override
         # the "cq-server <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
 
@@ -723,7 +719,7 @@ class ClaudeQServer:
         signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
         signal.signal(signal.SIGHUP, lambda s, f: sys.exit(0))
 
-        # Reset title (Claude CLI may have changed it)
+        # Reset title (CLI may have changed it)
         set_terminal_title(f"cq-server {self.tag}")
 
         try:
@@ -768,19 +764,35 @@ class ClaudeQServer:
 def main() -> None:
     """Entry point for claudeq-server command."""
     if len(sys.argv) < 2:
-        print("Usage: claudeq-server <tag> [--flags...]")
+        print("Usage: claudeq-server <tag> [--cli claude|codex] [--flags...]")
         sys.exit(1)
 
     tag = sys.argv[1]
 
     if tag.startswith('-'):
         print("Error: Tag cannot start with '-'")
-        print("Usage: claudeq-server <tag> [--flags...]")
+        print("Usage: claudeq-server <tag> [--cli claude|codex] [--flags...]")
         sys.exit(1)
 
-    flags = [arg for arg in sys.argv[2:] if arg.startswith('--')]
+    # Extract --cli option (consumed by CQ, not passed to the CLI)
+    cli_name = None
+    remaining_args = sys.argv[2:]
+    filtered_args: list[str] = []
+    i = 0
+    while i < len(remaining_args):
+        if remaining_args[i] == '--cli' and i + 1 < len(remaining_args):
+            cli_name = remaining_args[i + 1]
+            i += 2
+        elif remaining_args[i].startswith('--cli='):
+            cli_name = remaining_args[i].split('=', 1)[1]
+            i += 1
+        else:
+            filtered_args.append(remaining_args[i])
+            i += 1
 
-    server = ClaudeQServer(tag, flags=flags)
+    flags = [arg for arg in filtered_args if arg.startswith('--')]
+
+    server = ClaudeQServer(tag, flags=flags, cli=cli_name)
     server.run()
 
 

@@ -49,8 +49,12 @@ class SessionMetadata:
             pass
         return None
 
-    def save(self) -> None:
-        """Save metadata about the session to disk."""
+    def save(self, cli_provider: Optional[str] = None) -> None:
+        """Save metadata about the session to disk.
+
+        Args:
+            cli_provider: CLI provider name (e.g. 'claude', 'codex').
+        """
         ide = detect_ide()
         cwd = os.getcwd()
         project_path = self._get_git_root(cwd) or cwd
@@ -62,7 +66,8 @@ class SessionMetadata:
             'tag': self.tag,
             'pid': os.getpid(),
             'project_path': project_path,
-            'branch': branch_name
+            'branch': branch_name,
+            'cli_provider': cli_provider or 'claude',
         }
 
         try:

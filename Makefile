@@ -101,7 +101,7 @@ check-python:
 	fi
 
 .PHONY: install
-install: check-macos check-python .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks
+install: check-macos check-python .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks .configure-codex-hooks
 	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using ClaudeQ:"
@@ -562,6 +562,17 @@ configure-shell:
 	@chmod +x "$$HOME/.claude/hooks/claudeq-hook.sh"
 	@python3 "$(SCRIPTS_DIR)/configure_claude_hooks.py" "$$HOME/.claude/hooks/claudeq-hook.sh"
 	@echo "$(GREEN)  ✓ Claude Code hooks configured$(NC)"
+
+.PHONY: .configure-codex-hooks
+.configure-codex-hooks:
+	@if command -v codex >/dev/null 2>&1; then \
+		echo "$(PROMPT_PREFIX) Configuring Codex hooks..."; \
+		mkdir -p "$$HOME/.codex"; \
+		cp "$(SCRIPTS_DIR)/claudeq-hook.sh" "$$HOME/.codex/claudeq-hook.sh"; \
+		chmod +x "$$HOME/.codex/claudeq-hook.sh"; \
+		python3 "$(SCRIPTS_DIR)/configure_codex_hooks.py" "$$HOME/.codex/claudeq-hook.sh"; \
+		echo "$(GREEN)  ✓ Codex hooks configured$(NC)"; \
+	fi
 
 .PHONY: .detect-shell
 .detect-shell:

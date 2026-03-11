@@ -1,7 +1,7 @@
 """
 PTY handling for ClaudeQ server.
 
-Manages spawning and interacting with the Claude CLI process.
+Manages spawning and interacting with a CLI process (Claude, Codex, etc.).
 """
 
 import os
@@ -14,71 +14,66 @@ from typing import Callable, Optional
 
 import pexpect
 
+from claudeq.cli_providers.base import CLIProvider
+from claudeq.cli_providers.registry import get_provider
+
 
 class PTYHandler:
-    """Handles PTY spawning and interaction with Claude CLI."""
+    """Handles PTY spawning and interaction with a CLI process."""
 
     def __init__(
         self,
         flags: Optional[list[str]] = None,
         tag: Optional[str] = None,
         signal_dir: Optional[Path] = None,
+        provider: Optional[CLIProvider] = None,
     ) -> None:
         """
         Initialize PTY handler.
 
         Args:
-            flags: Command-line flags to pass to Claude CLI.
+            flags: Command-line flags to pass to the CLI.
             tag: Session tag name (injected as CQ_TAG env var).
             signal_dir: Directory for signal files (injected as CQ_SIGNAL_DIR).
+            provider: CLI provider instance. Defaults to Claude.
         """
         self.flags = flags or []
         self._tag = tag
         self._signal_dir = signal_dir
+        self._provider = provider or get_provider()
         self.process: Optional[pexpect.spawn] = None
         self._send_lock = threading.Lock()
         self._output_received = threading.Event()
 
+    @property
+    def provider(self) -> CLIProvider:
+        """The CLI provider for this PTY session."""
+        return self._provider
+
     def spawn(self) -> None:
         """
-        Spawn the Claude CLI process.
+        Spawn the CLI process.
 
         Raises:
-            SystemExit: If Claude CLI is not found in PATH.
+            SystemExit: If CLI is not found in PATH.
         """
         cols, rows = shutil.get_terminal_size(fallback=(80, 24))
-        print(f"📏 Terminal: {cols}x{rows}\n")
+        print(f"\U0001f4cf Terminal: {cols}x{rows}\n")
 
-        claude_path = self._find_claude_cli()
-        if not claude_path:
-            print("Error: 'claude' command not found")
+        cli_path = self._provider.find_cli()
+        if not cli_path:
+            print(f"Error: '{self._provider.command}' command not found")
             sys.exit(1)
 
         env = dict(os.environ)
-        if self._tag:
-            env['CQ_TAG'] = self._tag
-        if self._signal_dir:
-            env['CQ_SIGNAL_DIR'] = str(self._signal_dir)
+        env.update(self._provider.get_spawn_env(self._tag, self._signal_dir))
 
         self.process = pexpect.spawn(
-            claude_path,
+            cli_path,
             args=self.flags,
             dimensions=(rows, cols),
             env=env,
         )
-
-    def _find_claude_cli(self) -> Optional[str]:
-        """
-        Find the Claude CLI executable in PATH.
-
-        Returns:
-            Path to Claude CLI or None if not found.
-        """
-        for path_dir in os.environ.get('PATH', '').split(':'):
-            candidate = os.path.join(path_dir, 'claude')
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return candidate
-        return None
 
     def _write_all(self, data: str) -> None:
         """Write all bytes to PTY, retrying on partial writes.
@@ -104,7 +99,7 @@ class PTYHandler:
 
     def send(self, message: str) -> None:
         """
-        Send raw data to the Claude CLI (thread-safe, handles partial writes).
+        Send raw data to the CLI (thread-safe, handles partial writes).
 
         Args:
             message: Data to send.
@@ -119,14 +114,13 @@ class PTYHandler:
 
         Must be called with _send_lock held.
 
-        After sending input, Claude CLI echoes it back (Ink TUI renders
-        the text at the prompt).  This method first waits for the echo
-        to *start* (at least one output event), then waits for it to
-        *finish* (no output for *settle_time* seconds).
+        After sending input, the CLI echoes it back (TUI renders the text
+        at the prompt).  This method first waits for the echo to *start*
+        (at least one output event), then waits for it to *finish* (no
+        output for *settle_time* seconds).
 
         The two-phase approach prevents a false "settled" when the echo
-        hasn't arrived yet — e.g. on a freshly started server where
-        Ink's event loop may be slow to process the first input burst.
+        hasn't arrived yet.
 
         Args:
             settle_time: Quiet-period duration in seconds.
@@ -134,16 +128,12 @@ class PTYHandler:
         """
         deadline = time.monotonic() + timeout
 
-        # Phase 1: wait for the first echo output to confirm the PTY
-        # has received our input and started rendering it.
+        # Phase 1: wait for the first echo output
         self._output_received.clear()
         if not self._output_received.wait(timeout=2.0):
-            # No echo at all within 2s — PTY may not be echoing
-            # (e.g. raw mode without render).  Fall through to send CR.
             return
 
-        # Phase 2: wait for the echo to settle (no new output for
-        # settle_time seconds).
+        # Phase 2: wait for the echo to settle
         while time.monotonic() < deadline:
             self._output_received.clear()
             if not self._output_received.wait(timeout=settle_time):
@@ -152,53 +142,39 @@ class PTYHandler:
     def sendline(self, message: str) -> None:
         """Send message + carriage return to the CLI.
 
-        Always sends the text and CR as separate writes with a quiet
-        gap between them.  Claude CLI detects rapid character bursts as
-        pastes and absorbs a trailing CR as content rather than treating
-        it as submit.  Waiting for the output to settle ensures the CR
-        arrives as a distinct input event.
-
-        Multi-line messages need a longer settle time because they
-        trigger paste-mode processing in the CLI.
+        Uses the provider's send_message() for CLI-specific timing.
 
         Args:
             message: Message to send.
         """
         with self._send_lock:
-            settle = 0.15 if '\n' in message else 0.05
-            self._write_all(message)
-            self._wait_for_output_settled(settle_time=settle)
-            self._write_all('\r')
+            self._provider.send_message(
+                self.process, message, self._send_lock,
+                self._write_all, self._wait_for_output_settled,
+            )
 
     def send_image_message(self, message: str) -> None:
-        """Send @-prefixed image message with file confirmation.
-
-        Holds the send lock for the entire three-part sequence (text,
-        confirm file, submit) to prevent interleaved writes.  Uses a
-        longer settle time than regular messages because the ``@path``
-        triggers file resolution in Claude CLI, which takes longer than
-        plain text echo and can overlap with paste-mode detection.
+        """Send image attachment message using provider's protocol.
 
         Args:
-            message: Image message starting with '@'.
+            message: Image message (e.g. '@path' for Claude).
         """
         with self._send_lock:
-            self._write_all(message)
-            self._wait_for_output_settled(settle_time=0.5)
-            self._write_all('\r')  # Confirm file selection
-            self._wait_for_output_settled(settle_time=0.3)
-            self._write_all('\r')  # Submit message
+            self._provider.send_image_message(
+                self.process, message, self._send_lock,
+                self._write_all, self._wait_for_output_settled,
+            )
 
     def notify_output_received(self) -> None:
         """Signal that PTY output was received from the child process.
 
         Called from the server's output filter to wake up
-        send_image_message when it's waiting for Claude CLI to react.
+        send_image_message when it's waiting for the CLI to react.
         """
         self._output_received.set()
 
     def is_alive(self) -> bool:
-        """Check if the Claude process is still running."""
+        """Check if the CLI process is still running."""
         return self.process is not None and self.process.isalive()
 
     def resize(self, rows: int, cols: int) -> None:
@@ -221,7 +197,7 @@ class PTYHandler:
         input_filter: Optional[Callable[[bytes], bytes]] = None,
     ) -> None:
         """
-        Enter interactive mode with the Claude CLI.
+        Enter interactive mode with the CLI.
 
         Args:
             output_filter: Optional function to filter output before display.
@@ -234,7 +210,7 @@ class PTYHandler:
             )
 
     def terminate(self) -> None:
-        """Terminate the Claude CLI process."""
+        """Terminate the CLI process."""
         if self.process and self.process.isalive():
             try:
                 self.process.terminate(force=True)
@@ -243,5 +219,5 @@ class PTYHandler:
 
     @property
     def pid(self) -> Optional[int]:
-        """Get the PID of the Claude process."""
+        """Get the PID of the CLI process."""
         return self.process.pid if self.process else None

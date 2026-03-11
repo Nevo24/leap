@@ -76,12 +76,13 @@ fi
 # Show help if requested
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     cat << 'EOF'
-ClaudeQ - Multi-session Claude Code with message queueing
+ClaudeQ - Multi-session AI CLI with message queueing
 
 USAGE:
     cq <tag>                     Start server or connect as client
     cq <tag> <message>           Send message to server
-    cq <tag> [--flags]           Start server with flags (passed to Claude CLI)
+    cq <tag> [--flags]           Start server with flags (passed to CLI)
+    cq <tag> --cli codex         Start server with Codex CLI (default: claude)
     cq --help, -h                Show this help
     cq --update                  Update ClaudeQ to latest version
 EOF
@@ -91,11 +92,14 @@ EOF
     cat << 'EOF'
 
 FLAGS (server only):
-    Flags starting with -- are passed directly to Claude CLI when starting a server.
+    Flags starting with -- are passed directly to the CLI when starting a server.
     They are NOT supported for clients (connecting to existing server).
+
+    --cli <name>    Select CLI backend: claude (default), codex
 
     Example:
         cq my-tag --dangerously-skip-permissions
+        cq my-tag --cli codex --full-auto
 
 EXAMPLES:
     # Terminal 1 (start server)
@@ -148,15 +152,26 @@ shift
 # Parse arguments to separate flags from messages
 # Flags (starting with --) are passed to server only
 # Messages are passed to client only
+# --cli <name> is a CQ flag (consumed here and passed to server)
 FLAGS=()
 ARGS=()
+CLI_FLAG=""
 while [ $# -gt 0 ]; do
-    if [[ "$1" == --* ]]; then
+    if [ "$1" = "--cli" ] && [ -n "$2" ]; then
+        CLI_FLAG="--cli $2"
+        FLAGS+=("--cli" "$2")
+        shift 2
+    elif [[ "$1" == --cli=* ]]; then
+        CLI_FLAG="$1"
         FLAGS+=("$1")
+        shift
+    elif [[ "$1" == --* ]]; then
+        FLAGS+=("$1")
+        shift
     else
         ARGS+=("$1")
+        shift
     fi
-    shift
 done
 
 # Restore positional parameters with non-flag arguments

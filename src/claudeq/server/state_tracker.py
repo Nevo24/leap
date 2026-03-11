@@ -1,9 +1,12 @@
 """
-Claude state tracking for ClaudeQ server.
+CLI state tracking for ClaudeQ server.
 
-Encapsulates the state machine that detects Claude's current state
+Encapsulates the state machine that detects the CLI's current state
 (idle, running, needs_permission, has_question, interrupted) using
 hook-based signal files with a PTY silence fallback.
+
+Supports multiple CLI backends (Claude, Codex, etc.) via the
+CLIProvider abstraction.
 """
 
 import json
@@ -16,6 +19,8 @@ from typing import Callable, Optional
 
 import pyte
 
+from claudeq.cli_providers.base import CLIProvider
+from claudeq.cli_providers.registry import get_provider
 from claudeq.utils.constants import OUTPUT_SILENCE_TIMEOUT, STORAGE_DIR
 
 _log = logging.getLogger('cq.state')
@@ -34,10 +39,10 @@ def _setup_debug_log() -> None:
     _log.setLevel(logging.DEBUG)
 
 
-class ClaudeStateTracker:
-    """Tracks Claude CLI state via hook-written signal files.
+class CLIStateTracker:
+    """Tracks CLI state via hook-written signal files.
 
-    The Claude Code hooks write a JSON signal file on state transitions
+    The CLI hooks write a JSON signal file on state transitions
     (Stop, ToolInput, SubAgentInput).  This class reads that file to
     determine the current state, with a silence-timeout fallback for
     cases where hooks don't fire (e.g. user interrupts with Ctrl+C).
@@ -50,7 +55,6 @@ class ClaudeStateTracker:
     heuristic).
     """
 
-    _VALID_SIGNAL_STATES = frozenset({'idle', 'needs_permission', 'has_question'})
     # Matches ANSI escape sequences (CSI, OSC, charset, keypad, cursor
     # save/restore) and carriage returns — used to filter TUI refresh
     # noise from real printable output.
@@ -67,17 +71,19 @@ class ClaudeStateTracker:
         signal_file: Path,
         auto_send_mode: str = 'pause',
         clock: Optional[Callable[[], float]] = None,
+        provider: Optional[CLIProvider] = None,
     ) -> None:
         self._signal_file = signal_file
         self._auto_send_mode = auto_send_mode
         self._clock = clock or time.time
+        self._provider = provider or get_provider()
 
         self._state: str = 'idle'
         self._lock = threading.Lock()
         self._buf_lock = threading.Lock()
         self._waiting_since: Optional[float] = None
         self._last_output_time: float = 0.0
-        # Track user input to distinguish typing echo from Claude output.
+        # Track user input to distinguish typing echo from CLI output.
         self._last_input_time: float = self._clock()
         # True after the first real user keystroke (prevents the startup
         # banner from falsely triggering idle → running).
@@ -90,11 +96,11 @@ class ClaudeStateTracker:
         # Accumulated printable output bytes while idle (reset on input
         # and state transitions).  Used to detect idle → running.
         self._idle_output_acc: int = 0
-        # Buffer recent PTY output so "Interrupted" can be detected even
+        # Buffer recent PTY output so patterns can be detected even
         # when split across chunk boundaries by the TUI renderer.
         self._output_buf: bytearray = bytearray()
         # True while the trust dialog is showing.  When the user answers
-        # and Claude starts up, resume detection goes to 'idle' instead
+        # and the CLI starts up, resume detection goes to 'idle' instead
         # of 'running' because there's no pending request to process.
         self._trust_dialog_phase: bool = False
         # Snapshot of _output_buf captured just before clearing on
@@ -115,12 +121,20 @@ class ClaudeStateTracker:
             pass
 
         _setup_debug_log()
-        _log.debug('INIT state=idle signal_file=%s', signal_file)
+        _log.debug(
+            'INIT state=idle signal_file=%s provider=%s',
+            signal_file, self._provider.name,
+        )
 
     # -- Public API ----------------------------------------------------------
 
+    @property
+    def provider(self) -> CLIProvider:
+        """The CLI provider used for pattern matching."""
+        return self._provider
+
     def get_state(self, pty_alive: bool) -> str:
-        """Poll the signal file and return Claude's current state.
+        """Poll the signal file and return the CLI's current state.
 
         Args:
             pty_alive: Whether the PTY child process is still running.
@@ -144,12 +158,12 @@ class ClaudeStateTracker:
         new_state = self._read_signal_state()
         if new_state and new_state != current:
             # Stop hook fires on Escape too, writing "idle",
-            # but Claude is actually prompting "What should
+            # but the CLI is actually prompting "What should
             # Claude do instead?" — keep has_question/interrupted.
             # Also guard running→idle when user pressed a key *during*
             # the running state (interrupt attempt): the Stop hook fires
-            # before the PTY outputs "Interrupted", so delay accepting
-            # idle to let on_output() detect interruption first.
+            # before the PTY outputs the interrupted pattern, so delay
+            # accepting idle to let on_output() detect interruption first.
             if (
                 new_state == 'idle'
                 and current == 'running'
@@ -172,9 +186,8 @@ class ClaudeStateTracker:
                     '(%.1fs since wait)',
                     current, self._clock() - self._waiting_since,
                 )
-            # Notification hook fires for the interrupt dialog
-            # ("What should Claude do instead?"), writing
-            # has_question — protect interrupted from this.
+            # Notification hook fires for the interrupt dialog,
+            # writing has_question — protect interrupted from this.
             elif (
                 new_state == 'has_question'
                 and current == 'interrupted'
@@ -188,12 +201,7 @@ class ClaudeStateTracker:
                 )
             else:
                 # Check if user answered the prompt (typed after entering
-                # the waiting state).  If so, preserve timing so that
-                # on_output() resume / idle→running detection still works
-                # after the stale signal is accepted.  Without this, the
-                # timing reset (_idle_since / _waiting_since = now) makes
-                # _last_input_time older than the threshold, permanently
-                # blocking resume detection.
+                # the waiting state).
                 user_answered = (
                     current in ('interrupted', 'has_question')
                     and new_state in ('idle', 'has_question')
@@ -225,9 +233,6 @@ class ClaudeStateTracker:
                     self._output_buf.clear()
                 if new_state == 'idle':
                     if user_answered and old_waiting_since is not None:
-                        # Set _idle_since to original waiting time so
-                        # _last_input_time > _idle_since remains true
-                        # and idle→running accumulation can proceed.
                         self._idle_since = old_waiting_since
                     else:
                         self._idle_since = self._clock()
@@ -254,12 +259,6 @@ class ClaudeStateTracker:
     def is_ready(self, pty_alive: bool) -> bool:
         """Check if the auto-sender should send the next message.
 
-        Polls ``get_state()`` and evaluates readiness based on the
-        current auto-send mode.  For callers that already have a
-        fresh state (e.g. the auto-sender loop), use
-        ``is_ready_for_state()`` to avoid a redundant signal-file
-        read that can race with the first one.
-
         Args:
             pty_alive: Whether the PTY child process is still running.
 
@@ -271,12 +270,12 @@ class ClaudeStateTracker:
     def is_ready_for_state(self, state: str) -> bool:
         """Check readiness given an already-computed state.
 
-        In 'pause' mode: only send when Claude is idle.
-        In 'always' mode: send whenever Claude is not running.
+        In 'pause' mode: only send when CLI is idle.
+        In 'always' mode: send whenever CLI is not running.
         Interrupted always blocks regardless of mode.
 
         Args:
-            state: The current Claude state (from a prior
+            state: The current CLI state (from a prior
                 ``get_state()`` call).
 
         Returns:
@@ -293,11 +292,11 @@ class ClaudeStateTracker:
         """Called when the user types in the server terminal.
 
         Tracks input timing so output-based idle → running detection
-        can distinguish user keystroke echo from Claude's processing
-        output.  Ignores multi-byte escape sequences (terminal focus
-        events, cursor position reports) that are not real user input.
+        can distinguish user keystroke echo from CLI processing output.
+        Ignores multi-byte escape sequences (terminal focus events,
+        cursor position reports) that are not real user input.
 
-        However, when Claude is running, multi-byte escape sequences
+        However, when the CLI is running, multi-byte escape sequences
         starting with ``\\x1b`` still update ``_last_input_time`` because
         ``os.read()`` may bundle a real Escape keypress with a subsequent
         terminal event (focus report, cursor position) into one chunk.
@@ -306,15 +305,7 @@ class ClaudeStateTracker:
         Args:
             data: Raw input bytes from the keyboard.
         """
-        # Multi-byte sequences starting with ESC are terminal auto-responses
-        # (focus in/out \x1b[I/O, cursor reports \x1b[row;colR, etc.),
-        # not user keystrokes.  Single ESC byte is the actual Escape key.
         if len(data) > 1 and data[0] == 0x1b:
-            # While running, the user may press Escape to interrupt.
-            # pexpect can bundle the \x1b with a subsequent terminal
-            # event into one read.  Update _last_input_time so the
-            # "Interrupted" detection window opens, but don't set
-            # _seen_user_input to avoid false idle→running triggers.
             if self._state == 'running':
                 _log.debug(
                     'ON_INPUT filtered escape seq len=%d '
@@ -334,7 +325,7 @@ class ClaudeStateTracker:
         self._idle_output_acc = 0
 
     def on_send(self) -> None:
-        """Called when a message is sent to Claude.
+        """Called when a message is sent to the CLI.
 
         Sets state to 'running' and deletes the stale signal file.
         """
@@ -359,7 +350,7 @@ class ClaudeStateTracker:
 
         Updates the last-output timestamp, detects state transitions:
         - idle → running: sustained printable output without recent input
-        - running → interrupted: "Interrupted" text detected
+        - running → interrupted: interrupted pattern detected
         - needs_permission/has_question/interrupted → running: printable output resume
 
         Args:
@@ -369,26 +360,17 @@ class ClaudeStateTracker:
         prev_output_time = self._last_output_time
         self._last_output_time = now
 
-        # Detect Claude starting to process when user types directly in
-        # the server terminal (on_send not called).  Accumulate printable
-        # output bytes and transition to 'running' once a threshold is
-        # reached.  Reset the accumulator on long output gaps (prevents
-        # slow TUI noise from building up) and on user input (via
-        # on_input).
+        interrupted_pattern = self._provider.interrupted_pattern
+        trust_pattern = self._provider.trust_dialog_pattern
+        dialog_patterns = self._provider.dialog_patterns
+
         if self._state == 'idle':
-            # Buffer all idle output for pattern detection (trust dialog
-            # at startup, Interrupted during Escape race).
             self._output_buf.extend(data)
             if len(self._output_buf) > 16384:
                 self._output_buf = self._output_buf[-16384:]
 
-            # Detect startup prompts (workspace trust dialog) from PTY
-            # output.  These appear before Claude Code's hooks are active,
-            # so no signal file is written.  Buffer + strip ANSI + remove
-            # spaces: the TUI (Ink) uses cursor-positioning CSI sequences
-            # for spacing, so stripping ANSI merges words together
-            # (e.g. "I trust this folder" → "Itrustthisfolder").
-            if not self._seen_user_input:
+            # Detect startup prompts (workspace trust dialog) from PTY output.
+            if not self._seen_user_input and trust_pattern is not None:
                 compact = self._ANSI_RE.sub(
                     b'', bytes(self._output_buf),
                 ).replace(b' ', b'')
@@ -398,7 +380,7 @@ class ClaudeStateTracker:
                     len(data), len(self._output_buf),
                     compact[-120:],
                 )
-                if b'Itrustthisfolder' in compact:
+                if trust_pattern in compact:
                     _log.debug(
                         'ON_OUTPUT idle→needs_permission (trust dialog)',
                     )
@@ -411,20 +393,13 @@ class ClaudeStateTracker:
                         self._waiting_since = self._clock()
                     return
 
-            # Detect Escape interruption — the Stop hook may race ahead
-            # and write "idle" before PTY output with "Interrupted" arrives.
-            # Checked before _seen_user_input guard because the signal-file
-            # idle transition may have reset _seen_user_input indirectly
-            # (via _idle_since), but the Escape race still needs to work.
-            # Window is 10s (not 3s) because complex operations (code review,
-            # multi-tool-call chains) may take several seconds to respond to
-            # an interrupt signal.
+            # Detect interruption — the Stop hook may race ahead
+            # and write "idle" before PTY output with the interrupted
+            # pattern arrives.
             if now - self._last_input_time < 10.0:
-                # Strip ANSI before checking — raw PTY bytes may contain
-                # "Interrupted" inside escape sequences (e.g. hyperlink OSC).
                 stripped_chunk = self._ANSI_RE.sub(b'', data)
-                has_interrupted = b'Interrupted' in stripped_chunk
-                if has_interrupted or b'Interrupted' in self._ANSI_RE.sub(
+                has_interrupted = interrupted_pattern in stripped_chunk
+                if has_interrupted or interrupted_pattern in self._ANSI_RE.sub(
                     b'', bytes(self._output_buf),
                 ):
                     _log.debug(
@@ -438,9 +413,6 @@ class ClaudeStateTracker:
                     return
             if not self._seen_user_input:
                 return
-            # Only accumulate output if user typed AFTER the last idle
-            # transition.  Prevents post-idle prompt/TUI rendering from
-            # falsely re-triggering running.
             if self._last_input_time < self._idle_since:
                 return
             stripped = self._ANSI_RE.sub(b'', data).strip()
@@ -466,24 +438,17 @@ class ClaudeStateTracker:
                             pass
             return
 
-        # Detect Claude interruption — Stop hook doesn't fire on Ctrl+C/Escape,
-        # so detect it from PTY output and treat as waiting for user input.
-        # Buffer recent output so the pattern is found even when the TUI
-        # renderer splits "Interrupted" across chunk boundaries.
+        # Detect interruption while running
         if self._state == 'running':
-            # Strip ANSI before checking — raw PTY bytes may contain
-            # "Interrupted" inside escape sequences (e.g. hyperlink OSC)
-            # which would cause false positives.
             stripped_data = self._ANSI_RE.sub(b'', data)
-            has_interrupted = b'Interrupted' in stripped_data
+            has_interrupted = interrupted_pattern in stripped_data
             self._output_buf.extend(data)
             if len(self._output_buf) > 8192:
                 self._output_buf = self._output_buf[-8192:]
             if not has_interrupted:
-                has_interrupted = b'Interrupted' in self._ANSI_RE.sub(
+                has_interrupted = interrupted_pattern in self._ANSI_RE.sub(
                     b'', bytes(self._output_buf),
                 )
-            # Log every chunk while running to diagnose detection failures
             stripped_preview = stripped_data.strip()
             if stripped_preview:
                 _log.debug(
@@ -493,7 +458,7 @@ class ClaudeStateTracker:
                     has_interrupted, stripped_preview[:80],
                 )
             if has_interrupted and (now - self._last_input_time) < 10.0:
-                _log.debug('ON_OUTPUT running→interrupted (Interrupted)')
+                _log.debug('ON_OUTPUT running→interrupted')
                 self._output_buf.clear()
                 with self._lock:
                     self._state = 'interrupted'
@@ -501,7 +466,7 @@ class ClaudeStateTracker:
             else:
                 # Trust dialog phase: after user answered via select_option,
                 # on_send() sets state to running.  Startup output means
-                # Claude is booting — go straight to idle.
+                # the CLI is booting — go straight to idle.
                 if self._trust_dialog_phase:
                     stripped = self._ANSI_RE.sub(b'', data).strip()
                     if stripped:
@@ -520,54 +485,42 @@ class ClaudeStateTracker:
                         return
 
                 # Detect permission/question dialogs from PTY output.
-                # Claude Code's Notification hook fires ~15s late, but
-                # the dialog content is in the PTY output immediately.
                 # Check the compact (ANSI-stripped, space-removed) buffer
-                # for "Enter to select" + "Esc to cancel" — both present
-                # in all Ink option selector dialogs.
-                compact = self._ANSI_RE.sub(
-                    b'', bytes(self._output_buf),
-                ).replace(b' ', b'')
-                if b'Entertoselect' in compact and b'Esctocancel' in compact:
-                    _log.debug(
-                        'ON_OUTPUT running→needs_permission '
-                        '(dialog detected from PTY output)',
-                    )
-                    self._last_prompt_buf = bytes(self._output_buf)
-                    self._output_buf.clear()
-                    self._idle_output_acc = 0
-                    with self._lock:
-                        self._state = 'needs_permission'
-                        self._waiting_since = self._clock()
+                # for provider-specific dialog patterns.
+                if dialog_patterns:
+                    compact = self._ANSI_RE.sub(
+                        b'', bytes(self._output_buf),
+                    ).replace(b' ', b'')
+                    if all(p in compact for p in dialog_patterns):
+                        _log.debug(
+                            'ON_OUTPUT running→needs_permission '
+                            '(dialog detected from PTY output)',
+                        )
+                        self._last_prompt_buf = bytes(self._output_buf)
+                        self._output_buf.clear()
+                        self._idle_output_acc = 0
+                        with self._lock:
+                            self._state = 'needs_permission'
+                            self._waiting_since = self._clock()
 
-        # Detect resume after permission/question — new PTY output means
-        # the user answered and Claude is processing again.  Delete the
-        # stale signal file so get_state() won't read the old value.
-        # Uses elif so interruption detection above isn't immediately undone.
-        # Grace period: ignore the first 2s of output after entering the
-        # waiting state (prompt text / escape sequences may still render).
-        # Require user input AFTER entering the waiting state — prevents
-        # TUI status bar rendering from falsely triggering resume.
+        # Detect resume after permission/question
         elif self._state in ('needs_permission', 'has_question', 'interrupted'):
-            # Notification hook for the interrupt dialog may race ahead
-            # and set has_question before PTY "Interrupted" output arrives.
-            # Override to interrupted if we see it in fresh output shortly
-            # after user input (Escape key).
+            # Override to interrupted if we see the interrupted pattern
+            # in fresh output shortly after user input (Escape key).
             if (
                 self._state == 'has_question'
-                and b'Interrupted' in self._ANSI_RE.sub(b'', data)
+                and interrupted_pattern in self._ANSI_RE.sub(b'', data)
                 and (now - self._last_input_time) < 3.0
             ):
                 _log.debug(
                     'ON_OUTPUT has_question→interrupted '
-                    '(Interrupted in output, Escape race)',
+                    '(pattern in output, Escape race)',
                 )
                 with self._lock:
                     self._state = 'interrupted'
                     self._waiting_since = now
             self._output_buf.clear()
             # Continue accumulating prompt output for Slack rendering.
-            # The dialog may still be rendering after the state transition.
             self._last_prompt_buf += data
             if len(self._last_prompt_buf) > 16384:
                 self._last_prompt_buf = self._last_prompt_buf[-16384:]
@@ -577,14 +530,8 @@ class ClaudeStateTracker:
                 and (self._clock() - ws) > 2.0
                 and self._last_input_time > ws
             ):
-                # Only treat as resume if the output has printable text
-                # beyond ANSI escape sequences — filters TUI cursor blinks
-                # and screen refreshes that arrive while Claude is idle.
                 stripped = self._ANSI_RE.sub(b'', data).strip()
                 if stripped:
-                    # Trust dialog phase: startup output after user answered
-                    # the trust prompt is Claude booting up, not processing
-                    # a request.  Go straight to idle.
                     if self._trust_dialog_phase:
                         _log.debug(
                             'ON_OUTPUT %s→idle (trust dialog startup)',
@@ -617,7 +564,7 @@ class ClaudeStateTracker:
         """Return PTY output from the last permission/question prompt.
 
         Processes the raw PTY bytes through a minimal virtual terminal
-        to properly handle Ink TUI cursor-positioning layout.
+        to properly handle TUI cursor-positioning layout.
         """
         with self._buf_lock:
             buf = self._last_prompt_buf
@@ -648,16 +595,11 @@ class ClaudeStateTracker:
             stream.feed(text)
             display = screen.display
         except (IndexError, ValueError, AssertionError):
-            # pyte bugs: wcwidth(char[0]) crashes on empty strings in
-            # the screen buffer, stream.feed() can raise on malformed
-            # escape sequences, and screen.display has an assert that
-            # can fire if character data is corrupted.
             return ''
 
-        # Box-drawing characters used by Ink's TUI borders.
+        # Box-drawing characters used by TUI borders.
         _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')
         lines = [line.rstrip() for line in display]
-        # Strip leading/trailing blank or purely decorative border lines.
         while lines and (
             not lines[0].strip()
             or all(c in _box_chars | {' '} for c in lines[0])
@@ -681,12 +623,8 @@ class ClaudeStateTracker:
             if not self._signal_file.exists():
                 return None
             raw = self._signal_file.read_text().strip()
-            data = json.loads(raw)
-            state = data.get('state', '')
-            if state in self._VALID_SIGNAL_STATES:
-                return state
-            return None
-        except (json.JSONDecodeError, OSError):
+            return self._provider.parse_signal_file(raw)
+        except OSError:
             return None
 
     @property
@@ -709,3 +647,7 @@ class ClaudeStateTracker:
             self._signal_file.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+# Backwards-compatible alias for existing code that imports the old name.
+ClaudeStateTracker = CLIStateTracker
