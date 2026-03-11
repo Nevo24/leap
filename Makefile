@@ -51,8 +51,15 @@ endef
 .PHONY: default
 default: install
 
+.PHONY: check-macos
+check-macos:
+	@if [ "$$(uname)" != "Darwin" ]; then \
+		echo "$(YELLOW)⚠ ClaudeQ is only supported on macOS$(NC)"; \
+		exit 1; \
+	fi
+
 .PHONY: install
-install: .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks
+install: check-macos .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks
 	@echo "$(GREEN)✓ ClaudeQ installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using ClaudeQ:"
@@ -352,8 +359,8 @@ configure-shell:
 			if [ "$$REPO_VERSION" != "$$INSTALLED_VERSION" ]; then \
 				if [ -n "$$NPM_PATH" ]; then \
 					cd "$(REPO_PATH)/src/claudeq/vscode-extension" && \
-					npx --yes @vscode/vsce package --out claudeq-terminal-selector.vsix >/dev/null 2>&1 && \
-					$$CODE_PATH --install-extension claudeq-terminal-selector.vsix --force >/dev/null 2>&1 && \
+					python3 -c "import subprocess,sys; sys.exit(subprocess.run(['npx','--yes','@vscode/vsce','package','--out','claudeq-terminal-selector.vsix'],capture_output=True,timeout=60).returncode)" 2>/dev/null && \
+					$$CODE_PATH --install-extension claudeq-terminal-selector.vsix --force < /dev/null >/dev/null 2>&1 && \
 					rm -f claudeq-terminal-selector.vsix && \
 					echo "$(GREEN)  ✓ ClaudeQ extension installed (v$$REPO_VERSION)$(NC)" && \
 					echo "$(YELLOW)    → Reload VS Code: Cmd+Shift+P → 'Developer: Reload Window'$(NC)" || \

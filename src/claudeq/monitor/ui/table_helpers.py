@@ -434,14 +434,24 @@ class TooltipApp(QApplication):
                   widget: QWidget, rect: 'Any' = None,
                   duration: int = 2_147_483_647) -> None:
         """Show a tooltip with max duration so it persists while hovered."""
+        # Final guard: widget may have been destroyed between the caller's
+        # sip.isdeleted() check and this call (e.g. table rebuild triggered
+        # a nested tooltip event on a just-deleted cell widget).
+        if sip.isdeleted(widget):
+            return
         from PyQt5.QtWidgets import QToolTip as _QToolTip
-        if rect is not None:
-            _QToolTip.showText(global_pos, text, widget, rect, duration)
-        else:
-            _QToolTip.showText(global_pos, text, widget)
+        try:
+            if rect is not None:
+                _QToolTip.showText(global_pos, text, widget, rect, duration)
+            else:
+                _QToolTip.showText(global_pos, text, widget)
+        except RuntimeError:
+            pass
 
     def _handle_tooltip(self, obj: QObject, event: QEvent) -> bool:
         """Handle tooltip events, returning True to consume the event."""
+        if not self.tooltips_enabled:
+            return True  # Suppress all tooltips (e.g. during table rebuild)
         if sip.isdeleted(obj):
             return True
         widget = obj if isinstance(obj, QWidget) else None
