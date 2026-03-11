@@ -326,21 +326,44 @@ def _navigate_jetbrains(
 
 
 def _navigate_vscode(project_path: Optional[str], terminal_name: str) -> bool:
-    """Navigate to VS Code window and select terminal tab by name."""
-    try:
-        env, code_path = _vscode_env_and_path()
-        if not code_path:
-            return False
+    """Navigate to VS Code window and select terminal tab by name.
 
-        # Open project (focuses the window, reuse existing window)
+    Uses AppleScript to focus the correct VS Code window (matching the
+    project folder name) instead of the ``code`` CLI, which would open a
+    new window or replace the current workspace.
+    """
+    try:
+        # Focus the VS Code window whose title contains the project folder name
         if project_path:
-            subprocess.run(
-                [code_path, '--reuse-window', project_path],
-                capture_output=True,
-                timeout=5,
-                env=env
-            )
-            time.sleep(0.3)
+            folder_name = _escape_applescript(os.path.basename(project_path))
+            script = f'''
+            tell application "Visual Studio Code"
+                activate
+                set found to false
+                repeat with w in windows
+                    if name of w contains "{folder_name}" then
+                        set index of w to 1
+                        set found to true
+                        exit repeat
+                    end if
+                end repeat
+                if not found then
+                    -- No matching window; just activate the app
+                    activate
+                end if
+            end tell
+            '''
+        else:
+            script = '''
+            tell application "Visual Studio Code"
+                activate
+            end tell
+            '''
+        subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True, timeout=5,
+        )
+        time.sleep(0.3)
 
         # Use file-based trigger for ClaudeQ extension
         # Extension watches ~/.claudeq-terminal-request and selects the terminal

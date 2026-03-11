@@ -107,8 +107,9 @@ function selectTerminalByName(terminalName) {
     const terminal = terminals.find(t => t.name && t.name.includes(terminalName));
 
     if (terminal) {
-        // Show and focus the terminal
-        terminal.show(false); // false = don't take focus from editor
+        // Show the terminal panel (switches away from any plugin panel)
+        // and focus it. preserveFocus=false means the terminal gets focus.
+        terminal.show(false);
     }
 }
 
