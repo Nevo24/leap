@@ -763,6 +763,21 @@ class TestTrustDialog:
         tracker.on_output(b'Hello world, processing your request...')
         assert tracker.current_state == 'idle'
 
+    def test_standard_dialog_at_startup(self, tmp_path: Path) -> None:
+        """Standard dialog patterns (Enter to select, Esc to cancel) at
+        startup should also be detected as needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        assert not tracker._seen_user_input
+        t[0] = 1.0
+        tracker.on_output(
+            b'Some permission prompt\r\n'
+            b'Enter to select  Esc to cancel\r\n'
+        )
+        assert tracker.current_state == 'needs_permission'
+        # Standard dialog should NOT set trust_dialog_phase
+        assert tracker._trust_dialog_phase is False
+
 
 # ---------------------------------------------------------------------------
 # Signal from idle (idle → needs_permission/has_question via signal file)

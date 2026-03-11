@@ -369,8 +369,11 @@ class CLIStateTracker:
             if len(self._output_buf) > 16384:
                 self._output_buf = self._output_buf[-16384:]
 
-            # Detect startup prompts (workspace trust dialog) from PTY output.
-            if not self._seen_user_input and trust_pattern is not None:
+            # Detect startup prompts from PTY output.
+            # Before any user input, check for:
+            # 1. Trust dialog (provider-specific pattern)
+            # 2. Any permission/question dialog (standard dialog_patterns)
+            if not self._seen_user_input:
                 compact = self._ANSI_RE.sub(
                     b'', bytes(self._output_buf),
                 ).replace(b' ', b'')
@@ -380,14 +383,24 @@ class CLIStateTracker:
                     len(data), len(self._output_buf),
                     compact[-120:],
                 )
-                if trust_pattern in compact:
+                is_trust = (
+                    trust_pattern is not None and trust_pattern in compact
+                )
+                is_dialog = (
+                    bool(dialog_patterns)
+                    and all(p in compact for p in dialog_patterns)
+                )
+                if is_trust or is_dialog:
                     _log.debug(
-                        'ON_OUTPUT idle→needs_permission (trust dialog)',
+                        'ON_OUTPUT idle→needs_permission '
+                        '(startup dialog: trust=%s dialog=%s)',
+                        is_trust, is_dialog,
                     )
                     self._last_prompt_buf = bytes(self._output_buf)
                     self._output_buf.clear()
                     self._idle_output_acc = 0
-                    self._trust_dialog_phase = True
+                    if is_trust:
+                        self._trust_dialog_phase = True
                     with self._lock:
                         self._state = 'needs_permission'
                         self._waiting_since = self._clock()
