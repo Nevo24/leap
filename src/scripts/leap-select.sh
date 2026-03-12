@@ -75,6 +75,13 @@ if [[ ! "$TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
     exit 1
 fi
 
-# Launch the selected CLI with tag, flags, and any remaining args
+# Append default per-CLI flags from env vars (LEAP_CLAUDE_FLAGS, LEAP_CODEX_FLAGS)
+CLI_UPPER=$(echo "$SELECTED" | tr '[:lower:]' '[:upper:]')
+DEFAULT_FLAGS_VAR="LEAP_${CLI_UPPER}_FLAGS"
+DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR:-}"
+# shellcheck disable=SC2086
+CLI_FLAGS=($DEFAULT_FLAGS)
+
+# Launch the selected CLI with tag, default flags, user flags, and any remaining args
 export LEAP_CLI="$SELECTED"
-exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${FLAGS[@]}" "${ARGS[@]}"
+exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${CLI_FLAGS[@]}" "${FLAGS[@]}" "${ARGS[@]}"

@@ -63,7 +63,7 @@ cat >> "$RC_FILE" <<'EOF'
 # Uses PTY (no tmux) with native scrolling
 # Server in JetBrains, client in any terminal
 #
-# Usage: leap <tag> [message]
+# Usage: leap [tag] [--flags]
 #        leap-cleanup
 #
 # You can modify the content below, but keep the START/END marker lines
@@ -100,8 +100,11 @@ echo "" >> "$RC_FILE"
 
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
-# Flags (starting with --) are passed to the CLI when starting a server
-# Example: leap my-tag --dangerously-skip-permissions
+# Default flags per CLI (always passed when starting a server)
+export LEAP_CLAUDE_FLAGS=""
+export LEAP_CODEX_FLAGS=""
+
+# Extra flags can also be passed inline: leap my-tag --some-flag
 leap() {
     "$LEAP_PROJECT_DIR/src/scripts/leap-select.sh" "$@"
 }
