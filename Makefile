@@ -358,6 +358,8 @@ update-deps: .env
 configure-shell:
 	@echo "$(PROMPT_PREFIX) Configuring shell..."
 	@chmod +x $(SCRIPTS_DIR)/leap-main.sh
+	@chmod +x $(SCRIPTS_DIR)/claude-leap-main.sh
+	@chmod +x $(SCRIPTS_DIR)/codex-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/leap-server.py
 	@chmod +x $(SCRIPTS_DIR)/leap-client.py
 	@chmod +x $(SCRIPTS_DIR)/leap-monitor.py

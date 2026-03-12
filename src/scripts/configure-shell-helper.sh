@@ -100,20 +100,18 @@ echo "" >> "$RC_FILE"
 
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
-leap() {
+claudel() {
     if [ $# -eq 0 ]; then
         echo "Error: Tag is required"
-        echo "Usage: leap <tag> [message]"
-        echo "Example (server): leap my-feature"
-        echo "Example (client): leap my-feature 'hello Claude'"
+        echo "Usage: claudel <tag> [message]"
+        echo "Example (server): claudel my-feature"
+        echo "Example (client): claudel my-feature 'hello Claude'"
         return 1
     fi
     # Flags (starting with --) can be passed and will be used by server only
-    # Example: leap my-tag --dangerously-skip-permissions
-    "$LEAP_PROJECT_DIR/src/scripts/leap-main.sh" "$@"
+    # Example: claudel my-tag --dangerously-skip-permissions
+    "$LEAP_PROJECT_DIR/src/scripts/claude-leap-main.sh" "$@"
 }
-
-alias claudel='leap'
 
 codexl() {
     if [ $# -eq 0 ]; then
@@ -123,7 +121,9 @@ codexl() {
         echo "Example (client): codexl my-feature 'hello Codex'"
         return 1
     fi
-    "$LEAP_PROJECT_DIR/src/scripts/leap-main.sh" "$@" --cli codex
+    # Flags (starting with --) can be passed and will be used by server only
+    # Example: codexl my-tag --full-auto
+    "$LEAP_PROJECT_DIR/src/scripts/codex-leap-main.sh" "$@"
 }
 
 # ===== Leap Configuration END - DO NOT REMOVE (needed for uninstall) =====

@@ -82,7 +82,7 @@ USAGE:
     claudel <tag>                     Start server or connect as client
     claudel <tag> <message>           Send message to server
     claudel <tag> [--flags]           Start server with flags (passed to CLI)
-    claudel <tag> --cli codex         Start server with Codex CLI (default: claude)
+    codexl <tag>                      Start server with Codex CLI
     claudel --help, -h                Show this help
     claudel --update                  Update Leap to latest version
 EOF
@@ -95,11 +95,9 @@ FLAGS (server only):
     Flags starting with -- are passed directly to the CLI when starting a server.
     They are NOT supported for clients (connecting to existing server).
 
-    --cli <name>    Select CLI backend: claude (default), codex
-
     Example:
         claudel my-tag --dangerously-skip-permissions
-        claudel my-tag --cli codex --full-auto
+        codexl my-tag --full-auto
 
 EXAMPLES:
     # Terminal 1 (start server)
@@ -152,17 +150,17 @@ shift
 # Parse arguments to separate flags from messages
 # Flags (starting with --) are passed to server only
 # Messages are passed to client only
-# --cli <name> is a Leap flag (consumed here and passed to server)
+# --cli <name> overrides LEAP_CLI env var (set by claude-leap-main.sh / codex-leap-main.sh)
 FLAGS=()
 ARGS=()
-CLI_FLAG=""
+CLI_FROM_ARG=""
 while [ $# -gt 0 ]; do
     if [ "$1" = "--cli" ] && [ -n "$2" ]; then
-        CLI_FLAG="--cli $2"
+        CLI_FROM_ARG="$2"
         FLAGS+=("--cli" "$2")
         shift 2
     elif [[ "$1" == --cli=* ]]; then
-        CLI_FLAG="$1"
+        CLI_FROM_ARG="${1#--cli=}"
         FLAGS+=("$1")
         shift
     elif [[ "$1" == --* ]]; then
@@ -173,6 +171,11 @@ while [ $# -gt 0 ]; do
         shift
     fi
 done
+
+# Apply LEAP_CLI env var if --cli was not explicitly passed
+if [ -z "$CLI_FROM_ARG" ] && [ -n "$LEAP_CLI" ]; then
+    FLAGS+=("--cli" "$LEAP_CLI")
+fi
 
 # Restore positional parameters with non-flag arguments
 set -- "${ARGS[@]}"
