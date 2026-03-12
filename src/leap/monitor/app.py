@@ -38,8 +38,8 @@ from leap.monitor.server_launcher import ServerLauncher
 from leap.monitor.ui.dock_badge import DockBadge
 from leap.monitor.ui.log_history import LogHistory, LogHistoryDialog
 from leap.monitor.ui.table_helpers import (
-    PR_TEMPLATE_LABEL, PR_TEMPLATE_TOOLTIP,
-    QUICK_MSG_TEMPLATE_LABEL, QUICK_MSG_TEMPLATE_TOOLTIP,
+    PR_PRESET_LABEL, PR_PRESET_TOOLTIP,
+    QUICK_MSG_PRESET_LABEL, QUICK_MSG_PRESET_TOOLTIP,
     PersistentTooltipStyle, SeparatorDelegate, SeparatorHeaderView, TooltipApp,
 )
 from leap.monitor.ui.ui_widgets import PulsingLabel, IndicatorLabel
@@ -315,41 +315,41 @@ class MonitorWindow(
 
         top_layout.addStretch()
 
-        edit_template_btn = QPushButton('\u270e  Presets')
-        edit_template_btn.setToolTip('Edit presets')
-        edit_template_btn.clicked.connect(self._open_template_editor)
-        top_layout.addWidget(edit_template_btn)
+        edit_preset_btn = QPushButton('\u270e  Presets')
+        edit_preset_btn.setToolTip('Edit presets')
+        edit_preset_btn.clicked.connect(self._open_preset_editor)
+        top_layout.addWidget(edit_preset_btn)
 
-        template_grid = QGridLayout()
-        template_grid.setSpacing(4)
+        preset_grid = QGridLayout()
+        preset_grid.setSpacing(4)
 
-        tpl_label = QLabel(PR_TEMPLATE_LABEL)
-        template_grid.addWidget(tpl_label, 0, 0)
+        pr_label = QLabel(PR_PRESET_LABEL)
+        preset_grid.addWidget(pr_label, 0, 0)
 
-        self.template_combo = QComboBox()
-        self.template_combo.setObjectName('template_combo')
-        self.template_combo.setMinimumWidth(180)
-        self.template_combo.setMaximumWidth(300)
-        self.template_combo.setToolTip(PR_TEMPLATE_TOOLTIP)
-        self._populate_template_combo()
-        self.template_combo.currentIndexChanged.connect(
-            self._on_template_combo_changed)
-        template_grid.addWidget(self.template_combo, 0, 1)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setObjectName('preset_combo')
+        self.preset_combo.setMinimumWidth(180)
+        self.preset_combo.setMaximumWidth(300)
+        self.preset_combo.setToolTip(PR_PRESET_TOOLTIP)
+        self._populate_preset_combo()
+        self.preset_combo.currentIndexChanged.connect(
+            self._on_preset_combo_changed)
+        preset_grid.addWidget(self.preset_combo, 0, 1)
 
-        direct_label = QLabel(QUICK_MSG_TEMPLATE_LABEL)
-        template_grid.addWidget(direct_label, 1, 0)
+        direct_label = QLabel(QUICK_MSG_PRESET_LABEL)
+        preset_grid.addWidget(direct_label, 1, 0)
 
-        self.direct_template_combo = QComboBox()
-        self.direct_template_combo.setObjectName('direct_template_combo')
-        self.direct_template_combo.setMinimumWidth(180)
-        self.direct_template_combo.setMaximumWidth(300)
-        self.direct_template_combo.setToolTip(QUICK_MSG_TEMPLATE_TOOLTIP)
-        self._populate_direct_template_combo()
-        self.direct_template_combo.currentIndexChanged.connect(
-            self._on_direct_template_combo_changed)
-        template_grid.addWidget(self.direct_template_combo, 1, 1)
+        self.direct_preset_combo = QComboBox()
+        self.direct_preset_combo.setObjectName('direct_preset_combo')
+        self.direct_preset_combo.setMinimumWidth(180)
+        self.direct_preset_combo.setMaximumWidth(300)
+        self.direct_preset_combo.setToolTip(QUICK_MSG_PRESET_TOOLTIP)
+        self._populate_direct_preset_combo()
+        self.direct_preset_combo.currentIndexChanged.connect(
+            self._on_direct_preset_combo_changed)
+        preset_grid.addWidget(self.direct_preset_combo, 1, 1)
 
-        top_layout.addLayout(template_grid)
+        top_layout.addLayout(preset_grid)
 
         top_layout.addStretch()
         reset_cols_btn = QPushButton('Reset Window Sizes')

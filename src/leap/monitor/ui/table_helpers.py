@@ -223,17 +223,17 @@ class ColorPickerPopup(QFrame):
         self.close()
 
 
-# Template UI strings (single source of truth for labels, tooltips, hints).
-PR_TEMPLATE_LABEL = 'PR thread context:'
-PR_TEMPLATE_TOOLTIP = 'Context attached to every PR thread message sent to Leap (single-message only)'
-PR_TEMPLATE_HINT = (
+# Preset UI strings (single source of truth for labels, tooltips, hints).
+PR_PRESET_LABEL = 'PR thread context:'
+PR_PRESET_TOOLTIP = 'Context attached to every PR thread message sent to Leap (single-message only)'
+PR_PRESET_HINT = (
     'PR thread context: This preset is attached to every PR thread message sent to Leap. '
     'Only single-message presets can be used.'
 )
 
-QUICK_MSG_TEMPLATE_LABEL = 'Message bundle:'
-QUICK_MSG_TEMPLATE_TOOLTIP = 'Preset messages sent via Queue column send button'
-QUICK_MSG_TEMPLATE_HINT = (
+QUICK_MSG_PRESET_LABEL = 'Message bundle:'
+QUICK_MSG_PRESET_TOOLTIP = 'Preset messages sent via Queue column send button'
+QUICK_MSG_PRESET_HINT = (
     'Message bundle: These preset messages are sent as standalone messages '
     '(via the send button in the Queue column).'
 )
@@ -244,7 +244,7 @@ QUICK_MSG_SEND_AT_END = 'Send message-bundle to end'
 APPLY_PR_BTN = 'Apply to PR Thread Context && Close'
 APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'
 
-# Max characters shown in template combo items before truncation with ellipsis
+# Max characters shown in preset combo items before truncation with ellipsis
 MAX_COMBO_DISPLAY = 40
 
 # Theme-aware stylesheet functions for cell buttons
@@ -582,13 +582,13 @@ class TooltipApp(QApplication):
                         return True
             # Fall through to normal widget tooltip handling
 
-        # Always show full-name tooltip on truncated template combo items
+        # Always show full-name tooltip on truncated preset combo items
         from PyQt5.QtWidgets import QComboBox
         combo = widget if isinstance(widget, QComboBox) else None
         if combo is None and isinstance(parent, QComboBox):
             combo = parent
         if combo is not None and combo.objectName() in (
-            'template_combo', 'direct_template_combo',
+            'preset_combo', 'direct_preset_combo',
         ):
             idx = combo.currentIndex()
             full_name = combo.itemData(idx, Qt.UserRole)

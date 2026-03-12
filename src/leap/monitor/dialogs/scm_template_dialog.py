@@ -1,9 +1,9 @@
-"""Template editor dialog for Leap Monitor.
+"""Preset editor dialog for Leap Monitor.
 
-A file-editor metaphor dialog for managing named Leap template presets.
-Templates are ordered lists of messages (multi-message bundles). Each
+A file-editor metaphor dialog for managing named Leap presets.
+Presets are ordered lists of messages (multi-message bundles). Each
 message is shown as a card in a scrollable area. Preset management
-(Save/Save As/Delete) is independent from applying the active template
+(Save/Save As/Delete) is independent from applying the active preset
 (Apply & Close).
 """
 
@@ -15,18 +15,18 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 
 from leap.monitor.pr_tracking.config import (
-    delete_named_template, load_dialog_geometry, load_saved_templates,
-    load_selected_direct_template_name, load_selected_template_name,
-    save_dialog_geometry, save_named_template,
-    save_selected_direct_template_name, save_selected_template_name,
+    delete_named_preset, load_dialog_geometry, load_saved_presets,
+    load_selected_direct_preset_name, load_selected_preset_name,
+    save_dialog_geometry, save_named_preset,
+    save_selected_direct_preset_name, save_selected_preset_name,
 )
 from leap.monitor.ui.table_helpers import (
-    APPLY_PR_BTN, APPLY_QUICK_MSG_BTN, PR_TEMPLATE_HINT,
-    QUICK_MSG_TEMPLATE_HINT,
+    APPLY_PR_BTN, APPLY_QUICK_MSG_BTN, PR_PRESET_HINT,
+    QUICK_MSG_PRESET_HINT,
 )
 
 
-MAX_TEMPLATE_NAME_LEN = 70
+MAX_PRESET_NAME_LEN = 70
 
 
 class _MessageCard(QFrame):
@@ -95,14 +95,14 @@ class _MessageCard(QFrame):
         self._text_edit.setFocus()
 
 
-class TemplateEditorDialog(QDialog):
-    """Dialog to edit Leap template messages with named presets."""
+class PresetEditorDialog(QDialog):
+    """Dialog to edit Leap presets with named entries."""
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Edit Presets')
         self.resize(780, 500)
-        saved = load_dialog_geometry('template_editor')
+        saved = load_dialog_geometry('preset_editor')
         if saved:
             self.resize(saved[0], saved[1])
 
@@ -114,13 +114,13 @@ class TemplateEditorDialog(QDialog):
 
         dlg_layout = QVBoxLayout(self)
 
-        hint_pr = QLabel(PR_TEMPLATE_HINT)
+        hint_pr = QLabel(PR_PRESET_HINT)
         hint_pr.setWordWrap(True)
         hint_pr.setIndent(0)
         hint_pr.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 0px;')
         dlg_layout.addWidget(hint_pr)
 
-        hint_quick = QLabel(QUICK_MSG_TEMPLATE_HINT)
+        hint_quick = QLabel(QUICK_MSG_PRESET_HINT)
         hint_quick.setWordWrap(True)
         hint_quick.setIndent(0)
         hint_quick.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
@@ -156,11 +156,11 @@ class TemplateEditorDialog(QDialog):
         dlg_layout.addWidget(self._scroll, 1)
 
         # Load the currently selected preset (if any)
-        selected_name = load_selected_template_name()
+        selected_name = load_selected_preset_name()
         if selected_name:
-            templates = load_saved_templates()
-            if selected_name in templates:
-                self._messages = list(templates[selected_name])
+            presets = load_saved_presets()
+            if selected_name in presets:
+                self._messages = list(presets[selected_name])
                 if not self._messages:
                     self._messages = ['']
         self._current_name = selected_name
@@ -196,8 +196,8 @@ class TemplateEditorDialog(QDialog):
             fallback = self._combo.currentText()
             if fallback:
                 self._current_name = fallback
-                templates = load_saved_templates()
-                self._messages = list(templates.get(fallback, ['']))
+                presets = load_saved_presets()
+                self._messages = list(presets.get(fallback, ['']))
                 if not self._messages:
                     self._messages = ['']
                 self._rebuild_cards()
@@ -280,7 +280,7 @@ class TemplateEditorDialog(QDialog):
     def _refresh_combo(self, select_name: str = '') -> None:
         self._refreshing = True
         self._combo.clear()
-        for name in sorted(load_saved_templates()):
+        for name in sorted(load_saved_presets()):
             self._combo.addItem(name)
         if select_name:
             idx = self._combo.findText(select_name)
@@ -295,8 +295,8 @@ class TemplateEditorDialog(QDialog):
         name = self._combo.currentText()
         if not name:
             return
-        templates = load_saved_templates()
-        self._messages = list(templates.get(name, ['']))
+        presets = load_saved_presets()
+        self._messages = list(presets.get(name, ['']))
         if not self._messages:
             self._messages = ['']
         self._rebuild_cards()
@@ -309,8 +309,8 @@ class TemplateEditorDialog(QDialog):
         prev_name = ''
         while True:
             dlg = QInputDialog(self)
-            dlg.setWindowTitle('Save Template As')
-            dlg.setLabelText('Name for this template:')
+            dlg.setWindowTitle('Save Preset As')
+            dlg.setLabelText('Name for this preset:')
             dlg.setTextValue(prev_name)
             ok = dlg.exec_() == QInputDialog.Accepted
             name = dlg.textValue()
@@ -318,24 +318,24 @@ class TemplateEditorDialog(QDialog):
                 return
             name = name.strip()
             prev_name = name
-            if len(name) > MAX_TEMPLATE_NAME_LEN:
+            if len(name) > MAX_PRESET_NAME_LEN:
                 QMessageBox.warning(
                     self, 'Name Too Long',
-                    f'Template name must be {MAX_TEMPLATE_NAME_LEN} characters or fewer '
+                    f'Preset name must be {MAX_PRESET_NAME_LEN} characters or fewer '
                     f'(currently {len(name)}).',
                 )
                 continue
-            existing = load_saved_templates()
+            existing = load_saved_presets()
             if name in existing:
                 reply = QMessageBox.question(
-                    self, 'Overwrite Template',
-                    f"A template named '{name}' already exists. Overwrite?",
+                    self, 'Overwrite Preset',
+                    f"A preset named '{name}' already exists. Overwrite?",
                     QMessageBox.Yes | QMessageBox.No,
                 )
                 if reply != QMessageBox.Yes:
                     continue
             break
-        save_named_template(name, list(self._messages))
+        save_named_preset(name, list(self._messages))
         self._current_name = name
         self._unsaved = False
         self._refresh_combo(name)
@@ -353,14 +353,14 @@ class TemplateEditorDialog(QDialog):
                 return
             name = name.strip()
             prev_name = name
-            if len(name) > MAX_TEMPLATE_NAME_LEN:
+            if len(name) > MAX_PRESET_NAME_LEN:
                 QMessageBox.warning(
                     self, 'Name Too Long',
-                    f'Template name must be {MAX_TEMPLATE_NAME_LEN} characters or fewer '
+                    f'Preset name must be {MAX_PRESET_NAME_LEN} characters or fewer '
                     f'(currently {len(name)}).',
                 )
                 continue
-            existing = load_saved_templates()
+            existing = load_saved_presets()
             if name in existing:
                 reply = QMessageBox.question(
                     self, 'Name Exists',
@@ -370,7 +370,7 @@ class TemplateEditorDialog(QDialog):
                 if reply != QMessageBox.Yes:
                     continue
             break
-        save_named_template(name, [''])
+        save_named_preset(name, [''])
         self._current_name = name
         self._unsaved = True
         self._messages = ['']
@@ -381,7 +381,7 @@ class TemplateEditorDialog(QDialog):
         if not self._current_name:
             return
         current_messages = list(self._messages)
-        saved_messages = load_saved_templates().get(self._current_name, [''])
+        saved_messages = load_saved_presets().get(self._current_name, [''])
         if current_messages == saved_messages:
             return  # No changes — nothing to save
         if not self._unsaved:
@@ -392,7 +392,7 @@ class TemplateEditorDialog(QDialog):
             )
             if reply != QMessageBox.Yes:
                 return
-        save_named_template(self._current_name, current_messages)
+        save_named_preset(self._current_name, current_messages)
         self._unsaved = False
 
     def _on_save_as(self) -> None:
@@ -403,20 +403,20 @@ class TemplateEditorDialog(QDialog):
         if not name:
             return
         reply = QMessageBox.question(
-            self, 'Delete Template',
-            f"Delete saved template '{name}'?",
+            self, 'Delete Preset',
+            f"Delete saved preset '{name}'?",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
-            delete_named_template(name)
+            delete_named_preset(name)
             self._current_name = ''
             self._unsaved = False
             self._refresh_combo()
             # Auto-load the first remaining preset
             fallback = self._combo.currentText()
             if fallback:
-                templates = load_saved_templates()
-                self._messages = list(templates.get(fallback, ['']))
+                presets = load_saved_presets()
+                self._messages = list(presets.get(fallback, ['']))
                 if not self._messages:
                     self._messages = ['']
                 self._current_name = fallback
@@ -429,7 +429,7 @@ class TemplateEditorDialog(QDialog):
         """Check for unsaved changes and offer to save. Returns False if cancelled."""
         name = self._current_name
         if name:
-            saved_messages = load_saved_templates().get(name, [''])
+            saved_messages = load_saved_presets().get(name, [''])
             if list(self._messages) != saved_messages:
                 reply = QMessageBox.question(
                     self, 'Unsaved Changes',
@@ -439,7 +439,7 @@ class TemplateEditorDialog(QDialog):
                 if reply == QMessageBox.Cancel:
                     return False
                 if reply == QMessageBox.Yes:
-                    save_named_template(name, list(self._messages))
+                    save_named_preset(name, list(self._messages))
         return True
 
     def _on_apply_pr(self) -> None:
@@ -457,17 +457,17 @@ class TemplateEditorDialog(QDialog):
             return
         if not self._maybe_save_unsaved():
             return
-        save_selected_template_name(self._current_name)
+        save_selected_preset_name(self._current_name)
         self.accept()
 
     def done(self, result: int) -> None:
         """Save dialog size on close."""
-        save_dialog_geometry('template_editor', self.width(), self.height())
+        save_dialog_geometry('preset_editor', self.width(), self.height())
         super().done(result)
 
     def _on_apply_direct(self) -> None:
         """Apply the current preset to the Message bundle combo and close."""
         if not self._maybe_save_unsaved():
             return
-        save_selected_direct_template_name(self._current_name)
+        save_selected_direct_preset_name(self._current_name)
         self.accept()

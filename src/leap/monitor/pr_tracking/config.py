@@ -12,13 +12,16 @@ GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
 NOTIFICATION_SEEN_FILE = STORAGE_DIR / "notification_seen.json"
-LEAP_TEMPLATE_FILE = STORAGE_DIR / "leap_selected_template"
-LEAP_DIRECT_TEMPLATE_FILE = STORAGE_DIR / "leap_selected_direct_template"
-LEAP_TEMPLATES_FILE = STORAGE_DIR / "leap_templates.json"
+LEAP_PRESET_FILE = STORAGE_DIR / "leap_selected_preset"
+LEAP_DIRECT_PRESET_FILE = STORAGE_DIR / "leap_selected_direct_preset"
+LEAP_PRESETS_FILE = STORAGE_DIR / "leap_presets.json"
 
 # Backward-compat: old file names for migration
 _OLD_LEAP_CONTEXT_FILE = STORAGE_DIR / "leap_selected_ctx"
 _OLD_LEAP_CONTEXTS_FILE = STORAGE_DIR / "leap_contexts.json"
+_OLD_LEAP_TEMPLATE_FILE = STORAGE_DIR / "leap_selected_template"
+_OLD_LEAP_DIRECT_TEMPLATE_FILE = STORAGE_DIR / "leap_selected_direct_template"
+_OLD_LEAP_TEMPLATES_FILE = STORAGE_DIR / "leap_templates.json"
 
 # Default monitor preferences
 _DEFAULT_PREFS = {
@@ -233,31 +236,39 @@ def save_monitor_prefs(prefs: dict[str, Any]) -> None:
     atomic_json_write(MONITOR_PREFS_FILE, prefs)
 
 
-def _migrate_old_template_files() -> None:
-    """Migrate old context files to new template names (one-time)."""
-    if _OLD_LEAP_CONTEXT_FILE.exists() and not LEAP_TEMPLATE_FILE.exists():
-        _OLD_LEAP_CONTEXT_FILE.rename(LEAP_TEMPLATE_FILE)
-    if _OLD_LEAP_CONTEXTS_FILE.exists() and not LEAP_TEMPLATES_FILE.exists():
-        _OLD_LEAP_CONTEXTS_FILE.rename(LEAP_TEMPLATES_FILE)
+def _migrate_old_preset_files() -> None:
+    """Migrate old context/template files to new preset names (one-time)."""
+    # Stage 1: context → template (legacy)
+    if _OLD_LEAP_CONTEXT_FILE.exists() and not _OLD_LEAP_TEMPLATE_FILE.exists():
+        _OLD_LEAP_CONTEXT_FILE.rename(_OLD_LEAP_TEMPLATE_FILE)
+    if _OLD_LEAP_CONTEXTS_FILE.exists() and not _OLD_LEAP_TEMPLATES_FILE.exists():
+        _OLD_LEAP_CONTEXTS_FILE.rename(_OLD_LEAP_TEMPLATES_FILE)
+    # Stage 2: template → preset
+    if _OLD_LEAP_TEMPLATE_FILE.exists() and not LEAP_PRESET_FILE.exists():
+        _OLD_LEAP_TEMPLATE_FILE.rename(LEAP_PRESET_FILE)
+    if _OLD_LEAP_DIRECT_TEMPLATE_FILE.exists() and not LEAP_DIRECT_PRESET_FILE.exists():
+        _OLD_LEAP_DIRECT_TEMPLATE_FILE.rename(LEAP_DIRECT_PRESET_FILE)
+    if _OLD_LEAP_TEMPLATES_FILE.exists() and not LEAP_PRESETS_FILE.exists():
+        _OLD_LEAP_TEMPLATES_FILE.rename(LEAP_PRESETS_FILE)
 
 
-def load_selected_template_name() -> str:
-    """Load the name of the currently selected template preset.
+def load_selected_preset_name() -> str:
+    """Load the name of the currently selected preset.
 
     Returns:
         The preset name, or empty string if none selected.
     """
-    _migrate_old_template_files()
-    if not LEAP_TEMPLATE_FILE.exists():
+    _migrate_old_preset_files()
+    if not LEAP_PRESET_FILE.exists():
         return ''
     try:
-        return LEAP_TEMPLATE_FILE.read_text(encoding='utf-8').strip()
+        return LEAP_PRESET_FILE.read_text(encoding='utf-8').strip()
     except OSError:
         return ''
 
 
-def save_selected_template_name(name: str) -> None:
-    """Save the name of the currently selected template preset."""
+def save_selected_preset_name(name: str) -> None:
+    """Save the name of the currently selected preset."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(STORAGE_DIR), suffix='.tmp')
     try:
@@ -265,7 +276,7 @@ def save_selected_template_name(name: str) -> None:
             f.write(name)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, str(LEAP_TEMPLATE_FILE))
+        os.replace(tmp_path, str(LEAP_PRESET_FILE))
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -274,22 +285,23 @@ def save_selected_template_name(name: str) -> None:
         raise
 
 
-def load_selected_direct_template_name() -> str:
-    """Load the name of the currently selected direct message template preset.
+def load_selected_direct_preset_name() -> str:
+    """Load the name of the currently selected direct message preset.
 
     Returns:
         The preset name, or empty string if none selected.
     """
-    if not LEAP_DIRECT_TEMPLATE_FILE.exists():
+    _migrate_old_preset_files()
+    if not LEAP_DIRECT_PRESET_FILE.exists():
         return ''
     try:
-        return LEAP_DIRECT_TEMPLATE_FILE.read_text(encoding='utf-8').strip()
+        return LEAP_DIRECT_PRESET_FILE.read_text(encoding='utf-8').strip()
     except OSError:
         return ''
 
 
-def save_selected_direct_template_name(name: str) -> None:
-    """Save the name of the currently selected direct message template preset."""
+def save_selected_direct_preset_name(name: str) -> None:
+    """Save the name of the currently selected direct message preset."""
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=str(STORAGE_DIR), suffix='.tmp')
     try:
@@ -297,7 +309,7 @@ def save_selected_direct_template_name(name: str) -> None:
             f.write(name)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, str(LEAP_DIRECT_TEMPLATE_FILE))
+        os.replace(tmp_path, str(LEAP_DIRECT_PRESET_FILE))
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -306,53 +318,53 @@ def save_selected_direct_template_name(name: str) -> None:
         raise
 
 
-def load_leap_direct_template() -> list[str]:
-    """Load the messages of the currently selected direct message template preset.
+def load_leap_direct_preset() -> list[str]:
+    """Load the messages of the currently selected direct message preset.
 
     Returns:
         List of non-empty message strings, or empty list if no preset selected
         or not found.
     """
-    name = load_selected_direct_template_name()
+    name = load_selected_direct_preset_name()
     if not name:
         return []
-    templates = load_saved_templates()
-    messages = templates.get(name, [])
+    presets = load_saved_presets()
+    messages = presets.get(name, [])
     return [m for m in messages if m.strip()]
 
 
-def load_leap_template() -> str:
-    """Load the text of the currently selected PR template preset.
+def load_leap_preset() -> str:
+    """Load the text of the currently selected PR preset.
 
     Resolves the selected preset name to its first message from
-    leap_templates.json.  PR templates are enforced to be single-message
+    leap_presets.json.  PR presets are enforced to be single-message
     by the combo validation, so only the first element is returned.
 
     Returns:
-        The template string, or empty string if no preset selected or not found.
+        The preset string, or empty string if no preset selected or not found.
     """
-    name = load_selected_template_name()
+    name = load_selected_preset_name()
     if not name:
         return ''
-    templates = load_saved_templates()
-    messages = templates.get(name, [])
+    presets = load_saved_presets()
+    messages = presets.get(name, [])
     return messages[0] if messages else ''
 
 
-def load_saved_templates() -> dict[str, list[str]]:
-    """Load all named template presets from storage.
+def load_saved_presets() -> dict[str, list[str]]:
+    """Load all named presets from storage.
 
     Auto-migrates old ``str`` values to ``[str]`` on read for backward
     compatibility.
 
     Returns:
-        Dict mapping template name to list of message strings.
+        Dict mapping preset name to list of message strings.
     """
-    _migrate_old_template_files()
-    if not LEAP_TEMPLATES_FILE.exists():
+    _migrate_old_preset_files()
+    if not LEAP_PRESETS_FILE.exists():
         return {}
     try:
-        with open(LEAP_TEMPLATES_FILE, 'r', encoding='utf-8') as f:
+        with open(LEAP_PRESETS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict):
             # Auto-migrate str values → [str]
@@ -365,28 +377,28 @@ def load_saved_templates() -> dict[str, list[str]]:
     return {}
 
 
-def _write_saved_templates(templates: dict[str, list[str]]) -> None:
-    """Write all named template presets to storage."""
-    atomic_json_write(LEAP_TEMPLATES_FILE, templates, ensure_ascii=False)
+def _write_saved_presets(presets: dict[str, list[str]]) -> None:
+    """Write all named presets to storage."""
+    atomic_json_write(LEAP_PRESETS_FILE, presets, ensure_ascii=False)
 
 
-def save_named_template(name: str, messages: list[str]) -> None:
-    """Save a template preset under the given name.
+def save_named_preset(name: str, messages: list[str]) -> None:
+    """Save a preset under the given name.
 
     Args:
         name: Preset name.
         messages: Ordered list of message strings.
     """
-    templates = load_saved_templates()
-    templates[name] = messages
-    _write_saved_templates(templates)
+    presets = load_saved_presets()
+    presets[name] = messages
+    _write_saved_presets(presets)
 
 
-def delete_named_template(name: str) -> None:
-    """Delete a saved template preset by name."""
-    templates = load_saved_templates()
-    templates.pop(name, None)
-    _write_saved_templates(templates)
+def delete_named_preset(name: str) -> None:
+    """Delete a saved preset by name."""
+    presets = load_saved_presets()
+    presets.pop(name, None)
+    _write_saved_presets(presets)
 
 
 def _migrate_mr_to_pr_keys(session: dict[str, Any]) -> dict[str, Any]:

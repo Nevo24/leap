@@ -5,7 +5,7 @@ from typing import Optional
 
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
-from leap.monitor.pr_tracking.config import load_leap_template
+from leap.monitor.pr_tracking.config import load_leap_preset
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def _send_to_socket(
 def send_to_leap_session(tag: str, message: str) -> bool:
     """Send a queued message to a Leap session via Unix socket.
 
-    The selected template (from leap_selected_template) is prepended to the
+    The selected preset (from leap_selected_preset) is prepended to the
     message if set.
 
     Args:
@@ -53,15 +53,15 @@ def send_to_leap_session(tag: str, message: str) -> bool:
     Returns:
         True on success, False on failure.
     """
-    template = load_leap_template()
-    if template:
-        message = template + '\n' + message
+    preset = load_leap_preset()
+    if preset:
+        message = preset + '\n' + message
 
     return _send_to_socket(tag, 'queue', '[scm] ' + message)
 
 
 def send_to_leap_session_raw(tag: str, message: str) -> bool:
-    """Send a message to a Leap session without prepending any template.
+    """Send a message to a Leap session without prepending any preset.
 
     Args:
         tag: Session tag name.

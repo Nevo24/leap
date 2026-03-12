@@ -1,4 +1,4 @@
-"""Table construction, refresh, settings, and template editor methods."""
+"""Table construction, refresh, settings, and preset editor methods."""
 
 from __future__ import annotations
 
@@ -20,10 +20,10 @@ from PyQt5.QtGui import QColor, QPalette
 
 from leap.monitor.pr_tracking.base import PRState
 from leap.monitor.pr_tracking.config import (
-    get_dock_enabled, get_notification_prefs, load_leap_direct_template,
-    load_saved_templates, load_selected_direct_template_name,
-    load_selected_template_name,
-    save_selected_direct_template_name, save_selected_template_name,
+    get_dock_enabled, get_notification_prefs, load_leap_direct_preset,
+    load_saved_presets, load_selected_direct_preset_name,
+    load_selected_preset_name,
+    save_selected_direct_preset_name, save_selected_preset_name,
 )
 from leap.monitor.session_manager import get_active_sessions
 from leap.utils.socket_utils import send_socket_request
@@ -32,8 +32,8 @@ from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.table_helpers import (
     BORDER_GROUP, BORDER_INTRA,
-    MAX_COMBO_DISPLAY, PR_TEMPLATE_TOOLTIP,
-    QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_TEMPLATE_TOOLTIP,
+    MAX_COMBO_DISPLAY, PR_PRESET_TOOLTIP,
+    QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_PRESET_TOOLTIP,
     ColorPickerPopup, HoverIconButton, column_border_type,
     active_btn_style, close_btn_style, menu_btn_style,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _PALETTE_SVG, _SEND_SVG,
@@ -90,7 +90,7 @@ def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
 
 
 class TableBuilderMixin(_Base):
-    """Methods for table construction, cell helpers, refresh, settings, and template editor."""
+    """Methods for table construction, cell helpers, refresh, settings, and preset editor."""
 
     _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})  # All data columns
 
@@ -1789,7 +1789,7 @@ class TableBuilderMixin(_Base):
         """
         from leap.monitor.leap_sender import prepend_to_leap_queue
 
-        messages = load_leap_direct_template()
+        messages = load_leap_direct_preset()
         if not messages:
             self._show_status('No message bundle selected')
             return
@@ -1802,7 +1802,7 @@ class TableBuilderMixin(_Base):
         """Append all message bundle messages to the end of the queue."""
         from leap.monitor.leap_sender import send_to_leap_session_raw
 
-        messages = load_leap_direct_template()
+        messages = load_leap_direct_preset()
         if not messages:
             self._show_status('No message bundle selected')
             return
@@ -1812,16 +1812,16 @@ class TableBuilderMixin(_Base):
         else:
             self._show_status(f'Bundle send failed for {tag}')
 
-    def _open_template_editor(self) -> None:
+    def _open_preset_editor(self) -> None:
         """Open the preset editor dialog."""
-        from leap.monitor.dialogs.scm_template_dialog import TemplateEditorDialog
+        from leap.monitor.dialogs.scm_template_dialog import PresetEditorDialog
 
-        dialog = TemplateEditorDialog(self)
+        dialog = PresetEditorDialog(self)
         dialog.exec_()
-        self._populate_template_combo()
-        self._populate_direct_template_combo()
+        self._populate_preset_combo()
+        self._populate_direct_preset_combo()
 
-    # -- Template combo helpers (shared logic for PR and direct combos) ----
+    # -- Preset combo helpers (shared logic for PR and direct combos) ------
 
     @staticmethod
     def _populate_combo(
@@ -1829,7 +1829,7 @@ class TableBuilderMixin(_Base):
         load_selected_fn: 'Callable[[], str]',
         default_tooltip: str,
     ) -> None:
-        """Populate a template combo from saved presets.
+        """Populate a preset combo from saved presets.
 
         Args:
             combo: The QComboBox to populate.
@@ -1839,7 +1839,7 @@ class TableBuilderMixin(_Base):
         combo.blockSignals(True)
         combo.clear()
         combo.addItem('(None)')
-        for name in sorted(load_saved_templates().keys()):
+        for name in sorted(load_saved_presets().keys()):
             if len(name) > MAX_COMBO_DISPLAY:
                 combo.addItem(name[:MAX_COMBO_DISPLAY] + '\u2026')
                 combo.setItemData(combo.count() - 1, name, Qt.UserRole)
@@ -1861,7 +1861,7 @@ class TableBuilderMixin(_Base):
         save_fn: 'Callable[[str], None]',
         default_tooltip: str,
     ) -> None:
-        """Handle a template combo selection change.
+        """Handle a preset combo selection change.
 
         Args:
             combo: The QComboBox that changed.
@@ -1887,25 +1887,25 @@ class TableBuilderMixin(_Base):
 
     # -- Public combo wrappers (called by app and signals) ----------------
 
-    def _populate_template_combo(self) -> None:
-        """Reload template combo items from saved presets and selection."""
+    def _populate_preset_combo(self) -> None:
+        """Reload preset combo items from saved presets and selection."""
         self._populate_combo(
-            self.template_combo, load_selected_template_name,
-            PR_TEMPLATE_TOOLTIP,
+            self.preset_combo, load_selected_preset_name,
+            PR_PRESET_TOOLTIP,
         )
 
-    def _on_template_combo_changed(self) -> None:
+    def _on_preset_combo_changed(self) -> None:
         """Handle PR thread context combo selection change.
 
         Rejects multi-message presets with a popup and reverts to the
         previous selection, since PR thread context must be single-message.
         """
-        text = self.template_combo.currentText()
-        idx = self.template_combo.currentIndex()
+        text = self.preset_combo.currentText()
+        idx = self.preset_combo.currentIndex()
         if text != '(None)':
-            full_name = self.template_combo.itemData(idx, Qt.UserRole)
+            full_name = self.preset_combo.itemData(idx, Qt.UserRole)
             name = full_name if full_name else text
-            messages = load_saved_templates().get(name, [])
+            messages = load_saved_presets().get(name, [])
             if len(messages) > 1:
                 QMessageBox.warning(
                     self, 'Multi-Message Preset',
@@ -1914,36 +1914,36 @@ class TableBuilderMixin(_Base):
                     'Use the Message bundle combo for multi-message presets.',
                 )
                 # Revert to previous selection
-                self.template_combo.blockSignals(True)
-                prev = load_selected_template_name()
+                self.preset_combo.blockSignals(True)
+                prev = load_selected_preset_name()
                 if prev:
-                    prev_idx = self.template_combo.findText(prev)
+                    prev_idx = self.preset_combo.findText(prev)
                     if prev_idx < 0 and len(prev) > MAX_COMBO_DISPLAY:
-                        prev_idx = self.template_combo.findText(
+                        prev_idx = self.preset_combo.findText(
                             prev[:MAX_COMBO_DISPLAY] + '\u2026')
-                    self.template_combo.setCurrentIndex(
+                    self.preset_combo.setCurrentIndex(
                         prev_idx if prev_idx >= 0 else 0)
                 else:
-                    self.template_combo.setCurrentIndex(0)
-                self.template_combo.blockSignals(False)
+                    self.preset_combo.setCurrentIndex(0)
+                self.preset_combo.blockSignals(False)
                 return
         self._on_combo_changed(
-            self.template_combo, save_selected_template_name,
-            PR_TEMPLATE_TOOLTIP,
+            self.preset_combo, save_selected_preset_name,
+            PR_PRESET_TOOLTIP,
         )
 
-    def _populate_direct_template_combo(self) -> None:
-        """Reload direct template combo items from saved presets and selection."""
+    def _populate_direct_preset_combo(self) -> None:
+        """Reload direct preset combo items from saved presets and selection."""
         self._populate_combo(
-            self.direct_template_combo, load_selected_direct_template_name,
-            QUICK_MSG_TEMPLATE_TOOLTIP,
+            self.direct_preset_combo, load_selected_direct_preset_name,
+            QUICK_MSG_PRESET_TOOLTIP,
         )
 
-    def _on_direct_template_combo_changed(self) -> None:
-        """Handle direct template combo selection change."""
+    def _on_direct_preset_combo_changed(self) -> None:
+        """Handle direct preset combo selection change."""
         self._on_combo_changed(
-            self.direct_template_combo, save_selected_direct_template_name,
-            QUICK_MSG_TEMPLATE_TOOLTIP,
+            self.direct_preset_combo, save_selected_direct_preset_name,
+            QUICK_MSG_PRESET_TOOLTIP,
         )
 
     def _on_cell_clicked(self, row: int, col: int) -> None:

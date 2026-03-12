@@ -181,9 +181,9 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Pinned sessions | `.storage/pinned_sessions.json` |
 | Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`) |
 | Notification seen state | `.storage/notification_seen.json` |
-| PR context preset selection | `.storage/leap_selected_template` |
-| Message bundle preset selection | `.storage/leap_selected_direct_template` |
-| Preset definitions | `.storage/leap_templates.json` |
+| PR context preset selection | `.storage/leap_selected_preset` |
+| Message bundle preset selection | `.storage/leap_selected_direct_preset` |
+| Preset definitions | `.storage/leap_presets.json` |
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Slack config | `.storage/slack/config.json` |
