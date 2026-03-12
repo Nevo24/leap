@@ -85,6 +85,16 @@ class CLIProvider(ABC):
         """
         return False
 
+    @property
+    def silence_timeout(self) -> Optional[float]:
+        """Override the default silence timeout (seconds) for this CLI.
+
+        Return None to use the global OUTPUT_SILENCE_TIMEOUT constant.
+        Full-screen TUIs (Ratatui) that output constantly during processing
+        can use a shorter timeout since any output gap indicates idle.
+        """
+        return None
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

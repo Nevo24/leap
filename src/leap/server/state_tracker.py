@@ -33,6 +33,7 @@ from leap.utils.constants import (
     RESUME_GRACE_PERIOD,
     STATE_PROTECTION_WINDOW,
     STORAGE_DIR,
+    WAITING_STATE_TIMEOUT,
 )
 
 _log = logging.getLogger('leap.state')
@@ -253,9 +254,14 @@ class CLIStateTracker:
 
         # Fallback: PTY silence timeout (handles interruptions,
         # missing hooks, or any case where the hook doesn't fire)
+        silence_timeout = (
+            self._provider.silence_timeout
+            if self._provider.silence_timeout is not None
+            else OUTPUT_SILENCE_TIMEOUT
+        )
         if current == CLIState.RUNNING and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
-            if silence > OUTPUT_SILENCE_TIMEOUT:
+            if silence > silence_timeout:
                 _log.debug(
                     'GET_STATE silence timeout %.1fs → idle', silence,
                 )
@@ -264,6 +270,27 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._idle_output_acc = 0
                 self._idle_since = self._clock()
+                return CLIState.IDLE
+
+        # Fallback: waiting states (interrupted, needs_permission,
+        # needs_input) can get stuck if the hook doesn't fire again
+        # and no output arrives to trigger resume detection.
+        # After WAITING_STATE_TIMEOUT with no PTY output, fall back
+        # to idle.
+        if current in WAITING_STATES and self._last_output_time > 0:
+            silence = self._clock() - self._last_output_time
+            if silence > WAITING_STATE_TIMEOUT:
+                _log.debug(
+                    'GET_STATE waiting timeout %s %.1fs → idle',
+                    current, silence,
+                )
+                with self._lock:
+                    self._state = CLIState.IDLE
+                    self._waiting_since = None
+                self._idle_output_acc = 0
+                self._idle_since = self._clock()
+                with self._buf_lock:
+                    self._last_prompt_buf = b''
                 return CLIState.IDLE
 
         return current
@@ -323,12 +350,26 @@ class CLIStateTracker:
         """
         if len(data) > 1 and data[0] == 0x1b:
             if self._state == CLIState.RUNNING:
-                _log.debug(
-                    'ON_INPUT filtered escape seq len=%d '
-                    '(updating _last_input_time for interrupt detection)',
-                    len(data),
-                )
-                self._last_input_time = self._clock()
+                # Only update _last_input_time for potential Escape
+                # keypresses, not terminal-generated CSI sequences
+                # (focus in/out, cursor position reports, mouse events).
+                # CSI sequences start with \x1b[ and are never real
+                # Escape key presses.  A bundled Escape + CSI event
+                # starts with \x1b\x1b[ (double escape), which this
+                # check correctly lets through.
+                if len(data) >= 2 and data[1] == 0x5b:  # \x1b[
+                    _log.debug(
+                        'ON_INPUT filtered CSI seq len=%d in running '
+                        '(not updating _last_input_time)',
+                        len(data),
+                    )
+                else:
+                    _log.debug(
+                        'ON_INPUT filtered escape seq len=%d '
+                        '(updating _last_input_time for interrupt detection)',
+                        len(data),
+                    )
+                    self._last_input_time = self._clock()
             else:
                 _log.debug('ON_INPUT filtered escape seq len=%d', len(data))
             return

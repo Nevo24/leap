@@ -76,6 +76,7 @@ ESCAPE_RACE_WINDOW: Final[float] = 2.0  # Running→idle signal suppression afte
 ESCAPE_CORRECTION_WINDOW: Final[float] = 3.0  # needs_input→interrupted correction
 RESUME_GRACE_PERIOD: Final[float] = 2.0  # Wait before detecting resume from waiting state
 OUTPUT_GAP_RESET: Final[float] = 2.0  # Output gap that resets idle accumulator
+WAITING_STATE_TIMEOUT: Final[float] = 30.0  # Max time in waiting state without output before idle
 
 # Queue limits
 MAX_RECENTLY_SENT: Final[int] = 20  # Maximum messages to track in recently_sent

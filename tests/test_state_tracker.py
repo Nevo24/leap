@@ -7,7 +7,8 @@ from typing import List
 import pytest
 
 from leap.server.state_tracker import ClaudeStateTracker
-from leap.utils.constants import OUTPUT_SILENCE_TIMEOUT
+from leap.cli_providers.codex import CodexProvider
+from leap.utils.constants import OUTPUT_SILENCE_TIMEOUT, WAITING_STATE_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -1285,3 +1286,311 @@ class TestCLIStateEnum:
         """CLIState can be imported from the cli_providers package."""
         from leap.cli_providers import CLIState
         assert CLIState.IDLE == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Codex-specific helpers
+# ---------------------------------------------------------------------------
+
+def make_codex_tracker(
+    tmp_path: Path,
+    t: List[float],
+    auto_send_mode: str = 'pause',
+) -> ClaudeStateTracker:
+    """Create a tracker with Codex provider, fake clock, signal file."""
+    signal_file = tmp_path / "test.signal"
+    return ClaudeStateTracker(
+        signal_file=signal_file,
+        auto_send_mode=auto_send_mode,
+        clock=lambda: t[0],
+        provider=CodexProvider(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Codex: enter_triggers_running
+# ---------------------------------------------------------------------------
+
+class TestCodexEnterTriggersRunning:
+    """Test Enter-key based idle→running detection for Ratatui CLIs."""
+
+    def test_enter_in_idle_transitions_to_running(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        tracker.on_input(b'\r')
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_enter_not_in_idle_is_noop(self, tmp_path: Path) -> None:
+        """Enter while running should not reset the running state."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        assert tracker.get_state(pty_alive=True) == 'running'
+        t[0] = 1.0
+        tracker.on_input(b'\r')
+        # Still running (not reset)
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_enter_deletes_signal_file(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        # Write a stale signal
+        write_signal(tracker, 'idle')
+        assert tracker._signal_file.exists()
+        tracker.on_input(b'\r')
+        assert not tracker._signal_file.exists()
+
+    def test_enter_clears_output_buf(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_output(b'some TUI output')
+        tracker.on_input(b'\r')
+        assert tracker._output_buf == bytearray()
+
+
+# ---------------------------------------------------------------------------
+# Codex: silence timeout
+# ---------------------------------------------------------------------------
+
+class TestCodexSilenceTimeout:
+    """Test Codex-specific shorter silence timeout (8s vs 15s)."""
+
+    def test_codex_uses_shorter_silence_timeout(self, tmp_path: Path) -> None:
+        """Codex falls back to idle after 8s of silence, not 15s."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'thinking...')
+        # After 9 seconds of silence — Codex timeout (8s) should fire
+        t[0] = 10.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_codex_not_idle_before_timeout(self, tmp_path: Path) -> None:
+        """Codex stays running if output arrived within 8s."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'thinking...')
+        # Only 5 seconds — still within 8s timeout
+        t[0] = 6.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_claude_uses_longer_timeout(self, tmp_path: Path) -> None:
+        """Claude (default) still uses 15s timeout, not 8s."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'processing...')
+        # 10 seconds — within Claude's 15s timeout
+        t[0] = 11.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # 16 seconds — exceeds timeout
+        t[0] = 17.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Codex: interrupted detection
+# ---------------------------------------------------------------------------
+
+class TestCodexInterrupted:
+    """Test interrupted state detection with Codex's lowercase pattern."""
+
+    def test_interrupted_detected_from_pty_output(self, tmp_path: Path) -> None:
+        """Codex outputs 'interrupted' (lowercase) → interrupted state."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate user pressing Escape
+        tracker.on_input(b'\x1b')
+        tracker._last_input_time = t[0]
+        t[0] = 1.5
+        # PTY outputs the interrupted message
+        tracker.on_output(
+            b'Conversation interrupted - tell the model what to do differently.'
+        )
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_interrupted_detected_with_ansi(self, tmp_path: Path) -> None:
+        """Interrupted pattern detected even with ANSI sequences mixed in."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        tracker._last_input_time = t[0]
+        t[0] = 1.5
+        tracker.on_output(
+            b'\x1b[31mConversation interrupted\x1b[0m - ...'
+        )
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_signal_idle_blocked_during_escape_race(self, tmp_path: Path) -> None:
+        """Stop hook writing 'idle' is blocked while awaiting interrupt pattern."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # User presses Escape (single byte)
+        tracker.on_input(b'\x1b')
+        t[0] = 1.5
+        # Stop hook fires, writes idle
+        write_signal(tracker, 'idle')
+        # Within ESCAPE_RACE_WINDOW — idle blocked
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # Now PTY outputs interrupted pattern
+        t[0] = 2.0
+        tracker.on_output(b'Conversation interrupted')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+
+# ---------------------------------------------------------------------------
+# Codex: CSI escape sequence filtering
+# ---------------------------------------------------------------------------
+
+class TestCodexCSIFiltering:
+    """Test that CSI terminal events don't hold ESCAPE_RACE_WINDOW open."""
+
+    def test_focus_events_dont_block_idle_signal(self, tmp_path: Path) -> None:
+        """Focus in/out events (\x1b[I, \x1b[O) should not refresh
+        _last_input_time and block running→idle signal transition."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate real Escape key
+        tracker.on_input(b'\x1b')
+        t[0] = 3.0  # Past ESCAPE_RACE_WINDOW (2s)
+        # Focus event arrives (terminal switching)
+        tracker.on_input(b'\x1b[I')  # focus in
+        t[0] = 3.5
+        # Stop hook writes idle
+        write_signal(tracker, 'idle')
+        # Should accept idle because focus event didn't refresh
+        # _last_input_time for ESCAPE_RACE_WINDOW purposes
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_real_escape_still_blocks_idle(self, tmp_path: Path) -> None:
+        """A real Escape key (single byte) should still block idle signal."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')  # Real Escape
+        t[0] = 1.5
+        write_signal(tracker, 'idle')
+        # Within 2s of Escape — idle blocked
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_bundled_escape_plus_csi_updates_time(self, tmp_path: Path) -> None:
+        """Escape key + CSI bundled (\x1b\x1b[I) should update time."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Bundled: Escape key + focus event in same read
+        tracker.on_input(b'\x1b\x1b[I')
+        t[0] = 1.5
+        write_signal(tracker, 'idle')
+        # Should block — the bundled Escape updated _last_input_time
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+
+# ---------------------------------------------------------------------------
+# Codex: output_triggers_running disabled
+# ---------------------------------------------------------------------------
+
+class TestCodexOutputDoesNotTriggerRunning:
+    """Verify output accumulation doesn't trigger idle→running for Codex."""
+
+    def test_output_does_not_trigger_running(self, tmp_path: Path) -> None:
+        """Large output while idle should NOT trigger running for Codex."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        # Simulate user input to mark seen_user_input
+        tracker.on_input(b'x')
+        t[0] = 1.0
+        # Go to idle via signal
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # Process signal
+        # Large output (TUI redraw) should not trigger running
+        t[0] = 2.0
+        tracker.on_output(b'x' * 500)
+        t[0] = 3.0
+        tracker.on_output(b'y' * 500)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Waiting state timeout (applies to all providers)
+# ---------------------------------------------------------------------------
+
+class TestWaitingStateTimeout:
+    """Test fallback timeout for stuck waiting states."""
+
+    def test_interrupted_times_out_to_idle(self, tmp_path: Path) -> None:
+        """Interrupted state falls back to idle after WAITING_STATE_TIMEOUT."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        tracker._last_input_time = t[0]
+        t[0] = 1.5
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        # Output timestamp is set to 1.5
+        # After WAITING_STATE_TIMEOUT (30s) with no output → idle
+        t[0] = 1.5 + WAITING_STATE_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_interrupted_stays_if_output_arrives(self, tmp_path: Path) -> None:
+        """Interrupted state should NOT time out if output keeps arriving."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        tracker._last_input_time = t[0]
+        t[0] = 1.5
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        # Output arrives within the timeout window
+        t[0] = 20.0
+        tracker.on_output(b'\x1b[Hsome TUI redraw')
+        # Not timed out yet (last output was at t=20)
+        t[0] = 25.0
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_needs_permission_times_out(self, tmp_path: Path) -> None:
+        """needs_permission also falls back to idle after timeout."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Some output at transition
+        tracker.on_output(b'prompt text')
+        # Wait beyond timeout
+        t[0] = 1.0 + WAITING_STATE_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_codex_interrupted_times_out(self, tmp_path: Path) -> None:
+        """Codex interrupted state also times out correctly."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        tracker._last_input_time = t[0]
+        t[0] = 1.5
+        tracker.on_output(b'Conversation interrupted')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        t[0] = 1.5 + WAITING_STATE_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'idle'

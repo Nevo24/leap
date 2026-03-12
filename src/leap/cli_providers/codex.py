@@ -91,6 +91,15 @@ class CodexProvider(CLIProvider):
         # typed directly in the server terminal.
         return True
 
+    @property
+    def silence_timeout(self) -> Optional[float]:
+        # Ratatui outputs every ~100ms during processing (spinner,
+        # thinking counter, response text).  An 8-second silence gap
+        # reliably indicates idle — much faster than the 15s default
+        # which is tuned for Claude Code's longer pauses between tools.
+        # 8s allows for brief LLM thinking pauses without false idle.
+        return 8.0
+
     # -- Menu / option parsing -------------------------------------------
 
     @property
