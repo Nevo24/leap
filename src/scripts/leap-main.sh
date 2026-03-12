@@ -349,6 +349,22 @@ fi
 # Clean up the lock directory on exit (normal exit, SIGTERM, SIGINT).
 trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
 
+# Record tag in history for arrow-up recall
+"$PYTHON_CMD" -c "
+from pathlib import Path
+STORAGE_DIR = Path('$STORAGE_DIR')
+HISTORY_FILE = STORAGE_DIR / 'tag_history'
+tag = '$TAG'
+history = []
+if HISTORY_FILE.exists():
+    history = [l.strip() for l in HISTORY_FILE.read_text().strip().splitlines() if l.strip()]
+history = [t for t in history if t != tag]
+history.append(tag)
+history = history[-50:]
+STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+HISTORY_FILE.write_text('\n'.join(history) + '\n')
+" 2>/dev/null
+
 # Start server
 # Set terminal tab name
 echo -ne "\033]0;lps ${TAG}\007"

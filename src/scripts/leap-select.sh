@@ -59,20 +59,34 @@ if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
     exit 1
 fi
 
-# If no tag provided, prompt for one
+# If no tag provided, prompt for one (with history support)
 if [ -z "$TAG" ]; then
-    echo -n "  Session name: " >&2
-    read -r TAG
-    if [ -z "$TAG" ]; then
-        echo "❌ Error: Session name is required." >&2
+    TAG=$("$PYTHON_CMD" "$SCRIPT_DIR/leap-select-tag.py")
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ] || [ -z "$TAG" ]; then
         exit 1
     fi
-fi
-
-# Validate tag
-if [[ ! "$TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
-    echo "❌ Error: Session name must contain only letters, numbers, hyphens, and underscores" >&2
-    exit 1
+else
+    # Tag provided as argument — validate and record in history
+    if [[ ! "$TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+        echo "❌ Error: Session name must contain only letters, numbers, hyphens, and underscores" >&2
+        exit 1
+    fi
+    # Record in tag history
+    "$PYTHON_CMD" -c "
+from pathlib import Path
+STORAGE_DIR = Path('$STORAGE_DIR')
+HISTORY_FILE = STORAGE_DIR / 'tag_history'
+tag = '$TAG'
+history = []
+if HISTORY_FILE.exists():
+    history = [l.strip() for l in HISTORY_FILE.read_text().strip().splitlines() if l.strip()]
+history = [t for t in history if t != tag]
+history.append(tag)
+history = history[-50:]
+STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+HISTORY_FILE.write_text('\n'.join(history) + '\n')
+" 2>/dev/null
 fi
 
 # Append default per-CLI flags from env vars (LEAP_CLAUDE_FLAGS, LEAP_CODEX_FLAGS)
