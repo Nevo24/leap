@@ -19,6 +19,7 @@ from leap.utils.constants import (
     ensure_storage_dirs, load_settings, save_settings,
 )
 from leap.utils.terminal import set_terminal_title, print_banner
+from leap.utils.ide_detection import detect_ide
 from leap.client.socket_client import SocketClient
 from leap.client.image_handler import (
     check_clipboard_has_image,
@@ -803,7 +804,17 @@ class LeapClient:
             sys.exit(1)
 
         self._print_startup_banner()
-        print("Ready! Type your messages:\n")
+        print("Ready! Type your messages:")
+
+        # Show newline hint for terminals where Shift+Enter doesn't work
+        _SHIFT_ENTER_TERMINALS = {'VS Code', 'iTerm2', 'Warp', 'Kitty', 'Ghostty'}
+        ide = detect_ide()
+        if ide not in _SHIFT_ENTER_TERMINALS:
+            if ide == 'Terminal.app':
+                print("Tip: Press Escape then Enter for newline (Shift+Enter not supported in Terminal.app)")
+            else:
+                print("Tip: Use Alt+Enter for newline (Shift+Enter not supported in this terminal)")
+        print()
 
         # Get initial queue status
         response = self.socket.get_status()
