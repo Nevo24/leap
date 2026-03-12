@@ -7,6 +7,7 @@ Interactive client for sending messages to a Leap server.
 import atexit
 import fcntl
 import hashlib
+import json
 import os
 import signal
 import sys
@@ -14,6 +15,7 @@ import threading
 import time
 from typing import Optional
 
+from leap.cli_providers.registry import get_provider
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR, SLACK_BOT_LOCK,
     ensure_storage_dirs, load_settings, save_settings,
@@ -528,10 +530,21 @@ class LeapClient:
         print("=" * 80)
         print()
 
+    def _read_cli_name(self) -> str:
+        """Read CLI display name from server metadata file."""
+        try:
+            meta_file = SOCKET_DIR / f"{self.tag}.meta"
+            with open(meta_file, 'r') as f:
+                data = json.load(f)
+            provider_name = data.get('cli_provider', 'claude')
+            return get_provider(provider_name).display_name
+        except Exception:
+            return ''
+
     def _print_startup_banner(self) -> None:
         """Print client startup banner."""
         set_terminal_title(f"lpc {self.tag}")
-        print_banner('client', self.tag)
+        print_banner('client', self.tag, cli_name=self._read_cli_name())
 
         print(f"  Sending messages to Leap PTY server '{self.tag}'")
         print("  Watch responses in server tab")

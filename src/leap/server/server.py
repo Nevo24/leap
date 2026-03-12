@@ -674,7 +674,7 @@ class LeapServer:
 
     def _print_startup_banner(self) -> None:
         """Print the startup banner with help information."""
-        print_banner('server', self.tag)
+        print_banner('server', self.tag, cli_name=self._provider.display_name)
         print("  All responses will appear HERE in this window.")
         print("")
         print("  To send messages from another tab, run:")

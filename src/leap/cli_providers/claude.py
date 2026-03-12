@@ -33,7 +33,7 @@ class ClaudeProvider(CLIProvider):
 
     @property
     def display_name(self) -> str:
-        return 'Claude'
+        return 'Claude Code'
 
     # -- State detection patterns ----------------------------------------
 

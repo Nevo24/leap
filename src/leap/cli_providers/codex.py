@@ -49,7 +49,7 @@ class CodexProvider(CLIProvider):
 
     @property
     def display_name(self) -> str:
-        return 'Codex'
+        return 'OpenAI Codex'
 
     # -- State detection patterns ----------------------------------------
 

@@ -20,21 +20,23 @@ def set_terminal_title(title: str) -> None:
     sys.stdout.flush()
 
 
-def print_banner(session_type: str, tag: str) -> None:
+def print_banner(session_type: str, tag: str, cli_name: str = '') -> None:
     """
     Print the Leap ASCII banner.
 
     Args:
         session_type: Either 'server' or 'client'.
         tag: The session tag name.
+        cli_name: CLI display name (e.g. 'Claude Code', 'OpenAI Codex').
     """
-    banner = r"""
+    subtitle = f" - {cli_name}" if cli_name else ""
+    banner = rf"""
   _
  | |    ___  __ _ _ __
  | |   / _ \/ _` | '_ \
  | |__|  __/ (_| | |_) |
  |_____\___|\__,_| .__/
-                  |_|
+                  |_|    {subtitle}
 """
     print(banner)
     print("=" * 80)
