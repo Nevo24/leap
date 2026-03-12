@@ -73,10 +73,12 @@ class SocketHandler:
             conn: Client socket connection.
         """
         response: dict[str, Any] = {'status': 'error', 'message': 'Unknown error'}
+        send_response = True
         try:
             conn.settimeout(5.0)
             chunks = []
             total_size = 0
+            parsed_msg: Optional[dict[str, Any]] = None
             while True:
                 chunk = conn.recv(4096)
                 if not chunk:
@@ -89,7 +91,7 @@ class SocketHandler:
                 chunks.append(chunk)
                 # Try to parse — if valid JSON, we have the full message
                 try:
-                    json.loads(b''.join(chunks))
+                    parsed_msg = json.loads(b''.join(chunks))
                     break
                 except json.JSONDecodeError:
                     continue
@@ -101,15 +103,15 @@ class SocketHandler:
                         pass
                 except (socket.timeout, OSError):
                     pass
+            elif parsed_msg is not None:
+                response = self.message_handler(parsed_msg)
+            elif chunks:
+                # Non-empty data that isn't valid JSON — re-raise so the
+                # outer JSONDecodeError handler sends a proper error.
+                json.loads(b''.join(chunks))
             else:
-                data = b''.join(chunks).decode('utf-8')
-
-                # Check if data is empty (client disconnected)
-                if not data or not data.strip():
-                    return
-
-                msg = json.loads(data)
-                response = self.message_handler(msg)
+                # No data at all — client disconnected before sending
+                send_response = False
 
         except json.JSONDecodeError as e:
             response = {'status': 'error', 'message': 'Invalid JSON'}
@@ -119,7 +121,8 @@ class SocketHandler:
             print(f"Error handling client: {e}", file=sys.stderr, flush=True)
 
         try:
-            conn.sendall(json.dumps(response).encode('utf-8'))
+            if send_response:
+                conn.sendall(json.dumps(response).encode('utf-8'))
         except BrokenPipeError:
             # Client disconnected - normal, suppress error
             pass
