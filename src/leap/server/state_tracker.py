@@ -314,6 +314,10 @@ class CLIStateTracker:
         terminal event (focus report, cursor position) into one chunk.
         Without this, the interrupt-detection time window never opens.
 
+        For Ratatui-based CLIs (enter_triggers_running=True), pressing
+        Enter while idle transitions directly to running, since
+        output-based detection is unreliable for full-screen TUIs.
+
         Args:
             data: Raw input bytes from the keyboard.
         """
@@ -335,6 +339,27 @@ class CLIStateTracker:
         self._seen_user_input = True
         self._last_input_time = self._clock()
         self._idle_output_acc = 0
+
+        # For Ratatui-based CLIs: Enter while idle → running.
+        # Output-based detection is disabled because full-screen TUI
+        # redraws are indistinguishable from real processing output.
+        if (
+            data == b'\r'
+            and self._state == CLIState.IDLE
+            and self._provider.enter_triggers_running
+        ):
+            _log.debug('ON_INPUT Enter in idle → running (Ratatui)')
+            self._running_since = self._clock()
+            with self._lock:
+                self._state = CLIState.RUNNING
+                self._waiting_since = None
+            with self._buf_lock:
+                self._output_buf.clear()
+                self._last_prompt_buf = b''
+            try:
+                self._signal_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def on_send(self) -> None:
         """Called when a message is sent to the CLI.
@@ -444,6 +469,12 @@ class CLIStateTracker:
                     self._waiting_since = self._clock()
                 return
         if not self._seen_user_input:
+            return
+        # For Ratatui-based CLIs, skip output-based idle→running.
+        # Full-screen TUI redraws produce hundreds of bytes after ANSI
+        # stripping (box-drawing, spinners, status bar) that are
+        # indistinguishable from real processing output.
+        if not self._provider.output_triggers_running:
             return
         if self._last_input_time < self._idle_since:
             return

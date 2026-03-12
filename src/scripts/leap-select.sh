@@ -83,5 +83,5 @@ DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR:-}"
 CLI_FLAGS=($DEFAULT_FLAGS)
 
 # Launch the selected CLI with tag, default flags, user flags, and any remaining args
-export LEAP_CLI="$SELECTED"
-exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${CLI_FLAGS[@]}" "${FLAGS[@]}" "${ARGS[@]}"
+# --cli tells leap-main.sh the user explicitly chose this CLI (via selector).
+exec "$SCRIPT_DIR/leap-main.sh" "$TAG" --cli "$SELECTED" "${CLI_FLAGS[@]}" "${FLAGS[@]}" "${ARGS[@]}"

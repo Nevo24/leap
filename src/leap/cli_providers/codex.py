@@ -62,11 +62,10 @@ class CodexProvider(CLIProvider):
 
     @property
     def dialog_patterns(self) -> list[bytes]:
-        # Codex uses Ratatui — approval prompts appear in the bottom pane.
-        # These patterns detect when Codex is waiting for user approval.
-        # The patterns are compact (ANSI-stripped, spaces removed).
-        # TODO: Verify exact patterns from Codex TUI output.
-        return [b'Approve', b'(y/n)']
+        # Codex uses Ratatui — no reliable PTY patterns for dialog
+        # detection yet.  Return empty to disable PTY-based dialog
+        # detection (rely on hooks when available).
+        return []
 
     @property
     def valid_signal_states(self) -> frozenset[str]:
@@ -75,6 +74,22 @@ class CodexProvider(CLIProvider):
         # (not from the signal file).  We still accept them in case
         # future Codex versions add notification hooks.
         return SIGNAL_STATES
+
+    @property
+    def output_triggers_running(self) -> bool:
+        # Ratatui redraws the full screen on every keystroke, producing
+        # hundreds of bytes of stripped output (box-drawing, spinners,
+        # status bar).  This is indistinguishable from actual CLI
+        # processing output, so disable output-based idle→running.
+        return False
+
+    @property
+    def enter_triggers_running(self) -> bool:
+        # Since output_triggers_running is False, detect submit via
+        # Enter key in the server terminal.  This is the primary way
+        # to detect that Codex started processing a user message
+        # typed directly in the server terminal.
+        return True
 
     # -- Menu / option parsing -------------------------------------------
 
@@ -124,10 +139,16 @@ class CodexProvider(CLIProvider):
         Codex supports SessionStart and Stop events.  We configure a Stop
         hook that writes the idle state to the signal file.
 
+        Also ensures the hooks feature flag is enabled in config.toml —
+        without this, Codex ignores hooks.json entirely.
+
         The hook receives a JSON payload on stdin with:
         - session_id, transcript_path, cwd, hook_event_name, model,
           permission_mode, stop_hook_active, last_assistant_message
         """
+        # Ensure hooks feature flag is enabled
+        self._ensure_hooks_feature_flag()
+
         hooks_data: dict[str, Any] = {}
         if CODEX_HOOKS_FILE.exists():
             try:
@@ -163,6 +184,19 @@ class CodexProvider(CLIProvider):
         with open(CODEX_HOOKS_FILE, "w") as f:
             json.dump(hooks_data, f, indent=2)
             f.write("\n")
+
+    @staticmethod
+    def _ensure_hooks_feature_flag() -> None:
+        """Ensure features.codex_hooks = true in ~/.codex/config.toml."""
+        config_file = CODEX_CONFIG_DIR / "config.toml"
+        CODEX_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        config_text = ''
+        if config_file.exists():
+            config_text = config_file.read_text()
+        if 'codex_hooks' in config_text:
+            return
+        with open(config_file, 'a') as f:
+            f.write('\n[features]\ncodex_hooks = true\nsuppress_unstable_features_warning = true\n')
 
     # -- CLI-specific input behaviors ------------------------------------
 

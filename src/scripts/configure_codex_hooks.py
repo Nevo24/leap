@@ -16,8 +16,15 @@ import os
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
 
-CODEX_HOOKS_FILE = Path.home() / ".codex" / "hooks.json"
+
+CODEX_CONFIG_DIR = Path.home() / ".codex"
+CODEX_HOOKS_FILE = CODEX_CONFIG_DIR / "hooks.json"
+CODEX_CONFIG_FILE = CODEX_CONFIG_DIR / "config.toml"
 HOOK_MARKER = "leap-hook.sh"
 _OLD_HOOK_MARKER = "claudeq-hook.sh"
 
@@ -70,8 +77,32 @@ def _upsert_entries(hooks_list: list, new_entries: list) -> list:
     return cleaned
 
 
+def _ensure_hooks_feature_flag() -> None:
+    """Ensure features.codex_hooks = true in ~/.codex/config.toml.
+
+    Codex hooks are gated behind a feature flag.  Without this,
+    the hooks.json file is ignored and hooks never fire.
+    """
+    CODEX_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config_text = ''
+    if CODEX_CONFIG_FILE.exists():
+        config_text = CODEX_CONFIG_FILE.read_text()
+
+    # Check if the feature flag is already set
+    if 'codex_hooks' in config_text:
+        return
+
+    # Append the feature flag
+    addition = '\n[features]\ncodex_hooks = true\nsuppress_unstable_features_warning = true\n'
+    with open(CODEX_CONFIG_FILE, 'a') as f:
+        f.write(addition)
+
+
 def configure_hooks(hook_path: str) -> None:
-    """Merge Leap hook entries into Codex hooks."""
+    """Merge Leap hook entries into Codex hooks and enable feature flag."""
+    # Enable hooks feature flag in config.toml
+    _ensure_hooks_feature_flag()
+
     hooks = _load_hooks()
 
     # Stop hook → writes "idle" state
@@ -96,6 +127,7 @@ def main() -> None:
 
     configure_hooks(hook_path)
     print(f"  Configured Codex hooks -> {CODEX_HOOKS_FILE}")
+    print(f"  Ensured hooks feature flag in {CODEX_CONFIG_FILE}")
 
 
 if __name__ == "__main__":

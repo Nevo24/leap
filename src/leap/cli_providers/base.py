@@ -64,6 +64,27 @@ class CLIProvider(ABC):
         """States that can appear in the hook signal file."""
         return SIGNAL_STATES
 
+    @property
+    def output_triggers_running(self) -> bool:
+        """Whether PTY output accumulation triggers idle→running.
+
+        For streaming TUIs (Ink), output after user input reliably
+        indicates the CLI is processing.  For full-screen TUIs
+        (Ratatui), screen redraws are indistinguishable from processing
+        output, so this should return False.
+        """
+        return True
+
+    @property
+    def enter_triggers_running(self) -> bool:
+        """Whether pressing Enter in idle state transitions to running.
+
+        For full-screen TUIs (Ratatui) where output-based detection is
+        disabled, Enter in the server terminal means the user submitted
+        a message.  Returns False by default (Claude uses hooks instead).
+        """
+        return False
+
     # -- Menu / option parsing -------------------------------------------
 
     @property
