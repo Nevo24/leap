@@ -291,10 +291,11 @@ update:
 		echo "  Monitor not installed. To install it, run: make install-monitor"; \
 	fi
 	@echo ""
-	@echo "$(PROMPT_PREFIX) Updating IDE configurations..."
+	@echo "$(PROMPT_PREFIX) Updating IDE/terminal configurations..."
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .configure-jetbrains
-	@echo "$(GREEN)✓ IDE configurations updated$(NC)"
+	@$(MAKE) .configure-iterm2
+	@echo "$(GREEN)✓ IDE/terminal configurations updated$(NC)"
 	@$(MAKE) .configure-claude-hooks
 	@$(MAKE) .configure-codex-hooks
 	@echo ""
@@ -365,6 +366,7 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/leap-monitor.py
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .configure-jetbrains
+	@$(MAKE) .configure-iterm2
 	@$(MAKE) .detect-shell
 
 .PHONY: .configure-vscode
@@ -573,6 +575,13 @@ configure-shell:
 				fi; \
 			fi; \
 		done; \
+	fi
+
+.PHONY: .configure-iterm2
+.configure-iterm2:
+	@if [ -d "/Applications/iTerm.app" ] || [ -d "$$HOME/Applications/iTerm.app" ]; then \
+		echo "$(PROMPT_PREFIX) Configuring iTerm2..."; \
+		python3 "$(SCRIPTS_DIR)/configure_iterm2_csi_u.py"; \
 	fi
 
 .PHONY: .configure-claude-hooks

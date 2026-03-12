@@ -130,7 +130,9 @@ tests/
 
 assets/
 ├── leap-icon.png             # Source icon (1024x1024)
-└── leap-icon.icns            # macOS icon bundle
+├── leap-icon.icns            # macOS icon bundle
+├── leap-simple-icon.png      # Alternate flat icon
+└── leap-exclusive-icon.png   # Alternate exclusive icon
 ```
 
 ## Key Classes
@@ -326,7 +328,10 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 **Automatically configured during `make install`** — Terminal Engine set to Classic, "Show application title" enabled. Restart IDEs after installation.
 
 ### VS Code
-**Automatically configured during `make install`** — Terminal selector extension auto-installed, tabs show numbered labels.
+**Automatically configured during `make install`** — Terminal selector extension auto-installed, tabs show numbered labels. Extension also configures Shift+Enter to send a distinct CSI u sequence so the client can distinguish it from plain Enter.
+
+### iTerm2
+**Automatically configured during `make install`** — CSI u (Kitty keyboard protocol) enabled in all profiles so Shift+Enter sends a distinct sequence. Restart iTerm2 after installation for the change to take effect.
 
 ## Troubleshooting
 
