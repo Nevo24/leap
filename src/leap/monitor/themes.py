@@ -55,7 +55,7 @@ class Theme:
     # Status indicator colors (QColor args as hex)
     status_running: str = '#4caf50'
     status_permission: str = '#ff9800'
-    status_question: str = '#64b5f6'
+    status_input: str = '#64b5f6'
     status_interrupted: str = '#ffd54f'
     status_idle: str = '#ffffff'  # idle / default text
 
@@ -117,7 +117,7 @@ _OCEAN = Theme(
     header_bg='transparent',
     status_running='#50fa7b',
     status_permission='#ffb86c',
-    status_question='#8be9fd',
+    status_input='#8be9fd',
     status_interrupted='#f1fa8c',
     status_idle='#d4dce8',
 )
@@ -148,7 +148,7 @@ _MONOKAI = Theme(
     header_bg='transparent',
     status_running='#a6e22e',
     status_permission='#fd971f',
-    status_question='#66d9ef',
+    status_input='#66d9ef',
     status_interrupted='#e6db74',
     status_idle='#f8f8f2',
 )
@@ -179,7 +179,7 @@ _NORD = Theme(
     header_bg='transparent',
     status_running='#a3be8c',
     status_permission='#d08770',
-    status_question='#88c0d0',
+    status_input='#88c0d0',
     status_interrupted='#ebcb8b',
     status_idle='#d8dee9',
 )
@@ -210,7 +210,7 @@ _SOLARIZED_DARK = Theme(
     header_bg='transparent',
     status_running='#859900',
     status_permission='#cb4b16',
-    status_question='#268bd2',
+    status_input='#268bd2',
     status_interrupted='#b58900',
     status_idle='#839496',
 )
@@ -241,7 +241,7 @@ _DAWN = Theme(
     header_bg='transparent',
     status_running='#2e7d32',
     status_permission='#e65100',
-    status_question='#1565c0',
+    status_input='#1565c0',
     status_interrupted='#f57f17',
     status_idle='#1e1e1e',
 )

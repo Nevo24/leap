@@ -67,6 +67,16 @@ POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
 OUTPUT_SILENCE_TIMEOUT: Final[float] = 15.0  # Fallback: assume idle after N seconds of PTY silence
 
+# State tracker timing constants
+INTERRUPT_DETECT_WINDOW: Final[float] = 10.0  # Input→interrupted detection window
+STATE_PROTECTION_WINDOW: Final[float] = 5.0  # Protect waiting states from premature idle signal
+IDLE_OUTPUT_THRESHOLD: Final[int] = 200  # Bytes accumulated to trigger idle→running
+INPUT_COOLDOWN: Final[float] = 0.5  # Ignore output echo after user input
+ESCAPE_RACE_WINDOW: Final[float] = 2.0  # Running→idle signal suppression after user input
+ESCAPE_CORRECTION_WINDOW: Final[float] = 3.0  # needs_input→interrupted correction
+RESUME_GRACE_PERIOD: Final[float] = 2.0  # Wait before detecting resume from waiting state
+OUTPUT_GAP_RESET: Final[float] = 2.0  # Output gap that resets idle accumulator
+
 # Queue limits
 MAX_RECENTLY_SENT: Final[int] = 20  # Maximum messages to track in recently_sent
 

@@ -132,10 +132,10 @@ class TestPTYSignalFile:
         pty.write_signal('needs_permission')
         assert pty.get_state() == 'needs_permission'
 
-    def test_signal_has_question(self, pty: PTYFixture) -> None:
+    def test_signal_needs_input(self, pty: PTYFixture) -> None:
         pty.tracker.on_send()
-        pty.write_signal('has_question')
-        assert pty.get_state() == 'has_question'
+        pty.write_signal('needs_input')
+        assert pty.get_state() == 'needs_input'
 
 
 class TestPTYOutputAccumulation:
@@ -304,7 +304,7 @@ class TestPTYInterrupted:
 
 
 class TestPTYResumeDetection:
-    """Resume detection: has_question/needs_permission → running."""
+    """Resume detection: needs_permission/needs_input → running."""
 
     def test_tui_rendering_after_interrupted_stays_interrupted(
         self, pty: PTYFixture,

@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
+from leap.cli_providers.states import PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
     POLL_INTERVAL, TITLE_RESET_INTERVAL,
@@ -253,10 +254,10 @@ class LeapServer:
         elif msg_type == 'select_option':
             # Select an option in a permission/question dialog.
             current = self.state.current_state
-            if current not in ('needs_permission', 'has_question'):
+            if current not in PROMPT_STATES:
                 return {
                     'status': 'error',
-                    'error': f'not in permission/question state (state={current})',
+                    'error': f'not in permission/input state (state={current})',
                 }
             try:
                 option_num = int(message)
@@ -286,10 +287,10 @@ class LeapServer:
         elif msg_type == 'custom_answer':
             # Send free-form text to a question dialog.
             current = self.state.current_state
-            if current not in ('needs_permission', 'has_question'):
+            if current not in PROMPT_STATES:
                 return {
                     'status': 'error',
-                    'error': f'not in permission/question state (state={current})',
+                    'error': f'not in permission/input state (state={current})',
                 }
             prompt = self.state.get_prompt_output()
             options = _extract_menu_options(prompt, self._provider)
@@ -547,9 +548,9 @@ class LeapServer:
                         and current_state == 'idle'
                         and self.state.auto_send_mode in ('pause', 'always')
                     )
-                    if current_state in ('needs_permission', 'has_question', 'interrupted'):
+                    if current_state in WAITING_STATES:
                         # Delay writing: let PTY output accumulate so the
-                        # full permission dialog / question is captured.
+                        # full permission dialog / input prompt is captured.
                         prompt_write_due = time.time() + 0.2
                         prompt_prev_state = prev_state
                         prompt_queue_has_next = queue_has_next
@@ -563,7 +564,7 @@ class LeapServer:
                 if prompt_write_due and time.time() >= prompt_write_due:
                     try:
                         cs = self.state.current_state
-                        if cs in ('needs_permission', 'has_question', 'interrupted'):
+                        if cs in WAITING_STATES:
                             prompt_output = self.state.get_prompt_output()
                             self.output_capture.on_state_change(
                                 cs, prompt_prev_state,

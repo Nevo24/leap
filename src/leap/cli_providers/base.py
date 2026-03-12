@@ -15,6 +15,8 @@ from typing import Any, Optional
 
 import pexpect
 
+from leap.cli_providers.states import SIGNAL_ALIASES, SIGNAL_STATES
+
 
 class CLIProvider(ABC):
     """Abstract interface for a CLI backend."""
@@ -60,7 +62,7 @@ class CLIProvider(ABC):
     @property
     def valid_signal_states(self) -> frozenset[str]:
         """States that can appear in the hook signal file."""
-        return frozenset({'idle', 'needs_permission', 'has_question'})
+        return SIGNAL_STATES
 
     # -- Menu / option parsing -------------------------------------------
 
@@ -268,6 +270,8 @@ class CLIProvider(ABC):
         try:
             data = json.loads(raw)
             state = data.get('state', '')
+            # Backward compat: old hooks may write 'has_question'
+            state = SIGNAL_ALIASES.get(state, state)
             if state in self.valid_signal_states:
                 return state
         except (json.JSONDecodeError, AttributeError):

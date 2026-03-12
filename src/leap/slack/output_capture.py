@@ -65,7 +65,7 @@ class OutputCapture:
             return
         if new_state == prev_state:
             return
-        if new_state not in ('idle', 'needs_permission', 'has_question', 'interrupted'):
+        if new_state not in ('idle', 'needs_permission', 'needs_input', 'interrupted'):
             return
 
         # Read the response text and notification message from the signal file
@@ -110,7 +110,7 @@ class OutputCapture:
         """
         if not self._enabled:
             return
-        if current_state not in ('idle', 'needs_permission', 'has_question', 'interrupted'):
+        if current_state not in ('idle', 'needs_permission', 'needs_input', 'interrupted'):
             return
 
         signal_data = self._read_signal_data()

@@ -128,7 +128,7 @@ class ClaudeProvider(CLIProvider):
             hooks["Notification"] = []
         hooks["Notification"] = upsert(hooks["Notification"], [
             make_entry("needs_permission", matcher="permission_prompt"),
-            make_entry("has_question", matcher="elicitation_dialog"),
+            make_entry("needs_input", matcher="elicitation_dialog"),
         ])
 
         settings_path.parent.mkdir(parents=True, exist_ok=True)

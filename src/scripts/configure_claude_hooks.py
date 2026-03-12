@@ -10,7 +10,7 @@ Hook entries use the nested format required by Claude Code:
 Three entries are created:
     Stop           -> leap-hook.sh idle
     Notification   -> leap-hook.sh needs_permission  (matcher: permission_prompt)
-    Notification   -> leap-hook.sh has_question       (matcher: elicitation_dialog)
+    Notification   -> leap-hook.sh needs_input         (matcher: elicitation_dialog)
 """
 
 import json
@@ -96,7 +96,7 @@ def configure_hooks(hook_path: str) -> None:
         hooks["Notification"] = []
     hooks["Notification"] = _upsert_entries(hooks["Notification"], [
         _make_entry(hook_path, "needs_permission", matcher="permission_prompt"),
-        _make_entry(hook_path, "has_question", matcher="elicitation_dialog"),
+        _make_entry(hook_path, "needs_input", matcher="elicitation_dialog"),
     ])
 
     _save_settings(settings)

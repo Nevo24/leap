@@ -2,7 +2,7 @@
 CLI state tracking for Leap server.
 
 Encapsulates the state machine that detects the CLI's current state
-(idle, running, needs_permission, has_question, interrupted) using
+(idle, running, needs_permission, needs_input, interrupted) using
 hook-based signal files with a PTY silence fallback.
 
 Supports multiple CLI backends (Claude, Codex, etc.) via the
@@ -21,7 +21,19 @@ import pyte
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
-from leap.utils.constants import OUTPUT_SILENCE_TIMEOUT, STORAGE_DIR
+from leap.cli_providers.states import CLIState, PROMPT_STATES, WAITING_STATES
+from leap.utils.constants import (
+    ESCAPE_CORRECTION_WINDOW,
+    ESCAPE_RACE_WINDOW,
+    IDLE_OUTPUT_THRESHOLD,
+    INPUT_COOLDOWN,
+    INTERRUPT_DETECT_WINDOW,
+    OUTPUT_GAP_RESET,
+    OUTPUT_SILENCE_TIMEOUT,
+    RESUME_GRACE_PERIOD,
+    STATE_PROTECTION_WINDOW,
+    STORAGE_DIR,
+)
 
 _log = logging.getLogger('leap.state')
 
@@ -78,7 +90,7 @@ class CLIStateTracker:
         self._clock = clock or time.time
         self._provider = provider or get_provider()
 
-        self._state: str = 'idle'
+        self._state: str = CLIState.IDLE
         self._lock = threading.Lock()
         self._buf_lock = threading.Lock()
         self._waiting_since: Optional[float] = None
@@ -104,7 +116,7 @@ class CLIStateTracker:
         # of 'running' because there's no pending request to process.
         self._trust_dialog_phase: bool = False
         # Snapshot of _output_buf captured just before clearing on
-        # needs_permission / has_question transitions.  Used by Slack
+        # needs_permission / needs_input transitions.  Used by Slack
         # integration to show the actual prompt text + numbered options.
         self._last_prompt_buf: bytes = b''
         # Timestamp when on_send() set state to running.  Used to detect
@@ -113,7 +125,7 @@ class CLIStateTracker:
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
-        # idle, a leftover needs_permission/has_question would cause a false
+        # idle, a leftover needs_permission/needs_input would cause a false
         # transition on the first poll.
         try:
             self._signal_file.unlink(missing_ok=True)
@@ -141,34 +153,34 @@ class CLIStateTracker:
 
         Returns:
             One of: 'idle', 'running', 'needs_permission',
-            'has_question', 'interrupted'.
+            'needs_input', 'interrupted'.
         """
         if not pty_alive:
             with self._lock:
-                self._state = 'idle'
+                self._state = CLIState.IDLE
                 self._waiting_since = None
-            return 'idle'
+            return CLIState.IDLE
 
         with self._lock:
             current = self._state
 
         # Check signal file for hook-written state transitions.
         # Always read regardless of current state — a Notification hook
-        # can write needs_permission/has_question while idle.
+        # can write needs_permission/needs_input while idle.
         new_state = self._read_signal_state()
         if new_state and new_state != current:
             # Stop hook fires on Escape too, writing "idle",
             # but the CLI is actually prompting "What should
-            # Claude do instead?" — keep has_question/interrupted.
+            # Claude do instead?" — keep needs_input/interrupted.
             # Also guard running→idle when user pressed a key *during*
             # the running state (interrupt attempt): the Stop hook fires
             # before the PTY outputs the interrupted pattern, so delay
             # accepting idle to let on_output() detect interruption first.
             if (
-                new_state == 'idle'
-                and current == 'running'
+                new_state == CLIState.IDLE
+                and current == CLIState.RUNNING
                 and self._last_input_time > self._running_since
-                and (self._clock() - self._last_input_time) < 2.0
+                and (self._clock() - self._last_input_time) < ESCAPE_RACE_WINDOW
             ):
                 _log.debug(
                     'GET_STATE signal=idle but protecting running '
@@ -176,10 +188,10 @@ class CLIStateTracker:
                     self._clock() - self._last_input_time,
                 )
             elif (
-                new_state == 'idle'
-                and current in ('has_question', 'interrupted')
+                new_state == CLIState.IDLE
+                and current in (CLIState.NEEDS_INPUT, CLIState.INTERRUPTED)
                 and self._waiting_since is not None
-                and (self._clock() - self._waiting_since) < 5.0
+                and (self._clock() - self._waiting_since) < STATE_PROTECTION_WINDOW
             ):
                 _log.debug(
                     'GET_STATE signal=idle but protecting %s '
@@ -187,15 +199,15 @@ class CLIStateTracker:
                     current, self._clock() - self._waiting_since,
                 )
             # Notification hook fires for the interrupt dialog,
-            # writing has_question — protect interrupted from this.
+            # writing needs_input — protect interrupted from this.
             elif (
-                new_state == 'has_question'
-                and current == 'interrupted'
+                new_state == CLIState.NEEDS_INPUT
+                and current == CLIState.INTERRUPTED
                 and self._waiting_since is not None
-                and (self._clock() - self._waiting_since) < 5.0
+                and (self._clock() - self._waiting_since) < STATE_PROTECTION_WINDOW
             ):
                 _log.debug(
-                    'GET_STATE signal=has_question but protecting '
+                    'GET_STATE signal=needs_input but protecting '
                     'interrupted (%.1fs since wait)',
                     self._clock() - self._waiting_since,
                 )
@@ -203,8 +215,8 @@ class CLIStateTracker:
                 # Check if user answered the prompt (typed after entering
                 # the waiting state).
                 user_answered = (
-                    current in ('interrupted', 'has_question')
-                    and new_state in ('idle', 'has_question')
+                    current in (CLIState.INTERRUPTED, CLIState.NEEDS_INPUT)
+                    and new_state in (CLIState.IDLE, CLIState.NEEDS_INPUT)
                     and self._waiting_since is not None
                     and self._last_input_time > self._waiting_since
                 )
@@ -217,7 +229,7 @@ class CLIStateTracker:
                 )
                 with self._lock:
                     self._state = new_state
-                    if new_state in ('needs_permission', 'has_question'):
+                    if new_state in PROMPT_STATES:
                         if user_answered:
                             pass  # preserve existing _waiting_since
                         else:
@@ -226,12 +238,12 @@ class CLIStateTracker:
                         self._waiting_since = None
                 self._idle_output_acc = 0
                 with self._buf_lock:
-                    if new_state in ('needs_permission', 'has_question'):
+                    if new_state in PROMPT_STATES:
                         self._last_prompt_buf = bytes(self._output_buf)
                     else:
                         self._last_prompt_buf = b''
                     self._output_buf.clear()
-                if new_state == 'idle':
+                if new_state == CLIState.IDLE:
                     if user_answered and old_waiting_since is not None:
                         self._idle_since = old_waiting_since
                     else:
@@ -241,18 +253,18 @@ class CLIStateTracker:
 
         # Fallback: PTY silence timeout (handles interruptions,
         # missing hooks, or any case where the hook doesn't fire)
-        if current == 'running' and self._last_output_time > 0:
+        if current == CLIState.RUNNING and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
             if silence > OUTPUT_SILENCE_TIMEOUT:
                 _log.debug(
                     'GET_STATE silence timeout %.1fs → idle', silence,
                 )
                 with self._lock:
-                    self._state = 'idle'
+                    self._state = CLIState.IDLE
                     self._waiting_since = None
                 self._idle_output_acc = 0
                 self._idle_since = self._clock()
-                return 'idle'
+                return CLIState.IDLE
 
         return current
 
@@ -281,12 +293,12 @@ class CLIStateTracker:
         Returns:
             True if the auto-sender should send the next queued message.
         """
-        if state == 'interrupted':
+        if state == CLIState.INTERRUPTED:
             return False
         if self._auto_send_mode == 'always':
-            return state != 'running'
+            return state != CLIState.RUNNING
         # 'pause' mode (default): only send when idle
-        return state == 'idle'
+        return state == CLIState.IDLE
 
     def on_input(self, data: bytes) -> None:
         """Called when the user types in the server terminal.
@@ -306,7 +318,7 @@ class CLIStateTracker:
             data: Raw input bytes from the keyboard.
         """
         if len(data) > 1 and data[0] == 0x1b:
-            if self._state == 'running':
+            if self._state == CLIState.RUNNING:
                 _log.debug(
                     'ON_INPUT filtered escape seq len=%d '
                     '(updating _last_input_time for interrupt detection)',
@@ -333,7 +345,7 @@ class CLIStateTracker:
         self._seen_user_input = True
         self._running_since = self._clock()
         with self._lock:
-            self._state = 'running'
+            self._state = CLIState.RUNNING
             self._waiting_since = None
         with self._buf_lock:
             self._output_buf.clear()
@@ -348,10 +360,8 @@ class CLIStateTracker:
     def on_output(self, data: bytes) -> None:
         """Called when PTY output is received.
 
-        Updates the last-output timestamp, detects state transitions:
-        - idle → running: sustained printable output without recent input
-        - running → interrupted: interrupted pattern detected
-        - needs_permission/has_question/interrupted → running: printable output resume
+        Updates the last-output timestamp and dispatches to a
+        state-specific handler for transition detection.
 
         Args:
             data: Raw output bytes from the PTY.
@@ -360,225 +370,235 @@ class CLIStateTracker:
         prev_output_time = self._last_output_time
         self._last_output_time = now
 
+        if self._state == CLIState.IDLE:
+            self._handle_idle_output(data, now, prev_output_time)
+        elif self._state == CLIState.RUNNING:
+            self._handle_running_output(data, now)
+        elif self._state in WAITING_STATES:
+            self._handle_waiting_output(data, now)
+
+    # -- on_output sub-handlers -----------------------------------------------
+
+    def _handle_idle_output(
+        self, data: bytes, now: float, prev_output_time: float,
+    ) -> None:
+        """Handle output while idle: startup dialogs, escape race, idle→running."""
         interrupted_pattern = self._provider.interrupted_pattern
         trust_pattern = self._provider.trust_dialog_pattern
         dialog_patterns = self._provider.dialog_patterns
 
-        if self._state == 'idle':
-            self._output_buf.extend(data)
-            if len(self._output_buf) > 16384:
-                self._output_buf = self._output_buf[-16384:]
+        self._output_buf.extend(data)
+        if len(self._output_buf) > 16384:
+            self._output_buf = self._output_buf[-16384:]
 
-            # Detect startup prompts from PTY output.
-            # Before any user input, check for:
-            # 1. Trust dialog (provider-specific pattern)
-            # 2. Any permission/question dialog (standard dialog_patterns)
-            if not self._seen_user_input:
-                compact = self._ANSI_RE.sub(
-                    b'', bytes(self._output_buf),
-                ).replace(b' ', b'')
+        # Detect startup prompts from PTY output.
+        if not self._seen_user_input:
+            compact = self._ANSI_RE.sub(
+                b'', bytes(self._output_buf),
+            ).replace(b' ', b'')
+            _log.debug(
+                'ON_OUTPUT idle (startup) len=%d buf_len=%d '
+                'compact=%r',
+                len(data), len(self._output_buf),
+                compact[-120:],
+            )
+            is_trust = (
+                trust_pattern is not None and trust_pattern in compact
+            )
+            is_dialog = (
+                bool(dialog_patterns)
+                and all(p in compact for p in dialog_patterns)
+            )
+            if is_trust or is_dialog:
                 _log.debug(
-                    'ON_OUTPUT idle (startup) len=%d buf_len=%d '
-                    'compact=%r',
-                    len(data), len(self._output_buf),
-                    compact[-120:],
+                    'ON_OUTPUT idle→needs_permission '
+                    '(startup dialog: trust=%s dialog=%s)',
+                    is_trust, is_dialog,
                 )
-                is_trust = (
-                    trust_pattern is not None and trust_pattern in compact
-                )
-                is_dialog = (
-                    bool(dialog_patterns)
-                    and all(p in compact for p in dialog_patterns)
-                )
-                if is_trust or is_dialog:
-                    _log.debug(
-                        'ON_OUTPUT idle→needs_permission '
-                        '(startup dialog: trust=%s dialog=%s)',
-                        is_trust, is_dialog,
-                    )
-                    self._last_prompt_buf = bytes(self._output_buf)
-                    self._output_buf.clear()
-                    self._idle_output_acc = 0
-                    if is_trust:
-                        self._trust_dialog_phase = True
-                    with self._lock:
-                        self._state = 'needs_permission'
-                        self._waiting_since = self._clock()
-                    return
-
-            # Detect interruption — the Stop hook may race ahead
-            # and write "idle" before PTY output with the interrupted
-            # pattern arrives.
-            if now - self._last_input_time < 10.0:
-                stripped_chunk = self._ANSI_RE.sub(b'', data)
-                has_interrupted = interrupted_pattern in stripped_chunk
-                if has_interrupted or interrupted_pattern in self._ANSI_RE.sub(
-                    b'', bytes(self._output_buf),
-                ):
-                    _log.debug(
-                        'ON_OUTPUT idle→interrupted (Escape race detected)',
-                    )
-                    self._output_buf.clear()
-                    self._idle_output_acc = 0
-                    with self._lock:
-                        self._state = 'interrupted'
-                        self._waiting_since = self._clock()
-                    return
-            if not self._seen_user_input:
-                return
-            if self._last_input_time < self._idle_since:
-                return
-            stripped = self._ANSI_RE.sub(b'', data).strip()
-            if stripped:
-                if now - prev_output_time > 2.0:
-                    self._idle_output_acc = 0
-                if now - self._last_input_time > 0.5:
-                    self._idle_output_acc += len(stripped)
-                    if self._idle_output_acc > 200:
-                        _log.debug(
-                            'ON_OUTPUT idle→running (accumulated %d bytes)',
-                            self._idle_output_acc,
-                        )
-                        self._idle_output_acc = 0
-                        self._output_buf.clear()
-                        self._running_since = self._clock()
-                        with self._lock:
-                            self._state = 'running'
-                            self._waiting_since = None
-                        try:
-                            self._signal_file.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-            return
-
-        # Detect interruption while running
-        if self._state == 'running':
-            stripped_data = self._ANSI_RE.sub(b'', data)
-            has_interrupted = interrupted_pattern in stripped_data
-            self._output_buf.extend(data)
-            if len(self._output_buf) > 8192:
-                self._output_buf = self._output_buf[-8192:]
-            if not has_interrupted:
-                has_interrupted = interrupted_pattern in self._ANSI_RE.sub(
-                    b'', bytes(self._output_buf),
-                )
-            stripped_preview = stripped_data.strip()
-            if stripped_preview:
-                _log.debug(
-                    'ON_OUTPUT running chunk len=%d buf_len=%d '
-                    'has_Interrupted=%s stripped=%r',
-                    len(data), len(self._output_buf),
-                    has_interrupted, stripped_preview[:80],
-                )
-            if has_interrupted and (now - self._last_input_time) < 10.0:
-                _log.debug('ON_OUTPUT running→interrupted')
+                self._last_prompt_buf = bytes(self._output_buf)
                 self._output_buf.clear()
+                self._idle_output_acc = 0
+                if is_trust:
+                    self._trust_dialog_phase = True
                 with self._lock:
-                    self._state = 'interrupted'
+                    self._state = CLIState.NEEDS_PERMISSION
                     self._waiting_since = self._clock()
-            else:
-                # Trust dialog phase: after user answered via select_option,
-                # on_send() sets state to running.  Startup output means
-                # the CLI is booting — go straight to idle.
-                if self._trust_dialog_phase:
-                    stripped = self._ANSI_RE.sub(b'', data).strip()
-                    if stripped:
-                        _log.debug(
-                            'ON_OUTPUT running→idle '
-                            '(trust dialog startup)',
-                        )
-                        self._trust_dialog_phase = False
-                        self._output_buf.clear()
-                        with self._lock:
-                            self._state = 'idle'
-                            self._waiting_since = None
-                        self._idle_since = self._clock()
-                        self._idle_output_acc = 0
-                        self._last_prompt_buf = b''
-                        return
+                return
 
-                # Detect permission/question dialogs from PTY output.
-                # Only check the most recent output chunk (current data)
-                # joined with a small tail of previous output, to avoid
-                # false positives when dialog pattern strings appear
-                # spread across Claude's streamed conversation output.
-                # Real dialogs render as a single Ink TUI screen burst.
-                if dialog_patterns:
-                    check_buf = bytes(self._output_buf[-512:])
-                    compact = self._ANSI_RE.sub(
-                        b'', check_buf,
-                    ).replace(b' ', b'')
-                    if all(p in compact for p in dialog_patterns):
-                        _log.debug(
-                            'ON_OUTPUT running→needs_permission '
-                            '(dialog detected from PTY output)',
-                        )
-                        self._last_prompt_buf = bytes(self._output_buf)
-                        self._output_buf.clear()
-                        self._idle_output_acc = 0
-                        with self._lock:
-                            self._state = 'needs_permission'
-                            self._waiting_since = self._clock()
-
-        # Detect resume after permission/question
-        elif self._state in ('needs_permission', 'has_question', 'interrupted'):
-            # Override to interrupted if we see the interrupted pattern
-            # in fresh output shortly after user input (Escape key).
-            if (
-                self._state == 'has_question'
-                and interrupted_pattern in self._ANSI_RE.sub(b'', data)
-                and (now - self._last_input_time) < 3.0
+        # Detect interruption — the Stop hook may race ahead
+        # and write "idle" before PTY output with the interrupted
+        # pattern arrives.
+        if now - self._last_input_time < INTERRUPT_DETECT_WINDOW:
+            stripped_chunk = self._ANSI_RE.sub(b'', data)
+            has_interrupted = interrupted_pattern in stripped_chunk
+            if has_interrupted or interrupted_pattern in self._ANSI_RE.sub(
+                b'', bytes(self._output_buf),
             ):
                 _log.debug(
-                    'ON_OUTPUT has_question→interrupted '
-                    '(pattern in output, Escape race)',
+                    'ON_OUTPUT idle→interrupted (Escape race detected)',
                 )
+                self._output_buf.clear()
+                self._idle_output_acc = 0
                 with self._lock:
-                    self._state = 'interrupted'
-                    self._waiting_since = now
-            self._output_buf.clear()
-            # Continue accumulating prompt output for Slack rendering.
-            self._last_prompt_buf += data
-            if len(self._last_prompt_buf) > 16384:
-                self._last_prompt_buf = self._last_prompt_buf[-16384:]
-            ws = self._waiting_since
-            if (
-                ws is not None
-                and (self._clock() - ws) > 2.0
-                and self._last_input_time > ws
-            ):
-                stripped = self._ANSI_RE.sub(b'', data).strip()
-                if stripped:
-                    if self._trust_dialog_phase:
-                        _log.debug(
-                            'ON_OUTPUT %s→idle (trust dialog startup)',
-                            self._state,
-                        )
-                        self._trust_dialog_phase = False
-                        with self._lock:
-                            self._state = 'idle'
-                            self._waiting_since = None
-                        self._idle_since = self._clock()
-                        self._idle_output_acc = 0
-                        self._last_prompt_buf = b''
-                        return
-
+                    self._state = CLIState.INTERRUPTED
+                    self._waiting_since = self._clock()
+                return
+        if not self._seen_user_input:
+            return
+        if self._last_input_time < self._idle_since:
+            return
+        stripped = self._ANSI_RE.sub(b'', data).strip()
+        if stripped:
+            if now - prev_output_time > OUTPUT_GAP_RESET:
+                self._idle_output_acc = 0
+            if now - self._last_input_time > INPUT_COOLDOWN:
+                self._idle_output_acc += len(stripped)
+                if self._idle_output_acc > IDLE_OUTPUT_THRESHOLD:
                     _log.debug(
-                        'ON_OUTPUT %s→running (resume, stripped=%r)',
-                        self._state, stripped[:60],
+                        'ON_OUTPUT idle→running (accumulated %d bytes)',
+                        self._idle_output_acc,
                     )
+                    self._idle_output_acc = 0
+                    self._output_buf.clear()
                     self._running_since = self._clock()
                     with self._lock:
-                        self._state = 'running'
+                        self._state = CLIState.RUNNING
                         self._waiting_since = None
-                    self._last_prompt_buf = b''
                     try:
                         self._signal_file.unlink(missing_ok=True)
                     except OSError:
                         pass
 
+    def _handle_running_output(self, data: bytes, now: float) -> None:
+        """Handle output while running: interruption, trust dialog, dialog detection."""
+        interrupted_pattern = self._provider.interrupted_pattern
+        dialog_patterns = self._provider.dialog_patterns
+
+        stripped_data = self._ANSI_RE.sub(b'', data)
+        has_interrupted = interrupted_pattern in stripped_data
+        self._output_buf.extend(data)
+        if len(self._output_buf) > 8192:
+            self._output_buf = self._output_buf[-8192:]
+        if not has_interrupted:
+            has_interrupted = interrupted_pattern in self._ANSI_RE.sub(
+                b'', bytes(self._output_buf),
+            )
+        stripped_preview = stripped_data.strip()
+        if stripped_preview:
+            _log.debug(
+                'ON_OUTPUT running chunk len=%d buf_len=%d '
+                'has_Interrupted=%s stripped=%r',
+                len(data), len(self._output_buf),
+                has_interrupted, stripped_preview[:80],
+            )
+        if has_interrupted and (now - self._last_input_time) < INTERRUPT_DETECT_WINDOW:
+            _log.debug('ON_OUTPUT running→interrupted')
+            self._output_buf.clear()
+            with self._lock:
+                self._state = CLIState.INTERRUPTED
+                self._waiting_since = self._clock()
+        else:
+            # Trust dialog phase: after user answered via select_option,
+            # on_send() sets state to running.  Startup output means
+            # the CLI is booting — go straight to idle.
+            if self._trust_dialog_phase:
+                stripped = self._ANSI_RE.sub(b'', data).strip()
+                if stripped:
+                    _log.debug(
+                        'ON_OUTPUT running→idle '
+                        '(trust dialog startup)',
+                    )
+                    self._trust_dialog_phase = False
+                    self._output_buf.clear()
+                    with self._lock:
+                        self._state = CLIState.IDLE
+                        self._waiting_since = None
+                    self._idle_since = self._clock()
+                    self._idle_output_acc = 0
+                    self._last_prompt_buf = b''
+                    return
+
+            # Detect permission/input dialogs from PTY output.
+            if dialog_patterns:
+                check_buf = bytes(self._output_buf[-512:])
+                compact = self._ANSI_RE.sub(
+                    b'', check_buf,
+                ).replace(b' ', b'')
+                if all(p in compact for p in dialog_patterns):
+                    _log.debug(
+                        'ON_OUTPUT running→needs_permission '
+                        '(dialog detected from PTY output)',
+                    )
+                    self._last_prompt_buf = bytes(self._output_buf)
+                    self._output_buf.clear()
+                    self._idle_output_acc = 0
+                    with self._lock:
+                        self._state = CLIState.NEEDS_PERMISSION
+                        self._waiting_since = self._clock()
+
+    def _handle_waiting_output(self, data: bytes, now: float) -> None:
+        """Handle output while in a waiting state: correction, prompt accumulation, resume."""
+        interrupted_pattern = self._provider.interrupted_pattern
+
+        # Override to interrupted if we see the interrupted pattern
+        # in fresh output shortly after user input (Escape key).
+        if (
+            self._state == CLIState.NEEDS_INPUT
+            and interrupted_pattern in self._ANSI_RE.sub(b'', data)
+            and (now - self._last_input_time) < ESCAPE_CORRECTION_WINDOW
+        ):
+            _log.debug(
+                'ON_OUTPUT needs_input→interrupted '
+                '(pattern in output, Escape race)',
+            )
+            with self._lock:
+                self._state = CLIState.INTERRUPTED
+                self._waiting_since = now
+        self._output_buf.clear()
+        # Continue accumulating prompt output for Slack rendering.
+        self._last_prompt_buf += data
+        if len(self._last_prompt_buf) > 16384:
+            self._last_prompt_buf = self._last_prompt_buf[-16384:]
+        ws = self._waiting_since
+        if (
+            ws is not None
+            and (self._clock() - ws) > RESUME_GRACE_PERIOD
+            and self._last_input_time > ws
+        ):
+            stripped = self._ANSI_RE.sub(b'', data).strip()
+            if stripped:
+                if self._trust_dialog_phase:
+                    _log.debug(
+                        'ON_OUTPUT %s→idle (trust dialog startup)',
+                        self._state,
+                    )
+                    self._trust_dialog_phase = False
+                    with self._lock:
+                        self._state = CLIState.IDLE
+                        self._waiting_since = None
+                    self._idle_since = self._clock()
+                    self._idle_output_acc = 0
+                    self._last_prompt_buf = b''
+                    return
+
+                _log.debug(
+                    'ON_OUTPUT %s→running (resume, stripped=%r)',
+                    self._state, stripped[:60],
+                )
+                self._running_since = self._clock()
+                with self._lock:
+                    self._state = CLIState.RUNNING
+                    self._waiting_since = None
+                self._last_prompt_buf = b''
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    # -- Prompt output -------------------------------------------------------
+
     def get_prompt_output(self) -> str:
-        """Return PTY output from the last permission/question prompt.
+        """Return PTY output from the last permission/input prompt.
 
         Processes the raw PTY bytes through a minimal virtual terminal
         to properly handle TUI cursor-positioning layout.

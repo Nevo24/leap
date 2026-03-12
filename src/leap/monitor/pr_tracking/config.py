@@ -34,7 +34,7 @@ _DEFAULT_NOTIFICATIONS: dict[str, dict[str, bool]] = {
     'pr_approved': {'dock': True, 'banner': False},
     'session_completed': {'dock': True, 'banner': False},
     'session_needs_permission': {'dock': True, 'banner': False},
-    'session_has_question': {'dock': True, 'banner': False},
+    'session_needs_input': {'dock': True, 'banner': False},
     'session_interrupted': {'dock': True, 'banner': False},
     'review_requested': {'dock': True, 'banner': False},
     'assigned': {'dock': True, 'banner': False},

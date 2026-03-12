@@ -42,7 +42,8 @@ src/
     │   ├── base.py              # CLIProvider ABC (patterns, timings, hooks, input)
     │   ├── claude.py            # Claude Code provider (Ink TUI, numbered menus)
     │   ├── codex.py             # OpenAI Codex provider (Ratatui TUI, y/n approval)
-    │   └── registry.py          # Provider registry (name → class lookup)
+    │   ├── registry.py          # Provider registry (name → class lookup)
+    │   └── states.py            # CLIState enum + state groupings (WAITING/SIGNAL/PROMPT)
     │
     ├── utils/                   # Shared utilities
     │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors, is_valid_tag()
@@ -136,6 +137,7 @@ assets/
 
 | Class / Function | File | Purpose |
 |------------------|------|---------|
+| `CLIState` | `cli_providers/states.py` | State enum (`idle`, `running`, `needs_permission`, `needs_input`, `interrupted`) |
 | `CLIProvider` | `cli_providers/base.py` | Abstract base for CLI backends (patterns, hooks, input) |
 | `ClaudeProvider` | `cli_providers/claude.py` | Claude Code CLI (Ink TUI, numbered menus, Notification hooks) |
 | `CodexProvider` | `cli_providers/codex.py` | OpenAI Codex CLI (Ratatui TUI, y/n approval, Stop hook only) |

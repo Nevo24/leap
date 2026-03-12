@@ -3,7 +3,7 @@ Route Slack messages to Leap sessions via Unix sockets.
 
 Looks up the Leap session tag from the Slack thread_ts, queries the
 server's current state, and sends the message as either a queue
-message (idle) or a direct PTY input (needs_permission / has_question).
+message (idle) or a direct PTY input (needs_permission / needs_input).
 """
 
 import time
@@ -54,7 +54,7 @@ class MessageRouter:
 
         claude_state = status.get('claude_state', 'idle')
 
-        if claude_state in ('needs_permission', 'has_question', 'interrupted'):
+        if claude_state in ('needs_permission', 'needs_input', 'interrupted'):
             normalized = text.strip()
             if normalized.isdigit():
                 response = send_socket_request(

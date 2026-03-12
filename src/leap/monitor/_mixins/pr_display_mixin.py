@@ -203,8 +203,8 @@ class PRDisplayMixin(_Base):
             return (tag, 'Claude finished processing')
         elif event.type == NotificationType.SESSION_NEEDS_PERMISSION:
             return (tag, 'Claude needs permission to use a tool')
-        elif event.type == NotificationType.SESSION_HAS_QUESTION:
-            return (tag, 'Claude is asking you a question')
+        elif event.type == NotificationType.SESSION_NEEDS_INPUT:
+            return (tag, 'Claude needs your input')
         elif event.type == NotificationType.SESSION_INTERRUPTED:
             return (tag, 'Claude was interrupted')
         elif event.type == NotificationType.REVIEW_REQUESTED:

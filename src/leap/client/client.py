@@ -391,7 +391,7 @@ class LeapClient:
                 'idle': '\u2713 Idle \u2014 will accept next message',
                 'running': '\u23f3 Running \u2014 Claude is processing',
                 'needs_permission': '\u26a0\ufe0f Needs Permission \u2014 waiting for tool approval',
-                'has_question': '\u2753 Has Question \u2014 Claude is asking you something',
+                'needs_input': '\u2753 Needs Input \u2014 Claude is asking you something',
                 'interrupted': '\u26a1 Interrupted \u2014 will auto-send next message',
             }
             mode_display = {

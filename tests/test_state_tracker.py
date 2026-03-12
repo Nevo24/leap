@@ -79,7 +79,7 @@ class TestOnSend:
 
 
 # ---------------------------------------------------------------------------
-# Signal file transitions (running → idle/needs_permission/has_question)
+# Signal file transitions (running → idle/needs_permission/needs_input)
 # ---------------------------------------------------------------------------
 
 class TestSignalFile:
@@ -97,12 +97,12 @@ class TestSignalFile:
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
-    def test_signal_file_has_question(self, tmp_path: Path) -> None:
+    def test_signal_file_needs_input(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
 
     def test_signal_file_invalid_json_ignored(self, tmp_path: Path) -> None:
         t = [0.0]
@@ -274,7 +274,7 @@ class TestOutputAccumulation:
 
 
 # ---------------------------------------------------------------------------
-# Running → has_question (Interrupted detection)
+# Running → needs_input (Interrupted detection)
 # ---------------------------------------------------------------------------
 
 class TestInterruptedDetection:
@@ -457,29 +457,29 @@ class TestEscapeRace:
 
 
 # ---------------------------------------------------------------------------
-# Stop hook race (has_question protected from idle signal)
+# Stop hook race (needs_input protected from idle signal)
 # ---------------------------------------------------------------------------
 
 class TestStopHookRace:
-    def test_has_question_protected_from_idle_signal_within_5s(self, tmp_path: Path) -> None:
+    def test_needs_input_protected_from_idle_signal_within_5s(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
         # Immediately write idle signal — within 5s grace
         t[0] = 2.0
         write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
 
-    def test_has_question_yields_to_idle_signal_after_5s(self, tmp_path: Path) -> None:
+    def test_needs_input_yields_to_idle_signal_after_5s(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
         # After 5s grace, idle signal is honored
         t[0] = 7.0
         write_signal(tracker, 'idle')
@@ -511,7 +511,7 @@ class TestStopHookRace:
 
 
 # ---------------------------------------------------------------------------
-# Resume detection (has_question/needs_permission → running)
+# Resume detection (needs_input/needs_permission → running)
 # ---------------------------------------------------------------------------
 
 class TestResumeDetection:
@@ -549,28 +549,28 @@ class TestResumeDetection:
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
-        # User types, but only ANSI output → stays has_question
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
+        # User types, but only ANSI output → stays needs_input
         t[0] = 3.0
         tracker.on_input(b'y')
         t[0] = 4.0
         tracker.on_output(b'\x1b[2J\x1b[H\r')
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'needs_input'
 
     def test_resume_blocked_without_user_input(self, tmp_path: Path) -> None:
-        """TUI status bar rendering after has_question should NOT
+        """TUI status bar rendering after needs_input should NOT
         trigger resume (no user input since entering waiting state)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
         # After grace, printable output but NO user input → stays
         t[0] = 4.0
         tracker.on_output(b'Nevo.Mashiach 10% Opus 4.6 default')
-        assert tracker.current_state == 'has_question'
+        assert tracker.current_state == 'needs_input'
 
 
 # ---------------------------------------------------------------------------
@@ -631,9 +631,9 @@ class TestIsReady:
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
         assert tracker.is_ready(pty_alive=True)
-        # has_question → ready in always mode
+        # needs_input → ready in always mode
         t[0] = 7.0  # past 5s grace
-        write_signal(tracker, 'has_question')
+        write_signal(tracker, 'needs_input')
         # Read state to transition
         tracker.get_state(pty_alive=True)
         assert tracker.is_ready(pty_alive=True)
@@ -780,12 +780,12 @@ class TestTrustDialog:
 
 
 # ---------------------------------------------------------------------------
-# Signal from idle (idle → needs_permission/has_question via signal file)
+# Signal from idle (idle → needs_permission/needs_input via signal file)
 # ---------------------------------------------------------------------------
 
 class TestSignalFromIdle:
     """Tests for the fix: signal file must be read even when current state
-    is idle, so that Notification hooks writing needs_permission/has_question
+    is idle, so that Notification hooks writing needs_permission/needs_input
     trigger a proper state transition."""
 
     def test_signal_from_idle_to_needs_permission(self, tmp_path: Path) -> None:
@@ -798,14 +798,14 @@ class TestSignalFromIdle:
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
-    def test_signal_from_idle_to_has_question(self, tmp_path: Path) -> None:
-        """idle + signal=has_question → has_question."""
+    def test_signal_from_idle_to_needs_input(self, tmp_path: Path) -> None:
+        """idle + signal=needs_input → needs_input."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         assert tracker.get_state(pty_alive=True) == 'idle'
         t[0] = 1.0
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
 
     def test_signal_from_idle_to_idle_is_noop(self, tmp_path: Path) -> None:
         """idle + signal=idle → stays idle (no transition)."""
@@ -835,7 +835,7 @@ class TestSignalFromIdle:
         tracker._idle_output_acc = 150
         tracker._output_buf.extend(b'some data')
         t[0] = 1.0
-        write_signal(tracker, 'has_question')
+        write_signal(tracker, 'needs_input')
         tracker.get_state(pty_alive=True)
         assert tracker._idle_output_acc == 0
         assert len(tracker._output_buf) == 0
@@ -1001,8 +1001,8 @@ class TestInterruptedState:
             assert tracker.current_state == 'interrupted'
             assert not tracker.is_ready(pty_alive=True)
 
-    def test_interrupted_protected_from_has_question_signal(self, tmp_path: Path) -> None:
-        """Notification hook fires has_question for the interrupt dialog —
+    def test_interrupted_protected_from_needs_input_signal(self, tmp_path: Path) -> None:
+        """Notification hook fires needs_input for the interrupt dialog —
         interrupted state should be protected for 5s."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
@@ -1010,9 +1010,9 @@ class TestInterruptedState:
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
-        # Notification hook writes has_question within 5s
+        # Notification hook writes needs_input within 5s
         t[0] = 2.0
-        write_signal(tracker, 'has_question')
+        write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'interrupted'
 
     def test_interrupted_protected_from_idle_signal(self, tmp_path: Path) -> None:
@@ -1029,25 +1029,25 @@ class TestInterruptedState:
         write_signal(tracker, 'idle')
         assert tracker.get_state(pty_alive=True) == 'interrupted'
 
-    def test_interrupted_yields_to_has_question_after_5s(self, tmp_path: Path) -> None:
-        """After 5s grace, a has_question signal should be honored."""
+    def test_interrupted_yields_to_needs_input_after_5s(self, tmp_path: Path) -> None:
+        """After 5s grace, a needs_input signal should be honored."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
-        # After 5s grace, has_question signal is honored
+        # After 5s grace, needs_input signal is honored
         t[0] = 7.0
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
 
-    def test_has_question_corrected_to_interrupted_by_pty_output(
+    def test_needs_input_corrected_to_interrupted_by_pty_output(
         self, tmp_path: Path,
     ) -> None:
-        """Race: Stop hook → idle, Notification hook → has_question, then PTY
+        """Race: Stop hook → idle, Notification hook → needs_input, then PTY
         output with 'Interrupted' arrives.  The on_output handler should
-        correct has_question back to interrupted."""
+        correct needs_input back to interrupted."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -1055,10 +1055,10 @@ class TestInterruptedState:
         # Stop hook races ahead, writes idle
         write_signal(tracker, 'idle')
         assert tracker.get_state(pty_alive=True) == 'idle'
-        # Notification hook writes has_question (interrupt dialog)
+        # Notification hook writes needs_input (interrupt dialog)
         t[0] = 1.1
-        write_signal(tracker, 'has_question')
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
         # Simulate Escape keypress just before
         tracker._last_input_time = 0.9
         # PTY output with "Interrupted" arrives
@@ -1150,10 +1150,10 @@ class TestInterruptedState:
         # _idle_since is set to now (normal behavior)
         assert tracker._idle_since == 7.0
 
-    def test_interrupted_to_has_question_preserves_timing(
+    def test_interrupted_to_needs_input_preserves_timing(
         self, tmp_path: Path,
     ) -> None:
-        """When interrupted→has_question after 5s with user input,
+        """When interrupted→needs_input after 5s with user input,
         _waiting_since is preserved so on_output() resume works."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
@@ -1166,11 +1166,11 @@ class TestInterruptedState:
         # User types at T=3
         t[0] = 3.0
         tracker.on_input(b'answer')
-        # Notification hook writes has_question (stale, from interrupt dialog)
-        write_signal(tracker, 'has_question')
+        # Notification hook writes needs_input (stale, from interrupt dialog)
+        write_signal(tracker, 'needs_input')
         # Protection expires
         t[0] = 7.0
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
         # _waiting_since should be preserved (not reset to T=7.0)
         assert tracker._waiting_since < tracker._last_input_time
         # Now printable output triggers resume
@@ -1178,17 +1178,17 @@ class TestInterruptedState:
         tracker.on_output(b'Processing your request...')
         assert tracker.current_state == 'running'
 
-    def test_has_question_user_answered_resumes_running(
+    def test_needs_input_user_answered_resumes_running(
         self, tmp_path: Path,
     ) -> None:
-        """on_output() resume works when user types after has_question
+        """on_output() resume works when user types after needs_input
         and printable output follows (existing behavior, no get_state involved)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        # Signal has_question directly
-        write_signal(tracker, 'has_question')
+        # Signal needs_input directly
+        write_signal(tracker, 'needs_input')
         t[0] = 0.5
-        assert tracker.get_state(pty_alive=True) == 'has_question'
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
         # User answers at T=3
         t[0] = 3.0
         tracker.on_input(b'yes')
@@ -1223,3 +1223,65 @@ class TestInterruptedState:
         # _waiting_since should be reset to now (fresh timing),
         # NOT preserved from the old interrupt
         assert tracker._waiting_since == 7.0
+
+
+# ---------------------------------------------------------------------------
+# CLIState enum and backward compatibility
+# ---------------------------------------------------------------------------
+
+class TestCLIStateEnum:
+    """Tests for CLIState enum, state sets, and backward-compat alias."""
+
+    def test_cli_state_string_comparison(self) -> None:
+        """CLIState members compare equal to their string values."""
+        from leap.cli_providers.states import CLIState
+        assert CLIState.IDLE == 'idle'
+        assert CLIState.RUNNING == 'running'
+        assert CLIState.NEEDS_PERMISSION == 'needs_permission'
+        assert CLIState.NEEDS_INPUT == 'needs_input'
+        assert CLIState.INTERRUPTED == 'interrupted'
+
+    def test_waiting_states_membership(self) -> None:
+        from leap.cli_providers.states import CLIState, WAITING_STATES
+        assert CLIState.NEEDS_PERMISSION in WAITING_STATES
+        assert CLIState.NEEDS_INPUT in WAITING_STATES
+        assert CLIState.INTERRUPTED in WAITING_STATES
+        assert CLIState.IDLE not in WAITING_STATES
+        assert CLIState.RUNNING not in WAITING_STATES
+
+    def test_signal_states_membership(self) -> None:
+        from leap.cli_providers.states import CLIState, SIGNAL_STATES
+        assert CLIState.IDLE in SIGNAL_STATES
+        assert CLIState.NEEDS_PERMISSION in SIGNAL_STATES
+        assert CLIState.NEEDS_INPUT in SIGNAL_STATES
+        assert CLIState.RUNNING not in SIGNAL_STATES
+        assert CLIState.INTERRUPTED not in SIGNAL_STATES
+
+    def test_prompt_states_membership(self) -> None:
+        from leap.cli_providers.states import CLIState, PROMPT_STATES
+        assert CLIState.NEEDS_PERMISSION in PROMPT_STATES
+        assert CLIState.NEEDS_INPUT in PROMPT_STATES
+        assert CLIState.IDLE not in PROMPT_STATES
+        assert CLIState.RUNNING not in PROMPT_STATES
+        assert CLIState.INTERRUPTED not in PROMPT_STATES
+
+    def test_string_membership_in_state_sets(self) -> None:
+        """Plain strings work with state sets (str, Enum)."""
+        from leap.cli_providers.states import WAITING_STATES, PROMPT_STATES
+        assert 'needs_input' in WAITING_STATES
+        assert 'needs_permission' in PROMPT_STATES
+
+    def test_backward_compat_signal_alias(self, tmp_path: Path) -> None:
+        """Old hooks writing 'has_question' should be read as 'needs_input'."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Write old-style signal
+        tracker._signal_file.write_text(json.dumps({"state": "has_question"}))
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
+
+    def test_import_from_cli_providers(self) -> None:
+        """CLIState can be imported from the cli_providers package."""
+        from leap.cli_providers import CLIState
+        assert CLIState.IDLE == 'idle'

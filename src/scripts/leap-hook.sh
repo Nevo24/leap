@@ -8,7 +8,7 @@
 # The state is passed as the first argument by the hook configuration:
 #   leap-hook.sh idle             (Stop hook)
 #   leap-hook.sh needs_permission (Notification/permission_prompt)
-#   leap-hook.sh has_question     (Notification/elicitation_dialog)
+#   leap-hook.sh needs_input      (Notification/elicitation_dialog)
 #
 # Claude Code passes JSON on stdin with session info including
 # transcript_path. For Stop hooks, we read the last assistant message
@@ -51,7 +51,7 @@ try:
     if notification_msg:
         signal['notification_message'] = notification_msg
 
-    # For Notification hooks (needs_permission/has_question), write the
+    # For Notification hooks (needs_permission/needs_input), write the
     # signal file immediately so the Leap server detects the state change
     # without waiting for the slow transcript read.  The preceding Stop
     # hook already captured the assistant response text.

@@ -626,7 +626,7 @@ class TableBuilderMixin(_Base):
                         'idle': ('\u25cb Idle', QColor(t.status_idle)),
                         'running': ('\u25cf Running', QColor(t.status_running)),
                         'needs_permission': ('\u25b2 Permission', QColor(t.status_permission)),
-                        'has_question': ('\u25c6 Question', QColor(t.status_question)),
+                        'needs_input': ('\u25c6 Input', QColor(t.status_input)),
                         'interrupted': ('\u25c7 Interrupted', QColor(t.status_interrupted)),
                     }
                     text, color = state_display.get(claude_state, (claude_state, QColor(t.status_idle)))
@@ -657,7 +657,7 @@ class TableBuilderMixin(_Base):
                         'idle': 'Claude is waiting for input — will accept next queued message',
                         'running': 'Claude is actively processing a request',
                         'needs_permission': 'Claude needs your permission',
-                        'has_question': 'Claude is asking a clarifying question',
+                        'needs_input': 'Claude needs your input',
                         'interrupted': 'Claude was interrupted — will accept next queued message',
                     }
 
@@ -705,7 +705,7 @@ class TableBuilderMixin(_Base):
 
                         # Click: "interrupted" → force-send menu;
                         # "running" → interrupt menu;
-                        # "needs_permission"/"has_question" →
+                        # "needs_permission"/"needs_input" →
                         #   right-click: permission options menu;
                         #   left-click: dismiss fire indicator;
                         # other states → dismiss fire indicator.
@@ -729,7 +729,7 @@ class TableBuilderMixin(_Base):
                         # show options menu (uses customContext
                         # signal so Qt delivers it properly).
                         if claude_state in (
-                            'needs_permission', 'has_question',
+                            'needs_permission', 'needs_input',
                         ):
                             container.setContextMenuPolicy(
                                 Qt.CustomContextMenu)
@@ -1625,7 +1625,7 @@ class TableBuilderMixin(_Base):
     def _show_permission_menu(
         self, widget: QWidget, tag: str,
     ) -> None:
-        """Show permission options menu for needs_permission/has_question."""
+        """Show permission options menu for needs_permission/needs_input."""
         from leap.utils.constants import SOCKET_DIR
 
         socket_path = SOCKET_DIR / f"{tag}.sock"

@@ -24,7 +24,7 @@ class NotificationType(Enum):
     PR_APPROVED = 'pr_approved'
     SESSION_COMPLETED = 'session_completed'
     SESSION_NEEDS_PERMISSION = 'session_needs_permission'
-    SESSION_HAS_QUESTION = 'session_has_question'
+    SESSION_NEEDS_INPUT = 'session_needs_input'
     SESSION_INTERRUPTED = 'session_interrupted'
     REVIEW_REQUESTED = 'review_requested'
     ASSIGNED = 'assigned'
@@ -164,7 +164,7 @@ class DockBadge:
         Detects transitions from 'running' to other states:
         - running -> idle: SESSION_COMPLETED
         - running -> needs_permission: SESSION_NEEDS_PERMISSION
-        - running -> has_question: SESSION_HAS_QUESTION
+        - running -> needs_input: SESSION_NEEDS_INPUT
 
         Args:
             sessions: List of session dicts with 'tag' and 'claude_state' keys.
@@ -189,7 +189,7 @@ class DockBadge:
         _TRANSITION_MAP = {
             'idle': NotificationType.SESSION_COMPLETED,
             'needs_permission': NotificationType.SESSION_NEEDS_PERMISSION,
-            'has_question': NotificationType.SESSION_HAS_QUESTION,
+            'needs_input': NotificationType.SESSION_NEEDS_INPUT,
             'interrupted': NotificationType.SESSION_INTERRUPTED,
         }
 

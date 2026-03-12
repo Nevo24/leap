@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
+from leap.cli_providers.states import SIGNAL_STATES
 
 
 # Codex hooks.json schema:
@@ -70,10 +71,10 @@ class CodexProvider(CLIProvider):
     @property
     def valid_signal_states(self) -> frozenset[str]:
         # Codex's Stop hook writes 'idle'.  Since there's no Notification
-        # hook, needs_permission/has_question come from PTY output only
+        # hook, needs_permission/needs_input come from PTY output only
         # (not from the signal file).  We still accept them in case
         # future Codex versions add notification hooks.
-        return frozenset({'idle', 'needs_permission', 'has_question'})
+        return SIGNAL_STATES
 
     # -- Menu / option parsing -------------------------------------------
 
