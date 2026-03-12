@@ -100,6 +100,8 @@ echo "" >> "$RC_FILE"
 
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
+# Flags (starting with --) are passed to the CLI when starting a server
+# Example: leap my-tag --dangerously-skip-permissions
 leap() {
     "$LEAP_PROJECT_DIR/src/scripts/leap-select.sh" "$@"
 }
