@@ -678,7 +678,7 @@ class LeapServer:
         print("  All responses will appear HERE in this window.")
         print("")
         print("  To send messages from another tab, run:")
-        print(f"    claudel {self.tag}")
+        print(f"    leap {self.tag}")
         print("")
         print("  \u2705 Native scrolling in IntelliJ")
         print("  \u2705 Full terminal width")
@@ -704,7 +704,7 @@ class LeapServer:
         threading.Thread(target=self._stdin_watchdog_loop, daemon=True).start()
 
         # Wait for the socket to be bound before releasing the startup lock,
-        # so concurrent `claudel <tag>` invocations see the socket and connect as
+        # so concurrent `leap <tag>` invocations see the socket and connect as
         # clients instead of trying to start a second server.
         self.socket_handler.wait_ready()
 

@@ -2023,7 +2023,7 @@ class TableBuilderMixin(_Base):
         QMessageBox.information(
             self, 'No Slack Bot Running',
             'Start the Slack bot using the Slack Bot button in the toolbar,\n'
-            'or run  claudel --slack  in a terminal.',
+            'or run  leap --slack  in a terminal.',
         )
 
     def _check_slack_bot_transition(self) -> None:

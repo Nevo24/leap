@@ -79,15 +79,15 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
 Leap - Multi-session AI CLI with message queueing
 
 USAGE:
-    claudel <tag>                     Start server or connect as client
-    claudel <tag> <message>           Send message to server
-    claudel <tag> [--flags]           Start server with flags (passed to CLI)
-    codexl <tag>                      Start server with Codex CLI
-    claudel --help, -h                Show this help
-    claudel --update                  Update Leap to latest version
+    leap                              Interactive CLI + session name selector
+    leap <tag>                        Interactive CLI selector for a session
+    leap <tag> <message>              Send message to existing server
+    leap <tag> [--flags]              Start server with flags (passed to CLI)
+    leap --help, -h                   Show this help
+    leap --update                     Update Leap to latest version
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
-        echo "    claudel --slack                   Start the Slack bot daemon"
+        echo "    leap --slack                      Start the Slack bot daemon"
     fi
     cat << 'EOF'
 
@@ -96,26 +96,28 @@ FLAGS (server only):
     They are NOT supported for clients (connecting to existing server).
 
     Example:
-        claudel my-tag --dangerously-skip-permissions
-        codexl my-tag --full-auto
+        leap my-tag --dangerously-skip-permissions
 
 EXAMPLES:
-    # Terminal 1 (start server)
-    claudel my-feature
+    # Interactive selector (choose CLI + session name)
+    leap
 
-    # Terminal 2 (connect as client and queue messages)
-    claudel my-feature
+    # Start server for a specific session
+    leap my-feature
+
+    # Connect as client and queue messages
+    leap my-feature
     You: How do I fix this bug?
     You: [Image #1] Explain this screenshot    # Ctrl+V to paste image
 
     # Send message directly
-    claudel my-feature "What is this error?"
+    leap my-feature "What is this error?"
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
         cat << 'EOF'
 
     # Start Slack bot daemon
-    claudel --slack
+    leap --slack
 EOF
     fi
     cat << 'EOF'
@@ -126,12 +128,12 @@ EOF
 fi
 
 if [ $# -lt 1 ]; then
-    echo "Usage: claudel <tag> [message...]"
+    echo "Usage: leap <tag> [message...]"
     echo ""
-    echo "First terminal (server): claudel test"
-    echo "Other terminals (client): claudel test 'your message'"
+    echo "First terminal (server): leap test"
+    echo "Other terminals (client): leap test 'your message'"
     echo ""
-    echo "For more info: claudel --help"
+    echo "For more info: leap --help"
     exit 1
 fi
 
@@ -140,8 +142,8 @@ TAG="$1"
 # Validate tag: alphanumeric, hyphens, underscores only
 if [[ ! "$TAG" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
     echo "Error: Tag must contain only letters, numbers, hyphens, and underscores" >&2
-    echo "Usage: claudel <tag> [message...]" >&2
-    echo "For help: claudel --help" >&2
+    echo "Usage: leap <tag> [message...]" >&2
+    echo "For help: leap --help" >&2
     exit 1
 fi
 
@@ -314,8 +316,8 @@ if [ $# -gt 0 ]; then
     # Has arguments but no server - error
     echo "Error: Server not running for tag '$TAG'"
     echo "Start server first in another terminal:"
-    echo "  Terminal 1: claudel $TAG"
-    echo "  Terminal 2: claudel $TAG 'your message'"
+    echo "  Terminal 1: leap $TAG"
+    echo "  Terminal 2: leap $TAG 'your message'"
     exit 1
 fi
 

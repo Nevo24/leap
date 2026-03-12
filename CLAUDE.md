@@ -9,10 +9,9 @@ make install                # Install core
 make install-monitor        # Install GUI (optional)
 source ~/.zshrc             # Reload shell
 
-claudel mytag                    # Terminal 1: Start Claude server
-claudel mytag                    # Terminal 2: Connect client
-
-codexl mytag                # Start Codex server (same as: claudel mytag --cli codex)
+leap mytag                       # Terminal 1: Select CLI + start server
+leap mytag                       # Terminal 2: Connect client
+leap                             # Interactive: choose CLI + session name
 ```
 
 ## Project Structure
@@ -20,7 +19,7 @@ codexl mytag                # Start Codex server (same as: claudel mytag --cli c
 ```
 src/
 ├── scripts/                     # Entry point scripts
-│   ├── leap-main.sh          # Main launcher (called by 'claudel' alias)
+│   ├── leap-main.sh          # Main launcher (called by 'leap' command)
 │   ├── leap-cleanup.sh       # Dead session cleanup
 │   ├── leap-server.py        # Thin launcher → LeapServer
 │   ├── leap-client.py        # Thin launcher → LeapClient
@@ -315,7 +314,7 @@ Optional Slack app for bidirectional Leap ↔ Slack communication. Each session 
 
 ```bash
 make install-slack-app   # Install deps + guided setup wizard
-claudel --slack               # Start the bot daemon
+leap --slack                 # Start the bot daemon
 ```
 
 **Data flow**: Claude finishes → hook reads transcript JSONL → writes to signal file → `OutputCapture` writes `.last_response` → `OutputWatcher` posts to Slack. Replies: Slack thread → `MessageRouter` → queue or direct message via socket.

@@ -6,7 +6,7 @@ needed), posts Claude's output to per-session DM threads, and routes
 user replies back to Leap sessions.
 
 Usage:
-    Run ``claudel --slack`` (or ``python -m leap.slack.bot``) to start.
+    Run ``leap --slack`` (or ``python -m leap.slack.bot``) to start.
 """
 
 import logging

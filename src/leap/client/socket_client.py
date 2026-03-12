@@ -79,7 +79,7 @@ class SocketClient:
                 )
                 print(
                     f"  → Try restarting the server by closing and reopening:"
-                    f" claudel {self.tag}"
+                    f" leap {self.tag}"
                 )
                 print(f"  → Details: {e}")
             return None

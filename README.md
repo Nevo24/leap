@@ -28,11 +28,12 @@ Already installed? Run `leap --update` to pull the latest version and rebuild.
 
 ## Usage
 
-Just run `claudel <tag>` instead of `claude` — that's it! Leap wraps Claude Code with queueing and session tracking.
+Just run `leap <tag>` — that's it! Leap wraps your AI CLI with queueing and session tracking.
 
 ```bash
-claudel my-feature      # First run starts the server (Claude runs here)
-claudel my-feature      # Second run connects a client (queue messages here)
+leap my-feature         # Select CLI (Claude/Codex), first run starts server
+leap my-feature         # Second run connects a client (queue messages here)
+leap                    # Interactive: choose CLI + session name
 ```
 
 The **Monitor** is a native macOS app installed alongside Leap. Just open it from your Applications folder or Spotlight to see all your sessions at a glance:

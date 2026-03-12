@@ -281,6 +281,6 @@ echo -e "${GREEN}╔════════════════════
 echo -e "${GREEN}║       Slack app configured!           ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════╝${NC}"
 echo ""
-echo "To start the bot:  claudel --slack"
+echo "To start the bot:  leap --slack"
 echo "To enable Slack on a session:  !slack on"
 echo ""

@@ -63,7 +63,7 @@ cat >> "$RC_FILE" <<'EOF'
 # Uses PTY (no tmux) with native scrolling
 # Server in JetBrains, client in any terminal
 #
-# Usage: claudel <tag> [message]
+# Usage: leap <tag> [message]
 #        leap-cleanup
 #
 # You can modify the content below, but keep the START/END marker lines
@@ -100,30 +100,8 @@ echo "" >> "$RC_FILE"
 
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
-claudel() {
-    if [ $# -eq 0 ]; then
-        echo "Error: Tag is required"
-        echo "Usage: claudel <tag> [message]"
-        echo "Example (server): claudel my-feature"
-        echo "Example (client): claudel my-feature 'hello Claude'"
-        return 1
-    fi
-    # Flags (starting with --) can be passed and will be used by server only
-    # Example: claudel my-tag --dangerously-skip-permissions
-    "$LEAP_PROJECT_DIR/src/scripts/claude-leap-main.sh" "$@"
-}
-
-codexl() {
-    if [ $# -eq 0 ]; then
-        echo "Error: Tag is required"
-        echo "Usage: codexl <tag> [message]"
-        echo "Example (server): codexl my-feature"
-        echo "Example (client): codexl my-feature 'hello Codex'"
-        return 1
-    fi
-    # Flags (starting with --) can be passed and will be used by server only
-    # Example: codexl my-tag --full-auto
-    "$LEAP_PROJECT_DIR/src/scripts/codex-leap-main.sh" "$@"
+leap() {
+    "$LEAP_PROJECT_DIR/src/scripts/leap-select.sh" "$@"
 }
 
 # ===== Leap Configuration END - DO NOT REMOVE (needed for uninstall) =====

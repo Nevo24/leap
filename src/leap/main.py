@@ -9,7 +9,7 @@ import sys
 
 def main() -> None:
     """
-    Main entry point for the 'claudel' command.
+    Main entry point for the 'leap' command.
 
     Routes based on arguments:
     - No tag: Shows usage
@@ -42,11 +42,11 @@ def main() -> None:
 
 def _show_usage() -> None:
     """Display usage information."""
-    print("Leap - Multi-session Claude Code with message queueing")
+    print("Leap - Multi-session AI CLI with message queueing")
     print()
     print("Usage:")
-    print("  claudel <tag>              Start server (if not running) or client")
-    print("  claudel <tag> [--flags]    Start server with Claude CLI flags")
+    print("  leap <tag>              Start server (if not running) or client")
+    print("  leap <tag> [--flags]    Start server with CLI flags")
     print()
     print("Commands:")
     print("  leap-server <tag>       Start server explicitly")
@@ -54,8 +54,8 @@ def _show_usage() -> None:
     print("  leap-monitor            Open session monitor GUI")
     print()
     print("Examples:")
-    print("  Tab 1: claudel my-feature          # Starts server")
-    print("  Tab 2: claudel my-feature          # Starts client")
+    print("  Tab 1: leap my-feature          # Starts server")
+    print("  Tab 2: leap my-feature          # Starts client")
     print()
 
 

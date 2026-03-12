@@ -641,7 +641,7 @@ class LeapClient:
                 enabled = response.get('slack_enabled', False)
                 if not bot_running:
                     print("\nSlack bot is not running.")
-                    print("Start it from the monitor or run: claudel --slack")
+                    print("Start it from the monitor or run: leap --slack")
                     if enabled:
                         print("(Session will reconnect automatically "
                               "when the bot starts)")
@@ -657,7 +657,7 @@ class LeapClient:
         if toggle in ('on', 'true', '1', 'yes'):
             if not bot_running:
                 print("Slack bot is not running. "
-                      "Start it from the monitor or run: claudel --slack\n")
+                      "Start it from the monitor or run: leap --slack\n")
                 return
             response = self.socket._send_request({
                 'type': 'set_slack', 'enabled': True,
@@ -798,8 +798,8 @@ class LeapClient:
             print(f"Error: PTY server '{self.tag}' is not running")
             print()
             print("Start it first:")
-            print(f"  Tab 1: claudel {self.tag}")
-            print(f"  Tab 2: claudel {self.tag} 'your message'")
+            print(f"  Tab 1: leap {self.tag}")
+            print(f"  Tab 2: leap {self.tag} 'your message'")
             print()
             sys.exit(1)
 
@@ -875,8 +875,8 @@ def main() -> None:
         print("Usage: leap-client <tag>")
         print()
         print("Example:")
-        print("  Tab 1: claudel my-feature")
-        print("  Tab 2: claudel my-feature")
+        print("  Tab 1: leap my-feature")
+        print("  Tab 2: leap my-feature")
         print()
         sys.exit(1)
 
