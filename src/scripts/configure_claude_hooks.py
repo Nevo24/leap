@@ -21,6 +21,7 @@ from pathlib import Path
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 HOOK_MARKER = "leap-hook.sh"
+_OLD_HOOK_MARKER = "claudeq-hook.sh"
 
 
 def _load_settings() -> dict:
@@ -58,9 +59,10 @@ def _make_entry(hook_path: str, state: str, matcher: str = "") -> dict:
 
 
 def _is_leap_entry(entry: dict) -> bool:
-    """Check if a hook entry belongs to Leap."""
+    """Check if a hook entry belongs to Leap (current or old ClaudeQ naming)."""
     for h in entry.get("hooks", []):
-        if HOOK_MARKER in h.get("command", ""):
+        cmd = h.get("command", "")
+        if HOOK_MARKER in cmd or _OLD_HOOK_MARKER in cmd:
             return True
     return False
 

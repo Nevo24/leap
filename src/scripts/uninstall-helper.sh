@@ -32,12 +32,12 @@ remove_shell_config() {
         return
     fi
 
-    if ! grep -q "Leap Configuration" "$RC_FILE" 2>/dev/null; then
-        echo "  No Leap configuration found in $RC_FILE"
+    if ! grep -qE "(Leap|ClaudeQ) Configuration" "$RC_FILE" 2>/dev/null; then
+        echo "  No Leap or ClaudeQ configuration found in $RC_FILE"
         return
     fi
 
-    echo -e "${YELLOW}⚠ Leap configuration found in $RC_FILE${NC}"
+    echo -e "${YELLOW}⚠ Shell configuration found in $RC_FILE${NC}"
     read -p "  Remove shell configuration? (y/N) " -n 1 -r REPLY
     echo
 
@@ -45,17 +45,33 @@ remove_shell_config() {
         # Backup
         cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
 
-        # Remove config
+        # Remove Leap config (current naming)
         if grep -q "Leap Configuration START" "$RC_FILE"; then
             sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
+            rm -f "$RC_FILE.bak"
         elif grep -q "# Leap" "$RC_FILE"; then
             sed -i.bak '/# Leap/,/# End Leap/d' "$RC_FILE"
             sed -i.bak '/# Leap/,/^alias claudel/d' "$RC_FILE"
+            rm -f "$RC_FILE.bak"
         fi
-        rm -f "$RC_FILE.bak"
 
-        echo -e "${GREEN}✓ Removed Leap configuration from $RC_FILE${NC}"
-        echo "  Backup created: $RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
+        # Remove ClaudeQ config (old naming)
+        if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
+            sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
+            rm -f "$RC_FILE.bak"
+        elif grep -q "# ClaudeQ" "$RC_FILE"; then
+            sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$RC_FILE"
+            rm -f "$RC_FILE.bak"
+        fi
+
+        # Clean up any stale env vars
+        if grep -q "CLAUDEQ_PROJECT_DIR" "$RC_FILE" 2>/dev/null; then
+            sed -i.bak '/CLAUDEQ_PROJECT_DIR/d' "$RC_FILE"
+            rm -f "$RC_FILE.bak"
+        fi
+
+        echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
+        echo "  Backup created: $RC_FILE.backup-uninstall-*"
     else
         echo "  Skipped shell configuration removal."
         echo "  To manually remove later, delete lines between:"

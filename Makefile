@@ -22,7 +22,7 @@ else \
 fi
 endef
 
-# Shell helper: remove Leap config from RC file
+# Shell helper: remove Leap/ClaudeQ config from RC file
 define REMOVE_SHELL_CONFIG
 if grep -q "Leap Configuration START" "$$RC_FILE"; then \
 	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
@@ -32,6 +32,11 @@ elif grep -q "# Leap" "$$RC_FILE"; then \
 	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
 	sed -i.bak '/# Leap/,/# End Leap/d' "$$RC_FILE"; \
 	sed -i.bak '/# Leap/,/^alias claudel/d' "$$RC_FILE"; \
+	rm -f "$$RC_FILE.bak"; \
+fi; \
+if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
+	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
+	sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
 	rm -f "$$RC_FILE.bak"; \
 fi
 endef
@@ -101,12 +106,12 @@ check-python:
 	fi
 
 .PHONY: install
-install: check-macos check-python .env install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks .configure-codex-hooks
+install: check-macos check-python .env .migrate-from-claudeq install-core ensure-storage write-install-metadata configure-shell .configure-claude-hooks .configure-codex-hooks
 	@echo "$(GREEN)✓ Leap installed successfully!$(NC)"
 	@echo ""
 	@echo "To start using Leap:"
 	@echo "  1. Reload your shell: source ~/.zshrc  (or ~/.bashrc)"
-	@echo "  2. Run: cq <tag-name>"
+	@echo "  2. Run: claudel <tag-name>"
 	@echo ""
 	@echo "Note: The venv is automatically used by leap commands."
 	@echo ""
@@ -214,9 +219,9 @@ lock: .env
 update:
 	@echo "$(PROMPT_PREFIX) Updating Leap..."
 	@$(GET_RC_FILE); \
-	if [ ! -f "$$RC_FILE" ] || ! grep -q "Leap Configuration" "$$RC_FILE"; then \
+	if [ ! -f "$$RC_FILE" ] || ! grep -qE "(Leap|ClaudeQ) Configuration" "$$RC_FILE"; then \
 		echo "$(YELLOW)⚠ Leap does not appear to be installed$(NC)"; \
-		echo "  No Leap configuration found in $$RC_FILE"; \
+		echo "  No Leap or ClaudeQ configuration found in $$RC_FILE"; \
 		echo ""; \
 		echo "Please run 'make install' first to install Leap."; \
 		echo "After installation, you can use 'make update' to update to newer versions."; \
@@ -250,6 +255,8 @@ update:
 	@git pull || (echo "$(YELLOW)⚠ Git pull failed. Please resolve conflicts and try again.$(NC)" && exit 1)
 	@echo "$(GREEN)✓ Code updated$(NC)"
 	@echo ""
+	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
+	@$(MAKE) .migrate-from-claudeq
 	@echo "$(PROMPT_PREFIX) Updating core dependencies..."
 	@poetry install --no-root --without monitor
 	@echo "$(GREEN)✓ Core dependencies updated$(NC)"
@@ -271,6 +278,14 @@ update:
 		poetry install --no-root --with monitor; \
 		$(BUILD_MONITOR_APP); \
 		echo "$(GREEN)✓ Monitor updated$(NC)"; \
+	elif [ -f "$(REPO_PATH)/.storage/.migration_had_monitor" ]; then \
+		echo ""; \
+		echo "$(PROMPT_PREFIX) Old ClaudeQ Monitor was removed during migration"; \
+		echo "$(PROMPT_PREFIX) Rebuilding as Leap Monitor..."; \
+		rm -f "$(REPO_PATH)/.storage/.migration_had_monitor"; \
+		poetry install --no-root --with monitor; \
+		$(BUILD_MONITOR_APP); \
+		echo "$(GREEN)✓ Leap Monitor installed$(NC)"; \
 	else \
 		echo ""; \
 		echo "  Monitor not installed. To install it, run: make install-monitor"; \
@@ -281,6 +296,7 @@ update:
 	@$(MAKE) .configure-jetbrains
 	@echo "$(GREEN)✓ IDE configurations updated$(NC)"
 	@$(MAKE) .configure-claude-hooks
+	@$(MAKE) .configure-codex-hooks
 	@echo ""
 	@$(GET_RC_FILE); \
 	if [ -f "$$RC_FILE" ] && grep -q "Leap Configuration START" "$$RC_FILE"; then \
@@ -299,6 +315,9 @@ update:
 			echo "  Skipped shell configuration update."; \
 			echo "  To update manually later, run: make install"; \
 		fi; \
+	elif [ -f "$$RC_FILE" ] && ! grep -q "Leap Configuration" "$$RC_FILE"; then \
+		echo "$(PROMPT_PREFIX) No shell configuration found — writing new Leap config..."; \
+		$(MAKE) .detect-shell; \
 	fi; \
 	echo ""; \
 	echo "$(GREEN)✓ Leap updated successfully!$(NC)"; \
@@ -313,7 +332,7 @@ update:
 	fi; \
 	echo "  • IDE configurations refreshed"; \
 	echo ""; \
-	echo "Note: Reload your shell if config was updated: source ~/.zshrc"
+	echo "Note: Reload your shell: source ~/.zshrc"
 
 .PHONY: update-deps
 update-deps: .env
@@ -574,6 +593,11 @@ configure-shell:
 		echo "$(GREEN)  ✓ Codex hooks configured$(NC)"; \
 	fi
 
+.PHONY: .migrate-from-claudeq
+.migrate-from-claudeq:
+	@chmod +x $(SCRIPTS_DIR)/migrate-from-claudeq.sh
+	@$(SCRIPTS_DIR)/migrate-from-claudeq.sh $(REPO_PATH)
+
 .PHONY: .detect-shell
 .detect-shell:
 	@chmod +x $(SCRIPTS_DIR)/configure-shell-helper.sh
@@ -585,8 +609,11 @@ uninstall-monitor:
 	@if [ -d "/Applications/Leap Monitor.app" ]; then \
 		sudo rm -rf "/Applications/Leap Monitor.app"; \
 		echo "$(GREEN)✓ Removed Leap Monitor.app from /Applications$(NC)"; \
+	elif [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
+		echo "$(GREEN)✓ Removed ClaudeQ Monitor.app from /Applications$(NC)"; \
 	else \
-		echo "  Leap Monitor.app not found in /Applications"; \
+		echo "  Monitor app not found in /Applications"; \
 	fi
 	@rm -rf build .dist
 	@echo "$(GREEN)✓ Monitor uninstalled successfully!$(NC)"
@@ -626,12 +653,22 @@ uninstall:
 		echo "$(GREEN)✓ Removed VS Code CLI symlink$(NC)" || \
 		echo "$(YELLOW)⚠ Could not remove code symlink (may need sudo)$(NC)"; \
 	fi; \
+	if command -v code >/dev/null 2>&1; then \
+		code --uninstall-extension leap.leap-terminal-selector 2>/dev/null && \
+			echo "$(GREEN)✓ Removed Leap VS Code extension$(NC)" || true; \
+		code --uninstall-extension claudeq.claudeq-terminal-selector 2>/dev/null && \
+			echo "$(GREEN)✓ Removed old ClaudeQ VS Code extension$(NC)" || true; \
+	fi; \
 	VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
 	if [ -f "$$VSCODE_SETTINGS" ] && grep -q "terminal.integrated.tabs.title" "$$VSCODE_SETTINGS"; then \
 		echo "$(YELLOW)⚠ VS Code settings.json still contains Leap setting$(NC)"; \
 		echo "  To remove: Open VS Code settings.json and delete 'terminal.integrated.tabs.title' line"; \
 		echo "  (Backup files: $$VSCODE_SETTINGS.backup-*)"; \
 	fi
+	@echo "$(PROMPT_PREFIX) Removing hook files..."
+	@rm -f "$$HOME/.claude/hooks/leap-hook.sh" "$$HOME/.claude/hooks/claudeq-hook.sh" 2>/dev/null || true
+	@rm -f "$$HOME/.codex/leap-hook.sh" "$$HOME/.codex/claudeq-hook.sh" 2>/dev/null || true
+	@echo "$(GREEN)✓ Removed hook files$(NC)"
 	@echo ""
 	@echo "$(GREEN)✓ Leap fully uninstalled!$(NC)"
 	@echo "Project is now in clean state (like just cloned)"
