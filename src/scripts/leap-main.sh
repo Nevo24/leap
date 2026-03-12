@@ -80,8 +80,7 @@ Leap - Multi-session AI CLI with message queueing
 
 USAGE:
     leap                              Interactive CLI + session name selector
-    leap <tag>                        Interactive CLI selector for a session
-    leap <tag> <message>              Send message to existing server
+    leap <tag>                        Start server or connect as client
     leap <tag> [--flags]              Start server with flags (passed to CLI)
     leap --help, -h                   Show this help
     leap --update                     Update Leap to latest version

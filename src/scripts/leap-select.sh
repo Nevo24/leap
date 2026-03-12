@@ -46,7 +46,7 @@ done
 
 SOCKET_DIR="$STORAGE_DIR/sockets"
 
-# If a server is already running for this tag, skip CLI selector
+# If a server is already running for this tag, skip CLI selector — just connect
 if [ -n "$TAG" ] && [ -S "$SOCKET_DIR/${TAG}.sock" ]; then
     exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${FLAGS[@]}" "${ARGS[@]}"
 fi
