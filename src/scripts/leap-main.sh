@@ -285,6 +285,18 @@ if [ -S "$SOCKET_PATH" ]; then
         # Server is alive - launch client (interactive or with message)
         echo "✓ Server is running - launching client" >&2
 
+        # Warn if the requested CLI doesn't match the running server's CLI
+        REQUESTED_CLI="${CLI_FROM_ARG:-${LEAP_CLI:-claude}}"
+        META_FILE="$SOCKET_DIR/${TAG}.meta"
+        if [ -f "$META_FILE" ]; then
+            SERVER_CLI=$("$PYTHON_CMD" -c "import json,sys; print(json.load(open('$META_FILE')).get('cli_provider','claude'))" 2>/dev/null || echo "claude")
+            if [ "$REQUESTED_CLI" != "$SERVER_CLI" ]; then
+                echo "" >&2
+                echo -e "  \033[38;5;208m⚠ Warning: Server '$TAG' is running with $SERVER_CLI, not $REQUESTED_CLI\033[0m" >&2
+                echo "" >&2
+            fi
+        fi
+
         # Flags are silently ignored for clients (only used by server)
 
         # Set terminal tab name
