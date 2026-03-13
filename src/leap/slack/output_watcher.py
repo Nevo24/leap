@@ -8,6 +8,8 @@ Slack-enabled Leap sessions every 2 seconds.
 import json
 import logging
 import os
+import re
+import subprocess
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -116,8 +118,36 @@ class OutputWatcher:
             self._post_output(tag, session_data, payload)
 
     @staticmethod
-    def _build_header(tag: str) -> str:
-        """Build the thread header with tag, project, and branch from metadata.
+    def _get_project_name(project_path: str) -> str:
+        """Get project name from git remote, falling back to directory basename.
+
+        Uses the same logic as the monitor's session_manager to stay consistent.
+
+        Args:
+            project_path: Path to the project directory.
+
+        Returns:
+            Project name string.
+        """
+        try:
+            result = subprocess.run(
+                ['git', 'config', '--get', 'remote.origin.url'],
+                capture_output=True, text=True, cwd=project_path, timeout=2,
+            )
+            if result.returncode == 0:
+                remote_url = result.stdout.strip()
+                m = re.match(
+                    r'(?:git@[^:]+:|https?://[^/]+/)(.+?)(?:\.git)?$',
+                    remote_url,
+                )
+                if m:
+                    return m.group(1).rsplit('/', 1)[-1]
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return os.path.basename(project_path) or 'N/A'
+
+    def _build_header(self, tag: str) -> str:
+        """Build the thread header with tag, CLI, project, and branch from metadata.
 
         Args:
             tag: Session tag.
@@ -128,14 +158,18 @@ class OutputWatcher:
         meta_file = SOCKET_DIR / f"{tag}.meta"
         project = 'N/A'
         branch = 'N/A'
+        cli_provider = 'N/A'
         try:
             if meta_file.exists():
                 data = json.loads(meta_file.read_text())
-                project = os.path.basename(data.get('project_path', '')) or 'N/A'
+                project_path = data.get('project_path', '')
+                if project_path:
+                    project = self._get_project_name(project_path)
                 branch = data.get('branch', '') or 'N/A'
+                cli_provider = data.get('cli_provider', '') or 'N/A'
         except (json.JSONDecodeError, OSError):
             pass
-        return f"*[tag: {tag}, project: {project}, branch: {branch}]*"
+        return f"*[tag: {tag}, CLI: {cli_provider}, project: {project}, branch: {branch}]*"
 
     def _send_greeting(self, tag: str) -> None:
         """Post a greeting message to create the Slack thread for a session.
