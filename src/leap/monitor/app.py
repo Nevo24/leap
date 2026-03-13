@@ -203,21 +203,6 @@ class MonitorWindow(
         layout = QVBoxLayout()
         main_widget.setLayout(layout)
 
-        # Logo banner — check source tree first, then .app bundle Resources/
-        logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "leap-text.png"
-        if not logo_path.exists():
-            for parent in Path(__file__).parents:
-                if parent.name == 'Resources' and parent.parent.name == 'Contents':
-                    logo_path = parent / "leap-text.png"
-                    break
-        if logo_path.exists():
-            logo_pixmap = QPixmap(str(logo_path)).scaledToHeight(
-                40, Qt.SmoothTransformation)
-            logo_label = QLabel()
-            logo_label.setPixmap(logo_pixmap)
-            logo_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(logo_label)
-
         # Table
         self.table = QTableWidget()
         self.table.setHorizontalHeader(SeparatorHeaderView(Qt.Horizontal, self.table))
@@ -321,14 +306,40 @@ class MonitorWindow(
         self._hover_timer.timeout.connect(self._check_row_hover)
         self._hover_timer.start(50)
 
-        # Top controls
-        top_layout = QHBoxLayout()
+        # Logo row: [Settings] ... [LEAP logo] ... [Reset Window Sizes]
+        logo_layout = QHBoxLayout()
 
         settings_btn = QPushButton('\u2699  Settings')
         settings_btn.setToolTip('Monitor settings')
         settings_btn.clicked.connect(self._open_settings)
-        top_layout.addWidget(settings_btn)
+        logo_layout.addWidget(settings_btn)
 
+        logo_layout.addStretch()
+
+        # Logo banner — check source tree first, then .app bundle Resources/
+        logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "leap-text.png"
+        if not logo_path.exists():
+            for parent in Path(__file__).parents:
+                if parent.name == 'Resources' and parent.parent.name == 'Contents':
+                    logo_path = parent / "leap-text.png"
+                    break
+        if logo_path.exists():
+            logo_pixmap = QPixmap(str(logo_path)).scaledToHeight(
+                40, Qt.SmoothTransformation)
+            logo_label = QLabel()
+            logo_label.setPixmap(logo_pixmap)
+            logo_layout.addWidget(logo_label)
+
+        logo_layout.addStretch()
+
+        reset_cols_btn = QPushButton('Reset Window Sizes')
+        reset_cols_btn.setToolTip('Reset all window and column sizes to defaults')
+        reset_cols_btn.clicked.connect(self._reset_window_size)
+        logo_layout.addWidget(reset_cols_btn)
+        layout.addLayout(logo_layout)
+
+        # Top controls (presets) — centered
+        top_layout = QHBoxLayout()
         top_layout.addStretch()
 
         edit_preset_btn = QPushButton('\u270e  Presets')
@@ -366,12 +377,7 @@ class MonitorWindow(
         preset_grid.addWidget(self.direct_preset_combo, 1, 1)
 
         top_layout.addLayout(preset_grid)
-
         top_layout.addStretch()
-        reset_cols_btn = QPushButton('Reset Window Sizes')
-        reset_cols_btn.setToolTip('Reset all window and column sizes to defaults')
-        reset_cols_btn.clicked.connect(self._reset_window_size)
-        top_layout.addWidget(reset_cols_btn)
         layout.addLayout(top_layout)
 
         add_row_layout = QHBoxLayout()
