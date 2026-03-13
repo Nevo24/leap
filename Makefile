@@ -577,7 +577,7 @@ configure-shell:
 .PHONY: .configure-hooks
 .configure-hooks:
 	@echo "$(PROMPT_PREFIX) Configuring CLI hooks..."
-	@PYTHONPATH="$(SRC_DIR):$$PYTHONPATH" python3 "$(SCRIPTS_DIR)/configure_hooks.py" --all "$(SCRIPTS_DIR)/leap-hook.sh"
+	@PYTHONPATH="$(SRC_DIR):$$PYTHONPATH" "$$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3" "$(SCRIPTS_DIR)/configure_hooks.py" --all "$(SCRIPTS_DIR)/leap-hook.sh"
 	@echo "$(GREEN)  ✓ CLI hooks configured$(NC)"
 
 .PHONY: .migrate-from-claudeq

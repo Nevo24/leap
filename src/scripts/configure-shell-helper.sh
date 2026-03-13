@@ -52,8 +52,13 @@ else
     echo -e "${GREEN}✓ Creating new $RC_FILE${NC}"
 fi
 
-# Get Poetry venv path
-POETRY_VENV=$(cd "$REPO_PATH" && poetry env info --path 2>/dev/null || echo "")
+# Get Poetry venv path (try stored path first, then poetry command)
+VENV_PATH_FILE="$REPO_PATH/.storage/venv-path"
+if [ -f "$VENV_PATH_FILE" ]; then
+    POETRY_VENV=$(cat "$VENV_PATH_FILE")
+else
+    POETRY_VENV=$(cd "$REPO_PATH" && poetry env info --path 2>/dev/null || echo "")
+fi
 
 # Add Leap configuration
 cat >> "$RC_FILE" <<'EOF'
@@ -100,7 +105,7 @@ echo "" >> "$RC_FILE"
 
 # Generate per-CLI default flags from the provider registry
 echo "# Default flags per CLI (always passed when starting a server)" >> "$RC_FILE"
-PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" python3 -c "
+PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
 from leap.cli_providers.registry import list_providers
 for name in list_providers():
     var = 'LEAP_' + name.upper() + '_FLAGS'
