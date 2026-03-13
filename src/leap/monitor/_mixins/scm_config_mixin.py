@@ -358,11 +358,16 @@ class SCMConfigMixin(_Base):
         script = str(project_dir / 'src' / 'scripts' / 'leap-main.sh')
 
         process = QProcess(self)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.setWorkingDirectory(str(project_dir))
         process.setProgram('/bin/bash')
         process.setArguments([script, '--slack'])
 
-        # Inherit current environment + tell the script we're the monitor
+        # Inherit current environment but remove py2app pollution so the
+        # poetry venv Python used by leap-main.sh works correctly.
         env = QProcessEnvironment.systemEnvironment()
+        env.remove('PYTHONHOME')
+        env.remove('PYTHONPATH')
         env.insert('LEAP_SLACK_SOURCE', 'monitor')
         process.setProcessEnvironment(env)
 
@@ -473,8 +478,17 @@ class SCMConfigMixin(_Base):
     def _on_slack_bot_finished(self) -> None:
         """Clean up after the Slack bot QProcess exits."""
         if self._slack_bot_process:
+            exit_code = self._slack_bot_process.exitCode()
+            output = bytes(self._slack_bot_process.readAllStandardOutput()).decode(
+                errors='replace').strip()
             self._slack_bot_process.deleteLater()
             self._slack_bot_process = None
+            if exit_code != 0:
+                msg = f'Slack bot exited with code {exit_code}'
+                if output:
+                    last_line = output.rstrip().rsplit('\n', 1)[-1]
+                    msg += f': {last_line}'
+                self._show_status(msg)
         self._update_slack_bot_button()
 
     def _slack_bot_context_menu(self, pos: Any) -> None:
