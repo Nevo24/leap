@@ -8,7 +8,7 @@ from setuptools import setup, find_packages
 APP = ['src/scripts/leap_monitor_launcher.py']
 DATA_FILES = [
     ('', ['src/leap/monitor/resources/activate_terminal.groovy',
-          'assets/leap-icon.png']),
+          'assets/leap-icon.png', 'assets/leap-text.png']),
     ('.storage', ['.storage/project-path', '.storage/venv-path'])
 ]
 OPTIONS = {

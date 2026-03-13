@@ -203,8 +203,13 @@ class MonitorWindow(
         layout = QVBoxLayout()
         main_widget.setLayout(layout)
 
-        # Logo banner
+        # Logo banner — check source tree first, then .app bundle Resources/
         logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "leap-text.png"
+        if not logo_path.exists():
+            for parent in Path(__file__).parents:
+                if parent.name == 'Resources' and parent.parent.name == 'Contents':
+                    logo_path = parent / "leap-text.png"
+                    break
         if logo_path.exists():
             logo_pixmap = QPixmap(str(logo_path)).scaledToHeight(
                 40, Qt.SmoothTransformation)
