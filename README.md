@@ -26,6 +26,22 @@ source ~/.zshrc  # or ~/.bashrc
 
 Already installed? Run `leap --update` to pull the latest version and rebuild.
 
+### Upgrading from ClaudeQ
+
+The project was renamed from **ClaudeQ** (`claudeq`) to **Leap** (`leap`). If you have an existing ClaudeQ installation:
+
+```bash
+cd ~/workspace/claudeq   # your existing repo
+git pull                  # get the new code
+cd ..
+mv claudeq leap           # rename the directory
+cd leap
+make install              # runs migration + installs new 'leap' command
+source ~/.zshrc           # activate the new shell config
+```
+
+This migrates your storage, hooks, shell config, and monitor app automatically. The old `cq` / `claudeq` commands are replaced by `leap`.
+
 ## Usage
 
 Just run `leap <tag>` — that's it! Leap wraps your AI CLI with queueing and session tracking.
