@@ -213,13 +213,13 @@ class MonitorWindow(
         # Column header tooltip descriptions (applied via _apply_header_tooltips)
         self._col_tooltip_descriptions = {
             self.COL_TAG: 'Leap session name',
-            self.COL_CLI: 'AI CLI backend (Claude or Codex)',
+            self.COL_CLI: 'AI CLI backend',
             self.COL_PROJECT: 'Git project name',
             self.COL_SERVER: 'Leap server process (green = running)',
             self.COL_PATH: 'Directory where the server is running',
             self.COL_SERVER_BRANCH: 'The git branch the server is running on',
             self.COL_STATUS: (
-                'Claude\u2019s current state:\n'
+                'CLI session state:\n'
                 '\n'
                 '\u25cb Idle \u2014 waiting for input\n'
                 '\u25cf Running \u2014 actively processing\n'

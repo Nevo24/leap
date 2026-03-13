@@ -268,7 +268,7 @@ class PulsingLabel(QLabel):
         send_action = QAction('Send each thread to Leap (one per queue message)', menu)
         send_action.setToolTip(
             'Queue each unresponded thread as a separate message\n'
-            'so Claude handles them one at a time')
+            'so the CLI handles them one at a time')
         send_action.triggered.connect(lambda: send_to_leap() if send_to_leap else None)
         send_action.setEnabled(bool(server_running and has_unresponded and send_to_leap))
         menu.addAction(send_action)
@@ -276,7 +276,7 @@ class PulsingLabel(QLabel):
         combined_action = QAction('Send all threads to Leap (combined into one message)', menu)
         combined_action.setToolTip(
             'Concatenate all unresponded threads into a single\n'
-            'message so Claude sees them all at once')
+            'message so the CLI sees them all at once')
         combined_action.triggered.connect(lambda: send_combined() if send_combined else None)
         combined_action.setEnabled(bool(server_running and has_unresponded and send_combined))
         menu.addAction(combined_action)

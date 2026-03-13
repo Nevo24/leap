@@ -12,6 +12,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from leap.cli_providers.registry import DEFAULT_PROVIDER
+from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.ide_detection import get_git_branch
 from leap.utils.socket_utils import send_socket_request
@@ -181,8 +183,8 @@ def get_active_sessions() -> list[dict[str, Any]]:
             continue
 
         queue_size = status_response.get('queue_size', 0)
-        claude_state = status_response.get('claude_state', 'idle')
-        auto_send_mode = status_response.get('auto_send_mode', 'pause')
+        cli_state = status_response.get('cli_state', CLIState.IDLE)
+        auto_send_mode = status_response.get('auto_send_mode', AutoSendMode.PAUSE)
         slack_enabled = status_response.get('slack_enabled', False)
 
         # Load metadata
@@ -226,11 +228,11 @@ def get_active_sessions() -> list[dict[str, Any]]:
             except (OSError, ValueError):
                 pass
 
-        cli_provider = status_response.get('cli_provider', 'claude')
+        cli_provider = status_response.get('cli_provider', DEFAULT_PROVIDER)
 
         sessions.append({
             'tag': tag,
-            'claude_state': claude_state,
+            'cli_state': cli_state,
             'auto_send_mode': auto_send_mode,
             'queue_size': queue_size,
             'project': project_name or 'N/A',

@@ -9,6 +9,7 @@ message (idle) or a direct PTY input (needs_permission / needs_input).
 import time
 from typing import Any, Optional
 
+from leap.cli_providers.states import CLIState, WAITING_STATES
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
 from leap.slack.config import load_slack_sessions
@@ -52,9 +53,9 @@ class MessageRouter:
         if not status:
             return 'offline'
 
-        claude_state = status.get('claude_state', 'idle')
+        cli_state = status.get('cli_state', CLIState.IDLE)
 
-        if claude_state in ('needs_permission', 'needs_input', 'interrupted'):
+        if cli_state in WAITING_STATES:
             normalized = text.strip()
             if normalized.isdigit():
                 response = send_socket_request(

@@ -83,6 +83,10 @@ class ClaudeProvider(CLIProvider):
 
     # -- Hook configuration ----------------------------------------------
 
+    @property
+    def hook_config_dir(self) -> Path:
+        return Path.home() / ".claude" / "hooks"
+
     def configure_hooks(self, hook_script_path: str) -> None:
         """Install hooks into ~/.claude/settings.json."""
         settings_path = Path.home() / ".claude" / "settings.json"

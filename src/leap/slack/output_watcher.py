@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from leap.cli_providers.states import CLIState, WAITING_STATES
 from leap.utils.constants import SOCKET_DIR
 from leap.slack.config import load_slack_sessions, save_slack_sessions
 
@@ -165,7 +166,7 @@ class OutputWatcher:
             # Post the last Claude message / permission request for context
             context = self._read_last_context(tag)
             last_msg = context.get('output', '')
-            state = context.get('state', 'idle')
+            state = context.get('state', CLIState.IDLE)
             notification_message = context.get('notification_message', '')
             prompt_output = context.get('prompt_output', '')
 
@@ -178,7 +179,7 @@ class OutputWatcher:
                         result_ts,
                     )
 
-            if state in ('needs_permission', 'needs_input', 'interrupted'):
+            if state in WAITING_STATES:
                 footer = self._build_footer(
                     state, False, notification_message, prompt_output,
                 )
@@ -204,7 +205,7 @@ class OutputWatcher:
             and ``prompt_output`` keys.
         """
         result: dict[str, str] = {
-            'output': '', 'state': 'idle',
+            'output': '', 'state': CLIState.IDLE,
             'notification_message': '', 'prompt_output': '',
         }
 
@@ -216,7 +217,7 @@ class OutputWatcher:
                 msg = data.get('last_assistant_message', '').strip()
                 if msg:
                     result['output'] = msg
-                result['state'] = data.get('state', 'idle')
+                result['state'] = data.get('state', CLIState.IDLE)
                 notif = data.get('notification_message', '').strip()
                 if notif:
                     result['notification_message'] = notif
@@ -253,7 +254,7 @@ class OutputWatcher:
             payload: Parsed .last_response content.
         """
         output = payload.get('output', '')
-        state = payload.get('state', 'idle')
+        state = payload.get('state', CLIState.IDLE)
         queue_has_next = payload.get('queue_has_next', False)
 
         notification_message = payload.get('notification_message', '')
@@ -322,12 +323,12 @@ class OutputWatcher:
         Returns:
             Footer text string.
         """
-        if state == 'idle' and not queue_has_next:
-            return ':speech_balloon: *Claude is waiting for your input*'
-        elif state == 'idle' and queue_has_next:
+        if state == CLIState.IDLE and not queue_has_next:
+            return ':speech_balloon: *Waiting for your input*'
+        elif state == CLIState.IDLE and queue_has_next:
             return ':arrow_forward: _Auto-sending next message..._'
-        elif state in ('needs_permission', 'needs_input', 'interrupted'):
-            header = ':warning: *Claude Code needs your attention*'
+        elif state in WAITING_STATES:
+            header = ':warning: *Needs your attention*'
             if notification_message:
                 header = f':warning: *{notification_message}*'
             if prompt_output:

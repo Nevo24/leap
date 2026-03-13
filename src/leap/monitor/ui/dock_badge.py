@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+from leap.cli_providers.states import CLIState
+
 from PyQt5.QtCore import QRect, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import QApplication
@@ -54,7 +56,7 @@ class DockBadge:
     def __init__(self) -> None:
         self._base_icon: Optional[QPixmap] = None
         self._seen_pr_statuses: dict[str, PRStatus] = {}
-        self._seen_session_states: dict[str, str] = {}  # tag -> claude_state
+        self._seen_session_states: dict[str, str] = {}  # tag -> cli_state
         self._busy_since: dict[str, float] = {}  # tag -> monotonic timestamp
         self._pr_changed: int = 0
         self._session_changed: int = 0
@@ -167,14 +169,14 @@ class DockBadge:
         - running -> needs_input: SESSION_NEEDS_INPUT
 
         Args:
-            sessions: List of session dicts with 'tag' and 'claude_state' keys.
+            sessions: List of session dicts with 'tag' and 'cli_state' keys.
             window_active: Whether the monitor window is currently focused.
             dock_enabled: Map of NotificationType.value -> bool for dock counting.
 
         Returns:
             List of NotificationEvent for state transitions.
         """
-        current = {s['tag']: s.get('claude_state', 'idle') for s in sessions}
+        current = {s['tag']: s.get('cli_state', CLIState.IDLE) for s in sessions}
         if window_active:
             self._seen_session_states = dict(current)
             self._session_changed = 0
@@ -187,17 +189,17 @@ class DockBadge:
         dock_count = 0
 
         _TRANSITION_MAP = {
-            'idle': NotificationType.SESSION_COMPLETED,
-            'needs_permission': NotificationType.SESSION_NEEDS_PERMISSION,
-            'needs_input': NotificationType.SESSION_NEEDS_INPUT,
-            'interrupted': NotificationType.SESSION_INTERRUPTED,
+            CLIState.IDLE: NotificationType.SESSION_COMPLETED,
+            CLIState.NEEDS_PERMISSION: NotificationType.SESSION_NEEDS_PERMISSION,
+            CLIState.NEEDS_INPUT: NotificationType.SESSION_NEEDS_INPUT,
+            CLIState.INTERRUPTED: NotificationType.SESSION_INTERRUPTED,
         }
 
         for tag, state in current.items():
             prev = self._seen_session_states.get(tag)
-            if state == 'running' and prev != 'running':
+            if state == CLIState.RUNNING and prev != CLIState.RUNNING:
                 self._busy_since[tag] = now
-            elif prev == 'running' and state != 'running':
+            elif prev == CLIState.RUNNING and state != CLIState.RUNNING:
                 started = self._busy_since.pop(tag, None)
                 if started is not None and (now - started) >= self.MIN_BUSY_SECONDS:
                     notif_type = _TRANSITION_MAP.get(state)
@@ -211,7 +213,7 @@ class DockBadge:
                             if dock_enabled is None or dock_enabled.get(ev.type.value, True):
                                 dock_count += 1
                                 self._session_notified.add(key)
-            elif state != 'running':
+            elif state != CLIState.RUNNING:
                 self._busy_since.pop(tag, None)
 
         self._seen_session_states = dict(current)

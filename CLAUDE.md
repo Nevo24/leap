@@ -28,8 +28,9 @@ src/
 │   ├── leap_monitor_launcher.py  # py2app entry point
 │   ├── setup-slack-app.sh       # Interactive Slack app setup wizard
 │   ├── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
-│   ├── configure_claude_hooks.py    # Merge Leap hooks into ~/.claude/settings.json
-│   ├── configure_codex_hooks.py    # Merge Leap hooks into ~/.codex/hooks.json
+│   ├── configure_hooks.py           # Unified hook config (delegates to provider.configure_hooks())
+│   ├── configure_claude_hooks.py    # Legacy Claude hook config (kept for reference)
+│   ├── configure_codex_hooks.py     # Legacy Codex hook config (kept for reference)
 │   └── leap-hook.sh             # CLI hook script (writes state to signal file)
 │
 └── leap/                     # Main Python package
@@ -165,6 +166,7 @@ assets/
 | `resolve_scm_token()` | `monitor/pr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `parse_pr_url()` | `monitor/pr_tracking/git_utils.py` | Parse GitLab/GitHub PR URLs |
 | `send_to_leap_session()` | `monitor/leap_sender.py` | Send message to Leap session (prepends PR context) |
+| `configure_hooks.py` | `scripts/configure_hooks.py` | Unified hook config (iterates providers, calls `provider.configure_hooks()`) |
 
 ## Runtime Data Files
 
@@ -207,6 +209,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 
 ## Adding Features
 
+- **New CLI provider** → See the `.claude/skills/add-cli-provider.md` skill for a comprehensive step-by-step guide. Key files: create `cli_providers/<name>.py`, register in `registry.py`, implement `configure_hooks()`. The CLI selector, monitor table, ASCII banner, and shell flags are all dynamic and require no changes.
 - **Utils** → `src/leap/utils/`
 - **Server** → `src/leap/server/`, update `LeapServer`
 - **Client** → `src/leap/client/`, update `LeapClient`

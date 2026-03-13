@@ -10,6 +10,7 @@ from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
 from leap.cli_providers.registry import get_provider, list_providers
 from leap.cli_providers.states import (
+    AutoSendMode,
     CLIState,
     PROMPT_STATES,
     SIGNAL_ALIASES,
@@ -18,6 +19,7 @@ from leap.cli_providers.states import (
 )
 
 __all__ = [
+    'AutoSendMode',
     'CLIProvider',
     'CLIState',
     'ClaudeProvider',

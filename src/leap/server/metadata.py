@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from leap.cli_providers.registry import DEFAULT_PROVIDER
 from leap.utils.ide_detection import detect_ide, get_git_branch
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class SessionMetadata:
             'pid': os.getpid(),
             'project_path': project_path,
             'branch': branch_name,
-            'cli_provider': cli_provider or 'claude',
+            'cli_provider': cli_provider or DEFAULT_PROVIDER,
         }
 
         try:

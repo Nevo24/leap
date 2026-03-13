@@ -11,6 +11,7 @@ import json
 import time
 from typing import Any, Optional
 
+from leap.cli_providers.states import CLIState
 from leap.utils.constants import SLACK_DIR, SOCKET_DIR, atomic_json_write
 
 
@@ -65,7 +66,7 @@ class OutputCapture:
             return
         if new_state == prev_state:
             return
-        if new_state not in ('idle', 'needs_permission', 'needs_input', 'interrupted'):
+        if new_state not in (CLIState.IDLE, CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT, CLIState.INTERRUPTED):
             return
 
         # Read the response text and notification message from the signal file
@@ -74,7 +75,7 @@ class OutputCapture:
         notification_message = signal_data.get('notification_message', '')
 
         # For idle, skip if no meaningful output
-        if new_state == 'idle' and not output:
+        if new_state == CLIState.IDLE and not output:
             return
 
         payload = {
@@ -110,7 +111,7 @@ class OutputCapture:
         """
         if not self._enabled:
             return
-        if current_state not in ('idle', 'needs_permission', 'needs_input', 'interrupted'):
+        if current_state not in (CLIState.IDLE, CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT, CLIState.INTERRUPTED):
             return
 
         signal_data = self._read_signal_data()

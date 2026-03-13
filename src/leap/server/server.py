@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
-from leap.cli_providers.states import PROMPT_STATES, WAITING_STATES
+from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
     POLL_INTERVAL, TITLE_RESET_INTERVAL,
@@ -159,7 +159,7 @@ class LeapServer:
         self.socket_handler = SocketHandler(self.socket_path, self._handle_message)
 
         # State tracking — per-session pinned mode overrides global default
-        global_mode = load_settings().get('auto_send_mode', 'pause')
+        global_mode = load_settings().get('auto_send_mode', AutoSendMode.PAUSE)
         pinned_mode = self._load_pinned_auto_send_mode(tag, global_mode)
         self.state = CLIStateTracker(
             signal_file=SOCKET_DIR / f"{tag}.signal",
@@ -310,9 +310,9 @@ class LeapServer:
                 'queue_contents': self.queue.get_contents(),
                 'recently_sent': self.queue.get_recently_sent(),
                 'ready': self.state.is_ready_for_state(state),
-                'claude_state': state,
+                'cli_state': state,
                 'auto_send_mode': self.state.auto_send_mode,
-                'claude_running': self.pty.is_alive(),
+                'cli_running': self.pty.is_alive(),
                 'slack_enabled': self.output_capture.is_enabled(),
                 'cli_provider': self._provider.name,
             }
@@ -377,7 +377,7 @@ class LeapServer:
 
         elif msg_type == 'set_auto_send_mode':
             mode = msg.get('mode', '')
-            if mode not in ('pause', 'always'):
+            if mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
                 return {'status': 'error', 'message': f"Invalid mode: {mode}. Use 'pause' or 'always'."}
             self.state.auto_send_mode = mode
             settings = load_settings()
@@ -426,8 +426,6 @@ class LeapServer:
         else:
             self.pty.sendline(message)
 
-    # Backwards-compatible alias
-    _send_to_claude = _send_to_cli
 
     def _prompt_load_old_queue(self) -> None:
         """Prompt user to load or discard old queued messages."""
@@ -527,7 +525,7 @@ class LeapServer:
 
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
-        prev_state = 'idle'
+        prev_state = CLIState.IDLE
         # Delayed write for prompt states: wait for TUI to finish rendering
         # before capturing prompt output for Slack.
         prompt_write_due: float = 0.0
@@ -545,8 +543,8 @@ class LeapServer:
                     prompt_write_due = 0.0
                     queue_has_next = (
                         not self.queue.is_empty
-                        and current_state == 'idle'
-                        and self.state.auto_send_mode in ('pause', 'always')
+                        and current_state == CLIState.IDLE
+                        and self.state.auto_send_mode in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS)
                     )
                     if current_state in WAITING_STATES:
                         # Delay writing: let PTY output accumulate so the

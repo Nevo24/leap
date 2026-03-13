@@ -98,11 +98,17 @@ if [ -n "$JETBRAINS_PATHS" ]; then
 fi
 echo "" >> "$RC_FILE"
 
+# Generate per-CLI default flags from the provider registry
+echo "# Default flags per CLI (always passed when starting a server)" >> "$RC_FILE"
+PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" python3 -c "
+from leap.cli_providers.registry import list_providers
+for name in list_providers():
+    var = 'LEAP_' + name.upper() + '_FLAGS'
+    print(f'export {var}=\"\"')
+" >> "$RC_FILE"
+
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
-# Default flags per CLI (always passed when starting a server)
-export LEAP_CLAUDE_FLAGS=""
-export LEAP_CODEX_FLAGS=""
 
 # Extra flags can also be passed inline: leap my-tag --some-flag
 leap() {

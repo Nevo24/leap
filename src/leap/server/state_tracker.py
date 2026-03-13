@@ -21,7 +21,7 @@ import pyte
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
-from leap.cli_providers.states import CLIState, PROMPT_STATES, WAITING_STATES
+from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
     ESCAPE_CORRECTION_WINDOW,
     ESCAPE_RACE_WINDOW,
@@ -82,7 +82,7 @@ class CLIStateTracker:
     def __init__(
         self,
         signal_file: Path,
-        auto_send_mode: str = 'pause',
+        auto_send_mode: AutoSendMode = AutoSendMode.PAUSE,
         clock: Optional[Callable[[], float]] = None,
         provider: Optional[CLIProvider] = None,
     ) -> None:
@@ -322,7 +322,7 @@ class CLIStateTracker:
         """
         if state == CLIState.INTERRUPTED:
             return False
-        if self._auto_send_mode == 'always':
+        if self._auto_send_mode == AutoSendMode.ALWAYS:
             return state != CLIState.RUNNING
         # 'pause' mode (default): only send when idle
         return state == CLIState.IDLE
@@ -742,12 +742,12 @@ class CLIStateTracker:
         return self._state
 
     @property
-    def auto_send_mode(self) -> str:
-        """Current auto-send mode ('pause' or 'always')."""
+    def auto_send_mode(self) -> AutoSendMode:
+        """Current auto-send mode."""
         return self._auto_send_mode
 
     @auto_send_mode.setter
-    def auto_send_mode(self, mode: str) -> None:
+    def auto_send_mode(self, mode: AutoSendMode) -> None:
         self._auto_send_mode = mode
 
     def cleanup(self) -> None:

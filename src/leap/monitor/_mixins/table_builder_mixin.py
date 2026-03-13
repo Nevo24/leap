@@ -25,7 +25,8 @@ from leap.monitor.pr_tracking.config import (
     load_selected_preset_name,
     save_selected_direct_preset_name, save_selected_preset_name,
 )
-from leap.cli_providers.registry import get_provider
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_provider
+from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.monitor.session_manager import get_active_sessions
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
@@ -530,11 +531,11 @@ class TableBuilderMixin(_Base):
                 self._build_tag_cell(row, tag, row_color)
 
                 # ── CLI cell ────────────────────────────────────────
-                cli_provider = session.get('cli_provider', 'claude')
+                cli_provider = session.get('cli_provider', DEFAULT_PROVIDER)
                 try:
                     cli_display = get_provider(cli_provider).display_name
                 except (ValueError, AttributeError):
-                    cli_display = cli_provider.capitalize() if cli_provider else 'Claude Code'
+                    cli_display = cli_provider.capitalize() if cli_provider else 'Unknown'
                 if is_dead:
                     # For dead rows, try metadata fallback
                     pinned_cli = pinned_data.get('cli_provider', '')
@@ -574,7 +575,7 @@ class TableBuilderMixin(_Base):
                         status_item.setForeground(QColor(current_theme().text_primary))
 
                     # Queue N/A with menu button
-                    dead_q_state = ('dead', session.get('auto_send_mode', 'pause'),
+                    dead_q_state = ('dead', session.get('auto_send_mode', AutoSendMode.PAUSE),
                                     row_color)
                     if not self._cell_cached(tag, 'queue', dead_q_state,
                                              row, self.COL_QUEUE):
@@ -627,16 +628,16 @@ class TableBuilderMixin(_Base):
                     self._build_branch_cell(row, tag, server_branch,
                                             row_color)
 
-                    claude_state = session.get('claude_state', 'idle')
+                    cli_state = session.get('cli_state', CLIState.IDLE)
                     t = current_theme()
                     state_display = {
-                        'idle': ('\u25cb Idle', QColor(t.status_idle)),
-                        'running': ('\u25cf Running', QColor(t.status_running)),
-                        'needs_permission': ('\u25b2 Permission', QColor(t.status_permission)),
-                        'needs_input': ('\u25c6 Input', QColor(t.status_input)),
-                        'interrupted': ('\u25c7 Interrupted', QColor(t.status_interrupted)),
+                        CLIState.IDLE: ('\u25cb Idle', QColor(t.status_idle)),
+                        CLIState.RUNNING: ('\u25cf Running', QColor(t.status_running)),
+                        CLIState.NEEDS_PERMISSION: ('\u25b2 Permission', QColor(t.status_permission)),
+                        CLIState.NEEDS_INPUT: ('\u25c6 Input', QColor(t.status_input)),
+                        CLIState.INTERRUPTED: ('\u25c7 Interrupted', QColor(t.status_interrupted)),
                     }
-                    text, color = state_display.get(claude_state, (claude_state, QColor(t.status_idle)))
+                    text, color = state_display.get(cli_state, (cli_state, QColor(t.status_idle)))
 
                     # Track state changes and show fire indicator for recent ones
                     prev = self._state_changed_at.get(tag)
@@ -644,16 +645,16 @@ class TableBuilderMixin(_Base):
                     if prev is None:
                         # First time seeing this tag — seed with epoch 0
                         # so the fire indicator doesn't flash on startup.
-                        self._state_changed_at[tag] = (claude_state, 0)
-                    elif prev[0] != claude_state:
-                        self._state_changed_at[tag] = (claude_state, now)
+                        self._state_changed_at[tag] = (cli_state, 0)
+                    elif prev[0] != cli_state:
+                        self._state_changed_at[tag] = (cli_state, now)
                         # Reset dismissal when state changes again
                         self._dismissed_new_status.discard(tag)
                     show_fire = False
                     threshold = self._prefs.get('new_status_seconds', 60)
                     if (
                         threshold > 0
-                        and claude_state not in ('running', 'interrupted')
+                        and cli_state not in (CLIState.RUNNING, CLIState.INTERRUPTED)
                         and tag not in self._dismissed_new_status
                     ):
                         changed_at = self._state_changed_at[tag][1]
@@ -661,11 +662,11 @@ class TableBuilderMixin(_Base):
                             show_fire = True
 
                     state_explanations = {
-                        'idle': 'Claude is waiting for input — will accept next queued message',
-                        'running': 'Claude is actively processing a request',
-                        'needs_permission': 'Claude needs your permission',
-                        'needs_input': 'Claude needs your input',
-                        'interrupted': 'Claude was interrupted — will accept next queued message',
+                        CLIState.IDLE: 'Waiting for input — will accept next queued message',
+                        CLIState.RUNNING: 'Actively processing a request',
+                        CLIState.NEEDS_PERMISSION: 'Needs your permission to use a tool',
+                        CLIState.NEEDS_INPUT: 'Asking you a question',
+                        CLIState.INTERRUPTED: 'Was interrupted — will accept next queued message',
                     }
 
                     # Adjust status color for row background contrast
@@ -718,13 +719,13 @@ class TableBuilderMixin(_Base):
                         # other states → dismiss fire indicator.
                         def _make_click(
                             t: str = tag,
-                            st: str = claude_state,
+                            st: str = cli_state,
                             w: QWidget = container,
                         ) -> Callable:
                             def _on_click(event: object) -> None:
-                                if st == 'interrupted':
+                                if st == CLIState.INTERRUPTED:
                                     self._show_status_action_menu(w, t)
-                                elif st == 'running':
+                                elif st == CLIState.RUNNING:
                                     self._show_running_status_menu(w, t)
                                 elif t not in self._dismissed_new_status:
                                     self._dismissed_new_status.add(t)
@@ -735,8 +736,8 @@ class TableBuilderMixin(_Base):
                         # Right-click on permission/question →
                         # show options menu (uses customContext
                         # signal so Qt delivers it properly).
-                        if claude_state in (
-                            'needs_permission', 'needs_input',
+                        if cli_state in (
+                            CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT,
                         ):
                             container.setContextMenuPolicy(
                                 Qt.CustomContextMenu)
@@ -771,7 +772,7 @@ class TableBuilderMixin(_Base):
                     explanation = ''
                     if self._prefs.get('show_tooltips', True):
                         explanation = state_explanations.get(
-                            claude_state, '')
+                            cli_state, '')
                         if show_fire and explanation:
                             ago = int(
                                 now - self._state_changed_at[tag][1])
@@ -788,7 +789,7 @@ class TableBuilderMixin(_Base):
                             label.setToolTip(explanation)
 
                     # Queue column with menu button on the left
-                    auto_send_mode = session.get('auto_send_mode', 'pause')
+                    auto_send_mode = session.get('auto_send_mode', AutoSendMode.PAUSE)
                     queue_size = session['queue_size']
                     q_state = (queue_size, auto_send_mode, row_color)
                     if not self._cell_cached(tag, 'queue', q_state,
@@ -1354,7 +1355,7 @@ class TableBuilderMixin(_Base):
             log_fn=self._show_status,
             show_tooltips=self._prefs.get('show_tooltips', True),
             notification_prefs=get_notification_prefs(self._prefs),
-            current_auto_send_mode=server_settings.get('auto_send_mode', 'pause'),
+            current_auto_send_mode=server_settings.get('auto_send_mode', AutoSendMode.PAUSE),
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
             new_status_seconds=self._prefs.get('new_status_seconds', 60),
             current_global_shortcut=self._prefs.get('global_shortcut', ''),
@@ -1386,10 +1387,10 @@ class TableBuilderMixin(_Base):
         self, label: QLabel, pos: 'QPoint', tag: str,
     ) -> None:
         """Show context menu on the Queue column left button."""
-        current_mode = 'pause'
+        current_mode = AutoSendMode.PAUSE
         for s in self.sessions:
             if s['tag'] == tag:
-                current_mode = s.get('auto_send_mode', 'pause')
+                current_mode = s.get('auto_send_mode', AutoSendMode.PAUSE)
                 break
 
         menu = QMenu(self)
@@ -1398,9 +1399,9 @@ class TableBuilderMixin(_Base):
 
         pause_action = menu.addAction('Pause on input (default)')
         pause_action.setCheckable(True)
-        pause_action.setChecked(current_mode == 'pause')
+        pause_action.setChecked(current_mode == AutoSendMode.PAUSE)
         pause_action.setToolTip(
-            'Auto-send queued messages only when Claude is idle.\n'
+            'Auto-send queued messages only when the CLI is idle.\n'
             '\n'
             '\u25cb Idle — sends next queued message\n'
             '\u25cf Running — waits until finished\n'
@@ -1408,14 +1409,14 @@ class TableBuilderMixin(_Base):
             '\u25c6 Question — waits (does not interrupt)\n'
             '\u25c7 Interrupted — waits (needs manual resume)')
         pause_action.triggered.connect(
-            lambda _checked, t=tag: self._set_auto_send_mode(t, 'pause')
+            lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.PAUSE)
         )
 
         always_action = menu.addAction('Always send')
         always_action.setCheckable(True)
-        always_action.setChecked(current_mode == 'always')
+        always_action.setChecked(current_mode == AutoSendMode.ALWAYS)
         always_action.setToolTip(
-            'Auto-send queued messages whenever Claude is\n'
+            'Auto-send queued messages whenever the CLI is\n'
             'not actively running — even if waiting for input.\n'
             '\n'
             '\u25cb Idle — sends next queued message\n'
@@ -1424,7 +1425,7 @@ class TableBuilderMixin(_Base):
             '\u25c6 Question — sends (interrupts the prompt)\n'
             '\u25c7 Interrupted — waits (needs manual resume)')
         always_action.triggered.connect(
-            lambda _checked, t=tag: self._set_auto_send_mode(t, 'always')
+            lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.ALWAYS)
         )
 
         menu.addSeparator()
@@ -1474,7 +1475,7 @@ class TableBuilderMixin(_Base):
         force_action.setEnabled(queue_size > 0)
         force_action.setToolTip(
             'Send the next queued message immediately,\n'
-            'even if Claude is still running')
+            'even if the CLI is still running')
         force_action.triggered.connect(
             lambda _checked, t=tag: self._force_send_next(t)
         )
@@ -1608,7 +1609,7 @@ class TableBuilderMixin(_Base):
             menu.setToolTipsVisible(True)
 
         interrupt_action = menu.addAction('Interrupt')
-        interrupt_action.setToolTip('Send Ctrl+C to stop Claude')
+        interrupt_action.setToolTip('Send Ctrl+C to stop the CLI')
         interrupt_action.triggered.connect(
             lambda _checked, t=tag: self._send_interrupt(t)
         )
@@ -1746,7 +1747,7 @@ class TableBuilderMixin(_Base):
         force_action.setEnabled(queue_size > 0)
         force_action.setToolTip(
             'Send the next queued message immediately,\n'
-            'even if Claude is still running')
+            'even if the CLI is still running')
         force_action.triggered.connect(
             lambda _checked, t=tag: self._force_send_next(t)
         )

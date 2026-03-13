@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QKeySequence
 
 from leap.monitor.dialogs.notifications_dialog import NotificationsDialog
+from leap.cli_providers.states import AutoSendMode
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import THEMES
 
@@ -134,7 +135,7 @@ class SettingsDialog(QDialog):
         log_fn: Optional[Callable[[str], None]] = None,
         show_tooltips: bool = True,
         notification_prefs: Optional[dict[str, dict[str, bool]]] = None,
-        current_auto_send_mode: str = 'pause',
+        current_auto_send_mode: str = AutoSendMode.PAUSE,
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
         current_global_shortcut: str = '',
@@ -208,7 +209,7 @@ class SettingsDialog(QDialog):
         grid.addWidget(QLabel('Default auto-send:'), 4, 0)
         self._auto_send_combo = QComboBox()
         self._auto_send_combo.addItems(['Pause on input', 'Always send'])
-        if current_auto_send_mode == 'always':
+        if current_auto_send_mode == AutoSendMode.ALWAYS:
             self._auto_send_combo.setCurrentIndex(1)
         grid.addWidget(self._auto_send_combo, 4, 1)
 
@@ -480,7 +481,7 @@ class SettingsDialog(QDialog):
 
     def selected_auto_send_mode(self) -> str:
         """Return the selected default auto-send mode."""
-        return 'always' if self._auto_send_combo.currentIndex() == 1 else 'pause'
+        return AutoSendMode.ALWAYS if self._auto_send_combo.currentIndex() == 1 else AutoSendMode.PAUSE
 
     def new_status_seconds(self) -> int:
         """Return the new-status fire indicator duration in seconds."""

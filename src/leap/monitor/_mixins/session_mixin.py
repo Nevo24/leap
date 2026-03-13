@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from PyQt5.QtWidgets import QMessageBox
 
+from leap.cli_providers.registry import DEFAULT_PROVIDER
+from leap.cli_providers.states import AutoSendMode
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.session_manager import (
@@ -69,7 +71,7 @@ class SessionMixin(_Base):
                     if is_pr_pinned
                     else s.get('branch') or ''
                 ),
-                'cli_provider': s.get('cli_provider') or 'claude',
+                'cli_provider': s.get('cli_provider') or DEFAULT_PROVIDER,
             }
             if self._pinned_sessions.get(tag) != pin_data:
                 self._pinned_sessions[tag] = pin_data
@@ -115,7 +117,7 @@ class SessionMixin(_Base):
                 merged.append({
                     'tag': tag,
                     'queue_size': 0,
-                    'auto_send_mode': pin.get('auto_send_mode', 'pause'),
+                    'auto_send_mode': pin.get('auto_send_mode', AutoSendMode.PAUSE),
                     'project': project_name,
                     'branch': pinned_branch,
                     'pr_branch': pinned_branch if pin.get('remote_project_path') else None,

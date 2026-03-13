@@ -125,7 +125,7 @@ class SocketClient:
         return self.send('queue', message)
 
     def send_direct(self, message: str) -> Optional[dict[str, Any]]:
-        """Send a message directly to Claude."""
+        """Send a message directly to the CLI."""
         return self.send('direct', message)
 
     def get_status(self, silent: bool = False) -> Optional[dict[str, Any]]:

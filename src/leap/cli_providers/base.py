@@ -145,6 +145,25 @@ class CLIProvider(ABC):
 
     # -- Hook configuration ----------------------------------------------
 
+    @property
+    @abstractmethod
+    def hook_config_dir(self) -> Path:
+        """Directory where the CLI stores its configuration/hooks.
+
+        The leap-hook.sh script will be copied into this directory
+        during installation.  E.g. ``~/.claude/hooks`` or ``~/.codex``.
+        """
+
+    @property
+    def requires_binary_for_hooks(self) -> bool:
+        """Whether hook configuration should be skipped if the CLI binary is not found.
+
+        Return True if hooks should only be configured when the CLI
+        is actually installed (e.g. Codex).  Return False to always
+        configure hooks (e.g. Claude Code, which is the primary CLI).
+        """
+        return False
+
     @abstractmethod
     def configure_hooks(self, hook_script_path: str) -> None:
         """Install hooks into the CLI's configuration.

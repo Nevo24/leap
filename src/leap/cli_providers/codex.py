@@ -142,6 +142,14 @@ class CodexProvider(CLIProvider):
 
     # -- Hook configuration ----------------------------------------------
 
+    @property
+    def hook_config_dir(self) -> Path:
+        return CODEX_CONFIG_DIR
+
+    @property
+    def requires_binary_for_hooks(self) -> bool:
+        return True
+
     def configure_hooks(self, hook_script_path: str) -> None:
         """Install hooks into ~/.codex/hooks.json.
 

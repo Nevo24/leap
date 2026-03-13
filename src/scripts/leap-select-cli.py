@@ -1,19 +1,36 @@
 #!/usr/bin/env python3
 """Interactive CLI provider selector for Leap.
 
-Presents an arrow-key menu to choose between Claude Code and Codex,
+Presents an arrow-key menu of all registered CLI providers,
 then prints the selected provider name to stdout for the shell wrapper.
+
+Providers are discovered dynamically from the registry — adding a new
+provider to registry.py automatically makes it appear here.
 """
 
 import sys
-import tty
 import termios
+import tty
+from pathlib import Path
+
+# Ensure src/ is on the path so leap package can be imported
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_SRC_DIR = _SCRIPT_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from leap.cli_providers.registry import get_provider, list_providers
 
 
-CHOICES = [
-    ("claude", "Claude Code"),
-    ("codex", "OpenAI Codex"),
-]
+def _build_choices() -> list[tuple[str, str]]:
+    """Build choices list from registry."""
+    return [
+        (name, get_provider(name).display_name)
+        for name in list_providers()
+    ]
+
+
+CHOICES = _build_choices()
 
 ORANGE = "\033[38;5;208m"
 DIM = "\033[2m"

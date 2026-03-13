@@ -1,8 +1,9 @@
-"""CLI state enumeration for Leap.
+"""CLI state and mode enumerations for Leap.
 
-Defines the canonical set of CLI states and commonly used groupings.
-Using ``str, Enum`` so members compare equal to their string values
-(e.g. ``CLIState.IDLE == 'idle'``) and serialize to JSON transparently.
+Defines the canonical set of CLI states, auto-send modes, and commonly
+used groupings.  Using ``str, Enum`` so members compare equal to their
+string values (e.g. ``CLIState.IDLE == 'idle'``) and serialize to JSON
+transparently.
 """
 
 from enum import Enum
@@ -17,6 +18,17 @@ class CLIState(str, Enum):
     NEEDS_PERMISSION = 'needs_permission'
     NEEDS_INPUT = 'needs_input'
     INTERRUPTED = 'interrupted'
+
+
+class AutoSendMode(str, Enum):
+    """Queue auto-send behavior.
+
+    PAUSE:  Only send when CLI is idle.
+    ALWAYS: Send whenever CLI is not running (even during prompts).
+    """
+
+    PAUSE = 'pause'
+    ALWAYS = 'always'
 
 
 # CLI is waiting for user action (not producing output).

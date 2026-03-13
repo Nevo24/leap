@@ -200,13 +200,13 @@ class PRDisplayMixin(_Base):
                 return (tag, f"{pr_ref} approved by {names}")
             return (tag, f"{pr_ref} approved")
         elif event.type == NotificationType.SESSION_COMPLETED:
-            return (tag, 'Claude finished processing')
+            return (tag, 'Session finished processing')
         elif event.type == NotificationType.SESSION_NEEDS_PERMISSION:
-            return (tag, 'Claude needs permission to use a tool')
+            return (tag, 'Session needs permission to use a tool')
         elif event.type == NotificationType.SESSION_NEEDS_INPUT:
-            return (tag, 'Claude needs your input')
+            return (tag, 'Session needs your input')
         elif event.type == NotificationType.SESSION_INTERRUPTED:
-            return (tag, 'Claude was interrupted')
+            return (tag, 'Session was interrupted')
         elif event.type == NotificationType.REVIEW_REQUESTED:
             title = event.notification_title or ''
             project = event.project_name or ''

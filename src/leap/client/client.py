@@ -15,7 +15,8 @@ import threading
 import time
 from typing import Optional
 
-from leap.cli_providers.registry import get_provider
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_provider
+from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR, SLACK_BOT_LOCK,
     ensure_storage_dirs, load_settings, save_settings,
@@ -370,13 +371,13 @@ class LeapClient:
             print("✗ Failed to queue message\n")
 
     def _send_direct(self, message: str) -> None:
-        """Send message directly to Claude."""
+        """Send message directly to the CLI."""
         message = self._resolve_image_placeholders(message)
         full_message = self._build_message_with_image(message)
 
         response = self.socket.send_direct(full_message)
         if response and response.get('status') == 'sent':
-            print(f"✓ Sent to Claude '{self.tag}'")
+            print(f"✓ Sent to '{self.tag}'")
             print("   See response in server tab\n")
         else:
             print("✗ Failed to send message\n")
@@ -387,23 +388,23 @@ class LeapClient:
         if response:
             queue_size = response.get('queue_size', 0)
             queue_contents = response.get('queue_contents', [])
-            claude_state = response.get('claude_state', 'idle')
-            auto_send_mode = response.get('auto_send_mode', 'pause')
+            cli_state = response.get('cli_state', CLIState.IDLE)
+            auto_send_mode = response.get('auto_send_mode', AutoSendMode.PAUSE)
 
             state_display = {
-                'idle': '\u2713 Idle \u2014 will accept next message',
-                'running': '\u23f3 Running \u2014 Claude is processing',
-                'needs_permission': '\u26a0\ufe0f Needs Permission \u2014 waiting for tool approval',
-                'needs_input': '\u2753 Needs Input \u2014 Claude is asking you something',
-                'interrupted': '\u26a1 Interrupted \u2014 will auto-send next message',
+                CLIState.IDLE: '\u2713 Idle \u2014 will accept next message',
+                CLIState.RUNNING: '\u23f3 Running \u2014 processing',
+                CLIState.NEEDS_PERMISSION: '\u26a0\ufe0f Needs Permission \u2014 waiting for tool approval',
+                CLIState.NEEDS_INPUT: '\u2753 Needs Input \u2014 asking you something',
+                CLIState.INTERRUPTED: '\u26a1 Interrupted \u2014 will auto-send next message',
             }
             mode_display = {
-                'pause': 'Pause on input',
-                'always': 'Always send',
+                AutoSendMode.PAUSE: 'Pause on input',
+                AutoSendMode.ALWAYS: 'Always send',
             }
 
             print("\n\U0001f4ca Server status:")
-            print(f"  {state_display.get(claude_state, claude_state)}")
+            print(f"  {state_display.get(cli_state, cli_state)}")
             print(f"  Auto-send: {mode_display.get(auto_send_mode, auto_send_mode)}")
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
@@ -511,8 +512,8 @@ class LeapClient:
         print()
         # Fetch current auto-send mode from server
         response = self.socket.get_status(silent=True)
-        as_mode = response.get('auto_send_mode', 'pause') if response else 'pause'
-        as_label = 'pause' if as_mode == 'pause' else 'always'
+        as_mode = response.get('auto_send_mode', AutoSendMode.PAUSE) if response else AutoSendMode.PAUSE
+        as_label = 'pause' if as_mode == AutoSendMode.PAUSE else 'always'
         notif_label = 'on' if self.show_auto_sent_notifications else 'off'
 
         print(f"  \U0001F916 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
@@ -536,7 +537,7 @@ class LeapClient:
             meta_file = SOCKET_DIR / f"{self.tag}.meta"
             with open(meta_file, 'r') as f:
                 data = json.load(f)
-            provider_name = data.get('cli_provider', 'claude')
+            provider_name = data.get('cli_provider', DEFAULT_PROVIDER)
             return get_provider(provider_name).display_name
         except Exception:
             return ''
@@ -612,20 +613,20 @@ class LeapClient:
         if len(parts) < 2:
             # Show current mode from server
             response = self.socket.get_status(silent=True)
-            mode = response.get('auto_send_mode', 'pause') if response else 'pause'
-            mode_display = {'pause': 'Pause on input', 'always': 'Always send'}
+            mode = response.get('auto_send_mode', AutoSendMode.PAUSE) if response else AutoSendMode.PAUSE
+            mode_display = {AutoSendMode.PAUSE: 'Pause on input', AutoSendMode.ALWAYS: 'Always send'}
             print(f"Auto-send mode: {mode_display.get(mode, mode)}")
             print("Usage: !autosend pause/always  (or !as pause/always)\n")
             return
 
         mode = parts[1].strip()
-        if mode not in ('pause', 'always'):
+        if mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
             print("\u2717 Invalid mode. Use: pause or always\n")
             return
 
         response = self.socket.set_auto_send_mode(mode)
         if response and response.get('status') == 'ok':
-            mode_display = {'pause': 'Pause on input', 'always': 'Always send'}
+            mode_display = {AutoSendMode.PAUSE: 'Pause on input', AutoSendMode.ALWAYS: 'Always send'}
             print(f"\u2713 Auto-send mode: {mode_display.get(mode, mode)}\n")
         else:
             print("\u2717 Failed to set auto-send mode\n")
