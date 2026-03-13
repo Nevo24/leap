@@ -74,8 +74,10 @@ class OutputCapture:
         output = signal_data.get('output', '')
         notification_message = signal_data.get('notification_message', '')
 
-        # For idle, skip if no meaningful output
-        if new_state == CLIState.IDLE and not output:
+        # For idle, skip if no meaningful output — unless the CLI just
+        # finished a turn (prev was running), in which case Slack should
+        # still get the state change so the user sees "Waiting for input".
+        if new_state == CLIState.IDLE and not output and prev_state != CLIState.RUNNING:
             return
 
         payload = {
