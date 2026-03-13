@@ -144,7 +144,7 @@ class OutputWatcher:
                     return m.group(1).rsplit('/', 1)[-1]
         except (subprocess.TimeoutExpired, OSError):
             pass
-        return os.path.basename(project_path) or 'N/A'
+        return 'N/A'
 
     def _build_header(self, tag: str) -> str:
         """Build the thread header with tag, CLI, project, and branch from metadata.
