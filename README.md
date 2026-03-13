@@ -31,13 +31,13 @@ Already installed? Run `leap --update` to pull the latest version and rebuild.
 The project was renamed from **ClaudeQ** (`claudeq`) to **Leap** (`leap`). If you have an existing ClaudeQ installation:
 
 ```bash
-cd ~/workspace/claudeq   # your existing repo
-git pull                  # get the new code
+cd <path-to-your-claudeq-repo>
+git pull
 cd ..
-mv claudeq leap           # rename the directory
+mv claudeq leap
 cd leap
-make install              # runs migration + installs new 'leap' command
-source ~/.zshrc           # activate the new shell config
+make install    # runs migration + installs new 'leap' command
+source ~/.zshrc
 ```
 
 This migrates your storage, hooks, shell config, and monitor app automatically. The old `cq` / `claudeq` commands are replaced by `leap`.
