@@ -626,6 +626,9 @@ class CLIStateTracker:
             with self._lock:
                 self._state = CLIState.INTERRUPTED
                 self._waiting_since = now
+            self._output_buf.clear()
+            self._last_prompt_buf = b''
+            return
         self._output_buf.clear()
         # Continue accumulating prompt output for Slack rendering.
         self._last_prompt_buf += data

@@ -26,11 +26,13 @@ class PRDisplayMixin(_Base):
 
     def _update_pr_column(self) -> None:
         """Update just the PR column widgets without rebuilding the whole table."""
+        row_tags = self.table.property('_row_tags') or []
         for row in range(self.table.rowCount()):
-            tag_item = self.table.item(row, self.COL_TAG)
-            if not tag_item:
+            if row >= len(row_tags):
+                break
+            tag = row_tags[row]
+            if not tag:
                 continue
-            tag = tag_item.text()
             pr_widget = self._pr_widgets.get(tag)
             if not pr_widget or sip.isdeleted(pr_widget):
                 self._pr_widgets.pop(tag, None)

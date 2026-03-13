@@ -422,7 +422,7 @@ class SendThreadsCombinedWorker(_BaseSendWorker):
                     parts.append("\n---\n")
                 parts.append(format_leap_message(cmd))
 
-            combined = "\n".join(parts)
+            combined = "".join(parts)
             sent = send_to_leap_session(self._matched_tag, combined)
             if sent:
                 ack_ok = self._ack_commands(self._commands)

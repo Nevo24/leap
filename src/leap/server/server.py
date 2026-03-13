@@ -5,6 +5,7 @@ Orchestrates PTY handling, socket server, and queue management.
 """
 
 import atexit
+import json
 import os
 import re
 import shutil
@@ -21,7 +22,7 @@ from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAI
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
     POLL_INTERVAL, TITLE_RESET_INTERVAL,
-    ensure_storage_dirs, load_settings, save_settings,
+    atomic_json_write, ensure_storage_dirs, load_settings, save_settings,
 )
 from leap.utils.terminal import set_terminal_title, print_banner
 from leap.server.pty_handler import PTYHandler
@@ -187,7 +188,6 @@ class LeapServer:
     @staticmethod
     def _load_pinned_auto_send_mode(tag: str, default: str) -> str:
         """Read auto_send_mode from pinned sessions if set for this tag."""
-        import json
         pinned_file = STORAGE_DIR / "pinned_sessions.json"
         try:
             if pinned_file.exists():
@@ -202,7 +202,6 @@ class LeapServer:
     @staticmethod
     def _save_pinned_auto_send_mode(tag: str, mode: str) -> None:
         """Persist auto_send_mode in pinned sessions for this tag."""
-        import json
         pinned_file = STORAGE_DIR / "pinned_sessions.json"
         try:
             if pinned_file.exists():
@@ -210,8 +209,7 @@ class LeapServer:
                     pinned = json.load(f)
                 if tag in pinned:
                     pinned[tag]['auto_send_mode'] = mode
-                    with open(pinned_file, 'w') as f:
-                        json.dump(pinned, f, indent=2)
+                    atomic_json_write(pinned_file, pinned)
         except (json.JSONDecodeError, OSError):
             pass
 
