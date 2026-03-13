@@ -1,8 +1,8 @@
 # Leap
 
-**A queueing system and dashboard for managing multiple Claude CLI sessions.**
+**A queueing system and dashboard for managing multiple AI CLI sessions.**
 
-Run Claude Code in any terminal (JetBrains, VS Code, iTerm2, and more). Queue messages while Claude is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
+Run AI coding agents (Claude Code, Codex CLI) in any terminal (JetBrains, VS Code, iTerm2, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
 
 ## Key Features
 
@@ -15,7 +15,7 @@ Run Claude Code in any terminal (JetBrains, VS Code, iTerm2, and more). Queue me
 
 **Platform:** macOS (full support). Linux works for core queueing and Slack, but the Monitor GUI is macOS only.
 
-**Prerequisites:** Python 3.11+, [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)
+**Prerequisites:** Python 3.11+, [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex CLI](https://github.com/openai/codex)
 
 ```bash
 git clone https://github.com/nevo24/leap.git
