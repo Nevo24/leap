@@ -21,7 +21,7 @@ Run AI coding agents (Claude Code, Codex CLI) in any terminal (JetBrains, VS Cod
 git clone https://github.com/nevo24/leap.git
 cd leap
 make install
-source ~/.zshrc  # or ~/.bashrc
+source ~/.zshrc  # ~/.bashrc on Linux
 ```
 
 Already installed? Run `leap --update` to pull the latest version and rebuild.
@@ -37,7 +37,7 @@ cd ..
 mv claudeq leap
 cd leap
 make install    # runs migration + installs new 'leap' command
-source ~/.zshrc
+source ~/.zshrc  # ~/.bashrc on Linux
 ```
 
 This migrates your storage, hooks, shell config, and monitor app automatically. The old `cq` / `claudeq` commands are replaced by `leap`.
