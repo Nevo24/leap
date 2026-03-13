@@ -37,6 +37,12 @@ signal_file = sys.argv[2]
 
 signal = {'state': state}
 
+# Write signal file IMMEDIATELY so the Leap server detects the state
+# change without waiting for stdin/transcript reading.  The file is
+# updated later with the assistant message text for Slack.
+with open(signal_file, 'w') as f:
+    json.dump(signal, f)
+
 # Read stdin with timeout — some CLIs (e.g. Codex) may not close stdin
 # promptly, which would hang the hook.  5s is generous for JSON delivery.
 stdin_content = ['']
@@ -62,16 +68,6 @@ try:
     direct_msg = hook_data.get('last_assistant_message', '')
     if direct_msg:
         signal['last_assistant_message'] = direct_msg
-
-    # For Notification hooks (needs_permission/needs_input), write the
-    # signal file immediately so the Leap server detects the state change
-    # without waiting for the slow transcript read.  The preceding Stop
-    # hook already captured the assistant response text.
-    if state != 'idle':
-        with open(signal_file, 'w') as f:
-            json.dump(signal, f)
-        # Still read transcript in the background to update the file,
-        # but don't block on it.
 
     # If we already have the message from the hook payload, skip
     # transcript reading entirely (faster, and avoids format mismatches).

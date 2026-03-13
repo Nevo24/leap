@@ -524,11 +524,13 @@ class LeapServer:
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
         prev_state = CLIState.IDLE
-        # Delayed write for prompt states: wait for TUI to finish rendering
-        # before capturing prompt output for Slack.
-        prompt_write_due: float = 0.0
-        prompt_prev_state: str = ''
-        prompt_queue_has_next: bool = False
+        # Delayed write for prompt/idle states: wait for TUI to finish
+        # rendering (prompts) or for the hook to update the signal file
+        # with the assistant message text (idle, for Slack).
+        delayed_write_due: float = 0.0
+        delayed_prev_state: str = ''
+        delayed_queue_has_next: bool = False
+        delayed_target_state: str = ''
         while self.running:
             time.sleep(POLL_INTERVAL)
 
@@ -537,8 +539,8 @@ class LeapServer:
 
                 # Detect state transitions for Slack output capture
                 if current_state != prev_state:
-                    # Cancel any pending prompt write on state change
-                    prompt_write_due = 0.0
+                    # Cancel any pending delayed write on state change
+                    delayed_write_due = 0.0
                     queue_has_next = (
                         not self.queue.is_empty
                         and current_state == CLIState.IDLE
@@ -547,27 +549,45 @@ class LeapServer:
                     if current_state in WAITING_STATES:
                         # Delay writing: let PTY output accumulate so the
                         # full permission dialog / input prompt is captured.
-                        prompt_write_due = time.time() + 0.2
-                        prompt_prev_state = prev_state
-                        prompt_queue_has_next = queue_has_next
+                        delayed_write_due = time.time() + 0.2
+                        delayed_prev_state = prev_state
+                        delayed_queue_has_next = queue_has_next
+                        delayed_target_state = current_state
+                    elif (
+                        current_state == CLIState.IDLE
+                        and prev_state == CLIState.RUNNING
+                    ):
+                        # Delay writing: the hook writes the signal file
+                        # immediately with just the state, then updates it
+                        # with last_assistant_message after reading stdin.
+                        # Wait 2s so the Slack message includes the text.
+                        delayed_write_due = time.time() + 2.0
+                        delayed_prev_state = prev_state
+                        delayed_queue_has_next = queue_has_next
+                        delayed_target_state = CLIState.IDLE
                     else:
                         self.output_capture.on_state_change(
                             current_state, prev_state, queue_has_next,
                         )
                     prev_state = current_state
 
-                # Delayed prompt output write
-                if prompt_write_due and time.time() >= prompt_write_due:
+                # Delayed Slack output write
+                if delayed_write_due and time.time() >= delayed_write_due:
                     try:
                         cs = self.state.current_state
-                        if cs in WAITING_STATES:
+                        if delayed_target_state in WAITING_STATES and cs in WAITING_STATES:
                             prompt_output = self.state.get_prompt_output()
                             self.output_capture.on_state_change(
-                                cs, prompt_prev_state,
-                                prompt_queue_has_next, prompt_output,
+                                cs, delayed_prev_state,
+                                delayed_queue_has_next, prompt_output,
+                            )
+                        elif delayed_target_state == CLIState.IDLE:
+                            self.output_capture.on_state_change(
+                                delayed_target_state, delayed_prev_state,
+                                delayed_queue_has_next,
                             )
                     finally:
-                        prompt_write_due = 0.0
+                        delayed_write_due = 0.0
 
                 if self.queue.is_empty or not self.state.is_ready_for_state(current_state):
                     continue
