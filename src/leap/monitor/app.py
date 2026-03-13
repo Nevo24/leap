@@ -6,6 +6,7 @@ PyQt5-based GUI for viewing and managing active Leap sessions.
 
 import logging
 import os
+from pathlib import Path
 import signal
 import sys
 import time
@@ -19,7 +20,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QTimer, Qt
 from PyQt5.QtGui import (
-    QColor, QCursor, QDrag, QIcon, QCloseEvent, QPalette, QResizeEvent,
+    QColor, QCursor, QDrag, QIcon, QCloseEvent, QPalette, QPixmap, QResizeEvent,
 )
 
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
@@ -201,6 +202,16 @@ class MonitorWindow(
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout()
         main_widget.setLayout(layout)
+
+        # Logo banner
+        logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "leap-text.png"
+        if logo_path.exists():
+            logo_pixmap = QPixmap(str(logo_path)).scaledToHeight(
+                40, Qt.SmoothTransformation)
+            logo_label = QLabel()
+            logo_label.setPixmap(logo_pixmap)
+            logo_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(logo_label)
 
         # Table
         self.table = QTableWidget()
