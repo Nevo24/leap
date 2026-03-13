@@ -303,8 +303,9 @@ if [ -S "$SOCKET_PATH" ]; then
 
         # Flags are silently ignored for clients (only used by server)
 
-        # Set terminal tab name
+        # Set terminal tab name (OSC for native terminals, request file for VS Code)
         echo -ne "\033]0;lpc ${TAG}\007"
+        echo "rename:lpc ${TAG}" > "$HOME/.leap-terminal-request"
         exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "$@"
     else
         # Stale socket - remove it and continue to server check below
@@ -366,6 +367,7 @@ HISTORY_FILE.write_text('\n'.join(history) + '\n')
 " 2>/dev/null
 
 # Start server
-# Set terminal tab name
+# Set terminal tab name (OSC for native terminals, request file for VS Code)
 echo -ne "\033]0;lps ${TAG}\007"
+echo "rename:lps ${TAG}" > "$HOME/.leap-terminal-request"
 exec "$PYTHON_CMD" "$SERVER_SCRIPT" "$TAG" "${FLAGS[@]}"

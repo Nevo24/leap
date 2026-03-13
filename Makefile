@@ -391,35 +391,24 @@ configure-shell:
 		VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
 		if [ -f "$$VSCODE_SETTINGS" ]; then \
 			TITLE_VALUE=$$(python3 -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
-			SHELL_INT=$$(python3 -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.shellIntegration.enabled', 'NOT_SET'))" 2>/dev/null); \
-			NEEDS_UPDATE=false; \
-			[ "$$TITLE_VALUE" != "\$${sequence}" ] && NEEDS_UPDATE=true; \
-			[ "$$SHELL_INT" != "True" ] && NEEDS_UPDATE=true; \
-			if [ "$$NEEDS_UPDATE" = "true" ]; then \
-				echo "  Updating VS Code settings for terminal titles..."; \
+			if [ "$$TITLE_VALUE" = "\$${sequence}" ]; then \
+				echo "  Removing Leap's terminal.integrated.tabs.title override..."; \
 				cp "$$VSCODE_SETTINGS" "$$VSCODE_SETTINGS.backup-$$(date +%Y%m%d-%H%M%S)"; \
-				python3 -c "import json, sys; \
+				python3 -c "import json; \
 					data = json.load(open('$$VSCODE_SETTINGS')); \
-					data['terminal.integrated.tabs.title'] = '\$${sequence}'; \
-					data['terminal.integrated.shellIntegration.enabled'] = True; \
+					data.pop('terminal.integrated.tabs.title', None); \
 					json.dump(data, open('$$VSCODE_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
-				echo "$(GREEN)  ✓ VS Code settings updated (backup created)$(NC)" || \
+				echo "$(GREEN)  ✓ Removed tabs.title override (backup created)$(NC)" || \
 				echo "$(YELLOW)  ⚠ Could not update VS Code settings$(NC)"; \
-			else \
-				echo "  ✓ VS Code terminal title settings already configured"; \
 			fi; \
-		elif [ -d "$$HOME/Library/Application Support/Code/User" ]; then \
-			echo "  Creating VS Code settings.json..."; \
-			mkdir -p "$$HOME/Library/Application Support/Code/User" && \
-			printf '{\n    "terminal.integrated.tabs.title": "\$${sequence}",\n    "terminal.integrated.shellIntegration.enabled": true\n}' > "$$VSCODE_SETTINGS" && \
-			echo "$(GREEN)  ✓ VS Code settings.json created$(NC)" || \
-			echo "$(YELLOW)  ⚠ Could not create settings.json$(NC)"; \
 		fi; \
 		\
 		echo "  Installing Leap Terminal Selector extension..."; \
 		CODE_PATH=$$(which code 2>/dev/null); \
 		NPM_PATH=$$(which npm 2>/dev/null); \
 		if [ -n "$$CODE_PATH" ]; then \
+			$$CODE_PATH --uninstall-extension claudeq.claudeq-terminal-selector 2>/dev/null && \
+				echo "$(GREEN)  ✓ Removed old ClaudeQ VS Code extension$(NC)" || true; \
 			REPO_VERSION=$$(python3 -c "import json; print(json.load(open('$(REPO_PATH)/src/leap/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
 			INSTALLED_VERSION=$$($$CODE_PATH --list-extensions --show-versions 2>/dev/null | grep "leap.leap-terminal-selector@" | sed 's/.*@//' || echo "0.0.0"); \
 			if [ "$$REPO_VERSION" != "$$INSTALLED_VERSION" ]; then \
@@ -658,10 +647,17 @@ uninstall:
 			echo "$(GREEN)✓ Removed old ClaudeQ VS Code extension$(NC)" || true; \
 	fi; \
 	VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
-	if [ -f "$$VSCODE_SETTINGS" ] && grep -q "terminal.integrated.tabs.title" "$$VSCODE_SETTINGS"; then \
-		echo "$(YELLOW)⚠ VS Code settings.json still contains Leap setting$(NC)"; \
-		echo "  To remove: Open VS Code settings.json and delete 'terminal.integrated.tabs.title' line"; \
-		echo "  (Backup files: $$VSCODE_SETTINGS.backup-*)"; \
+	if [ -f "$$VSCODE_SETTINGS" ]; then \
+		TITLE_VALUE=$$(python3 -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
+		if [ "$$TITLE_VALUE" = "\$${sequence}" ]; then \
+			echo "  Removing Leap's terminal.integrated.tabs.title override..."; \
+			python3 -c "import json; \
+				data = json.load(open('$$VSCODE_SETTINGS')); \
+				data.pop('terminal.integrated.tabs.title', None); \
+				json.dump(data, open('$$VSCODE_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
+			echo "$(GREEN)✓ Removed Leap VS Code settings$(NC)" || \
+			echo "$(YELLOW)⚠ Could not update VS Code settings$(NC)"; \
+		fi; \
 	fi
 	@echo "$(PROMPT_PREFIX) Removing hook files..."
 	@rm -f "$$HOME/.claude/hooks/leap-hook.sh" "$$HOME/.claude/hooks/claudeq-hook.sh" 2>/dev/null || true
