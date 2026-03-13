@@ -295,7 +295,7 @@ if [ -S "$SOCKET_PATH" ]; then
                 SERVER_CLI=$("$PYTHON_CMD" -c "import json,sys; print(json.load(open('$META_FILE')).get('cli_provider','claude'))" 2>/dev/null || echo "claude")
                 if [ "$CLI_FROM_ARG" != "$SERVER_CLI" ]; then
                     echo "" >&2
-                    echo -e "  \033[38;5;208m⚠ Warning: Server '$TAG' is running with $SERVER_CLI, not $CLI_FROM_ARG\033[0m" >&2
+                    echo -e "  \033[33m⚠ Warning: Server '$TAG' is running with $SERVER_CLI, not $CLI_FROM_ARG\033[0m" >&2
                     echo "" >&2
                 fi
             fi
