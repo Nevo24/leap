@@ -95,6 +95,12 @@ check-python:
 				*) \
 					echo "$(PROMPT_PREFIX) Installing Python $$REQUIRED via Homebrew..."; \
 					brew install python@$$REQUIRED; \
+					eval "$$(brew shellenv 2>/dev/null)"; \
+					BREW_PREFIX=$$(brew --prefix 2>/dev/null); \
+					if [ -n "$$BREW_PREFIX" ]; then \
+						export PATH="$$BREW_PREFIX/opt/python@$$REQUIRED/libexec/bin:$$BREW_PREFIX/bin:$$PATH"; \
+					fi; \
+					hash -r 2>/dev/null; \
 					echo "$(GREEN)✓ Python $$REQUIRED installed$(NC)"; \
 					;; \
 			esac; \
@@ -343,12 +349,21 @@ update-deps: .env
 
 .PHONY: .env
 .env:
-	@if ! command -v poetry &> /dev/null; then \
+	@# Ensure Homebrew Python is in PATH (needed when brew installed Python
+	@# during check-python — that was a different shell, so PATH was lost).
+	@if command -v brew &>/dev/null; then \
+		eval "$$(brew shellenv 2>/dev/null)"; \
+		BREW_PREFIX=$$(brew --prefix 2>/dev/null); \
+		if [ -n "$$BREW_PREFIX" ]; then \
+			export PATH="$$BREW_PREFIX/opt/python@$(PYTHON_VERSION)/libexec/bin:$$BREW_PREFIX/bin:$$PATH"; \
+		fi; \
+	fi; \
+	if ! command -v poetry &> /dev/null; then \
 		echo "$(YELLOW)⚠ Poetry not found, installing...$(NC)"; \
 		curl -sSL https://install.python-poetry.org | python3 -; \
 		export PATH="$$HOME/.local/bin:$$PATH"; \
-	fi
-	@if [ "$$(poetry config virtualenvs.create)" = "true" ]; then \
+	fi; \
+	if [ "$$(poetry config virtualenvs.create)" = "true" ]; then \
 		poetry env use $(PYTHON_VERSION); \
 	else \
 		echo "Skipping .env target because virtualenv creation is disabled"; \
@@ -376,6 +391,12 @@ configure-shell:
 	@if [ -d "/Applications/Visual Studio Code.app" ]; then \
 		echo "$(PROMPT_PREFIX) Configuring VS Code..."; \
 		\
+		VENV_PY=""; \
+		if [ -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+			VENV_PY="$$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"; \
+		fi; \
+		PY=$${VENV_PY:-python3}; \
+		\
 		VSCODE_BIN="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"; \
 		CODE_SYMLINK="/usr/local/bin/code"; \
 		\
@@ -390,11 +411,11 @@ configure-shell:
 		\
 		VSCODE_SETTINGS="$$HOME/Library/Application Support/Code/User/settings.json"; \
 		if [ -f "$$VSCODE_SETTINGS" ]; then \
-			TITLE_VALUE=$$(python3 -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
+			TITLE_VALUE=$$($$PY -c "import json; data=json.load(open('$$VSCODE_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
 			if [ "$$TITLE_VALUE" = "\$${sequence}" ]; then \
 				echo "  Removing Leap's terminal.integrated.tabs.title override..."; \
 				cp "$$VSCODE_SETTINGS" "$$VSCODE_SETTINGS.backup-$$(date +%Y%m%d-%H%M%S)"; \
-				python3 -c "import json; \
+				$$PY -c "import json; \
 					data = json.load(open('$$VSCODE_SETTINGS')); \
 					data.pop('terminal.integrated.tabs.title', None); \
 					json.dump(data, open('$$VSCODE_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
@@ -409,12 +430,12 @@ configure-shell:
 		if [ -n "$$CODE_PATH" ]; then \
 			$$CODE_PATH --uninstall-extension claudeq.claudeq-terminal-selector 2>/dev/null && \
 				echo "$(GREEN)  ✓ Removed old ClaudeQ VS Code extension$(NC)" || true; \
-			REPO_VERSION=$$(python3 -c "import json; print(json.load(open('$(REPO_PATH)/src/leap/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
+			REPO_VERSION=$$($$PY -c "import json; print(json.load(open('$(REPO_PATH)/src/leap/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
 			INSTALLED_VERSION=$$($$CODE_PATH --list-extensions --show-versions 2>/dev/null | grep "leap.leap-terminal-selector@" | sed 's/.*@//' || echo "0.0.0"); \
 			if [ "$$REPO_VERSION" != "$$INSTALLED_VERSION" ]; then \
 				if [ -n "$$NPM_PATH" ]; then \
 					cd "$(REPO_PATH)/src/leap/vscode-extension" && \
-					python3 -c "import subprocess,sys; sys.exit(subprocess.run(['npx','--yes','@vscode/vsce','package','--out','leap-terminal-selector.vsix'],capture_output=True,timeout=60).returncode)" 2>/dev/null && \
+					$$PY -c "import subprocess,sys; sys.exit(subprocess.run(['npx','--yes','@vscode/vsce','package','--out','leap-terminal-selector.vsix'],capture_output=True,timeout=60).returncode)" 2>/dev/null && \
 					$$CODE_PATH --install-extension leap-terminal-selector.vsix --force < /dev/null >/dev/null 2>&1 && \
 					rm -f leap-terminal-selector.vsix && \
 					echo "$(GREEN)  ✓ Leap extension installed (v$$REPO_VERSION)$(NC)" && \

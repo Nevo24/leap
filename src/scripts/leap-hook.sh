@@ -27,9 +27,13 @@ STATE="$1"
 
 SIGNAL_FILE="$LEAP_SIGNAL_DIR/$LEAP_TAG.signal"
 
+# Use venv Python if available (set by Leap server), fall back to PATH python3.
+# Homebrew-only installs may not have python3 in PATH inside CLI subshells.
+PYTHON="${LEAP_PYTHON:-python3}"
+
 # All processing in Python — reads stdin with timeout to handle CLIs
 # that may not close stdin promptly (e.g. Codex).
-python3 -c "
+"$PYTHON" -c "
 import json, sys, os, threading
 
 state = sys.argv[1]

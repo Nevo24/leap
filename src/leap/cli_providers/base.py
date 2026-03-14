@@ -9,6 +9,7 @@ tracker, and server can work with any supported CLI.
 import json
 import os
 import re
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Optional
@@ -205,6 +206,9 @@ class CLIProvider(ABC):
             env['LEAP_TAG'] = tag
         if signal_dir:
             env['LEAP_SIGNAL_DIR'] = str(signal_dir)
+        # Pass the current Python interpreter path so hook scripts can use
+        # the venv Python instead of relying on a bare `python3` in PATH.
+        env['LEAP_PYTHON'] = sys.executable
         return env
 
     # -- CLI-specific input behaviors ------------------------------------
