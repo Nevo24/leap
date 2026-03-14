@@ -244,18 +244,18 @@ except Exception as e:
     print(json.dumps({'ok': False, 'error': str(e)}))
 " 2>&1)
 
-IS_OK=$(echo "$VALIDATION" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('ok', False))")
+IS_OK=$(echo "$VALIDATION" | $PYTHON -c "import sys,json; print(json.loads(sys.stdin.read()).get('ok', False))")
 
 if [ "$IS_OK" != "True" ]; then
-    ERROR=$(echo "$VALIDATION" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('error', 'Unknown error'))")
+    ERROR=$(echo "$VALIDATION" | $PYTHON -c "import sys,json; print(json.loads(sys.stdin.read()).get('error', 'Unknown error'))")
     echo -e "${RED}Validation failed: $ERROR${NC}"
     echo "Please check your tokens and try again."
     exit 1
 fi
 
 USER_ID="$SLACK_USER_ID"
-CHANNEL_ID=$(echo "$VALIDATION" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['channel_id'])")
-TEAM_ID=$(echo "$VALIDATION" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('team_id', ''))")
+CHANNEL_ID=$(echo "$VALIDATION" | $PYTHON -c "import sys,json; print(json.loads(sys.stdin.read())['channel_id'])")
+TEAM_ID=$(echo "$VALIDATION" | $PYTHON -c "import sys,json; print(json.loads(sys.stdin.read()).get('team_id', ''))")
 
 echo -e "${GREEN}✓ Bot token valid${NC}"
 echo "  User ID: $USER_ID"

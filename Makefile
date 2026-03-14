@@ -457,6 +457,11 @@ configure-shell:
 	@# Configure JetBrains IDEs terminal settings
 	@if [ -d "$$HOME/Library/Application Support/JetBrains" ]; then \
 		echo "$(PROMPT_PREFIX) Configuring JetBrains IDEs..."; \
+		VENV_PY=""; \
+		if [ -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+			VENV_PY="$$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"; \
+		fi; \
+		PY=$${VENV_PY:-python3}; \
 		CONFIGURED_IDES=""; \
 		for IDE_DIR in "$$HOME/Library/Application Support/JetBrains"/*20*; do \
 			if [ -d "$$IDE_DIR/options" ]; then \
@@ -489,12 +494,12 @@ configure-shell:
 					if [ -f "$$TERMINAL_XML" ]; then \
 						cp "$$TERMINAL_XML" "$$TERMINAL_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
 					\
 					if [ -f "$$ADVANCED_XML" ]; then \
 						cp "$$ADVANCED_XML" "$$ADVANCED_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
 					\
 					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
 					if [ -z "$$CONFIGURED_IDES" ]; then \
@@ -570,12 +575,12 @@ configure-shell:
 					if [ -f "$$TERMINAL_XML" ]; then \
 						cp "$$TERMINAL_XML" "$$TERMINAL_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
 					\
 					if [ -f "$$ADVANCED_XML" ]; then \
 						cp "$$ADVANCED_XML" "$$ADVANCED_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					python3 "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
 					\
 					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
 					if ps aux | grep -i "studio" | grep -v grep > /dev/null 2>&1; then \
@@ -592,7 +597,12 @@ configure-shell:
 .configure-iterm2:
 	@if [ -d "/Applications/iTerm.app" ] || [ -d "$$HOME/Applications/iTerm.app" ]; then \
 		echo "$(PROMPT_PREFIX) Configuring iTerm2..."; \
-		python3 "$(SCRIPTS_DIR)/configure_iterm2_csi_u.py"; \
+		VENV_PY=""; \
+		if [ -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+			VENV_PY="$$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"; \
+		fi; \
+		PY=$${VENV_PY:-python3}; \
+		$$PY "$(SCRIPTS_DIR)/configure_iterm2_csi_u.py"; \
 	fi
 
 .PHONY: .configure-hooks
