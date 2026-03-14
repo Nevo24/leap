@@ -22,7 +22,7 @@ from leap.monitor.pr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
 )
 from leap.slack.config import is_slack_installed
-from leap.utils.constants import SCM_POLL_INTERVAL, SLACK_BOT_LOCK, STORAGE_DIR
+from leap.utils.constants import SCM_POLL_INTERVAL, SLACK_BOT_LOCK, SLACK_DIR, STORAGE_DIR
 
 if TYPE_CHECKING:
     from leap.monitor.app import MonitorWindow
@@ -417,10 +417,15 @@ class SCMConfigMixin(_Base):
                 close_terminal_with_title('leap slack-bot',
                                           preferred_ide=default_term)
 
-        # Always remove lock dir immediately so the button updates right away
+        # Always remove lock files immediately so the button updates right
+        # away and the next start doesn't see a stale lock.
         try:
             (SLACK_BOT_LOCK / 'source').unlink(missing_ok=True)
             SLACK_BOT_LOCK.rmdir()
+        except OSError:
+            pass
+        try:
+            (SLACK_DIR / 'slack-bot.pid').unlink(missing_ok=True)
         except OSError:
             pass
 

@@ -10,6 +10,7 @@ Usage:
 """
 
 import logging
+import os
 import sys
 from typing import Any, Optional
 
@@ -204,8 +205,47 @@ class SlackBot:
             pass  # Non-critical
 
 
+def _check_singleton() -> None:
+    """Ensure only one Slack bot instance runs at a time.
+
+    Uses a PID file to detect stale locks.  If another bot is alive,
+    exit.  If the PID file points to a dead process, take over.
+    """
+    import subprocess
+    from leap.utils.constants import SLACK_DIR
+    pid_file = SLACK_DIR / "slack-bot.pid"
+    SLACK_DIR.mkdir(parents=True, exist_ok=True)
+
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            # Check if the process is still alive AND is a Slack bot
+            os.kill(old_pid, 0)
+            # Verify it's actually a leap-slack process (PID could be recycled)
+            result = subprocess.run(
+                ['ps', '-o', 'command=', '-p', str(old_pid)],
+                capture_output=True, text=True, timeout=2,
+            )
+            if 'leap-slack' in result.stdout:
+                print(
+                    f"Another Slack bot is already running (PID {old_pid}).\n"
+                    "Kill it first or use the monitor to stop/start.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            # PID alive but not a Slack bot — stale PID file
+        except (ValueError, OSError):
+            pass
+
+    pid_file.write_text(str(os.getpid()))
+
+    import atexit
+    atexit.register(lambda: pid_file.unlink(missing_ok=True))
+
+
 def main() -> None:
     """Entry point for the leap-slack command."""
+    _check_singleton()
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s',

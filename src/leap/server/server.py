@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
@@ -167,7 +168,7 @@ class LeapServer:
             auto_send_mode=pinned_mode,
             provider=self._provider,
         )
-        self.output_capture = OutputCapture(tag)
+        self.output_capture = OutputCapture(tag, cli_provider=self._provider.name)
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
 
@@ -592,6 +593,30 @@ class LeapServer:
                 if self.queue.is_empty or not self.state.is_ready_for_state(current_state):
                     continue
 
+                # Flush pending Slack write BEFORE sending the next
+                # message — on_send() deletes the signal file, so the
+                # output text would be lost if we wait.  The hook may
+                # not have written last_assistant_message yet (< 2s),
+                # but a partial capture is better than losing it.
+                if delayed_write_due:
+                    try:
+                        if delayed_target_state == CLIState.IDLE:
+                            self.output_capture.on_state_change(
+                                delayed_target_state, delayed_prev_state,
+                                delayed_queue_has_next,
+                            )
+                        elif delayed_target_state in WAITING_STATES:
+                            cs = self.state.current_state
+                            if cs in WAITING_STATES:
+                                prompt_output = self.state.get_prompt_output()
+                                self.output_capture.on_state_change(
+                                    cs, delayed_prev_state,
+                                    delayed_queue_has_next, prompt_output,
+                                )
+                    except Exception:
+                        pass
+                    delayed_write_due = 0.0
+
                 message = self.queue.pop()
                 if not message:
                     continue
@@ -712,6 +737,7 @@ class LeapServer:
         set_terminal_title(f"lps {self.tag}")
         self._print_startup_banner()
         self.pty.spawn()
+        self._write_cli_pid_map()
 
         # Start background threads
         self.socket_handler.start()
@@ -764,6 +790,36 @@ class LeapServer:
         except OSError:
             pass
 
+    def _write_cli_pid_map(self) -> None:
+        """Write a PID-to-session mapping file for the spawned CLI process.
+
+        Hook scripts use LEAP_TAG/LEAP_SIGNAL_DIR env vars, but some CLIs
+        (e.g. Codex) may not pass the parent environment to hook
+        subprocesses.  This mapping file in /tmp lets the hook discover
+        the session by walking up its parent PID chain.
+        """
+        if not self.pty.process:
+            return
+        cli_pid = self.pty.process.pid
+        self._cli_pid_map_file = Path(f"/tmp/leap_cli_pid_{cli_pid}.json")
+        try:
+            atomic_json_write(self._cli_pid_map_file, {
+                'tag': self.tag,
+                'signal_dir': str(SOCKET_DIR),
+                'python': sys.executable,
+            })
+        except OSError:
+            pass
+
+    def _cleanup_cli_pid_map(self) -> None:
+        """Remove the CLI PID mapping file."""
+        pid_file = getattr(self, '_cli_pid_map_file', None)
+        if pid_file:
+            try:
+                pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def cleanup(self) -> None:
         """Clean up all resources."""
         self.running = False
@@ -774,6 +830,7 @@ class LeapServer:
         self.pty.terminate()
         self.state.cleanup()
         self.output_capture.cleanup()
+        self._cleanup_cli_pid_map()
         # Remove queue file if empty (no pending messages).
         self.queue.delete_file_if_empty()
 

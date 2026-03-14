@@ -17,19 +17,75 @@
 #   LEAP_TAG        - Session tag name
 #   LEAP_SIGNAL_DIR - Directory for signal files
 #
+# Fallback: if env vars are missing (some CLIs don't pass the parent
+# environment to hook subprocesses), the script looks for a PID mapping
+# file in /tmp written by the Leap server (leap_cli_pid_<PID>.json).
+#
+
+STATE="$1"
+[ -z "$STATE" ] && exit 0
+
+# Use venv Python if available (set by Leap server), fall back to PATH python3.
+# Homebrew-only installs may not have python3 in PATH inside CLI subshells.
+PYTHON="${LEAP_PYTHON:-python3}"
+
+# If LEAP_TAG or LEAP_SIGNAL_DIR are missing, try to resolve them from the
+# PID mapping file.  The Leap server writes /tmp/leap_cli_pid_<PID>.json
+# after spawning the CLI process.  Walk up the parent PID chain to find it.
+if [ -z "$LEAP_TAG" ] || [ -z "$LEAP_SIGNAL_DIR" ]; then
+    RESOLVED=$("$PYTHON" -c "
+import json, os, subprocess
+
+def get_ppid(pid):
+    try:
+        with open(f'/proc/{pid}/status') as f:
+            for line in f:
+                if line.startswith('PPid:'):
+                    return int(line.split()[1])
+    except (FileNotFoundError, OSError):
+        pass
+    try:
+        r = subprocess.run(['ps', '-o', 'ppid=', '-p', str(pid)],
+                           capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            return int(r.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+pid = os.getpid()
+for _ in range(10):
+    ppid = get_ppid(pid)
+    if ppid is None or ppid <= 1:
+        break
+    path = f'/tmp/leap_cli_pid_{ppid}.json'
+    if os.path.isfile(path):
+        try:
+            d = json.loads(open(path).read())
+            tag, sd = d.get('tag',''), d.get('signal_dir','')
+            py = d.get('python','')
+            if tag and sd:
+                print(f'{tag}|{sd}|{py}')
+                break
+        except Exception:
+            pass
+    pid = ppid
+" < /dev/null 2>/dev/null)
+
+    if [ -n "$RESOLVED" ]; then
+        IFS='|' read -r _TAG _DIR _PY <<< "$RESOLVED"
+        LEAP_TAG="$_TAG"
+        LEAP_SIGNAL_DIR="$_DIR"
+        [ -n "$_PY" ] && PYTHON="$_PY"
+        export LEAP_TAG LEAP_SIGNAL_DIR
+    fi
+fi
 
 # Non-Leap sessions: exit silently
 [ -z "$LEAP_TAG" ] && exit 0
 [ -z "$LEAP_SIGNAL_DIR" ] && exit 0
 
-STATE="$1"
-[ -z "$STATE" ] && exit 0
-
 SIGNAL_FILE="$LEAP_SIGNAL_DIR/$LEAP_TAG.signal"
-
-# Use venv Python if available (set by Leap server), fall back to PATH python3.
-# Homebrew-only installs may not have python3 in PATH inside CLI subshells.
-PYTHON="${LEAP_PYTHON:-python3}"
 
 # All processing in Python — reads stdin with timeout to handle CLIs
 # that may not close stdin promptly (e.g. Codex).

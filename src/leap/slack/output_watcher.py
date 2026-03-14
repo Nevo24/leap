@@ -20,6 +20,12 @@ from leap.slack.config import load_slack_sessions, save_slack_sessions
 
 logger = logging.getLogger(__name__)
 
+# Provider name → display name (lightweight, avoids importing pexpect)
+_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    'claude': 'Claude Code',
+    'codex': 'OpenAI Codex',
+}
+
 # Slack message limit is ~4000 chars for best rendering
 _MAX_MESSAGE_LEN: int = 3900
 _POLL_INTERVAL: float = 0.5
@@ -166,7 +172,11 @@ class OutputWatcher:
                 if project_path:
                     project = self._get_project_name(project_path)
                 branch = data.get('branch', '') or 'N/A'
-                cli_provider = data.get('cli_provider', '') or 'N/A'
+                cli_name = data.get('cli_provider', '')
+                if cli_name:
+                    cli_provider = _PROVIDER_DISPLAY_NAMES.get(
+                        cli_name, cli_name,
+                    )
         except (json.JSONDecodeError, OSError):
             pass
         return f"*[tag: {tag}, CLI: {cli_provider}, project: {project}, branch: {branch}]*"
@@ -186,7 +196,7 @@ class OutputWatcher:
         text = (
             f"{header}\n"
             ":large_green_circle: *Slack tracking enabled.*\n"
-            "Claude's output will appear in this thread.\n"
+            "CLI output will appear in this thread.\n"
             "Reply here to send messages to this session."
         )
         result_ts = self._post_fn(self._channel_id, text, None)
