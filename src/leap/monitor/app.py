@@ -13,8 +13,8 @@ import time
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QGridLayout, QMainWindow, QMenu,
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTableWidget,
+    QAction, QApplication, QComboBox, QFrame, QGridLayout, QMainWindow, QMenu,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
@@ -201,6 +201,8 @@ class MonitorWindow(
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout()
+        margins = layout.contentsMargins()
+        layout.setContentsMargins(margins.left(), 0, margins.right(), margins.bottom())
         main_widget.setLayout(layout)
 
         # Table
@@ -306,16 +308,21 @@ class MonitorWindow(
         self._hover_timer.timeout.connect(self._check_row_hover)
         self._hover_timer.start(50)
 
-        # Logo row: [Settings] ... [LEAP logo] ... [Reset Window Sizes]
-        logo_layout = QHBoxLayout()
+        # Logo row: buttons on sides, logo absolutely centered on window
+        logo_container = QFrame()
+        logo_container.setFrameShape(QFrame.NoFrame)
+        logo_container.setContentsMargins(0, 0, 0, 0)
+        logo_container.setFixedHeight(50)
+        stacked = QStackedLayout(logo_container)
+        stacked.setContentsMargins(0, 0, 0, 0)
+        stacked.setStackingMode(QStackedLayout.StackAll)
 
-        settings_btn = QPushButton('\u2699  Settings')
-        settings_btn.setToolTip('Monitor settings')
-        settings_btn.clicked.connect(self._open_settings)
-        logo_layout.addWidget(settings_btn)
-
-        logo_layout.addStretch()
-
+        # Layer 1 (bottom): logo centered in the full width — pass-through clicks
+        logo_center_widget = QWidget()
+        logo_center_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        logo_center_layout = QHBoxLayout(logo_center_widget)
+        logo_center_layout.setContentsMargins(0, 0, 0, 0)
+        logo_center_layout.addStretch()
         # Logo banner — check source tree first, then .app bundle Resources/
         logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "leap-text.png"
         if not logo_path.exists():
@@ -328,15 +335,29 @@ class MonitorWindow(
                 40, Qt.SmoothTransformation)
             logo_label = QLabel()
             logo_label.setPixmap(logo_pixmap)
-            logo_layout.addWidget(logo_label)
+            logo_center_layout.addWidget(logo_label)
+        logo_center_layout.addStretch()
+        stacked.addWidget(logo_center_widget)
 
-        logo_layout.addStretch()
+        # Layer 2 (top): buttons on left and right edges — receives clicks
+        buttons_widget = QWidget()
+        buttons_layout = QHBoxLayout(buttons_widget)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+
+        settings_btn = QPushButton('\u2699  Settings')
+        settings_btn.setToolTip('Monitor settings')
+        settings_btn.clicked.connect(self._open_settings)
+        buttons_layout.addWidget(settings_btn)
+
+        buttons_layout.addStretch()
 
         reset_cols_btn = QPushButton('Reset Window Sizes')
         reset_cols_btn.setToolTip('Reset all window and column sizes to defaults')
         reset_cols_btn.clicked.connect(self._reset_window_size)
-        logo_layout.addWidget(reset_cols_btn)
-        layout.addLayout(logo_layout)
+        buttons_layout.addWidget(reset_cols_btn)
+        stacked.addWidget(buttons_widget)
+
+        layout.addWidget(logo_container)
 
         # Top controls (presets) — centered
         top_layout = QHBoxLayout()
