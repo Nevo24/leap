@@ -402,18 +402,14 @@ class SCMConfigMixin(_Base):
             if not self._slack_bot_process.waitForFinished(500):
                 self._slack_bot_process.kill()
         else:
-            default_term = self._prefs.get('default_terminal')
-
-            # Step 1: try closing the terminal tab (this also kills the process)
-            tab_closed = close_terminal_with_title('leap slack-bot',
-                                                   preferred_ide=default_term)
-
-            # Step 2: kill any surviving processes (bash wrapper + Python child)
+            # Kill the processes first — this is the reliable path.
+            # Then try to close the terminal tab (cosmetic cleanup).
+            # Only try the preferred terminal to avoid activating
+            # unrelated apps (e.g. Warp opening when using iTerm2).
             self._kill_slack_bot_processes()
 
-            # Step 3: if the tab wasn't closed in step 1, try again now that
-            # the process is dead (tab title may still match)
-            if not tab_closed:
+            default_term = self._prefs.get('default_terminal')
+            if default_term:
                 close_terminal_with_title('leap slack-bot',
                                           preferred_ide=default_term)
 
