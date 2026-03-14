@@ -50,11 +50,54 @@ function findTerminal(terminalName) {
 }
 
 /**
+ * Process the request file if it exists.
+ * Shared by the fs.watch callback and the polling fallback.
+ *
+ * @param {boolean} requireFocus - If true, only process rename/open commands
+ *   when this VS Code window is focused. This prevents the polling fallback
+ *   in a background window from stealing rename requests meant for the
+ *   foreground window where the user actually typed `leap`.
+ */
+function processRequestFile(requireFocus) {
+    if (!fs.existsSync(REQUEST_FILE)) {
+        return;
+    }
+    try {
+        const content = fs.readFileSync(REQUEST_FILE, 'utf8').trim();
+        if (!content) {
+            return;
+        }
+
+        // When called from the poll timer, only act if this window is focused.
+        // This prevents a background VS Code window from grabbing the request
+        // and renaming/opening in the wrong window.
+        if (requireFocus && !vscode.window.state.focused) {
+            return;
+        }
+
+        log(`Request received: "${content}"`);
+        if (content.startsWith('close:')) {
+            closeTerminalByName(content.substring(6));
+        } else if (content.startsWith('open:')) {
+            log(`Opening terminal with command: "${content.substring(5)}"`);
+            openTerminalWithCommand(content.substring(5));
+        } else if (content.startsWith('rename:')) {
+            renameActiveTerminal(content.substring(7));
+        } else {
+            selectTerminalByName(content);
+        }
+        fs.unlinkSync(REQUEST_FILE);
+    } catch (err) {
+        log(`Error processing request: ${err}`);
+    }
+}
+
+/**
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Leap');
-    log('Leap extension v1.4.0 activated');
+    log('Leap extension v1.5.0 activated');
     log(`Watching for: ${REQUEST_FILE}`);
 
     // Register command (for manual use via command palette)
@@ -70,26 +113,8 @@ function activate(context) {
     let watcher;
     try {
         watcher = fs.watch(path.dirname(REQUEST_FILE), (eventType, filename) => {
-            if (filename === '.leap-terminal-request' && fs.existsSync(REQUEST_FILE)) {
-                try {
-                    const content = fs.readFileSync(REQUEST_FILE, 'utf8').trim();
-                    log(`Request received: "${content}" (event: ${eventType})`);
-                    if (content) {
-                        if (content.startsWith('close:')) {
-                            closeTerminalByName(content.substring(6));
-                        } else if (content.startsWith('open:')) {
-                            log(`Opening terminal with command: "${content.substring(5)}"`);
-                            openTerminalWithCommand(content.substring(5));
-                        } else if (content.startsWith('rename:')) {
-                            renameActiveTerminal(content.substring(7));
-                        } else {
-                            selectTerminalByName(content);
-                        }
-                        fs.unlinkSync(REQUEST_FILE);
-                    }
-                } catch (err) {
-                    log(`Error processing request: ${err}`);
-                }
+            if (filename === '.leap-terminal-request') {
+                processRequestFile(true);
             }
         });
         log('File watcher started on home directory');
@@ -97,6 +122,14 @@ function activate(context) {
         log(`Error setting up file watcher: ${err}`);
     }
     context.subscriptions.push({ dispose: () => watcher && watcher.close() });
+
+    // Polling fallback — macOS FSEvents on the home directory can miss rapid
+    // file create/delete cycles (e.g. server rename then client rename).
+    // Poll every 500ms as a safety net.
+    const pollInterval = setInterval(() => {
+        processRequestFile(true);
+    }, 500);
+    context.subscriptions.push({ dispose: () => clearInterval(pollInterval) });
 
     // Auto-rename Leap terminal tabs when OSC title sequences are detected.
     // This avoids needing the global terminal.integrated.tabs.title = "${sequence}"

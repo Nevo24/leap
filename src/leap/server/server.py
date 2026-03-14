@@ -613,7 +613,7 @@ class LeapServer:
         """Background thread to maintain terminal title."""
         while self.running:
             try:
-                set_terminal_title(f"lps {self.tag}")
+                set_terminal_title(f"lps {self.tag}", vscode_rename=False)
             except Exception:
                 pass
             time.sleep(TITLE_RESET_INTERVAL)
