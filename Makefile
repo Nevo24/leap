@@ -156,6 +156,7 @@ install: check-macos check-python .env .migrate-from-claudeq install-core ensure
 .PHONY: install-core
 install-core:
 	@echo "$(PROMPT_PREFIX) Installing core dependencies..."
+	@poetry lock --no-update 2>/dev/null || true
 	@poetry install --no-root --without monitor
 
 .PHONY: ensure-storage
