@@ -522,6 +522,17 @@ class LeapServer:
             # Don't fail startup if cleanup fails
             pass
 
+    def _signal_file_has_response(self) -> bool:
+        """Check if the signal file already contains last_assistant_message."""
+        signal_file = SOCKET_DIR / f"{self.tag}.signal"
+        try:
+            if signal_file.exists():
+                data = json.loads(signal_file.read_text())
+                return bool(data.get('last_assistant_message'))
+        except (json.JSONDecodeError, OSError):
+            pass
+        return False
+
     def _auto_sender_loop(self) -> None:
         """Background thread to auto-send queued messages."""
         prev_state = CLIState.IDLE
@@ -558,11 +569,13 @@ class LeapServer:
                         current_state == CLIState.IDLE
                         and prev_state == CLIState.RUNNING
                     ):
-                        # Delay writing: the hook writes the signal file
-                        # immediately with just the state, then updates it
-                        # with last_assistant_message after reading stdin.
-                        # Wait 2s so the Slack message includes the text.
-                        delayed_write_due = time.time() + 2.0
+                        # Delay writing so the hook can populate the signal
+                        # file with last_assistant_message.  If the signal
+                        # file already has the response (e.g. transcript-
+                        # based detection wrote it), use a short delay.
+                        signal_has_response = self._signal_file_has_response()
+                        delay = 0.2 if signal_has_response else 2.0
+                        delayed_write_due = time.time() + delay
                         delayed_prev_state = prev_state
                         delayed_queue_has_next = queue_has_next
                         delayed_target_state = CLIState.IDLE

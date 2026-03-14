@@ -92,6 +92,10 @@ class CodexProvider(CLIProvider):
         return True
 
     @property
+    def transcript_sessions_dir(self) -> Optional[Path]:
+        return CODEX_CONFIG_DIR / 'sessions'
+
+    @property
     def silence_timeout(self) -> Optional[float]:
         # Ratatui outputs every ~100ms during processing (spinner,
         # thinking counter, response text).  An 8-second silence gap

@@ -96,6 +96,95 @@ class CLIProvider(ABC):
         """
         return None
 
+    # -- Transcript-based idle detection ---------------------------------
+
+    @property
+    def transcript_sessions_dir(self) -> Optional[Path]:
+        """Directory where the CLI stores session transcripts.
+
+        When set, the state tracker polls the most recent transcript
+        for completion events, enabling near-instant idle detection
+        instead of relying on the silence timeout.
+
+        Return None if the CLI doesn't have accessible transcripts.
+        """
+        return None
+
+    def read_transcript_completion(self) -> Optional[str]:
+        """Check the CLI's transcript for a task-completion event.
+
+        Reads the tail of the most recently modified transcript file
+        and looks for a completion event with the assistant's response.
+
+        Called every poll cycle (~0.5s), so must be fast:
+        - Only scans today's date directory (not full rglob)
+        - Caches the active transcript path
+        - Reads only the last 32KB of the file
+
+        Returns:
+            The last assistant message text, or None if not found
+            or the transcript is stale (> 30s old).
+        """
+        import time as _time
+        sessions_dir = self.transcript_sessions_dir
+        if sessions_dir is None or not sessions_dir.exists():
+            return None
+        try:
+            transcript = self._find_active_transcript(sessions_dir)
+            if transcript is None:
+                return None
+            if _time.time() - transcript.stat().st_mtime > 30:
+                return None
+            file_size = transcript.stat().st_size
+            chunk_size = 32768
+            with open(transcript, 'rb') as f:
+                start = max(0, file_size - chunk_size)
+                f.seek(start)
+                tail = f.read()
+            for raw_line in reversed(tail.split(b'\n')):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                    payload = entry.get('payload', {})
+                    if payload.get('type') == 'task_complete':
+                        msg = payload.get('last_agent_message', '')
+                        return msg.strip() if msg else None
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except OSError:
+            pass
+        return None
+
+    def _find_active_transcript(self, sessions_dir: Path) -> Optional[Path]:
+        """Find the most recently modified transcript in today's directory.
+
+        Much faster than rglob — only lists files in today's date dir.
+        Falls back to yesterday if today's dir doesn't exist yet.
+        """
+        import time as _time
+        from datetime import date, timedelta
+        today = date.today()
+        for d in (today, today - timedelta(days=1)):
+            day_dir = sessions_dir / d.strftime('%Y/%m/%d')
+            if not day_dir.is_dir():
+                continue
+            best: Optional[Path] = None
+            best_mtime: float = 0
+            try:
+                for f in day_dir.iterdir():
+                    if f.suffix == '.jsonl':
+                        mt = f.stat().st_mtime
+                        if mt > best_mtime:
+                            best = f
+                            best_mtime = mt
+            except OSError:
+                continue
+            if best is not None:
+                return best
+        return None
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

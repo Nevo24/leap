@@ -123,6 +123,10 @@ class CLIStateTracker:
         # Timestamp when on_send() set state to running.  Used to detect
         # user input *during* the running state (i.e. interrupt attempts).
         self._running_since: float = 0.0
+        # Transcript file mtime at the time we entered RUNNING.  Used to
+        # detect only NEW task_complete events (not stale ones from before
+        # the current turn).
+        self._transcript_mtime_at_send: float = 0.0
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
@@ -251,6 +255,49 @@ class CLIStateTracker:
                         self._idle_since = self._clock()
                     self._trust_dialog_phase = False
                 return new_state
+
+        # Fast path: transcript-based idle detection.
+        # For CLIs with accessible transcripts (e.g. Codex), check for
+        # task_complete events instead of waiting for the silence timeout.
+        # This detects idle in ~0.5s instead of 8s.
+        # Note: with concurrent Codex sessions, this may read the wrong
+        # session's transcript.  The silence timeout is the safe fallback.
+        if current == CLIState.RUNNING and self._provider.transcript_sessions_dir:
+            transcript = self._provider._find_active_transcript(
+                self._provider.transcript_sessions_dir,
+            )
+            # Only check if the transcript was modified AFTER we entered
+            # RUNNING — this avoids reading stale completions.
+            if (
+                transcript is not None
+                and transcript.stat().st_mtime > self._transcript_mtime_at_send
+            ):
+                msg = self._provider.read_transcript_completion()
+            else:
+                msg = None
+            if msg is not None:
+                _log.debug(
+                    'GET_STATE transcript task_complete → idle '
+                    '(msg=%r)',
+                    msg[:60] if msg else '',
+                )
+                # Write the response to the signal file so
+                # output_capture can read it without the fallback.
+                try:
+                    signal_data = {'state': CLIState.IDLE}
+                    if msg:
+                        signal_data['last_assistant_message'] = msg
+                    self._signal_file.write_text(
+                        json.dumps(signal_data),
+                    )
+                except OSError:
+                    pass
+                with self._lock:
+                    self._state = CLIState.IDLE
+                    self._waiting_since = None
+                self._idle_output_acc = 0
+                self._idle_since = self._clock()
+                return CLIState.IDLE
 
         # Fallback: PTY silence timeout (handles interruptions,
         # missing hooks, or any case where the hook doesn't fire)
@@ -397,6 +444,8 @@ class CLIStateTracker:
             with self._buf_lock:
                 self._output_buf.clear()
                 self._last_prompt_buf = b''
+            # Snapshot transcript mtime so we detect only NEW completions.
+            self._snapshot_transcript_mtime()
             try:
                 self._signal_file.unlink(missing_ok=True)
             except OSError:
@@ -417,6 +466,9 @@ class CLIStateTracker:
             self._output_buf.clear()
             self._last_prompt_buf = b''
         self._idle_output_acc = 0
+
+        # Snapshot transcript mtime so we detect only NEW completions.
+        self._snapshot_transcript_mtime()
 
         try:
             self._signal_file.unlink(missing_ok=True)
@@ -723,6 +775,22 @@ class CLIStateTracker:
         ):
             lines.pop()
         return '\n'.join(lines)
+
+    def _snapshot_transcript_mtime(self) -> None:
+        """Record the current transcript file mtime.
+
+        Called when entering RUNNING so that transcript polling only
+        detects completions that happen AFTER the current turn started.
+        """
+        sessions_dir = self._provider.transcript_sessions_dir
+        if sessions_dir is None:
+            return
+        try:
+            transcript = self._provider._find_active_transcript(sessions_dir)
+            if transcript is not None:
+                self._transcript_mtime_at_send = transcript.stat().st_mtime
+        except OSError:
+            pass
 
     def _read_signal_state(self) -> Optional[str]:
         """Read the state from the signal file.
