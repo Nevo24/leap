@@ -456,6 +456,47 @@ class TestEscapeRace:
         # Should stay idle — too late for the race window
         assert tracker.current_state == 'idle'
 
+    def test_escape_race_ignores_normal_typing_redraw(self, tmp_path: Path) -> None:
+        """Normal typing that triggers TUI redraw with 'Interrupted' in AI text.
+
+        When user types a normal character while idle, the Ink TUI redraws
+        the visible screen.  If the AI's previous response discussed interrupts,
+        the redraw contains 'Interrupted' — but the user didn't press Escape,
+        so the escape-race detector must NOT trigger.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+        # User types a normal character (NOT Escape)
+        t[0] = 1.5
+        tracker.on_input(b'y')
+        # PTY redraws screen — output contains 'Interrupted' from AI text
+        t[0] = 1.52
+        tracker.on_output(b'Interrupted')
+        # Should stay idle — no Escape was pressed
+        assert tracker.current_state == 'idle'
+
+    def test_escape_race_still_works_after_escape(self, tmp_path: Path) -> None:
+        """Escape race still triggers correctly when user presses Escape."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+        # User presses Escape
+        t[0] = 1.5
+        tracker.on_input(b'\x1b')
+        # PTY outputs "Interrupted" (even as part of a large redraw)
+        t[0] = 1.52
+        large_redraw = b'A' * 800 + b'Interrupted' + b'B' * 400
+        tracker.on_output(large_redraw)
+        # Should detect interrupt — Escape WAS pressed
+        assert tracker.current_state == 'interrupted'
+
 
 # ---------------------------------------------------------------------------
 # Stop hook race (needs_input protected from idle signal)
@@ -1062,6 +1103,7 @@ class TestInterruptedState:
         assert tracker.get_state(pty_alive=True) == 'needs_input'
         # Simulate Escape keypress just before
         tracker._last_input_time = 0.9
+        tracker._last_escape_time = 0.9
         # PTY output with "Interrupted" arrives
         t[0] = 1.2
         tracker.on_output(b'Interrupted \xc2\xb7 What should Claude do instead?')
