@@ -277,7 +277,8 @@ update:
 	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
 	@$(MAKE) .migrate-from-claudeq
 	@echo "$(PROMPT_PREFIX) Updating core dependencies..."
-	@poetry install --no-root --without monitor
+	@poetry lock --no-update 2>/dev/null; \
+	poetry install --no-root --without monitor
 	@echo "$(GREEN)✓ Core dependencies updated$(NC)"
 	@$(MAKE) write-install-metadata
 	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
