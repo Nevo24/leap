@@ -300,6 +300,13 @@ update:
 		poetry install --no-root --with monitor; \
 		$(BUILD_MONITOR_APP); \
 		echo "$(GREEN)✓ Monitor updated$(NC)"; \
+		echo ""; \
+		echo "$(YELLOW)Note: macOS revokes Accessibility after app rebuild$(NC)"; \
+		printf "  Re-open Accessibility settings? (Y/n) "; \
+		read -n 1 -r REPLY_ACC; echo; \
+		if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
+			open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
+		fi; \
 	elif [ -f "$(REPO_PATH)/.storage/.migration_had_monitor" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Old ClaudeQ Monitor was removed during migration"; \
@@ -308,6 +315,13 @@ update:
 		poetry install --no-root --with monitor; \
 		$(BUILD_MONITOR_APP); \
 		echo "$(GREEN)✓ Leap Monitor installed$(NC)"; \
+		echo ""; \
+		echo "$(YELLOW)Note: macOS requires Accessibility permission for IDE navigation$(NC)"; \
+		printf "  Open Accessibility settings? (Y/n) "; \
+		read -n 1 -r REPLY_ACC; echo; \
+		if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
+			open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
+		fi; \
 	else \
 		echo ""; \
 		echo "  Monitor not installed. To install it, run: make install-monitor"; \
