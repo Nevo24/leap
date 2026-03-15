@@ -283,6 +283,8 @@ class TestInterruptedDetection:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
@@ -291,6 +293,8 @@ class TestInterruptedDetection:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'some text Inter')
         assert tracker.current_state == 'running'
@@ -316,6 +320,8 @@ class TestInterruptedDetection:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         # Fill buffer with prior Claude response output
         tracker.on_output(b'A' * 400)
@@ -326,6 +332,49 @@ class TestInterruptedDetection:
         chunk += b'B' * 600  # status bar / prompt rendering
         t[0] = 1.1
         tracker.on_output(chunk)
+        assert tracker.current_state == 'interrupted'
+
+
+# ---------------------------------------------------------------------------
+# False positive: "Interrupted" in Claude's response text (no Escape pressed)
+# ---------------------------------------------------------------------------
+
+class TestInterruptedWordInOutputNotFalsePositive:
+    """The word 'Interrupted' in Claude's normal response text must NOT
+    trigger interrupted state when the user didn't press Escape."""
+
+    def test_interrupted_word_after_send_no_escape(self, tmp_path: Path) -> None:
+        """on_send() followed by output containing 'Interrupted' — no Escape
+        was pressed, so state should remain running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'some text Interrupted more text')
+        assert tracker.current_state == 'running'
+
+    def test_interrupted_word_after_normal_typing(self, tmp_path: Path) -> None:
+        """User types a normal message, Claude responds with 'Interrupted'
+        in its output — should stay running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'hello')
+        t[0] = 1.0
+        tracker.on_output(b'A' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+        t[0] = 2.0
+        tracker.on_output(b'Request interrupted by user')
+        assert tracker.current_state == 'running'
+
+    def test_interrupted_word_with_escape_triggers(self, tmp_path: Path) -> None:
+        """Same scenario but with Escape — should trigger interrupted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')
+        t[0] = 1.0
+        tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
 
 
@@ -369,6 +418,8 @@ class TestInterruptedFalsePositive:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         chunk = b'\x1b[2J\x1b[HInterrupted \xc2\xb7 What next?\r\n'
         tracker.on_output(chunk)
@@ -531,6 +582,8 @@ class TestStopHookRace:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'Interrupted')
         assert tracker.current_state == 'interrupted'
@@ -543,6 +596,8 @@ class TestStopHookRace:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'Interrupted')
         assert tracker.current_state == 'interrupted'
@@ -1003,6 +1058,8 @@ class TestPTYDialogDetection:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(
             b'Interrupted\n'
@@ -1038,6 +1095,8 @@ class TestInterruptedState:
         for mode in ('pause', 'always'):
             tracker = make_tracker(tmp_path, t, auto_send_mode=mode)
             tracker.on_send()
+            t[0] = 0.5
+            tracker.on_input(b'\x1b')  # User presses Escape
             t[0] = 1.0
             tracker.on_output(b'some text Interrupted more text')
             assert tracker.current_state == 'interrupted'
@@ -1049,6 +1108,8 @@ class TestInterruptedState:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
@@ -1063,6 +1124,8 @@ class TestInterruptedState:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
@@ -1076,6 +1139,8 @@ class TestInterruptedState:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x1b')  # User presses Escape
         t[0] = 1.0
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'

@@ -613,7 +613,7 @@ class CLIStateTracker:
                 len(data), len(self._output_buf),
                 has_interrupted, stripped_preview[:80],
             )
-        if has_interrupted and (now - self._last_input_time) < INTERRUPT_DETECT_WINDOW:
+        if has_interrupted and (now - self._last_escape_time) < INTERRUPT_DETECT_WINDOW:
             _log.debug('ON_OUTPUT running→interrupted')
             self._output_buf.clear()
             with self._lock:
