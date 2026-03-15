@@ -205,72 +205,54 @@ class SlackBot:
             pass  # Non-critical
 
 
-def _check_singleton() -> None:
+def _ensure_singleton() -> None:
     """Ensure only one Slack bot instance runs at a time.
 
-    Two-layer check:
-    1. PID file — fast path for normal operation.
-    2. pgrep fallback — catches orphaned processes where the PID file
-       was removed (e.g. monitor cleaned it before the process died).
+    Kills any existing leap-slack.py processes (last-start-wins).
+    This avoids stale lock issues entirely — the newest instance
+    always takes over.
     """
+    import signal
     import subprocess
-    from leap.utils.constants import SLACK_DIR
-    pid_file = SLACK_DIR / "slack-bot.pid"
-    SLACK_DIR.mkdir(parents=True, exist_ok=True)
+    import time as _time
+
     my_pid = os.getpid()
-
-    # Check 1: PID file
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            if old_pid != my_pid:
-                os.kill(old_pid, 0)
-                result = subprocess.run(
-                    ['ps', '-o', 'command=', '-p', str(old_pid)],
-                    capture_output=True, text=True, timeout=2,
-                )
-                if 'leap-slack' in result.stdout:
-                    print(
-                        f"Another Slack bot is already running (PID {old_pid}).\n"
-                        "Kill it first or use the monitor to stop/start.",
-                        file=sys.stderr,
-                    )
-                    sys.exit(1)
-        except (ValueError, OSError):
-            pass
-
-    # Check 2: pgrep fallback — catches orphans where the PID file
-    # was removed but the process is still alive.
     try:
         result = subprocess.run(
             ['pgrep', '-f', 'leap-slack.py'],
             capture_output=True, text=True, timeout=2,
         )
+        old_pids = []
         for pid_str in result.stdout.strip().split('\n'):
             if pid_str:
                 try:
                     pid = int(pid_str)
                     if pid != my_pid:
-                        print(
-                            f"Another Slack bot is already running (PID {pid}).\n"
-                            "Kill it first or use the monitor to stop/start.",
-                            file=sys.stderr,
-                        )
-                        sys.exit(1)
+                        old_pids.append(pid)
                 except ValueError:
                     pass
+
+        if old_pids:
+            for pid in old_pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            _time.sleep(0.3)
+            for pid in old_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            _time.sleep(0.2)
+            print(f"Killed previous Slack bot (PID {', '.join(str(p) for p in old_pids)})")
     except (subprocess.TimeoutExpired, OSError):
         pass
-
-    pid_file.write_text(str(my_pid))
-
-    import atexit
-    atexit.register(lambda: pid_file.unlink(missing_ok=True))
 
 
 def main() -> None:
     """Entry point for the leap-slack command."""
-    _check_singleton()
+    _ensure_singleton()
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s %(message)s',
