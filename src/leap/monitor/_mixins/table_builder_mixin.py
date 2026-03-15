@@ -446,8 +446,8 @@ class TableBuilderMixin(_Base):
         # can trigger nested tooltip dispatches on stale C++ pointers,
         # causing a segfault in QToolTip::showText().
         app = QApplication.instance()
-        tooltips_were_enabled = getattr(app, 'tooltips_enabled', True)
-        app.tooltips_enabled = False
+        tooltips_were_enabled = getattr(app, '_suppress_tooltips', False)
+        app._suppress_tooltips = True
         try:
             # Track which cached PR widgets are stale (tag no longer in table).
             # Widgets for still-present tracked tags are reused to preserve
@@ -1277,7 +1277,7 @@ class TableBuilderMixin(_Base):
             for k in stale_keys:
                 self._cell_cache.pop(k, None)
         finally:
-            app.tooltips_enabled = tooltips_were_enabled
+            app._suppress_tooltips = tooltips_were_enabled
             self.table.setUpdatesEnabled(True)
             # Re-apply row hover highlight (widgets were replaced during rebuild)
             if getattr(self, '_hovered_row', -1) >= 0:

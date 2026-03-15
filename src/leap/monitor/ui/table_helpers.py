@@ -393,13 +393,15 @@ class TooltipApp(QApplication):
     """QApplication subclass that controls tooltip behavior.
 
     Overrides notify() to intercept ToolTip events on ALL widgets.
-    When tooltips_enabled=True: shows with max duration (no auto-dismiss).
-    When tooltips_enabled=False: suppresses all tooltips.
+    When tooltips_enabled=True: shows explanatory tooltips + truncated text.
+    When tooltips_enabled=False: suppresses explanatory tooltips, still shows
+    truncated text on hover so users can read clipped content.
     """
 
     def __init__(self, argv: list) -> None:
         super().__init__(argv)
         self.tooltips_enabled: bool = True
+        self._suppress_tooltips: bool = False  # Hard suppress during table rebuild
         self._in_tooltip: bool = False
 
     def notify(self, obj: QObject, event: QEvent) -> bool:
@@ -450,8 +452,8 @@ class TooltipApp(QApplication):
 
     def _handle_tooltip(self, obj: QObject, event: QEvent) -> bool:
         """Handle tooltip events, returning True to consume the event."""
-        if not self.tooltips_enabled:
-            return True  # Suppress all tooltips (e.g. during table rebuild)
+        if self._suppress_tooltips:
+            return True  # Hard suppress during table rebuild (safety)
         if sip.isdeleted(obj):
             return True
         widget = obj if isinstance(obj, QWidget) else None
