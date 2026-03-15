@@ -136,9 +136,11 @@ class NotificationsDialog(QDialog):
                 sound_combo.setMinimumWidth(110)
                 sound_combo.setMaxVisibleItems(20)
                 sound_combo.setProperty('always_tooltip', True)
-                # Install event filter on dropdown view for right-click removal
+                sound_combo.setProperty('_sound_key', key)
+                # Install event filter on dropdown view AND the combo itself
                 sound_combo.view().viewport().installEventFilter(self)
                 sound_combo.view().viewport().setProperty('_sound_key', key)
+                sound_combo.installEventFilter(self)
                 sound_combo.currentTextChanged.connect(
                     partial(self._on_sound_changed, key))
 
@@ -212,50 +214,97 @@ class NotificationsDialog(QDialog):
         combo.setToolTip(sound_name)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
-        """Intercept right-clicks on combobox dropdown items."""
-        if event.type() == QEvent.MouseButtonPress:
-            if event.button() == Qt.RightButton:
-                key = obj.property('_sound_key')
-                if key:
-                    combo = self._sound_combos.get(key)
-                    if combo:
-                        view = combo.view()
-                        index = view.indexAt(event.pos())
-                        if index.isValid():
-                            row_idx = index.row()
-                            item_data = combo.itemData(row_idx)
-                            if item_data:
-                                # Custom sound — close popup and show remove menu
-                                item_text = combo.itemText(row_idx)
-                                self._browsing = True
-                                combo.hidePopup()
-                                self._browsing = False
-                                menu = QMenu(self)
-                                remove_action = QAction(
-                                    f'Remove "{item_text}"', self)
-                                remove_action.triggered.connect(
-                                    partial(self._remove_custom_sound,
-                                            key, item_data))
-                                menu.addAction(remove_action)
-                                menu.exec_(QCursor.pos())
-                                return True
+        """Intercept right-clicks on combobox dropdown items and closed combos."""
+        if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
+            key = obj.property('_sound_key')
+            if not key:
+                return super().eventFilter(obj, event)
+            combo = self._sound_combos.get(key)
+            if not combo:
+                return super().eventFilter(obj, event)
+
+            # Determine which item was right-clicked
+            if isinstance(obj, QComboBox):
+                # Closed combo — use the currently selected item
+                item_idx = combo.currentIndex()
+            else:
+                # Dropdown viewport — use the item under the cursor
+                view = combo.view()
+                index = view.indexAt(event.pos())
+                if not index.isValid():
+                    return True
+                item_idx = index.row()
+
+            item_text = combo.itemText(item_idx)
+            item_data = combo.itemData(item_idx)
+            if item_text in ('None', _BROWSE_SENTINEL):
+                return True
+
+            self._browsing = True
+            combo.hidePopup()
+            self._show_sound_context_menu(key, combo, item_text, item_data)
+            self._browsing = False
+            return True
         return super().eventFilter(obj, event)
+
+    def _show_sound_context_menu(
+        self, key: str, combo: QComboBox, item_text: str,
+        item_data: Any,
+    ) -> None:
+        """Show the right-click context menu for a sound item."""
+        is_custom = bool(item_data)
+        sound_value = item_data if is_custom else item_text
+
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WA_DeleteOnClose)
+
+        apply_action = QAction(f'Apply "{item_text}" to all', self)
+        apply_action.triggered.connect(
+            partial(self._apply_sound_to_all, sound_value))
+        menu.addAction(apply_action)
+
+        if is_custom:
+            remove_action = QAction(f'Remove "{item_text}"', self)
+            remove_action.triggered.connect(
+                partial(self._remove_custom_sound, key, item_data))
+            menu.addAction(remove_action)
+
+            remove_all_action = QAction(
+                f'Remove "{item_text}" from all', self)
+            remove_all_action.triggered.connect(
+                partial(self._remove_custom_sound_from_all, item_data))
+            menu.addAction(remove_all_action)
+
+        menu.exec_(QCursor.pos())
+
+    def _apply_sound_to_all(self, sound_value: str) -> None:
+        """Set the given sound on all notification type combos."""
+        self._browsing = True
+        try:
+            for combo in self._sound_combos.values():
+                self._set_combo_sound(combo, sound_value)
+        finally:
+            self._browsing = False
 
     def _remove_custom_sound(self, key: str, file_path: str) -> None:
         """Remove a custom sound entry by file path; revert to None if selected."""
         combo = self._sound_combos.get(key)
         if not combo:
             return
-        # Guard: removing the item before "Browse..." can cause Qt to auto-select
-        # "Browse...", which would trigger the file picker. Block that.
+        self._remove_custom_from_combo(combo, file_path)
+
+    def _remove_custom_sound_from_all(self, file_path: str) -> None:
+        """Remove a custom sound entry from every combo; revert to None where selected."""
+        for combo in self._sound_combos.values():
+            self._remove_custom_from_combo(combo, file_path)
+
+    def _remove_custom_from_combo(self, combo: QComboBox, file_path: str) -> None:
+        """Remove a custom item by file path from a single combo."""
         self._browsing = True
         try:
-            # Find the item by its stored data (file path) — indices may have shifted
             for i in range(combo.count()):
                 if combo.itemData(i) == file_path:
-                    was_selected = combo.currentIndex() == i
-                    if was_selected:
-                        # Switch away first so removeItem doesn't auto-select Browse...
+                    if combo.currentIndex() == i:
                         combo.setCurrentIndex(combo.findText('None'))
                     combo.removeItem(i)
                     break
