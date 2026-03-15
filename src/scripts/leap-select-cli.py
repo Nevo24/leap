@@ -19,14 +19,14 @@ _SRC_DIR = _SCRIPT_DIR.parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from leap.cli_providers.registry import get_provider, list_providers
+from leap.cli_providers.registry import get_provider, list_installed_providers
 
 
 def _build_choices() -> list[tuple[str, str]]:
-    """Build choices list from registry."""
+    """Build choices list from installed providers only."""
     return [
         (name, get_provider(name).display_name)
-        for name in list_providers()
+        for name in list_installed_providers()
     ]
 
 
@@ -86,6 +86,16 @@ def clear_menu() -> None:
 
 
 def main() -> None:
+    if not CHOICES:
+        sys.stderr.write("\n  ❌ No supported CLI found on PATH.\n")
+        sys.stderr.write("     Install Claude Code (claude) or Codex (codex) and try again.\n\n")
+        sys.exit(1)
+
+    if len(CHOICES) == 1:
+        # Only one CLI installed — auto-select it
+        print(CHOICES[0][0])
+        return
+
     selected = 0
     render(selected)
 

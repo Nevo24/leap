@@ -9,6 +9,7 @@ tracker, and server can work with any supported CLI.
 import json
 import os
 import re
+import shutil
 import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -38,6 +39,10 @@ class CLIProvider(ABC):
     @abstractmethod
     def display_name(self) -> str:
         """Human-readable name (e.g. 'Claude', 'Codex')."""
+
+    def is_installed(self) -> bool:
+        """Check whether the CLI binary is available on PATH."""
+        return shutil.which(self.command) is not None
 
     # -- State detection patterns ----------------------------------------
 

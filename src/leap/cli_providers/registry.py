@@ -41,3 +41,8 @@ def get_provider(name: Optional[str] = None) -> CLIProvider:
 def list_providers() -> list[str]:
     """Return sorted list of available provider names."""
     return sorted(_PROVIDERS.keys())
+
+
+def list_installed_providers() -> list[str]:
+    """Return sorted list of provider names whose CLI binary is on PATH."""
+    return sorted(name for name, provider in _PROVIDERS.items() if provider.is_installed())
