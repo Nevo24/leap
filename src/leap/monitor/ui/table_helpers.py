@@ -475,11 +475,26 @@ class TooltipApp(QApplication):
                     if isinstance(table, QTableWidget):
                         header_item = table.horizontalHeaderItem(logical)
                         if header_item:
+                            label = header_item.text()
                             tip = header_item.toolTip()
+                            # Always show label when column is too narrow
+                            section_w = parent.sectionSize(logical)
+                            text_w = parent.fontMetrics().horizontalAdvance(
+                                label)
+                            truncated = text_w > section_w - 16
+                            if truncated and not tip:
+                                # No explanatory tooltip — show just the label
+                                self._show_tip(
+                                    event.globalPos(), label, widget,
+                                    parent.rect(),
+                                )
+                                return True
                             if tip:
-                                if self.tooltips_enabled:
+                                if truncated or self.tooltips_enabled:
+                                    shown = (f'{label}\n\n{tip}'
+                                             if truncated else tip)
                                     self._show_tip(
-                                        event.globalPos(), tip, widget,
+                                        event.globalPos(), shown, widget,
                                         parent.rect(),
                                     )
                                 return True

@@ -216,7 +216,7 @@ class MonitorWindow(
         # Column header tooltip descriptions (applied via _apply_header_tooltips)
         self._col_tooltip_descriptions = {
             self.COL_TAG: 'Leap session name',
-            self.COL_CLI: 'AI CLI backend',
+            self.COL_CLI: 'AI CLI engine',
             self.COL_PROJECT: 'Git project name',
             self.COL_SERVER: 'Leap server process (green = running)',
             self.COL_PATH: 'Directory where the server is running',
@@ -238,11 +238,14 @@ class MonitorWindow(
         }
         self._apply_header_tooltips()
 
-        # Enable interactive column resizing
+        # Enable interactive column resizing (columns never exceed viewport)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         header = self.table.horizontalHeader()
         header.setStyleSheet('QHeaderView::section { border: none; padding: 4px; }')
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
+        self._resizing_columns = False  # guard against re-entrant sectionResized
+        header.sectionResized.connect(self._on_section_resized)
 
         # Hide vertical header (row indices) — delete button is in COL_DELETE
         self.table.verticalHeader().setVisible(False)
@@ -660,8 +663,66 @@ class MonitorWindow(
             if col != self.COL_DELETE and not self.table.isColumnHidden(col)
         ]
         col_width = available // max(len(visible_cols), 1)
+        self._resizing_columns = True
         for col in visible_cols:
             self.table.setColumnWidth(col, col_width)
+        self._resizing_columns = False
+
+    def _on_section_resized(self, index: int, old_size: int, new_size: int) -> None:
+        """Clamp column resizes so total width never exceeds viewport.
+
+        When the user drags a column wider, steal space from subsequent
+        visible columns (min 30 px each).  If the column was narrowed,
+        give the freed space to the last visible column.
+        """
+        if self._resizing_columns or not self._ui_ready:
+            return
+        if index == self.COL_DELETE:
+            return
+
+        viewport_w = self.table.viewport().width()
+        if viewport_w <= 0:
+            return
+
+        col_count = self.table.columnCount()
+        delete_w = self.table.columnWidth(self.COL_DELETE)
+        available = viewport_w - delete_w
+
+        visible_cols = [
+            c for c in range(col_count)
+            if c != self.COL_DELETE and not self.table.isColumnHidden(c)
+        ]
+        total = sum(self.table.columnWidth(c) for c in visible_cols)
+        overflow = total - available
+        if overflow <= 0:
+            # Columns fit — give leftover to the last visible column
+            if visible_cols and overflow < 0:
+                last = visible_cols[-1]
+                self._resizing_columns = True
+                self.table.setColumnWidth(
+                    last, self.table.columnWidth(last) - overflow)
+                self._resizing_columns = False
+            return
+
+        # Overflow: shrink columns *after* the resized one
+        self._resizing_columns = True
+        try:
+            after = [c for c in visible_cols if c > index]
+            # Try to absorb overflow from columns after the resized one
+            for col in after:
+                if overflow <= 0:
+                    break
+                cur = self.table.columnWidth(col)
+                shrink = min(overflow, cur - 30)
+                if shrink > 0:
+                    self.table.setColumnWidth(col, cur - shrink)
+                    overflow -= shrink
+
+            # If still overflowing, cap the resized column itself
+            if overflow > 0:
+                self.table.setColumnWidth(index, max(30, new_size - overflow))
+        finally:
+            self._resizing_columns = False
 
     def _reset_window_size(self) -> None:
         """Reset window geometry, column widths, and dialog sizes.
@@ -818,6 +879,7 @@ class MonitorWindow(
         available = viewport_w - delete_w
         # Cumulative rounding: compute each column's target from cumulative
         # proportions so every column shifts evenly, even for tiny changes.
+        self._resizing_columns = True
         cumulative_old = 0
         used = 0
         for col in resizable_cols:
@@ -826,6 +888,7 @@ class MonitorWindow(
             w = max(30, target - used)
             self.table.setColumnWidth(col, w)
             used += w
+        self._resizing_columns = False
 
     def changeEvent(self, event: QEvent) -> None:
         """Reset dock badge when window becomes active."""
