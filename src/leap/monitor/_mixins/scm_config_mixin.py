@@ -349,10 +349,16 @@ class SCMConfigMixin(_Base):
 
     def _toggle_slack_bot(self) -> None:
         """Start or stop the Slack bot."""
-        if self._is_slack_bot_running():
-            self._stop_slack_bot()
-        else:
-            self._start_slack_bot()
+        # Disable button during the operation to prevent double-clicks
+        # from causing a stop+start in the same second.
+        self.slack_bot_btn.setEnabled(False)
+        try:
+            if self._is_slack_bot_running():
+                self._stop_slack_bot()
+            else:
+                self._start_slack_bot()
+        finally:
+            self._update_slack_bot_button()
 
     def _start_slack_bot(self, silent: bool = False) -> None:
         """Launch the Slack bot as a QProcess.
