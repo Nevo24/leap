@@ -191,6 +191,18 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "  • Applications: Double-click Leap Monitor.app"
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
+	@echo "$(YELLOW)Optional: Grant macOS permissions for full functionality$(NC)"
+	@echo "  • Accessibility: Required for IDE terminal navigation"
+	@echo "  • Notifications: Required for system notifications"
+	@echo ""
+	@read -p "  Open Accessibility settings? (Y/n) " -n 1 -r REPLY_ACC; echo; \
+	if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
+		open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
+	fi
+	@read -p "  Open Notifications settings? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
+	if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
+		open "x-apple.systempreferences:com.apple.preference.notifications"; \
+	fi
 
 .PHONY: install-slack-app
 install-slack-app: .env ensure-storage write-install-metadata
