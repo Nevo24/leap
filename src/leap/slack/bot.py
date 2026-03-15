@@ -12,6 +12,7 @@ Usage:
 import logging
 import os
 import sys
+import threading
 from typing import Any, Optional
 
 try:
@@ -82,9 +83,10 @@ class SlackBot:
 
         try:
             handler = SocketModeHandler(self._app, self._app_token)
+            handler.connect()
             print("Connected to Slack. Listening for messages...")
             print("Press Ctrl+C to stop.\n")
-            handler.start()
+            threading.Event().wait()
         except KeyboardInterrupt:
             print("\nShutting down...")
         finally:
