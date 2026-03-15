@@ -31,36 +31,45 @@ _DEFAULT_PREFS = {
 
 # Default notification preferences per notification type.
 # Each type has independent 'dock' (badge count) and 'banner' (macOS banner) toggles.
-_DEFAULT_NOTIFICATIONS: dict[str, dict[str, bool]] = {
-    'pr_unresponded': {'dock': True, 'banner': False},
-    'pr_all_responded': {'dock': True, 'banner': False},
-    'pr_approved': {'dock': True, 'banner': False},
-    'session_completed': {'dock': True, 'banner': False},
-    'session_needs_permission': {'dock': True, 'banner': False},
-    'session_needs_input': {'dock': True, 'banner': False},
-    'session_interrupted': {'dock': True, 'banner': False},
-    'review_requested': {'dock': True, 'banner': False},
-    'assigned': {'dock': True, 'banner': False},
-    'mentioned': {'dock': True, 'banner': False},
+_DEFAULT_NOTIFICATIONS: dict[str, dict[str, Any]] = {
+    'pr_unresponded': {'dock': True, 'banner': False, 'sound': 'None'},
+    'pr_all_responded': {'dock': True, 'banner': False, 'sound': 'None'},
+    'pr_approved': {'dock': True, 'banner': False, 'sound': 'None'},
+    'session_completed': {'dock': True, 'banner': False, 'sound': 'None'},
+    'session_needs_permission': {'dock': True, 'banner': False, 'sound': 'None'},
+    'session_needs_input': {'dock': True, 'banner': False, 'sound': 'None'},
+    'session_interrupted': {'dock': True, 'banner': False, 'sound': 'None'},
+    'review_requested': {'dock': True, 'banner': False, 'sound': 'None'},
+    'assigned': {'dock': True, 'banner': False, 'sound': 'None'},
+    'mentioned': {'dock': True, 'banner': False, 'sound': 'None'},
 }
 
+# macOS system sounds available in /System/Library/Sounds/
+# 'Browse...' is a sentinel — the dialog replaces it with a file picker.
+MACOS_SYSTEM_SOUNDS: list[str] = [
+    'None', 'Default', 'Basso', 'Blow', 'Bottle', 'Frog', 'Funk', 'Glass',
+    'Hero', 'Morse', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink',
+    'Browse...',
+]
 
-def get_notification_prefs(prefs: dict[str, Any]) -> dict[str, dict[str, bool]]:
+
+def get_notification_prefs(prefs: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Get notification preferences merged with defaults.
 
     Args:
         prefs: The full monitor prefs dict (may contain a 'notifications' key).
 
     Returns:
-        Dict mapping notification type key to {'dock': bool, 'banner': bool}.
+        Dict mapping notification type key to {'dock': bool, 'banner': bool, 'sound': str}.
     """
     saved = prefs.get('notifications', {})
-    merged: dict[str, dict[str, bool]] = {}
+    merged: dict[str, dict[str, Any]] = {}
     for key, defaults in _DEFAULT_NOTIFICATIONS.items():
         entry = saved.get(key, {})
         merged[key] = {
             'dock': entry.get('dock', defaults['dock']),
             'banner': entry.get('banner', defaults['banner']),
+            'sound': entry.get('sound', defaults['sound']),
         }
     return merged
 

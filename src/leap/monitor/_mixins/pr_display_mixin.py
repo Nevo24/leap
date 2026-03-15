@@ -158,10 +158,10 @@ class PRDisplayMixin(_Base):
         self._banner_notified = set()
 
     def _send_banner_notifications(self, events: list[NotificationEvent]) -> None:
-        """Send macOS banner notifications for events where banner is enabled.
+        """Send macOS banner notifications and play sounds for events.
 
         Coalesces repeated (tag, type) combos while the window is inactive —
-        only the first occurrence triggers a banner.
+        only the first occurrence triggers a banner/sound.
         """
         if self.isActiveWindow():
             self._banner_notified: set[tuple[str, str]] = set()
@@ -172,14 +172,22 @@ class PRDisplayMixin(_Base):
             self._banner_notified = set()
         notif_prefs = get_notification_prefs(self._prefs)
         for ev in events:
-            if not notif_prefs.get(ev.type.value, {}).get('banner', False):
-                continue
+            type_prefs = notif_prefs.get(ev.type.value, {})
+            banner_enabled = type_prefs.get('banner', False)
+            sound_name = type_prefs.get('sound', 'None')
             key = (ev.tag, ev.type.value)
             if key in self._banner_notified:
                 continue
+            # At least one of banner or sound must be enabled
+            if not banner_enabled and sound_name == 'None':
+                continue
             self._banner_notified.add(key)
-            subtitle, body = self._format_banner_text(ev)
-            self._send_macos_notification(subtitle, body)
+            if banner_enabled:
+                subtitle, body = self._format_banner_text(ev)
+                self._send_macos_notification(subtitle, body, sound_name)
+            elif sound_name != 'None':
+                # Sound only (no banner)
+                self._play_notification_sound(sound_name)
 
     @staticmethod
     def _format_banner_text(event: NotificationEvent) -> tuple[str, str]:
@@ -224,9 +232,10 @@ class PRDisplayMixin(_Base):
         return (tag, '')
 
     @staticmethod
-    def _send_macos_notification(subtitle: str, body: str) -> None:
+    def _send_macos_notification(subtitle: str, body: str, sound_name: str = 'None') -> None:
         """Send a macOS banner notification via native NSUserNotification."""
         try:
+            import os
             from AppKit import NSImage
             from Foundation import NSUserNotification, NSUserNotificationCenter
             notif = NSUserNotification.alloc().init()
@@ -235,6 +244,16 @@ class PRDisplayMixin(_Base):
                 notif.setSubtitle_(subtitle)
             if body:
                 notif.setInformativeText_(body)
+            # Set notification sound (built-in names only; custom files are
+            # played separately since NSUserNotification only supports named sounds)
+            if sound_name and sound_name != 'None':
+                if os.path.isabs(sound_name):
+                    # Custom file — play via _play_notification_sound after delivery
+                    pass
+                elif sound_name == 'Default':
+                    notif.setSoundName_('NSUserNotificationDefaultSoundName')
+                else:
+                    notif.setSoundName_(sound_name)
             # Override the Python app icon with the Leap icon
             icon_path = find_icon()
             if icon_path:
@@ -243,5 +262,15 @@ class PRDisplayMixin(_Base):
                     notif.setValue_forKey_(image, '_identityImage')
                     notif.setValue_forKey_(False, '_identityImageHasBorder')
             NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(notif)
+            # For custom file paths, play the sound separately
+            if sound_name and os.path.isabs(sound_name):
+                from leap.monitor.dialogs.notifications_dialog import _play_sound
+                _play_sound(sound_name)
         except Exception:
             pass  # PyObjC not available or notification failed
+
+    @staticmethod
+    def _play_notification_sound(sound_name: str) -> None:
+        """Play a notification sound without sending a banner."""
+        from leap.monitor.dialogs.notifications_dialog import _play_sound
+        _play_sound(sound_name)

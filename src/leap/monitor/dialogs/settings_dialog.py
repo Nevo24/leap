@@ -134,7 +134,7 @@ class SettingsDialog(QDialog):
         active_paths_fn: Optional[Callable[[], set[str]]] = None,
         log_fn: Optional[Callable[[str], None]] = None,
         show_tooltips: bool = True,
-        notification_prefs: Optional[dict[str, dict[str, bool]]] = None,
+        notification_prefs: Optional[dict[str, dict[str, Any]]] = None,
         current_auto_send_mode: str = AutoSendMode.PAUSE,
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
@@ -146,7 +146,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._active_paths_fn = active_paths_fn
         self._log_fn = log_fn
-        self._notification_prefs: dict[str, dict[str, bool]] = notification_prefs or {}
+        self._notification_prefs: dict[str, dict[str, Any]] = notification_prefs or {}
         self._on_theme_change = on_theme_change
         self._original_theme = current_theme_name
         self.setWindowTitle('Settings')
@@ -463,7 +463,7 @@ class SettingsDialog(QDialog):
         if dialog.exec_():
             self._notification_prefs = dialog.selected_prefs()
 
-    def notification_prefs(self) -> dict[str, dict[str, bool]]:
+    def notification_prefs(self) -> dict[str, dict[str, Any]]:
         """Return the current notification preferences."""
         return self._notification_prefs
 
