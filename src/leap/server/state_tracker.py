@@ -98,6 +98,11 @@ class CLIStateTracker:
         self._last_output_time: float = 0.0
         # Track user input to distinguish typing echo from CLI output.
         self._last_input_time: float = self._clock()
+        # Track when the user last pressed Escape (or interrupt was sent
+        # via socket).  Used *only* by the idle-state escape-race detector
+        # to avoid false positives from normal typing that triggers TUI
+        # redraws containing "Interrupted" in the AI's conversational text.
+        self._last_escape_time: float = -INTERRUPT_DETECT_WINDOW
         # True after the first real user keystroke (prevents the startup
         # banner from falsely triggering idle → running).
         self._seen_user_input: bool = False
@@ -417,6 +422,7 @@ class CLIStateTracker:
                         len(data),
                     )
                     self._last_input_time = self._clock()
+                    self._last_escape_time = self._last_input_time
             else:
                 _log.debug('ON_INPUT filtered escape seq len=%d', len(data))
             return
@@ -426,6 +432,9 @@ class CLIStateTracker:
         )
         self._seen_user_input = True
         self._last_input_time = self._clock()
+        # Single-byte Escape key (0x1b) — track for idle escape-race.
+        if data == b'\x1b':
+            self._last_escape_time = self._last_input_time
         self._idle_output_acc = 0
 
         # For Ratatui-based CLIs: Enter while idle → running.
@@ -546,7 +555,10 @@ class CLIStateTracker:
         # Detect interruption — the Stop hook may race ahead
         # and write "idle" before PTY output with the interrupted
         # pattern arrives.
-        if now - self._last_input_time < INTERRUPT_DETECT_WINDOW:
+        # Use _last_escape_time (not _last_input_time) so that normal
+        # typing (which triggers TUI redraws of the visible screen)
+        # doesn't false-positive on "Interrupted" in the AI's text.
+        if now - self._last_escape_time < INTERRUPT_DETECT_WINDOW:
             stripped_chunk = self._ANSI_RE.sub(b'', data)
             has_interrupted = interrupted_pattern in stripped_chunk
             if has_interrupted or interrupted_pattern in self._ANSI_RE.sub(
@@ -665,11 +677,13 @@ class CLIStateTracker:
         interrupted_pattern = self._provider.interrupted_pattern
 
         # Override to interrupted if we see the interrupted pattern
-        # in fresh output shortly after user input (Escape key).
+        # in fresh output shortly after user pressed Escape.
+        # Use _last_escape_time to avoid false positives from normal
+        # typing that triggers TUI redraws with "Interrupted" in AI text.
         if (
             self._state == CLIState.NEEDS_INPUT
             and interrupted_pattern in self._ANSI_RE.sub(b'', data)
-            and (now - self._last_input_time) < ESCAPE_CORRECTION_WINDOW
+            and (now - self._last_escape_time) < ESCAPE_CORRECTION_WINDOW
         ):
             _log.debug(
                 'ON_OUTPUT needs_input→interrupted '

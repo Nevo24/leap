@@ -314,9 +314,18 @@ class SCMConfigMixin(_Base):
     #  Slack bot management
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _is_slack_bot_running() -> bool:
-        """Check if the Slack bot lock directory exists (bot is running)."""
+    def _is_slack_bot_running(self) -> bool:
+        """Check if the Slack bot is running.
+
+        Checks both the QProcess state (for monitor-launched bots) and
+        the lock directory (for terminal-launched bots).  The QProcess
+        check catches the window between start() and lock creation.
+        """
+        if (
+            self._slack_bot_process is not None
+            and self._slack_bot_process.state() != QProcess.NotRunning
+        ):
+            return True
         return SLACK_BOT_LOCK.is_dir()
 
     def _update_slack_bot_button(self) -> None:
