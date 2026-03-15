@@ -640,10 +640,10 @@ class MonitorWindow(
 
     def _center_on_screen(self) -> None:
         """Resize to default dimensions and center on screen."""
-        self.resize(1150, 600)
+        self.resize(1230, 642)
         screen = QApplication.primaryScreen().availableGeometry()
-        x = (screen.width() - 1150) // 2 + screen.x()
-        y = (screen.height() - 600) // 2 + screen.y()
+        x = (screen.width() - 1230) // 2 + screen.x()
+        y = (screen.height() - 642) // 2 + screen.y()
         self.move(x, y)
 
     def _apply_equal_column_widths(self) -> None:
@@ -654,7 +654,7 @@ class MonitorWindow(
         viewport_w = self.table.viewport().width()
         if viewport_w <= 0:
             # Viewport not ready yet — estimate from window geometry
-            viewport_w = (self.geometry().width() or 1150) - 50
+            viewport_w = (self.geometry().width() or 1230) - 50
         delete_w = self.table.columnWidth(self.COL_DELETE)
         available = viewport_w - delete_w
         # Only count visible, non-fixed columns (skip hidden like Slack)
