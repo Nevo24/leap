@@ -246,6 +246,8 @@ update:
 		echo "After installation, you can use 'make update' to update to newer versions."; \
 		exit 1; \
 	fi
+	@# Restore poetry.lock if it's the only change (caused by poetry lock --no-update in previous update)
+	@git checkout -- poetry.lock 2>/dev/null || true
 	@if [ -n "$$(git status --porcelain)" ]; then \
 		echo "$(YELLOW)⚠ You have uncommitted local changes:$(NC)"; \
 		git status --short; \
