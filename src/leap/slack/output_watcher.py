@@ -59,6 +59,9 @@ class OutputWatcher:
 
     def start(self) -> None:
         """Start the background polling thread."""
+        # Seed last-seen timestamps from existing .last_response files
+        # so we don't re-post stale responses on bot restart.
+        self._seed_last_seen_ts()
         self._running = True
         self._thread = threading.Thread(
             target=self._poll_loop, daemon=True, name='output-watcher',
@@ -71,6 +74,25 @@ class OutputWatcher:
         if self._thread:
             self._thread.join(timeout=5)
             self._thread = None
+
+    def _seed_last_seen_ts(self) -> None:
+        """Pre-populate _last_seen_ts from existing .last_response files.
+
+        Prevents re-posting old responses when the bot restarts.
+        """
+        sessions = self._get_sessions()
+        for tag, session_data in sessions.items():
+            if not session_data.get('enabled') or not session_data.get('thread_ts'):
+                continue
+            response_file = SOCKET_DIR / f"{tag}.last_response"
+            try:
+                if response_file.exists():
+                    payload = json.loads(response_file.read_text())
+                    ts = payload.get('timestamp', 0)
+                    if ts:
+                        self._last_seen_ts[tag] = ts
+            except (json.JSONDecodeError, OSError):
+                pass
 
     def _poll_loop(self) -> None:
         """Main polling loop: check all enabled sessions for new output."""
