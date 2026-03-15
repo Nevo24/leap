@@ -110,22 +110,28 @@ class CLIProvider(ABC):
         """
         return None
 
-    def read_transcript_completion(self) -> Optional[str]:
+    def read_transcript_completion(self, since: float = 0) -> Optional[str]:
         """Check the CLI's transcript for a task-completion event.
 
         Reads the tail of the most recently modified transcript file
-        and looks for a completion event with the assistant's response.
+        and looks for a ``task_complete`` event whose ISO timestamp is
+        newer than ``since`` (Unix epoch).  This prevents detecting
+        stale completions from previous turns when the transcript is
+        incrementally updated (user message written before task_complete).
 
         Called every poll cycle (~0.5s), so must be fast:
         - Only scans today's date directory (not full rglob)
-        - Caches the active transcript path
         - Reads only the last 32KB of the file
 
+        Args:
+            since: Unix timestamp.  Only return completions with an
+                ISO timestamp strictly after this.
+
         Returns:
-            The last assistant message text, or None if not found
-            or the transcript is stale (> 30s old).
+            The last assistant message text, or None if not found.
         """
         import time as _time
+        from datetime import datetime, timezone
         sessions_dir = self.transcript_sessions_dir
         if sessions_dir is None or not sessions_dir.exists():
             return None
@@ -149,9 +155,18 @@ class CLIProvider(ABC):
                     entry = json.loads(raw_line)
                     payload = entry.get('payload', {})
                     if payload.get('type') == 'task_complete':
+                        # Check the entry's timestamp against 'since'
+                        ts_str = entry.get('timestamp', '')
+                        if ts_str and since > 0:
+                            entry_dt = datetime.fromisoformat(
+                                ts_str.replace('Z', '+00:00'),
+                            )
+                            entry_ts = entry_dt.timestamp()
+                            if entry_ts <= since:
+                                return None  # Stale completion
                         msg = payload.get('last_agent_message', '')
                         return msg.strip() if msg else None
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, ValueError):
                     continue
         except OSError:
             pass
