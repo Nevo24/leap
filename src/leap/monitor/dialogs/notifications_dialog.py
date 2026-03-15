@@ -137,10 +137,13 @@ class NotificationsDialog(QDialog):
                 sound_combo.setMaxVisibleItems(20)
                 sound_combo.setProperty('always_tooltip', True)
                 sound_combo.setProperty('_sound_key', key)
-                # Install event filter on dropdown view AND the combo itself
+                # Event filter on dropdown view for right-click on items
                 sound_combo.view().viewport().installEventFilter(self)
                 sound_combo.view().viewport().setProperty('_sound_key', key)
-                sound_combo.installEventFilter(self)
+                # Context menu policy for right-click on closed combo
+                sound_combo.setContextMenuPolicy(Qt.CustomContextMenu)
+                sound_combo.customContextMenuRequested.connect(
+                    partial(self._on_combo_context_menu, key))
                 sound_combo.currentTextChanged.connect(
                     partial(self._on_sound_changed, key))
 
@@ -214,7 +217,7 @@ class NotificationsDialog(QDialog):
         combo.setToolTip(sound_name)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
-        """Intercept right-clicks on combobox dropdown items and closed combos."""
+        """Intercept right-clicks on combobox dropdown items."""
         if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
             key = obj.property('_sound_key')
             if not key:
@@ -223,17 +226,12 @@ class NotificationsDialog(QDialog):
             if not combo:
                 return super().eventFilter(obj, event)
 
-            # Determine which item was right-clicked
-            if isinstance(obj, QComboBox):
-                # Closed combo — use the currently selected item
-                item_idx = combo.currentIndex()
-            else:
-                # Dropdown viewport — use the item under the cursor
-                view = combo.view()
-                index = view.indexAt(event.pos())
-                if not index.isValid():
-                    return True
-                item_idx = index.row()
+            # Dropdown viewport — use the item under the cursor
+            view = combo.view()
+            index = view.indexAt(event.pos())
+            if not index.isValid():
+                return True
+            item_idx = index.row()
 
             item_text = combo.itemText(item_idx)
             item_data = combo.itemData(item_idx)
@@ -246,6 +244,19 @@ class NotificationsDialog(QDialog):
             self._browsing = False
             return True
         return super().eventFilter(obj, event)
+
+    def _on_combo_context_menu(self, key: str) -> None:
+        """Handle right-click on the closed combobox."""
+        combo = self._sound_combos.get(key)
+        if not combo:
+            return
+        item_text = combo.currentText()
+        item_data = combo.currentData()
+        if item_text in ('None', _BROWSE_SENTINEL):
+            return
+        self._browsing = True
+        self._show_sound_context_menu(key, combo, item_text, item_data)
+        self._browsing = False
 
     def _show_sound_context_menu(
         self, key: str, combo: QComboBox, item_text: str,
