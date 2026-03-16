@@ -156,7 +156,12 @@ install: check-macos check-python .env .migrate-from-claudeq install-core ensure
 .PHONY: install-core
 install-core:
 	@echo "$(PROMPT_PREFIX) Installing core dependencies..."
-	@poetry lock --no-update 2>/dev/null || true
+	@POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
+	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
+		echo "$(RED)✗ Poetry 2.x is required but found $$(poetry --version)$(NC)"; \
+		echo "  Please upgrade Poetry: curl -sSL https://install.python-poetry.org | python3 -"; \
+		exit 1; \
+	fi
 	@poetry install --no-root --without monitor
 
 .PHONY: ensure-storage
@@ -232,10 +237,10 @@ clean:
 .PHONY: lock
 lock: .env
 	@echo "$(PROMPT_PREFIX) Locking dependencies..."
-	@poetry lock --no-update
+	@poetry lock
 
 .PHONY: update
-update:
+update: .env
 	@echo "$(PROMPT_PREFIX) Updating Leap..."
 	@$(GET_RC_FILE); \
 	if [ ! -f "$$RC_FILE" ] || ! grep -qE "(Leap|ClaudeQ) Configuration" "$$RC_FILE"; then \
@@ -246,7 +251,7 @@ update:
 		echo "After installation, you can use 'make update' to update to newer versions."; \
 		exit 1; \
 	fi
-	@# Restore poetry.lock if it's the only change (caused by poetry lock --no-update in previous update)
+	@# Restore poetry.lock if modified by a previous Poetry version mismatch
 	@git checkout -- poetry.lock 2>/dev/null || true
 	@if [ -n "$$(git status --porcelain)" ]; then \
 		echo "$(YELLOW)⚠ You have uncommitted local changes:$(NC)"; \
@@ -279,8 +284,13 @@ update:
 	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
 	@$(MAKE) .migrate-from-claudeq
 	@echo "$(PROMPT_PREFIX) Updating core dependencies..."
-	@poetry lock --no-update 2>/dev/null; \
-	poetry install --no-root --without monitor
+	@POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
+	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
+		echo "$(RED)✗ Poetry 2.x is required but found $$(poetry --version)$(NC)"; \
+		echo "  Please upgrade Poetry: curl -sSL https://install.python-poetry.org | python3 -"; \
+		exit 1; \
+	fi
+	@poetry install --no-root --without monitor
 	@echo "$(GREEN)✓ Core dependencies updated$(NC)"
 	@$(MAKE) write-install-metadata
 	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
@@ -390,6 +400,12 @@ update-deps: .env
 	fi; \
 	if ! command -v poetry &> /dev/null; then \
 		echo "$(YELLOW)⚠ Poetry not found, installing...$(NC)"; \
+		curl -sSL https://install.python-poetry.org | python3 -; \
+		export PATH="$$HOME/.local/bin:$$PATH"; \
+	fi; \
+	POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
+	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
+		echo "$(YELLOW)⚠ Poetry 2.x required (found $$(poetry --version)). Upgrading...$(NC)"; \
 		curl -sSL https://install.python-poetry.org | python3 -; \
 		export PATH="$$HOME/.local/bin:$$PATH"; \
 	fi; \
