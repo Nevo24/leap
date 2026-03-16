@@ -33,10 +33,9 @@ from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.table_helpers import (
-    BORDER_GROUP, BORDER_INTRA,
     MAX_COMBO_DISPLAY, PR_PRESET_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_PRESET_TOOLTIP,
-    ColorPickerPopup, HoverIconButton, column_border_type,
+    ColorPickerPopup, HoverIconButton,
     active_btn_style, close_btn_style, menu_btn_style,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _PALETTE_SVG, _SEND_SVG,
     _THREE_DOT_SVG,
@@ -103,18 +102,10 @@ class TableBuilderMixin(_Base):
         toggled uniformly via the ``_hover`` dynamic property.  Columns
         at group boundaries additionally get a right border.
         """
-        border = column_border_type(col, self.table)
-        t = current_theme()
-        if border == BORDER_GROUP:
-            border_css = f'border-right: 1px solid {t.border_solid}; '
-        elif border == BORDER_INTRA:
-            border_css = f'border-right: 1px solid {t.border_subtle}; '
-        else:
-            border_css = ''
         wrapper = QWidget()
         wrapper.setObjectName('_leapSep')
         wrapper.setStyleSheet(
-            f'#_leapSep {{ {border_css}background: transparent; }}'
+            '#_leapSep { background: transparent; }'
         )
         lay = QHBoxLayout(wrapper)
         lay.setContentsMargins(0, 0, 0, 0)
