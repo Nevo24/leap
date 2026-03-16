@@ -619,6 +619,17 @@ class TooltipApp(QApplication):
 
         if sip.isdeleted(widget):
             return True
+
+        # ElidedLabel: show tooltip when truncated even if tooltips are off
+        from leap.monitor.ui.ui_widgets import ElidedLabel as _ElidedLabel
+        if isinstance(widget, _ElidedLabel) and widget.toolTip():
+            if widget.is_truncated() or self.tooltips_enabled or widget.property('always_tooltip'):
+                self._show_tip(
+                    event.globalPos(), widget.toolTip(), widget,
+                    widget.rect(),
+                )
+            return True
+
         if not self.tooltips_enabled and not widget.property('always_tooltip'):
             return True  # Suppress
         if widget.toolTip():

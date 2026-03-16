@@ -23,6 +23,10 @@ class ElidedLabel(QLabel):
         super().setText(text)
         self.update()
 
+    def is_truncated(self) -> bool:
+        """Return True if the text is currently elided (doesn't fit)."""
+        return self.fontMetrics().horizontalAdvance(self._full_text) > self.width()
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         metrics = self.fontMetrics()

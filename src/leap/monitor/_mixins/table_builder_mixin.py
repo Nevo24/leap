@@ -15,8 +15,8 @@ from PyQt5.QtWidgets import (
     QAction, QApplication, QComboBox, QHBoxLayout, QInputDialog, QLabel,
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QPalette
+from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtGui import QColor, QFont, QPalette
 
 from leap.monitor.pr_tracking.base import PRState
 from leap.monitor.pr_tracking.config import (
@@ -221,7 +221,8 @@ class TableBuilderMixin(_Base):
     def _build_tag_cell(self, row: int, tag: str,
                         row_color: Optional[str] = None) -> None:
         """Build the Tag column cell: elided label + palette icon button."""
-        tag_state = (tag, row_color)
+        alias = self._aliases.get(tag)
+        tag_state = (tag, row_color, alias)
         if self._cell_cached(tag, 'tag', tag_state, row, self.COL_TAG):
             return
 
@@ -230,8 +231,13 @@ class TableBuilderMixin(_Base):
         tag_layout.setContentsMargins(0, 0, 0, 0)
         tag_layout.setSpacing(2)
 
-        tag_label = ElidedLabel(tag)
+        display_text = alias if alias else tag
+        tag_label = ElidedLabel(display_text)
         tag_label.setAlignment(Qt.AlignCenter)
+        if alias:
+            font = tag_label.font()
+            font.setItalic(True)
+            tag_label.setFont(font)
         tag_layout.addWidget(tag_label, 1)
 
         palette_btn = HoverIconButton(_PALETTE_SVG, 14)
@@ -244,16 +250,65 @@ class TableBuilderMixin(_Base):
         )
         tag_layout.addWidget(palette_btn, 0, Qt.AlignVCenter)
 
+        # Right-click context menu for alias
+        tag_container.setContextMenuPolicy(Qt.CustomContextMenu)
+        tag_container.customContextMenuRequested.connect(
+            lambda pos, t=tag, w=tag_container:
+                self._show_tag_context_menu(t, w.mapToGlobal(pos))
+        )
+
+        # Tooltip: aliased tags always show both alias and tag.
+        # Regular tags show on hover only when truncated or tooltips enabled
+        # (truncation detection handled by the tooltip app for ElidedLabel).
+        if alias:
+            tag_label.setToolTip(f'Alias: {alias}\nTag: {tag}')
+            tag_label.setProperty('always_tooltip', True)
+        else:
+            tag_label.setToolTip(tag)
+
         # Ensure a table item exists with the tooltip
         item = self.table.item(row, self.COL_TAG)
         if not item:
             item = QTableWidgetItem('')
             self.table.setItem(row, self.COL_TAG, item)
         item.setText('')
-        item.setToolTip(tag)
+        item.setToolTip('')
         self._set_cell_widget(row, self.COL_TAG, tag_container)
         self._apply_row_color_to_widget(tag_container, row_color)
         self._cache_cell(tag, 'tag', tag_state, row, self.COL_TAG)
+
+    def _show_tag_context_menu(self, tag: str, global_pos: QPoint) -> None:
+        """Show context menu for the tag cell (set/remove alias)."""
+        menu = QMenu(self)
+        alias = self._aliases.get(tag)
+        if alias:
+            set_action = menu.addAction(f'Rename alias')
+            remove_action = menu.addAction('Remove alias')
+        else:
+            set_action = menu.addAction('Set alias')
+            remove_action = None
+
+        action = menu.exec_(global_pos)
+        if action == set_action:
+            current = alias or ''
+            text, ok = QInputDialog.getText(
+                self, 'Set Alias', f'Alias for "{tag}":', text=current)
+            if ok and text.strip():
+                self._set_alias(tag, text.strip())
+        elif remove_action and action == remove_action:
+            self._set_alias(tag, None)
+
+    def _set_alias(self, tag: str, alias: Optional[str]) -> None:
+        """Set or clear the alias for a tag and persist."""
+        if alias:
+            self._aliases[tag] = alias
+        else:
+            self._aliases.pop(tag, None)
+        self._prefs['aliases'] = self._aliases
+        self._save_prefs()
+        # Invalidate tag cell cache so it rebuilds
+        self._cell_cache.pop((tag, 'tag'), None)
+        self._update_table()
 
     def _show_color_picker(self, tag: str, anchor: QWidget) -> None:
         """Show the color picker popup anchored below the palette button."""

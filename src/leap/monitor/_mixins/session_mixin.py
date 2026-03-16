@@ -134,15 +134,19 @@ class SessionMixin(_Base):
 
         # Remove dead rows without PR tracking
         if tags_to_remove:
-            colors_changed = False
+            prefs_changed = False
             for tag in tags_to_remove:
                 self._pinned_sessions.pop(tag, None)
                 if tag in self._row_colors:
                     del self._row_colors[tag]
-                    colors_changed = True
+                    prefs_changed = True
+                if tag in self._aliases:
+                    del self._aliases[tag]
+                    prefs_changed = True
             save_pinned_sessions(self._pinned_sessions)
-            if colors_changed:
+            if prefs_changed:
                 self._prefs['row_colors'] = self._row_colors
+                self._prefs['aliases'] = self._aliases
                 save_monitor_prefs(self._prefs)
                 self.table.setProperty('_row_colors', self._row_colors)
             self._remove_from_row_order(set(tags_to_remove))
@@ -488,10 +492,17 @@ class SessionMixin(_Base):
         self._pinned_sessions.pop(tag, None)
         save_pinned_sessions(self._pinned_sessions)
 
-        # Clean up row color
+        # Clean up row color and alias
+        prefs_changed = False
         if tag in self._row_colors:
             del self._row_colors[tag]
             self._prefs['row_colors'] = self._row_colors
+            prefs_changed = True
+        if tag in self._aliases:
+            del self._aliases[tag]
+            self._prefs['aliases'] = self._aliases
+            prefs_changed = True
+        if prefs_changed:
             save_monitor_prefs(self._prefs)
             self.table.setProperty('_row_colors', self._row_colors)
 

@@ -127,6 +127,7 @@ class MonitorWindow(
         self._pr_changed_at: dict[str, tuple[tuple, float]] = {}  # tag -> (snapshot, timestamp)
         self._dismissed_pr_new_status: set[str] = set()  # tags where user dismissed PR fire
         self._row_colors: dict[str, str] = self._prefs.get('row_colors', {})
+        self._aliases: dict[str, str] = self._prefs.get('aliases', {})
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect

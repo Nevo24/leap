@@ -182,7 +182,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Client lock | `.storage/sockets/<tag>.client.lock` |
 | Server lock | `.storage/sockets/<tag>.server.lock/` (directory) |
 | Pinned sessions | `.storage/pinned_sessions.json` |
-| Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`) |
+| Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`, `aliases`) |
 | Notification seen state | `.storage/notification_seen.json` |
 | PR context preset selection | `.storage/leap_selected_preset` |
 | Message bundle preset selection | `.storage/leap_selected_direct_preset` |
@@ -310,6 +310,15 @@ Per-row background colors selectable via a droplet icon button in the Tag column
 - **Rendering**: `SeparatorDelegate.paint()` reads `_row_colors` / `_row_tags` table properties and `fillRect`s the row background before the hover overlay
 - **Text contrast**: `ensure_contrast()` adjusts text foreground against the row color for both `QTableWidgetItem` cells and child `QLabel`s in widget cells (skips `PulsingLabel`/`IndicatorLabel`)
 - **Cleanup**: `_remove_pinned_session()` in `session_mixin.py` deletes the color entry when a row is removed
+
+### Tag Aliases
+
+Display aliases for tags, set via right-click context menu on the Tag column. Persisted as `aliases: {tag: "display name"}` in `monitor_prefs.json`.
+
+- **Display**: Aliased tags show the alias in *italic*; the real tag is unchanged everywhere else (files, sockets, server, client)
+- **Tooltip**: Aliased tags always show "Alias: X / Tag: Y" (regardless of tooltip setting). Regular tags show on hover when truncated or when "Show hover explanations" is on
+- **Context menu**: Right-click tag cell → "Set alias" / "Rename alias" / "Remove alias" via `_show_tag_context_menu()` in `table_builder_mixin.py`
+- **Cleanup**: `_remove_pinned_session()` and `_merge_sessions()` in `session_mixin.py` delete the alias entry when a row is removed
 
 ## Slack Integration
 
