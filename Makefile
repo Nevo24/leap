@@ -5,10 +5,30 @@ PROMPT_PREFIX    := "→"
 SRC_DIR          := $(REPO_PATH)/src
 SCRIPTS_DIR      := $(SRC_DIR)/scripts
 
+# Ensure ~/.local/bin is in PATH for all recipes (Poetry installer puts poetry there)
+export PATH := $(HOME)/.local/bin:$(PATH)
+
 # Colors for output
 GREEN  := \033[0;32m
 YELLOW := \033[1;33m
+RED    := \033[0;31m
 NC     := \033[0m
+
+# Shell helper: ensure Poetry 2.x is available, upgrade if needed
+define ENSURE_POETRY2
+POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
+if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
+	echo "$(YELLOW)⚠ Poetry 2.x required (found $$(poetry --version)). Upgrading...$(NC)"; \
+	curl -sSL https://install.python-poetry.org | python3 -; \
+	export PATH="$$HOME/.local/bin:$$PATH"; \
+	POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
+	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
+		echo "$(RED)✗ Poetry upgrade failed. Please upgrade manually: pip install 'poetry>=2'$(NC)"; \
+		exit 1; \
+	fi; \
+	echo "$(GREEN)✓ Poetry upgraded to $$(poetry --version)$(NC)"; \
+fi
+endef
 
 # Shell helper: detect and set RC_FILE
 define GET_RC_FILE
@@ -156,13 +176,8 @@ install: check-macos check-python .env .migrate-from-claudeq install-core ensure
 .PHONY: install-core
 install-core:
 	@echo "$(PROMPT_PREFIX) Installing core dependencies..."
-	@POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
-	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
-		echo "$(RED)✗ Poetry 2.x is required but found $$(poetry --version)$(NC)"; \
-		echo "  Please upgrade Poetry: curl -sSL https://install.python-poetry.org | python3 -"; \
-		exit 1; \
-	fi
-	@poetry install --no-root --without monitor
+	@$(ENSURE_POETRY2); \
+	poetry install --no-root --without monitor
 
 .PHONY: ensure-storage
 ensure-storage:
@@ -284,14 +299,9 @@ update: .env
 	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
 	@$(MAKE) .migrate-from-claudeq
 	@echo "$(PROMPT_PREFIX) Updating core dependencies..."
-	@POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
-	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
-		echo "$(RED)✗ Poetry 2.x is required but found $$(poetry --version)$(NC)"; \
-		echo "  Please upgrade Poetry: curl -sSL https://install.python-poetry.org | python3 -"; \
-		exit 1; \
-	fi
-	@poetry install --no-root --without monitor
-	@echo "$(GREEN)✓ Core dependencies updated$(NC)"
+	@$(ENSURE_POETRY2); \
+	poetry install --no-root --without monitor; \
+	echo "$(GREEN)✓ Core dependencies updated$(NC)"
 	@$(MAKE) write-install-metadata
 	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
 		echo ""; \
@@ -403,12 +413,7 @@ update-deps: .env
 		curl -sSL https://install.python-poetry.org | python3 -; \
 		export PATH="$$HOME/.local/bin:$$PATH"; \
 	fi; \
-	POETRY_VER=$$(poetry --version 2>/dev/null | grep -oE '[0-9]+' | head -1); \
-	if [ -n "$$POETRY_VER" ] && [ "$$POETRY_VER" -lt 2 ]; then \
-		echo "$(YELLOW)⚠ Poetry 2.x required (found $$(poetry --version)). Upgrading...$(NC)"; \
-		curl -sSL https://install.python-poetry.org | python3 -; \
-		export PATH="$$HOME/.local/bin:$$PATH"; \
-	fi; \
+	$(ENSURE_POETRY2); \
 	if [ "$$(poetry config virtualenvs.create)" = "true" ]; then \
 		poetry env use $(PYTHON_VERSION); \
 	else \
