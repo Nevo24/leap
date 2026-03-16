@@ -251,6 +251,9 @@ class TestPTYInterrupted:
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
+        # User presses Escape to interrupt
+        pty.send_input(b'\x1b')
+
         # Make bash output "Interrupted"
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
@@ -264,6 +267,9 @@ class TestPTYInterrupted:
         byte buffer cap trims 'Interrupted' off the front."""
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
+
+        # User presses Escape to interrupt
+        pty.send_input(b'\x1b')
 
         # Fill the buffer with prior Claude response output
         pty.tracker.on_output(b'A' * 500)
@@ -296,6 +302,9 @@ class TestPTYInterrupted:
         """'Interrupted' detected even with ANSI codes around it."""
         pty.tracker.on_send()
 
+        # User presses Escape to interrupt
+        pty.send_input(b'\x1b')
+
         # Output with ANSI codes around "Interrupted" (like Claude TUI does)
         pty.send_line(r'printf "\033[31mInterrupted\033[0m\n"')
         pty.drain_to_tracker(timeout=1.0)
@@ -314,7 +323,8 @@ class TestPTYResumeDetection:
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
-        # "Interrupted" detected → interrupted
+        # User presses Escape, "Interrupted" detected → interrupted
+        pty.send_input(b'\x1b')
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
         assert pty.tracker.current_state == 'interrupted'
@@ -332,6 +342,7 @@ class TestPTYResumeDetection:
     def test_resume_after_user_types(self, pty: PTYFixture) -> None:
         """After interrupted, user typing then output → running."""
         pty.tracker.on_send()
+        pty.send_input(b'\x1b')
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
         assert pty.tracker.current_state == 'interrupted'

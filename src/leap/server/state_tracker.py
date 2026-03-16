@@ -98,10 +98,11 @@ class CLIStateTracker:
         self._last_output_time: float = 0.0
         # Track user input to distinguish typing echo from CLI output.
         self._last_input_time: float = self._clock()
-        # Track when the user last pressed Escape (or interrupt was sent
-        # via socket).  Used *only* by the idle-state escape-race detector
-        # to avoid false positives from normal typing that triggers TUI
-        # redraws containing "Interrupted" in the AI's conversational text.
+        # Track when the user last attempted an interrupt — Escape (0x1b),
+        # Ctrl+C (0x03), or multi-byte escape sequences while running.
+        # Used by the interrupted-pattern detector in on_output() to avoid
+        # false positives from normal typing that triggers TUI redraws
+        # containing "Interrupted" in the AI's conversational text.
         self._last_escape_time: float = -INTERRUPT_DETECT_WINDOW
         # True after the first real user keystroke (prevents the startup
         # banner from falsely triggering idle → running).
@@ -423,8 +424,10 @@ class CLIStateTracker:
         )
         self._seen_user_input = True
         self._last_input_time = self._clock()
-        # Single-byte Escape key (0x1b) — track for idle escape-race.
-        if data == b'\x1b':
+        # Track interrupt attempts for the interrupted-pattern detector.
+        # Escape (0x1b) and Ctrl+C (0x03) both interrupt the CLI and
+        # produce the "Interrupted" PTY output that on_output() looks for.
+        if data in (b'\x1b', b'\x03'):
             self._last_escape_time = self._last_input_time
         self._idle_output_acc = 0
 

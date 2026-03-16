@@ -377,6 +377,32 @@ class TestInterruptedWordInOutputNotFalsePositive:
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.current_state == 'interrupted'
 
+    def test_interrupted_with_ctrl_c_triggers(self, tmp_path: Path) -> None:
+        """Ctrl+C (0x03) should also trigger interrupted detection."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x03')
+        t[0] = 1.0
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?',
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_ctrl_c_without_interrupted_output_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """Ctrl+C alone (without 'Interrupted' in output) stays running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 0.5
+        tracker.on_input(b'\x03')
+        t[0] = 1.0
+        tracker.on_output(b'normal output continues')
+        assert tracker.current_state == 'running'
+
 
 # ---------------------------------------------------------------------------
 # False positive: "Interrupted" inside ANSI escape sequences
