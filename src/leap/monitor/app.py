@@ -177,6 +177,11 @@ class MonitorWindow(
         # Register global focus shortcut (if configured)
         self._register_global_shortcut()
 
+        # Set up modern notification API (UNUserNotificationCenter) for
+        # banner action buttons and click handling
+        from leap.monitor._mixins.pr_display_mixin import _setup_modern_notifications
+        _setup_modern_notifications(self)
+
     def _init_ui(self) -> None:
         """Initialize the user interface."""
         self.setWindowTitle('Leap Monitor')

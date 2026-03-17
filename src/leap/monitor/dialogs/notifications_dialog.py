@@ -375,6 +375,7 @@ class NotificationsDialog(QDialog):
         return result
 
 
+
 def _play_sound(sound_name: str) -> None:
     """Play a macOS system sound by name or file path.
 
