@@ -29,7 +29,7 @@ class GitLabProvider(SCMProvider):
         self._project_cache: dict[str, gitlab.v4.objects.Project] = {}
         self._bot_cache: dict[int, bool] = {}  # user_id -> is_bot
         # Caches to avoid phantom state changes on transient API failures
-        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str]]] = {}
+        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str], bool]] = {}
         self._status_cache: dict[tuple[str, str], PRStatus] = {}
         self._emoji_cache: dict[int, bool] = {}  # note_id -> user_reacted
 
@@ -116,18 +116,25 @@ class GitLabProvider(SCMProvider):
         approval_failed = False
         approved = False
         approved_by: list[str] = []
+        self_approved = False
         try:
             approvals = pr_full.approvals.get()
             for entry in getattr(approvals, 'approved_by', []):
                 name = self._extract_user_name(entry)
                 if name:
                     approved_by.append(name)
+                uname = self._extract_user_username(entry)
+                if uname and uname == self._username:
+                    self_approved = True
             # Fallback 1: check PR object's approved_by attribute
             if not approved_by:
                 for entry in getattr(pr_full, 'approved_by', []):
                     name = self._extract_user_name(entry)
                     if name and name not in approved_by:
                         approved_by.append(name)
+                    uname = self._extract_user_username(entry)
+                    if uname and uname == self._username:
+                        self_approved = True
             # Fallback 2: check approval_state for approver names
             if not approved_by:
                 try:
@@ -138,21 +145,25 @@ class GitLabProvider(SCMProvider):
                             name = self._extract_user_name(user)
                             if name and name not in approved_by:
                                 approved_by.append(name)
+                            uname = self._extract_user_username(user)
+                            if uname and uname == self._username:
+                                self_approved = True
                 except Exception:
                     pass
             # Only mark as approved if someone actually approved — GitLab
             # returns approved=True when zero approvals are required, which
             # is misleading in the UI.
             approved = len(approved_by) > 0
-            logger.debug("Approvals for PR !%s: approved=%s approved_by=%s",
-                         pr_iid, approved, approved_by)
-            self._approval_cache[cache_key] = (approved, list(approved_by))
+            logger.debug("Approvals for PR !%s: approved=%s approved_by=%s self_approved=%s",
+                         pr_iid, approved, approved_by, self_approved)
+            self._approval_cache[cache_key] = (approved, list(approved_by), self_approved)
         except Exception:
             logger.debug("Failed to fetch approval status for PR !%s", pr_iid, exc_info=True)
             approval_failed = True
             cached_approval = self._approval_cache.get(cache_key)
             if cached_approval is not None:
                 approved, approved_by = cached_approval[0], list(cached_approval[1])
+                self_approved = cached_approval[2]
 
         # Fetch discussions to count unresponded threads
         try:
@@ -168,13 +179,13 @@ class GitLabProvider(SCMProvider):
                         unresponded_count=cached.unresponded_count,
                         pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                         first_unresponded_note_id=cached.first_unresponded_note_id,
-                        approved=approved, approved_by=approved_by or None,
+                        approved=approved, approved_by=approved_by or None, self_approved=self_approved,
                     )
                 return cached
             return PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
-                approved=approved, approved_by=approved_by or None,
+                approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
 
         unresponded = 0
@@ -193,13 +204,13 @@ class GitLabProvider(SCMProvider):
                 unresponded_count=unresponded,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 first_unresponded_note_id=first_note_id,
-                approved=approved, approved_by=approved_by or None,
+                approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
         else:
             result = PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
-                approved=approved, approved_by=approved_by or None,
+                approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
 
         self._status_cache[cache_key] = result
@@ -317,6 +328,20 @@ class GitLabProvider(SCMProvider):
         if isinstance(user, dict):
             return user.get('name', '') or user.get('username', '')
         return getattr(user, 'name', '') or getattr(user, 'username', '')
+
+    @staticmethod
+    def _extract_user_username(entry: object) -> str:
+        """Extract the login username from a GitLab user or approval entry.
+
+        Same unwrap logic as _extract_user_name but returns username (login).
+        """
+        if isinstance(entry, dict):
+            user = entry.get('user', entry)
+        else:
+            user = getattr(entry, 'user', entry)
+        if isinstance(user, dict):
+            return user.get('username', '')
+        return getattr(user, 'username', '')
 
     @staticmethod
     def _note_author(note) -> str:

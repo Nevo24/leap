@@ -37,7 +37,7 @@ class GitHubProvider(SCMProvider):
         self._filter_bots = filter_bots
         self._repo_cache: dict[str, object] = {}
         # Caches to avoid phantom state changes on transient API failures
-        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str]]] = {}
+        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str], bool]] = {}
         self._status_cache: dict[tuple[str, str], PRStatus] = {}
 
     def test_connection(self) -> tuple[bool, str]:
@@ -105,6 +105,7 @@ class GitHubProvider(SCMProvider):
         approval_failed = False
         approved = False
         approved_by: list[str] = []
+        self_approved = False
         try:
             reviews = list(pr.get_reviews())
             # Track latest review state per reviewer
@@ -116,13 +117,16 @@ class GitHubProvider(SCMProvider):
                 if state == 'APPROVED':
                     approved = True
                     approved_by.append(reviewer)
-            self._approval_cache[cache_key] = (approved, list(approved_by))
+                    if reviewer == self._username:
+                        self_approved = True
+            self._approval_cache[cache_key] = (approved, list(approved_by), self_approved)
         except Exception:
             logger.debug("Failed to fetch review status for PR #%s", pr_number)
             approval_failed = True
             cached_approval = self._approval_cache.get(cache_key)
             if cached_approval is not None:
                 approved, approved_by = cached_approval[0], list(cached_approval[1])
+                self_approved = cached_approval[2]
 
         # Count unresponded review comment threads
         try:
@@ -137,13 +141,13 @@ class GitHubProvider(SCMProvider):
                         unresponded_count=cached.unresponded_count,
                         pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                         first_unresponded_note_id=cached.first_unresponded_note_id,
-                        approved=approved, approved_by=approved_by or None,
+                        approved=approved, approved_by=approved_by or None, self_approved=self_approved,
                     )
                 return cached
             return PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
-                approved=approved, approved_by=approved_by or None,
+                approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
 
         if unresponded > 0:
@@ -152,13 +156,13 @@ class GitHubProvider(SCMProvider):
                 unresponded_count=unresponded,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 first_unresponded_note_id=first_comment_id,
-                approved=approved, approved_by=approved_by or None,
+                approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
         else:
             result = PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
-                approved=approved, approved_by=approved_by or None,
+                approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
 
         self._status_cache[cache_key] = result

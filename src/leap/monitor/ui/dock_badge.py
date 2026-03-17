@@ -143,15 +143,24 @@ class DockBadge:
                 pr_title=current.pr_title,
             ))
 
-        # Approved changed False -> True
-        if not seen.approved and current.approved:
-            events.append(NotificationEvent(
-                type=NotificationType.PR_APPROVED,
-                tag=tag,
-                pr_iid=current.pr_iid,
-                pr_title=current.pr_title,
-                approved_by=current.approved_by,
-            ))
+        # Approval: notify when new approvers appear, but not for self-only changes.
+        # Detect new approvers by comparing the approved_by lists.
+        seen_approvers = set(seen.approved_by or [])
+        current_approvers = set(current.approved_by or [])
+        new_approvers = current_approvers - seen_approvers
+        if new_approvers and current.approved:
+            # The only self-detectable change is self_approved flipping False->True.
+            # If that happened AND exactly one new approver appeared, it's us.
+            self_just_approved = current.self_approved and not seen.self_approved
+            only_self = self_just_approved and len(new_approvers) == 1
+            if not only_self:
+                events.append(NotificationEvent(
+                    type=NotificationType.PR_APPROVED,
+                    tag=tag,
+                    pr_iid=current.pr_iid,
+                    pr_title=current.pr_title,
+                    approved_by=current.approved_by,
+                ))
 
         return events
 

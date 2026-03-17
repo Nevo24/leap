@@ -34,6 +34,7 @@ class PRStatus:
     first_unresponded_note_id: Optional[int] = None
     approved: bool = False
     approved_by: Optional[list[str]] = None
+    self_approved: bool = False  # True if the current user is among the approvers
 
 
 @dataclass
