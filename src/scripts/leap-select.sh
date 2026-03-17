@@ -51,20 +51,17 @@ if [ -n "$TAG" ] && [ -S "$SOCKET_DIR/${TAG}.sock" ]; then
     exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${FLAGS[@]}" "${ARGS[@]}"
 fi
 
-# Show interactive CLI selector
-SELECTED=$("$PYTHON_CMD" "$SCRIPT_DIR/leap-select-cli.py")
-EXIT_CODE=$?
-
-if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
-    exit 1
-fi
-
-# If no tag provided, prompt for one (with history support)
+# If no tag provided, prompt for one first (before CLI selector).
+# If the chosen tag already has a running server, we skip the CLI selector entirely.
 if [ -z "$TAG" ]; then
     TAG=$("$PYTHON_CMD" "$SCRIPT_DIR/leap-select-tag.py")
     EXIT_CODE=$?
     if [ $EXIT_CODE -ne 0 ] || [ -z "$TAG" ]; then
         exit 1
+    fi
+    # Check again: if a server is already running for this tag, skip CLI selector
+    if [ -S "$SOCKET_DIR/${TAG}.sock" ]; then
+        exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${FLAGS[@]}" "${ARGS[@]}"
     fi
 else
     # Tag provided as argument — validate and record in history
@@ -87,6 +84,14 @@ history = history[-50:]
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 HISTORY_FILE.write_text('\n'.join(history) + '\n')
 " 2>/dev/null
+fi
+
+# Show interactive CLI selector (only reached if no server is running for this tag)
+SELECTED=$("$PYTHON_CMD" "$SCRIPT_DIR/leap-select-cli.py")
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
+    exit 1
 fi
 
 # Append default per-CLI flags from env vars (LEAP_CLAUDE_FLAGS, LEAP_CODEX_FLAGS)
