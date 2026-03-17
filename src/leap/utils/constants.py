@@ -56,6 +56,7 @@ STORAGE_DIR: Final[Path] = _find_project_root() / ".storage"
 QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"
 SOCKET_DIR: Final[Path] = STORAGE_DIR / "sockets"
 HISTORY_DIR: Final[Path] = STORAGE_DIR / "history"
+IMAGES_DIR: Final[Path] = STORAGE_DIR / "images"
 SLACK_DIR: Final[Path] = STORAGE_DIR / "slack"
 SLACK_BOT_LOCK: Final[Path] = SLACK_DIR / "slack-bot.lock"
 
@@ -122,6 +123,7 @@ def ensure_storage_dirs() -> None:
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     SOCKET_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     SLACK_DIR.mkdir(parents=True, exist_ok=True)
 
 

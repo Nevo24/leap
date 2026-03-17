@@ -9,10 +9,12 @@ message is shown as a card in a scrollable area. Preset management
 
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
-    QLabel, QMessageBox, QPushButton, QScrollArea, QTextEdit,
+    QLabel, QMessageBox, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import Qt
+
+from leap.monitor.ui.image_text_edit import ImageTextEdit
 
 from leap.monitor.pr_tracking.config import (
     delete_named_preset, load_dialog_geometry, load_saved_presets,
@@ -70,14 +72,14 @@ class _MessageCard(QFrame):
         header.addWidget(self._remove_btn)
         layout.addLayout(header)
 
-        # Text editor
-        self._text_edit = QTextEdit()
-        self._text_edit.setPlaceholderText(f'Message {index + 1} content...')
+        # Text editor (supports image paste via Cmd+V)
+        self._text_edit = ImageTextEdit()
+        self._text_edit.setPlaceholderText(f'Message {index + 1} content... (paste images with Cmd+V)')
         self._text_edit.setPlainText(text)
         self._text_edit.setFixedHeight(80)
         self._text_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._text_edit.textChanged.connect(
-            lambda: on_text_changed(self._text_edit.toPlainText())
+            lambda: on_text_changed(self._text_edit.resolved_text())
         )
         layout.addWidget(self._text_edit)
 
@@ -87,8 +89,8 @@ class _MessageCard(QFrame):
         self._remove_btn.setVisible(removable)
 
     def get_text(self) -> str:
-        """Return the current text of this card."""
-        return self._text_edit.toPlainText()
+        """Return the current text of this card (with image placeholders resolved)."""
+        return self._text_edit.resolved_text()
 
     def focus_editor(self) -> None:
         """Set focus to this card's text editor."""

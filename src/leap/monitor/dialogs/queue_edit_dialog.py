@@ -5,9 +5,11 @@ from typing import Optional
 
 from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QSplitter, QTextEdit, QVBoxLayout,
+    QMessageBox, QPushButton, QSplitter, QVBoxLayout,
 )
 from PyQt5.QtCore import Qt
+
+from leap.monitor.ui.image_text_edit import ImageTextEdit
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.utils.socket_utils import send_socket_request
@@ -50,9 +52,9 @@ class QueueEditDialog(QDialog):
         self._list.currentRowChanged.connect(self._on_row_changed)
         splitter.addWidget(self._list)
 
-        # Bottom: editor
-        self._editor = QTextEdit()
-        self._editor.setPlaceholderText('Select a message to edit')
+        # Bottom: editor (supports image paste via Cmd+V)
+        self._editor = ImageTextEdit()
+        self._editor.setPlaceholderText('Select a message to edit (paste images with Cmd+V)')
         self._editor.setEnabled(False)
         self._editor.textChanged.connect(self._on_text_changed)
         splitter.addWidget(self._editor)
@@ -144,6 +146,7 @@ class QueueEditDialog(QDialog):
 
         self._current_index = row
         self._editor.setEnabled(True)
+        self._editor.reset_images()
         self._editor.blockSignals(True)
         self._editor.setPlainText(self._messages[row]['msg'])
         self._editor.blockSignals(False)
@@ -166,7 +169,7 @@ class QueueEditDialog(QDialog):
     def _do_save(self, index: int) -> bool:
         """Send edit_message to the server. Returns True on success."""
         entry = self._messages[index]
-        new_text = self._editor.toPlainText()
+        new_text = self._editor.resolved_text()
 
         response = send_socket_request(
             self._socket_path,

@@ -50,7 +50,6 @@ class LeapClient:
         self.running = True
         self.pending_image_path: Optional[str] = None
         self.monitor_thread: Optional[threading.Thread] = None
-        self.temp_image_files: list[str] = []  # Track temp files for cleanup
         self._image_counter = 0
         self._image_placeholders: dict[str, str] = {}  # "[Image #N]" → path
 
@@ -169,20 +168,6 @@ class LeapClient:
         except OSError:
             pass
 
-        # Clean up temp image files
-        self._cleanup_temp_images()
-
-    def _cleanup_temp_images(self) -> None:
-        """Clean up temporary image files."""
-        if not hasattr(self, 'temp_image_files'):
-            return
-
-        for image_path in self.temp_image_files:
-            try:
-                if os.path.exists(image_path):
-                    os.unlink(image_path)
-            except OSError:
-                pass
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         """Handle termination signals."""
@@ -220,8 +205,6 @@ class LeapClient:
         except OSError:
             pass
 
-        if image_path.startswith('/tmp/'):
-            self.temp_image_files.append(image_path)
         self._image_counter += 1
         placeholder = f'[Image #{self._image_counter}]'
         self._image_placeholders[placeholder] = image_path
@@ -507,7 +490,7 @@ class LeapClient:
         for emoji, cmd, desc in commands:
             print(f"  {emoji}  {cmd.ljust(CMD_WIDTH)} \u2192 {desc}")
         print()
-        print("  \U0001F5BC  Ctrl+V pastes clipboard image as [Image #N]")
+        print("  \U0001F5BC  Ctrl+V (not Cmd+V) pastes clipboard image as [Image #N]")
         print()
         # Fetch current auto-send mode from server
         response = self.socket.get_status(silent=True)

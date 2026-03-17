@@ -177,9 +177,9 @@ class TestPTYTrustDialog:
         assert not pty.tracker._seen_user_input
 
         pty.send_line(
-            'printf "Do you trust the contents of this directory?\\n'
-            '> 1. Yes, continue\\n'
-            '  2. No, quit\\n"'
+            'printf "Is this a project you created or one you trust?\\n'
+            '> 1. Yes, I trust this folder\\n'
+            '  2. No, exit\\n"'
         )
         pty.drain_to_tracker(timeout=1.0)
 
@@ -192,11 +192,10 @@ class TestPTYTrustDialog:
         # Simulate Ink rendering: words positioned via CSI sequences,
         # no literal spaces between words
         pty.send_line(
-            r'printf "\033[10;1HDo\033[10;4Hyou\033[10;8Htrust'
-            r'\033[10;14Hthe\033[10;18Hcontents'
-            r'\033[10;27Hof\033[10;30Hthis'
-            r'\033[10;35Hdirectory?\n'
-            r'\033[11;3H1.\033[11;6HYes,\033[11;11Hcontinue\n"'
+            r'printf "\033[10;1HIs\033[10;4Hthis\033[10;9Ha'
+            r'\033[10;11Hproject\033[10;19Hyou\033[10;23Htrust?\n'
+            r'\033[11;3H1.\033[11;6HYes,\033[11;11HI'
+            r'\033[11;13Htrust\033[11;19Hthis\033[11;24Hfolder\n"'
         )
         pty.drain_to_tracker(timeout=1.0)
 
@@ -207,7 +206,10 @@ class TestPTYTrustDialog:
         transition returns to idle (user answered the prompt, hooks
         become active)."""
         # Trigger trust dialog detection
-        pty.send_line('printf "Do you trust the contents of this directory?\\n"')
+        pty.send_line(
+            'printf "Is this a project you trust?\\n'
+            '> 1. Yes, I trust this folder\\n"'
+        )
         pty.drain_to_tracker(timeout=1.0)
         assert pty.tracker.current_state == 'needs_permission'
 
@@ -224,7 +226,10 @@ class TestPTYTrustDialog:
         should be idle (not running), because Claude hasn't processed
         any request."""
         # Trust dialog detected
-        pty.send_line('printf "Do you trust the contents of this directory?\\n"')
+        pty.send_line(
+            'printf "Is this a project you trust?\\n'
+            '> 1. Yes, I trust this folder\\n"'
+        )
         pty.drain_to_tracker(timeout=1.0)
         assert pty.tracker.current_state == 'needs_permission'
 

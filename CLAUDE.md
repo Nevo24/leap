@@ -98,6 +98,7 @@ src/
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
     │   │   ├── dock_badge.py    # Dock icon badge overlay + notification event detection
+    │   │   ├── image_text_edit.py # ImageTextEdit (clipboard image paste) + SendMessageDialog
     │   │   ├── log_history.py   # Log history (in-memory + dialog)
     │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides, ColorPickerPopup)
     │   │
@@ -156,6 +157,8 @@ assets/
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
+| `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
+| `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste (replaces QInputDialog) |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (6 built-in themes) |
@@ -187,6 +190,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | PR context preset selection | `.storage/leap_selected_preset` |
 | Message bundle preset selection | `.storage/leap_selected_direct_preset` |
 | Preset definitions | `.storage/leap_presets.json` |
+| Pasted images | `.storage/images/<hash>.png` (MD5-deduped, cleaned on server startup) |
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Slack config | `.storage/slack/config.json` |

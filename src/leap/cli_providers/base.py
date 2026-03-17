@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Optional
@@ -47,12 +48,16 @@ class CLIProvider(ABC):
     # -- State detection patterns ----------------------------------------
 
     @property
-    def trust_dialog_pattern(self) -> Optional[bytes]:
-        """Compact pattern (ANSI-stripped, spaces removed) for startup trust dialog.
+    def trust_dialog_patterns(self) -> list[bytes]:
+        """Compact patterns (ANSI-stripped, spaces removed) for startup trust dialog.
 
-        Return None if the CLI has no trust dialog.
+        Return empty list if the CLI has no trust dialog.
+        Any match triggers detection.
         """
-        return b'Doyoutrustthecontentsofthisdirectory?'
+        return [
+            b'Yes,Itrustthisfolder',
+            b'Doyoutrustthecontentsofthisdirectory?',
+        ]
 
     @property
     @abstractmethod
@@ -369,8 +374,10 @@ class CLIProvider(ABC):
     ) -> None:
         """Send an image attachment message.
 
-        Default implementation: same as regular message.
-        Providers with special image protocols should override.
+        Uses fixed sleeps instead of ``wait_fn`` to avoid its Phase 1
+        timeout (up to 2 s) which can give file-picker autocomplete
+        time to open and capture the CR. Two CRs are sent: the first
+        confirms any autocomplete, the second submits.
 
         Args:
             process: The pexpect process.
@@ -379,7 +386,11 @@ class CLIProvider(ABC):
             write_fn: Callable to write raw data to PTY.
             wait_fn: Callable to wait for output settle.
         """
-        self.send_message(process, message, send_lock, write_fn, wait_fn)
+        write_fn(message)
+        time.sleep(1.5)   # Let autocomplete fully render
+        write_fn('\r')    # Confirm file selection
+        time.sleep(1.0)   # Let TUI process the selection
+        write_fn('\r')    # Submit the message
 
     def is_image_message(self, message: str) -> bool:
         """Check if a message is an image attachment.

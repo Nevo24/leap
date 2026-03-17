@@ -21,7 +21,7 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, STORAGE_DIR,
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, IMAGES_DIR, STORAGE_DIR,
     POLL_INTERVAL, TITLE_RESET_INTERVAL,
     atomic_json_write, ensure_storage_dirs, load_settings, save_settings,
 )
@@ -127,6 +127,7 @@ class LeapServer:
 
         # Ensure storage directories exist
         ensure_storage_dirs()
+        self._cleanup_old_images()
 
         # Validate against monitor pinned sessions (PR-pinned rows).
         # Release the startup lock on failure so another server can start.
@@ -422,11 +423,87 @@ class LeapServer:
         """
         self.state.on_send()
 
-        if self._provider.is_image_message(message):
+        if self._provider.is_image_message(message) or self._has_image_ref(message):
             self.pty.send_image_message(message)
         else:
             self.pty.sendline(message)
 
+    def _has_image_ref(self, message: str) -> bool:
+        """Check if the message contains any @path refs to .storage/images/.
+
+        Catches image references that aren't at the start of the message
+        (which ``is_image_message`` would miss). Checked for all providers
+        so that image messages always use the fixed-sleep send protocol.
+        """
+        prefix = self._provider.image_prefix
+        images_dir = str(IMAGES_DIR)
+        for token in message.split():
+            if not token.startswith(prefix):
+                continue
+            path_part = token[len(prefix):]
+            try:
+                if os.path.realpath(path_part).startswith(images_dir):
+                    return True
+            except (OSError, ValueError):
+                pass
+        return False
+
+    @staticmethod
+    def _cleanup_old_images() -> None:
+        """Delete images in .storage/images/ not referenced anywhere.
+
+        Called once on server startup. Scans queue files (``id|message``
+        format) and the presets JSON for image paths, then removes any
+        image file not found in either.
+        """
+        if not IMAGES_DIR.is_dir():
+            return
+
+        images_dir_str = str(IMAGES_DIR)
+
+        def _collect_refs(text: str) -> None:
+            """Find all @<IMAGES_DIR>/... references in *text*."""
+            for token in text.split():
+                # Token may be bare @path or embedded after a | separator
+                at_idx = token.find('@')
+                if at_idx < 0:
+                    continue
+                path_part = token[at_idx + 1:]
+                if path_part.startswith(images_dir_str):
+                    referenced.add(path_part)
+
+        referenced: set[str] = set()
+
+        # Scan queue files (format: "id|message\n")
+        if QUEUE_DIR.is_dir():
+            for queue_file in QUEUE_DIR.iterdir():
+                try:
+                    _collect_refs(queue_file.read_text())
+                except OSError:
+                    pass
+
+        # Scan presets JSON (format: {"name": ["msg1", ...], ...})
+        presets_file = STORAGE_DIR / 'leap_presets.json'
+        if presets_file.is_file():
+            try:
+                import json as _json
+                data = _json.loads(presets_file.read_text())
+                if isinstance(data, dict):
+                    for messages in data.values():
+                        if isinstance(messages, list):
+                            for msg in messages:
+                                if isinstance(msg, str):
+                                    _collect_refs(msg)
+            except (OSError, ValueError):
+                pass
+
+        # Delete unreferenced images
+        for entry in IMAGES_DIR.iterdir():
+            try:
+                if entry.is_file() and str(entry) not in referenced:
+                    entry.unlink()
+            except OSError:
+                pass
 
     def _prompt_load_old_queue(self) -> None:
         """Prompt user to load or discard old queued messages."""

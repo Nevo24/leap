@@ -150,23 +150,7 @@ class ClaudeProvider(CLIProvider):
 
     # -- CLI-specific input behaviors ------------------------------------
 
-    def send_image_message(
-        self,
-        process: pexpect.spawn,
-        message: str,
-        send_lock: Any,
-        write_fn: Any,
-        wait_fn: Any,
-    ) -> None:
-        """Send @-prefixed image message with Claude's file confirmation protocol.
-
-        Claude CLI requires: text → wait → CR (confirm file) → wait → CR (submit).
-        """
-        write_fn(message)
-        wait_fn(settle_time=0.5)
-        write_fn('\r')  # Confirm file selection
-        wait_fn(settle_time=0.3)
-        write_fn('\r')  # Submit message
+    # send_image_message: uses base class fixed-sleep protocol
 
     def select_option(
         self,

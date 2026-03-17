@@ -1819,10 +1819,11 @@ class TableBuilderMixin(_Base):
     def _send_immediate_message(self, tag: str, at_end: bool = True) -> None:
         """Open a dialog to type and queue a message for the session."""
         from leap.monitor.leap_sender import prepend_to_leap_queue, send_to_leap_session_raw
+        from leap.monitor.ui.image_text_edit import SendMessageDialog
 
         label = 'Message to queue at end:' if at_end else 'Message to queue next:'
-        text, ok = QInputDialog.getMultiLineText(
-            self, 'Send Message', f'{label} ({tag})', '')
+        text, ok = SendMessageDialog.get_message(
+            self, 'Send Message', f'{label} ({tag})')
         if ok and text.strip():
             if at_end:
                 ok = send_to_leap_session_raw(tag, text.strip())

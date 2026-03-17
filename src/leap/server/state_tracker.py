@@ -500,7 +500,7 @@ class CLIStateTracker:
     ) -> None:
         """Handle output while idle: startup dialogs, escape race, idle→running."""
         interrupted_pattern = self._provider.interrupted_pattern
-        trust_pattern = self._provider.trust_dialog_pattern
+        trust_patterns = self._provider.trust_dialog_patterns
         dialog_patterns = self._provider.dialog_patterns
 
         self._output_buf.extend(data)
@@ -518,9 +518,7 @@ class CLIStateTracker:
                 len(data), len(self._output_buf),
                 compact[-120:],
             )
-            is_trust = (
-                trust_pattern is not None and trust_pattern in compact
-            )
+            is_trust = any(p in compact for p in trust_patterns)
             is_dialog = (
                 bool(dialog_patterns)
                 and all(p in compact for p in dialog_patterns)
