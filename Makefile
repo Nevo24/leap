@@ -293,7 +293,14 @@ update: .env
 		fi; \
 	fi
 	@echo "$(PROMPT_PREFIX) Pulling latest code from git..."
-	@git pull || (echo "$(YELLOW)⚠ Git pull failed. Please resolve conflicts and try again.$(NC)" && exit 1)
+	@PRE_PULL_HEAD=$$(git rev-parse HEAD); \
+	git pull || (echo "$(YELLOW)⚠ Git pull failed. Please resolve conflicts and try again.$(NC)" && exit 1); \
+	POST_PULL_HEAD=$$(git rev-parse HEAD); \
+	if [ "$$PRE_PULL_HEAD" = "$$POST_PULL_HEAD" ]; then \
+		echo ""; \
+		echo "$(GREEN)✓ Leap is already up to date$(NC)"; \
+		exit 0; \
+	fi
 	@echo "$(GREEN)✓ Code updated$(NC)"
 	@echo ""
 	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
