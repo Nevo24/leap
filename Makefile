@@ -299,8 +299,12 @@ update: .env
 	if [ "$$PRE_PULL_HEAD" = "$$POST_PULL_HEAD" ]; then \
 		echo ""; \
 		echo "$(GREEN)✓ Leap is already up to date$(NC)"; \
-		exit 0; \
+	else \
+		$(MAKE) .update-after-pull; \
 	fi
+
+.PHONY: .update-after-pull
+.update-after-pull:
 	@echo "$(GREEN)✓ Code updated$(NC)"
 	@echo ""
 	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
