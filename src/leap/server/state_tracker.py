@@ -617,9 +617,8 @@ class CLIStateTracker:
                         pass
 
     def _handle_running_output(self, data: bytes, now: float) -> None:
-        """Handle output while running: interruption, trust dialog, dialog detection."""
+        """Handle output while running: interruption, trust dialog."""
         interrupted_pattern = self._provider.interrupted_pattern
-        dialog_patterns = self._provider.dialog_patterns
 
         stripped_data = self._ANSI_RE.sub(b'', data)
         has_interrupted = interrupted_pattern in stripped_data
@@ -685,26 +684,6 @@ class CLIStateTracker:
                         self._state = CLIState.INTERRUPTED
                         self._waiting_since = self._clock()
                     return
-
-            # Detect permission/input dialogs from PTY output.
-            # Use a limited window to avoid false positives from
-            # dialog-like patterns spread across conversational text.
-            if dialog_patterns:
-                check_buf = bytes(self._output_buf[-512:])
-                compact = self._ANSI_RE.sub(
-                    b'', check_buf,
-                ).replace(b' ', b'')
-                if all(p in compact for p in dialog_patterns):
-                    _log.debug(
-                        'ON_OUTPUT running→needs_permission '
-                        '(dialog detected from PTY output)',
-                    )
-                    self._last_prompt_buf = bytes(self._output_buf)
-                    self._output_buf.clear()
-                    self._idle_output_acc = 0
-                    with self._lock:
-                        self._state = CLIState.NEEDS_PERMISSION
-                        self._waiting_since = self._clock()
 
     def _handle_waiting_output(self, data: bytes, now: float) -> None:
         """Handle output while in a waiting state: correction, prompt accumulation, resume."""

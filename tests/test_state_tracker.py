@@ -1008,15 +1008,26 @@ class TestSignalFromIdle:
 # ---------------------------------------------------------------------------
 
 class TestPTYDialogDetection:
-    """Detect permission/question dialogs from PTY output patterns."""
+    """Permission dialogs during running state are detected via Notification
+    hooks (signal file), NOT PTY output patterns.  PTY dialog detection was
+    removed to eliminate false positives from conversation text containing
+    dialog-like patterns (e.g. Claude discussing permission prompts).
 
-    def test_dialog_detected_from_pty_output(self, tmp_path: Path) -> None:
-        """'Enter to select' + 'Esc to cancel' in running → needs_permission."""
+    These tests verify that:
+    - Dialog-like text in conversation does NOT trigger needs_permission
+    - Interrupt detection still works correctly alongside dialog text
+    - Signal-file-based permission detection works during running state
+    """
+
+    def test_dialog_text_in_conversation_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """Dialog patterns in conversation text should NOT trigger
+        needs_permission — only Notification hooks (signal file) do."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # Simulate Ink TUI dialog output (plain text, no ANSI)
         tracker.on_output(
             b'Allow Claude to use Bash?\n'
             b'1. Allow once\n'
@@ -1024,78 +1035,21 @@ class TestPTYDialogDetection:
             b'3. Deny\n'
             b'Enter to select \xc2\xb7 Esc to cancel\n'
         )
-        assert tracker.current_state == 'needs_permission'
+        assert tracker.current_state == 'running'
 
-    def test_dialog_detected_with_ansi_sequences(self, tmp_path: Path) -> None:
-        """Dialog detection works with cursor-positioned Ink TUI output."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Simulate Ink TUI with ANSI cursor positioning between words
-        tracker.on_output(
-            b'\x1b[3;1H Allow \x1b[3;8H once\n'
-            b'\x1b[5;1H Enter \x1b[5;8H to \x1b[5;12H select\n'
-            b'\x1b[6;1H Esc \x1b[6;6H to \x1b[6;10H cancel\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-
-    def test_dialog_seeds_prompt_buf(self, tmp_path: Path) -> None:
-        """Dialog detection copies output_buf to _last_prompt_buf."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(
-            b'Question here\n'
-            b'1. Option A\n'
-            b'Enter to select \xc2\xb7 Esc to cancel\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-        assert tracker._last_prompt_buf != b''
-        assert len(tracker._output_buf) == 0  # cleared after detection
-
-    def test_no_false_positive_with_only_enter_to_select(
+    def test_permission_detected_via_signal_file(
         self, tmp_path: Path,
     ) -> None:
-        """Require BOTH patterns to avoid false positives."""
+        """Real permission prompts are detected via the Notification hook
+        writing needs_permission to the signal file."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        tracker.on_output(b'Enter to select something from the list')
-        assert tracker.current_state == 'running'
-
-    def test_dialog_split_across_chunks(self, tmp_path: Path) -> None:
-        """Dialog detected when patterns arrive in separate chunks."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'1. Option A\nEnter to select\n')
-        assert tracker.current_state == 'running'  # only one pattern
-        t[0] = 1.1
-        tracker.on_output(b'Esc to cancel\n')
-        assert tracker.current_state == 'needs_permission'
-
-    def test_no_false_positive_from_conversation_text(
-        self, tmp_path: Path,
-    ) -> None:
-        """Dialog patterns in streamed conversation text (e.g. code
-        discussion) should not trigger false needs_permission if they
-        appear spread across a large output buffer."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Simulate Claude streaming a conversation about dialog patterns.
-        # The patterns appear spread across >1KB of output — this should
-        # NOT trigger false positive detection.
-        tracker.on_output(b'x' * 800 + b' Enter to select ')
-        assert tracker.current_state == 'running'
-        t[0] = 1.1
-        tracker.on_output(b'y' * 800 + b' Esc to cancel ')
-        assert tracker.current_state == 'running'
+        # Notification hook fires → signal file written
+        signal_file = tmp_path / 'test.signal'
+        signal_file.write_text('{"state": "needs_permission"}')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
     def test_interrupted_takes_priority_over_dialog(
         self, tmp_path: Path,
@@ -1169,8 +1123,9 @@ class TestPTYDialogDetection:
     def test_no_false_interrupted_from_conversation_plus_dialog(
         self, tmp_path: Path,
     ) -> None:
-        """'Interrupted' in conversation text followed by a normal
-        permission dialog should detect needs_permission, NOT interrupted."""
+        """'Interrupted' in conversation text followed by dialog-like
+        patterns should stay running — not trigger interrupted or
+        needs_permission."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -1181,15 +1136,15 @@ class TestPTYDialogDetection:
         )
         assert tracker.current_state == 'running'
         t[0] = 2.0
-        # Later, a normal permission dialog appears (no middle dot
-        # after "Interrupted" — the word was conversational)
+        # Later, dialog-like text in conversation (not a real dialog)
         tracker.on_output(
             b'Allow Bash?\n'
             b'1. Allow once\n'
             b'Enter to select \xc2\xb7 Esc to cancel\n'
         )
-        # Should detect as needs_permission, NOT interrupted
-        assert tracker.current_state == 'needs_permission'
+        # Stays running — only the Notification hook can trigger
+        # needs_permission during running state
+        assert tracker.current_state == 'running'
 
     def test_interrupt_prompt_split_across_chunks(
         self, tmp_path: Path,
