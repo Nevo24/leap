@@ -304,10 +304,12 @@ class LeapServer:
 
         elif msg_type == 'status':
             state = self.state.get_state(self.pty.is_alive())
+            recently_sent, total_sent = self.queue.get_recently_sent()
             return {
                 'queue_size': self.queue.size,
                 'queue_contents': self.queue.get_contents(),
-                'recently_sent': self.queue.get_recently_sent(),
+                'recently_sent': recently_sent,
+                'total_sent': total_sent,
                 'ready': self.state.is_ready_for_state(state),
                 'cli_state': state,
                 'auto_send_mode': self.state.auto_send_mode,

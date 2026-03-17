@@ -248,7 +248,7 @@ class LeapClient:
 
     def _queue_monitor_loop(self) -> None:
         """Background thread to monitor queue changes."""
-        last_recently_sent: list[str] = []
+        last_total_sent: int = 0
         last_queue_contents: list[str] = []
         poll_count = 0
         last_bot_running: Optional[bool] = None
@@ -296,15 +296,14 @@ class LeapClient:
                             print(f"\n📩 SCM review queued: {preview}", flush=True)
                             print(f"   ({new_size} in queue)", flush=True)
 
-            # Detect newly sent messages
+            # Detect newly sent messages using the server's total sent
+            # counter.  This is robust against circular buffer rotation
+            # and duplicate message texts.
+            total_sent: int = response.get('total_sent', 0)
             new_sent_messages: list[str] = []
-            if recently_sent:
-                if last_recently_sent:
-                    if len(recently_sent) >= len(last_recently_sent):
-                        if recently_sent[:len(last_recently_sent)] == last_recently_sent:
-                            new_sent_messages = recently_sent[len(last_recently_sent):]
-                elif poll_count > 1:
-                    new_sent_messages = recently_sent[:]
+            if total_sent > last_total_sent and poll_count > 1:
+                new_count = total_sent - last_total_sent
+                new_sent_messages = recently_sent[-new_count:]
 
             # Print notifications for new sent messages (if enabled)
             if new_sent_messages and self.show_auto_sent_notifications:
@@ -317,7 +316,7 @@ class LeapClient:
                 else:
                     print("   (queue empty)", flush=True)
 
-            last_recently_sent = list(recently_sent)
+            last_total_sent = total_sent
             last_queue_contents = list(queue_contents)
 
     def _should_print_socket_error(self) -> bool:

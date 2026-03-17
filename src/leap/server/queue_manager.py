@@ -32,6 +32,7 @@ class QueueManager:
         self.max_recently_sent = max_recently_sent
         self.queue: deque[dict[str, str]] = deque()  # Each entry: {'id': ..., 'msg': ...}
         self.recently_sent: list[str] = []
+        self.total_sent: int = 0
         self._lock = threading.Lock()
         self._recently_sent_lock = threading.Lock()
 
@@ -171,18 +172,22 @@ class QueueManager:
         """
         with self._recently_sent_lock:
             self.recently_sent.append(message)
+            self.total_sent += 1
             if len(self.recently_sent) > self.max_recently_sent:
                 self.recently_sent.pop(0)
 
-    def get_recently_sent(self) -> list[str]:
+    def get_recently_sent(self) -> tuple[list[str], int]:
         """
-        Get list of recently sent messages.
+        Get list of recently sent messages and total sent count.
+
+        Returns both under the same lock to ensure consistency
+        (the total count always matches the list snapshot).
 
         Returns:
-            Copy of the recently sent messages list.
+            Tuple of (recently sent messages list copy, total sent count).
         """
         with self._recently_sent_lock:
-            return list(self.recently_sent)
+            return list(self.recently_sent), self.total_sent
 
     def get_contents(self) -> list[str]:
         """
