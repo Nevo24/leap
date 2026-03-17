@@ -61,6 +61,14 @@ class CodexProvider(CLIProvider):
         return b'interrupted'
 
     @property
+    def confirmed_interrupt_pattern(self) -> Optional[bytes]:
+        # Codex's interrupt prompt: "■ Conversation interrupted - tell
+        # the model what to do differently."  In compact form (spaces
+        # removed), "Conversationinterrupted" is specific enough to
+        # distinguish from conversational use of "interrupted".
+        return b'Conversationinterrupted'
+
+    @property
     def dialog_patterns(self) -> list[bytes]:
         # Codex uses Ratatui — no reliable PTY patterns for dialog
         # detection yet.  Return empty to disable PTY-based dialog

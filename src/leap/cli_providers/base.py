@@ -60,6 +60,19 @@ class CLIProvider(ABC):
         """Text that appears in PTY output when the user interrupts."""
 
     @property
+    def confirmed_interrupt_pattern(self) -> Optional[bytes]:
+        """Specific pattern (ANSI-stripped, spaces removed) that confirms
+        a real interrupt prompt — not just the word in conversation text.
+
+        Checked against compact output (ANSI stripped + spaces removed).
+        Must be specific enough to avoid false positives.  Used as a
+        fallback when the Escape/Ctrl+C input bypasses on_input().
+
+        Return None to rely solely on the escape-time-based check.
+        """
+        return None
+
+    @property
     @abstractmethod
     def dialog_patterns(self) -> list[bytes]:
         """Compact patterns (ANSI-stripped, spaces removed) that indicate

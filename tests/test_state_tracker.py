@@ -1093,6 +1093,182 @@ class TestPTYDialogDetection:
         )
         assert tracker.current_state == 'interrupted'
 
+    def test_interrupt_detected_without_escape(
+        self, tmp_path: Path,
+    ) -> None:
+        """Interrupt detected via confirmed_interrupt_pattern
+        (Interrupted·) even without user Escape."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # No Escape pressed — Ctrl+C bypassed on_input or CLI
+        # self-interrupted.  TUI renders the interrupt prompt.
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
+            b'1. Try again\n'
+            b'2. Stop\n'
+            b'Enter to select \xc2\xb7 Esc to cancel\n'
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_interrupt_with_preceding_output(
+        self, tmp_path: Path,
+    ) -> None:
+        """Interrupt detected when prompt follows earlier tool output."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Tool output before the interrupt
+        tracker.on_output(b'Processing files...\nDone with step 1\n')
+        t[0] = 2.0
+        # CLI interrupts, TUI re-renders full screen
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
+            b'1. Try again\n'
+            b'Enter to select \xc2\xb7 Esc to cancel\n'
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_no_false_interrupted_from_conversation_text(
+        self, tmp_path: Path,
+    ) -> None:
+        """'Interrupted' in conversation text (no middle dot) should
+        NOT false-positive as interrupted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Claude discusses interrupts — no middle dot after the word
+        tracker.on_output(
+            b'The process was Interrupted due to a timeout.\n'
+        )
+        assert tracker.current_state == 'running'
+
+    def test_no_false_interrupted_from_conversation_plus_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        """'Interrupted' in conversation text followed by a normal
+        permission dialog should detect needs_permission, NOT interrupted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Claude discusses interrupts in its conversational output
+        tracker.on_output(
+            b'The process was Interrupted due to a timeout.\n'
+        )
+        assert tracker.current_state == 'running'
+        t[0] = 2.0
+        # Later, a normal permission dialog appears (no middle dot
+        # after "Interrupted" — the word was conversational)
+        tracker.on_output(
+            b'Allow Bash?\n'
+            b'1. Allow once\n'
+            b'Enter to select \xc2\xb7 Esc to cancel\n'
+        )
+        # Should detect as needs_permission, NOT interrupted
+        assert tracker.current_state == 'needs_permission'
+
+    def test_interrupt_prompt_split_across_chunks(
+        self, tmp_path: Path,
+    ) -> None:
+        """Interrupt detected when 'Interrupted·' arrives in a
+        separate chunk from dialog patterns."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # First chunk: just tool output
+        tracker.on_output(b'Running command...\n')
+        assert tracker.current_state == 'running'
+        t[0] = 1.1
+        # Second chunk: the interrupt prompt with middle dot
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
+        )
+        assert tracker.current_state == 'interrupted'
+
+
+# ---------------------------------------------------------------------------
+# Idle-state interrupt detection (confirmed pattern fallback)
+# ---------------------------------------------------------------------------
+
+class TestIdleInterruptDetection:
+    """Test confirmed_interrupt_pattern detection while in idle state.
+
+    Covers the case where the state transitioned to idle (via Stop hook
+    or silence timeout) before the interrupt PTY output arrived.
+    """
+
+    def test_claude_interrupt_detected_in_idle(self, tmp_path: Path) -> None:
+        """Claude interrupt prompt detected while idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate: running → idle via signal file, then interrupt output
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        t[0] = 2.0
+        # Interrupt PTY output arrives while idle
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
+            b'1. Try again\n'
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_codex_interrupt_detected_in_idle(self, tmp_path: Path) -> None:
+        """Codex interrupt prompt detected while idle (critical:
+        output_triggers_running=False means no further processing
+        without this check)."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Simulate: running → idle via signal file
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        t[0] = 2.0
+        # Interrupt PTY output arrives while idle
+        tracker.on_output(
+            b'Conversation interrupted - tell the model what to do.'
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_no_false_interrupted_in_idle_from_conversation(
+        self, tmp_path: Path,
+    ) -> None:
+        """Generic 'Interrupted' in conversation text while idle
+        should NOT trigger false interrupted (no middle dot)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+        t[0] = 2.0
+        tracker.on_output(
+            b'The process was Interrupted due to a timeout.\n'
+        )
+        assert tracker.current_state == 'idle'
+
+    def test_idle_interrupt_requires_seen_user_input(
+        self, tmp_path: Path,
+    ) -> None:
+        """Confirmed pattern check should not fire during startup
+        (before any user input)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # No on_send() or on_input() — _seen_user_input is False
+        t[0] = 1.0
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
+        )
+        # Should stay idle (startup phase, not a real interrupt)
+        assert tracker.current_state == 'idle'
+
 
 class TestCleanup:
     def test_cleanup_deletes_signal_file(self, tmp_path: Path) -> None:
@@ -1580,6 +1756,47 @@ class TestCodexInterrupted:
         t[0] = 2.0
         tracker.on_output(b'Conversation interrupted')
         assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_interrupt_detected_without_escape(self, tmp_path: Path) -> None:
+        """Codex interrupt detected via confirmed_interrupt_pattern
+        even when Ctrl+C bypassed on_input()."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # No Escape/Ctrl+C seen by on_input — bypassed to child process
+        tracker.on_output(
+            b'Conversation interrupted - tell the model what to do differently.'
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_no_false_interrupted_from_conversation_text(
+        self, tmp_path: Path,
+    ) -> None:
+        """Generic 'interrupted' in conversation text should NOT
+        trigger false interrupted state."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Codex outputs text discussing interrupts — but not
+        # "Conversation interrupted" as a phrase
+        tracker.on_output(
+            b'The task was interrupted by a network error.'
+        )
+        assert tracker.current_state == 'running'
+
+    def test_interrupt_with_ansi_without_escape(self, tmp_path: Path) -> None:
+        """Codex interrupt with ANSI detected without Escape keypress."""
+        t = [0.0]
+        tracker = make_codex_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(
+            b'\x1b[31m\xe2\x96\xa0 Conversation interrupted\x1b[0m'
+            b' - tell the model what to do differently.'
+        )
+        assert tracker.current_state == 'interrupted'
 
 
 # ---------------------------------------------------------------------------

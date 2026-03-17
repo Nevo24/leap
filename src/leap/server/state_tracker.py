@@ -562,6 +562,30 @@ class CLIStateTracker:
                     self._state = CLIState.INTERRUPTED
                     self._waiting_since = self._clock()
                 return
+
+        # Confirmed interrupt pattern fallback — catches interrupts
+        # that reached idle (e.g. Stop hook raced ahead of PTY output,
+        # Ctrl+C bypassed on_input, or silence timeout expired).
+        # Only check the CURRENT data chunk to avoid false positives
+        # from stale buffer content (silence timeout does not clear
+        # the buffer).
+        confirmed = self._provider.confirmed_interrupt_pattern
+        if confirmed and self._seen_user_input:
+            compact_chunk = self._ANSI_RE.sub(
+                b'', data,
+            ).replace(b' ', b'')
+            if confirmed in compact_chunk:
+                _log.debug(
+                    'ON_OUTPUT idle→interrupted '
+                    '(confirmed interrupt pattern in chunk)',
+                )
+                self._output_buf.clear()
+                self._idle_output_acc = 0
+                with self._lock:
+                    self._state = CLIState.INTERRUPTED
+                    self._waiting_since = self._clock()
+                return
+
         if not self._seen_user_input:
             return
         # For Ratatui-based CLIs, skip output-based idle→running.
@@ -643,7 +667,30 @@ class CLIStateTracker:
                     self._last_prompt_buf = b''
                     return
 
+            # Interrupt detection without Escape keypress: the Ctrl+C or
+            # self-interrupt may have bypassed on_input().  Use the
+            # provider's confirmed_interrupt_pattern — a specific pattern
+            # that only appears in the real interrupt prompt, not in
+            # conversational text.
+            confirmed = self._provider.confirmed_interrupt_pattern
+            if has_interrupted and confirmed:
+                compact = self._ANSI_RE.sub(
+                    b'', bytes(self._output_buf),
+                ).replace(b' ', b'')
+                if confirmed in compact:
+                    _log.debug(
+                        'ON_OUTPUT running→interrupted '
+                        '(confirmed interrupt pattern in buffer)',
+                    )
+                    self._output_buf.clear()
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    return
+
             # Detect permission/input dialogs from PTY output.
+            # Use a limited window to avoid false positives from
+            # dialog-like patterns spread across conversational text.
             if dialog_patterns:
                 check_buf = bytes(self._output_buf[-512:])
                 compact = self._ANSI_RE.sub(

@@ -42,6 +42,14 @@ class ClaudeProvider(CLIProvider):
         return b'Interrupted'
 
     @property
+    def confirmed_interrupt_pattern(self) -> Optional[bytes]:
+        # Claude's interrupt prompt: "Interrupted · What should Claude do
+        # instead?"  In compact form (ANSI stripped, spaces removed),
+        # the middle dot sits right after "Interrupted".  Conversational
+        # text won't have this combination.
+        return b'Interrupted\xc2\xb7'
+
+    @property
     def dialog_patterns(self) -> list[bytes]:
         return [b'Entertoselect', b'Esctocancel']
 
