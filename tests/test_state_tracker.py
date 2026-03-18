@@ -1540,7 +1540,7 @@ class TestCLIStateEnum:
         assert CLIState.NEEDS_PERMISSION in SIGNAL_STATES
         assert CLIState.NEEDS_INPUT in SIGNAL_STATES
         assert CLIState.RUNNING not in SIGNAL_STATES
-        assert CLIState.INTERRUPTED not in SIGNAL_STATES
+        assert CLIState.INTERRUPTED in SIGNAL_STATES
 
     def test_prompt_states_membership(self) -> None:
         from leap.cli_providers.states import CLIState, PROMPT_STATES
@@ -1858,8 +1858,12 @@ class TestCodexOutputDoesNotTriggerRunning:
 class TestWaitingStateTimeout:
     """Test fallback timeout for stuck waiting states."""
 
-    def test_interrupted_times_out_to_idle(self, tmp_path: Path) -> None:
-        """Interrupted state falls back to idle after WAITING_STATE_TIMEOUT."""
+    def test_interrupted_persists_after_timeout(self, tmp_path: Path) -> None:
+        """Interrupted state persists even after WAITING_STATE_TIMEOUT.
+
+        The state tracker writes 'interrupted' to the signal file, so the
+        timeout check finds confirmation and keeps the state.
+        """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -1870,9 +1874,10 @@ class TestWaitingStateTimeout:
         tracker.on_output(b'some text Interrupted more text')
         assert tracker.get_state(pty_alive=True) == 'interrupted'
         # Output timestamp is set to 1.5
-        # After WAITING_STATE_TIMEOUT (30s) with no output → idle
+        # After WAITING_STATE_TIMEOUT (30s) — signal file confirms
+        # interrupted, so the state stays.
         t[0] = 1.5 + WAITING_STATE_TIMEOUT + 1.0
-        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
 
     def test_interrupted_stays_if_output_arrives(self, tmp_path: Path) -> None:
         """Interrupted state should NOT time out if output keeps arriving."""
@@ -1927,8 +1932,8 @@ class TestWaitingStateTimeout:
         t[0] = 1.0 + WAITING_STATE_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
-    def test_codex_interrupted_times_out(self, tmp_path: Path) -> None:
-        """Codex interrupted state also times out correctly."""
+    def test_codex_interrupted_persists(self, tmp_path: Path) -> None:
+        """Codex interrupted state persists (signal file confirms)."""
         t = [0.0]
         tracker = make_codex_tracker(tmp_path, t)
         tracker.on_send()
@@ -1939,4 +1944,4 @@ class TestWaitingStateTimeout:
         tracker.on_output(b'Conversation interrupted')
         assert tracker.get_state(pty_alive=True) == 'interrupted'
         t[0] = 1.5 + WAITING_STATE_TIMEOUT + 1.0
-        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker.get_state(pty_alive=True) == 'interrupted'

@@ -145,6 +145,23 @@ class CLIStateTracker:
             signal_file, self._provider.name,
         )
 
+    def _write_interrupted_signal(self) -> None:
+        """Write 'interrupted' state to the signal file.
+
+        The hook script never writes 'interrupted' (only idle /
+        needs_permission / needs_input), so the WAITING_STATE_TIMEOUT
+        fallback would find no confirmation and reset to idle.  By
+        writing the signal file ourselves, the timeout check
+        (signal_state == current) finds the confirmation and keeps the
+        interrupted state.
+        """
+        try:
+            self._signal_file.write_text(
+                json.dumps({'state': CLIState.INTERRUPTED}),
+            )
+        except OSError:
+            pass
+
     # -- Public API ----------------------------------------------------------
 
     @property
@@ -176,6 +193,21 @@ class CLIStateTracker:
         # can write needs_permission/needs_input while idle.
         new_state = self._read_signal_state()
         if new_state and new_state != current:
+            # "interrupted" in the signal file is written by the state
+            # tracker itself (not by hooks) purely so the
+            # WAITING_STATE_TIMEOUT check can find confirmation.
+            # It should never trigger a *new* transition — interrupted
+            # is always detected from PTY output patterns.
+            if new_state == CLIState.INTERRUPTED:
+                _log.debug(
+                    'GET_STATE signal=interrupted but current=%s — '
+                    'ignoring stale signal (deleting)',
+                    current,
+                )
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
             # Stop hook fires on Escape too, writing "idle",
             # but the CLI is actually prompting "What should
             # Claude do instead?" — keep needs_input/interrupted.
@@ -575,6 +607,7 @@ class CLIStateTracker:
                 with self._lock:
                     self._state = CLIState.INTERRUPTED
                     self._waiting_since = self._clock()
+                self._write_interrupted_signal()
                 return
 
         # Confirmed interrupt pattern fallback — catches interrupts
@@ -598,6 +631,7 @@ class CLIStateTracker:
                 with self._lock:
                     self._state = CLIState.INTERRUPTED
                     self._waiting_since = self._clock()
+                self._write_interrupted_signal()
                 return
 
         if not self._seen_user_input:
@@ -659,6 +693,7 @@ class CLIStateTracker:
             with self._lock:
                 self._state = CLIState.INTERRUPTED
                 self._waiting_since = self._clock()
+            self._write_interrupted_signal()
         else:
             # Trust dialog phase: after user answered via select_option,
             # on_send() sets state to running.  Startup output means
@@ -699,6 +734,7 @@ class CLIStateTracker:
                     with self._lock:
                         self._state = CLIState.INTERRUPTED
                         self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
                     return
 
     def _handle_waiting_output(self, data: bytes, now: float) -> None:
@@ -723,6 +759,7 @@ class CLIStateTracker:
                 self._waiting_since = now
             self._output_buf.clear()
             self._last_prompt_buf = b''
+            self._write_interrupted_signal()
             return
         self._output_buf.clear()
         # Continue accumulating prompt output for Slack rendering.

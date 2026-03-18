@@ -38,11 +38,13 @@ WAITING_STATES: FrozenSet[CLIState] = frozenset({
     CLIState.INTERRUPTED,
 })
 
-# States that can be written to the hook signal file.
+# States that can appear in the signal file (written by hooks or by
+# the state tracker itself for states the hook cannot express).
 SIGNAL_STATES: FrozenSet[CLIState] = frozenset({
     CLIState.IDLE,
     CLIState.NEEDS_PERMISSION,
     CLIState.NEEDS_INPUT,
+    CLIState.INTERRUPTED,
 })
 
 # Showing a permission or input prompt dialog.
