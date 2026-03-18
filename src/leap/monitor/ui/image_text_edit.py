@@ -79,11 +79,19 @@ class ImageTextEdit(QTextEdit):
         super().__init__(parent)
         self._image_counter: int = 0
         self._image_placeholders: dict[str, str] = {}
+        self._submit_callback: Optional[object] = None
+
+    def set_submit_callback(self, callback: object) -> None:
+        """Set a custom callback for Cmd+Enter instead of dialog accept."""
+        self._submit_callback = callback
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:
-        """Accept Cmd+Enter / Cmd+Return as dialog accept (send)."""
+        """Accept Cmd+Enter / Cmd+Return as submit shortcut."""
         if (event.modifiers() & Qt.ControlModifier
                 and event.key() in (Qt.Key_Return, Qt.Key_Enter)):
+            if self._submit_callback:
+                self._submit_callback()
+                return
             dialog = self.window()
             if isinstance(dialog, QDialog):
                 dialog.accept()

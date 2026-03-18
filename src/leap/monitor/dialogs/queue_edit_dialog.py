@@ -56,6 +56,7 @@ class QueueEditDialog(QDialog):
         self._editor = ImageTextEdit()
         self._editor.setPlaceholderText('Select a message to edit (paste images with Cmd+V)')
         self._editor.setEnabled(False)
+        self._editor.set_submit_callback(self._save_current)
         self._editor.textChanged.connect(self._on_text_changed)
         splitter.addWidget(self._editor)
 
