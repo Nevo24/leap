@@ -757,45 +757,46 @@ class TableBuilderMixin(_Base):
                             Qt.AlignRight | Qt.AlignVCenter)
                         c_layout.addWidget(fire_label)
 
-                        # Click: "interrupted" → force-send menu;
-                        # "running" → interrupt menu;
-                        # "needs_permission"/"needs_input" →
-                        #   right-click: permission options menu;
-                        #   left-click: dismiss fire indicator;
-                        # other states → dismiss fire indicator.
+                        # Left-click: dismiss fire indicator.
+                        # Right-click: open context menu for states
+                        # that have one (interrupted, running,
+                        # needs_permission, needs_input).
                         def _make_click(
                             t: str = tag,
-                            st: str = cli_state,
                             w: QWidget = container,
                         ) -> Callable:
                             def _on_click(event: object) -> None:
-                                # Only handle left-clicks; let right-clicks
-                                # propagate so customContextMenuRequested fires.
                                 if event.button() != Qt.LeftButton:
                                     QWidget.mousePressEvent(w, event)
                                     return
-                                if st == CLIState.INTERRUPTED:
-                                    self._show_status_action_menu(w, t)
-                                elif st == CLIState.RUNNING:
-                                    self._show_running_status_menu(w, t)
-                                elif t not in self._dismissed_new_status:
+                                if t not in self._dismissed_new_status:
                                     self._dismissed_new_status.add(t)
                                     self._update_table()
                             return _on_click
                         container.mousePressEvent = _make_click()
 
-                        # Right-click on permission/question →
-                        # show options menu (uses customContext
-                        # signal so Qt delivers it properly).
+                        # Right-click context menu for actionable states.
                         if cli_state in (
+                            CLIState.INTERRUPTED, CLIState.RUNNING,
                             CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT,
                         ):
                             container.setContextMenuPolicy(
                                 Qt.CustomContextMenu)
-                            container.customContextMenuRequested.connect(
-                                lambda _pos, w=container, t=tag:
-                                    self._show_permission_menu(w, t)
-                            )
+                            if cli_state == CLIState.INTERRUPTED:
+                                container.customContextMenuRequested.connect(
+                                    lambda _pos, w=container, t=tag:
+                                        self._show_status_action_menu(w, t)
+                                )
+                            elif cli_state == CLIState.RUNNING:
+                                container.customContextMenuRequested.connect(
+                                    lambda _pos, w=container, t=tag:
+                                        self._show_running_status_menu(w, t)
+                                )
+                            else:
+                                container.customContextMenuRequested.connect(
+                                    lambda _pos, w=container, t=tag:
+                                        self._show_permission_menu(w, t)
+                                )
 
                         # Ensure a table item exists so the
                         # cell-widget tooltip path can find it.
@@ -1794,6 +1795,16 @@ class TableBuilderMixin(_Base):
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
 
+        continue_action = menu.addAction("Send 'continue' message")
+        continue_action.setToolTip(
+            "Send 'continue' directly to the CLI,\n"
+            'bypassing the queue')
+        continue_action.triggered.connect(
+            lambda _checked, t=tag: self._send_continue(t)
+        )
+
+        menu.addSeparator()
+
         force_action = menu.addAction('Force-send next queued message')
         force_action.setEnabled(queue_size > 0)
         force_action.setToolTip(
@@ -1804,6 +1815,20 @@ class TableBuilderMixin(_Base):
         )
 
         menu.exec_(widget.mapToGlobal(widget.rect().center()))
+
+    def _send_continue(self, tag: str) -> None:
+        """Send 'continue' directly to the Leap server (bypasses queue)."""
+        from leap.utils.constants import SOCKET_DIR
+
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'direct', 'message': 'continue'},
+        )
+        if response and response.get('status') in ('ok', 'sent'):
+            self._show_status(f'Sent "continue" to {tag}')
+            self._refresh_data()
+        else:
+            self._show_status(f'Failed to send "continue" to {tag}')
 
     def _force_send_next(self, tag: str) -> None:
         """Force-send the next queued message to the Leap server."""
