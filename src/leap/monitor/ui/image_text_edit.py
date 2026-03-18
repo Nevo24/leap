@@ -80,6 +80,16 @@ class ImageTextEdit(QTextEdit):
         self._image_counter: int = 0
         self._image_placeholders: dict[str, str] = {}
 
+    def keyPressEvent(self, event: 'QKeyEvent') -> None:
+        """Accept Cmd+Enter / Cmd+Return as dialog accept (send)."""
+        if (event.modifiers() & Qt.ControlModifier
+                and event.key() in (Qt.Key_Return, Qt.Key_Enter)):
+            dialog = self.window()
+            if isinstance(dialog, QDialog):
+                dialog.accept()
+                return
+        super().keyPressEvent(event)
+
     def insertFromMimeData(self, source: QMimeData) -> None:
         """Override paste to detect images in the clipboard."""
         if source.hasImage():
@@ -162,7 +172,8 @@ class SendMessageDialog(QDialog):
         self._editor.setPlaceholderText('Type a message... (paste images with Cmd+V)')
         layout.addWidget(self._editor, 1)
 
-        hint = QLabel('Tip: paste an image from clipboard to attach it')
+        hint = QLabel('Tip: paste an image from clipboard to attach it\n'
+                      'Tip: cmd+Enter to send')
         hint.setStyleSheet('color: #888; font-size: 11px;')
         layout.addWidget(hint)
 
