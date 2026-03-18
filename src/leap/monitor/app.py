@@ -1075,7 +1075,11 @@ class MonitorWindow(
         def _handler(event: object) -> object:
             """NSEvent handler — check modifiers + hardware key code."""
             try:
-                ev_flags = event.modifierFlags() & 0x00FF0000  # device-independent
+                # Mask to only the four modifier keys we care about:
+                # Shift (1<<17), Control (1<<18), Option (1<<19), Command (1<<20).
+                # Ignores CapsLock (1<<16), NumericPad (1<<21), Function (1<<23).
+                _MOD_MASK = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+                ev_flags = event.modifierFlags() & _MOD_MASK
                 if event.keyCode() == expected_keycode and ev_flags == ns_flags:
                     from PyQt5.QtCore import QTimer
                     QTimer.singleShot(0, self._on_global_shortcut_triggered)
