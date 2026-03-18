@@ -46,6 +46,8 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
     and the legacy NSUserNotification path is used instead.
     """
     global _un_center, _un_ready
+    if _un_ready:
+        return  # Already set up
     try:
         import objc
         from Foundation import NSObject, NSSet
@@ -95,6 +97,11 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
         center = UNUserNotificationCenter.currentNotificationCenter()
 
         # ---- Delegate (handles clicks) ----
+        # macOS calls delegate methods on an arbitrary thread, but Qt GUI
+        # operations must run on the main thread.  We use QTimer.singleShot
+        # with 0ms to safely marshal the work onto the Qt event loop.
+        from PyQt5.QtCore import QTimer
+
         class _LeapUNDelegate(NSObject):
             monitor_ref = None
 
@@ -104,19 +111,27 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
                 try:
                     mon = self.monitor_ref
                     if not mon or mon._shutting_down:
-                        completion()
                         return
                     action_id = response.actionIdentifier()
                     user_info = response.notification().request().content().userInfo()
                     tag = user_info.get('tag', '') if user_info else ''
                     if action_id in ('server', 'client') and tag:
-                        mon._focus_session(tag, action_id)
+                        # Marshal to Qt main thread
+                        def _navigate(_m: object = mon, _t: str = tag,
+                                      _a: str = action_id) -> None:
+                            if not _m._shutting_down:
+                                _m._focus_session(_t, _a)
+                        QTimer.singleShot(0, _navigate)
                     else:
-                        # Default action (banner click) or dismiss
-                        from AppKit import NSApplication
-                        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-                        mon.activateWindow()
-                        mon.raise_()
+                        # Default action (banner click) → bring monitor to foreground
+                        def _activate(_m: object = mon) -> None:
+                            if _m._shutting_down:
+                                return
+                            from AppKit import NSApplication
+                            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                            _m.activateWindow()
+                            _m.raise_()
+                        QTimer.singleShot(0, _activate)
                 except Exception:
                     logger.debug("Notification response handler error", exc_info=True)
                 finally:
@@ -461,8 +476,7 @@ def _send_modern_notification(
         if sound_name and sound_name != 'None':
             import os
             if os.path.isabs(sound_name):
-                # Custom file — play separately after delivery
-                content.setSound_(UNNotificationSound.defaultSound())
+                # Custom file — play separately, no system sound on the notification
                 from leap.monitor.dialogs.notifications_dialog import _play_sound
                 _play_sound(sound_name)
             elif sound_name == 'Default':
