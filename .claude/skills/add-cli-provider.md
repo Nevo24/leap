@@ -153,7 +153,7 @@ Override these only if the CLI differs from the defaults:
 
 | Property | Default | When to Override |
 |----------|---------|-----------------|
-| `trust_dialog_pattern` | Claude's trust dialog | Different startup dialog, or `None` if no trust dialog |
+| `trust_dialog_patterns` | Claude's trust dialog | Different startup dialog, or `[]` if no trust dialog |
 | `output_triggers_running` | `True` | Set `False` for full-screen TUIs (Ratatui) where redraws look like output |
 | `enter_triggers_running` | `False` | Set `True` for full-screen TUIs where Enter is the submit signal |
 | `silence_timeout` | `None` (uses 15s global) | Shorter timeout for TUIs that output constantly during processing |
@@ -294,9 +294,11 @@ The CLI calls hook scripts on lifecycle events. The hook writes state to a signa
 
 The state tracker watches raw PTY output for patterns:
 
-- **`dialog_patterns`**: ANSI-stripped, space-removed output checked for ALL patterns present → `needs_permission`
+- **`trust_dialog_patterns`**: Startup dialog detection (before user input) → `needs_permission`
+- **`dialog_patterns`**: Startup dialog detection (before user input, fallback) — checked for ALL patterns present → `needs_permission`
 - **`interrupted_pattern`**: ANSI-stripped output after user input → `interrupted`
-- **`trust_dialog_pattern`**: Startup dialog detection → `needs_permission`
+
+Note: During running state, permission detection relies solely on Notification hooks (signal file). PTY `dialog_patterns` are only checked at startup.
 
 For full-screen TUIs (Ratatui), PTY output is unreliable because screen redraws produce constant output. Set `output_triggers_running = False` and rely on hooks.
 
