@@ -769,6 +769,11 @@ class TableBuilderMixin(_Base):
                             w: QWidget = container,
                         ) -> Callable:
                             def _on_click(event: object) -> None:
+                                # Only handle left-clicks; let right-clicks
+                                # propagate so customContextMenuRequested fires.
+                                if event.button() != Qt.LeftButton:
+                                    QWidget.mousePressEvent(w, event)
+                                    return
                                 if st == CLIState.INTERRUPTED:
                                     self._show_status_action_menu(w, t)
                                 elif st == CLIState.RUNNING:

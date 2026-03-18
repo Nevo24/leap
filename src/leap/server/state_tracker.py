@@ -320,22 +320,38 @@ class CLIStateTracker:
         # needs_input) can get stuck if the hook doesn't fire again
         # and no output arrives to trigger resume detection.
         # After WAITING_STATE_TIMEOUT with no PTY output, fall back
-        # to idle.
+        # to idle — but only if the signal file doesn't still confirm
+        # the current waiting state.  Without this check, the timeout
+        # fires every poll cycle after 30s of silence (since
+        # _last_output_time is never reset), the signal file
+        # immediately reasserts the waiting state on the next poll,
+        # and the state rapidly toggles between idle and waiting.
         if current in WAITING_STATES and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
             if silence > WAITING_STATE_TIMEOUT:
-                _log.debug(
-                    'GET_STATE waiting timeout %s %.1fs → idle',
-                    current, silence,
-                )
-                with self._lock:
-                    self._state = CLIState.IDLE
-                    self._waiting_since = None
-                self._idle_output_acc = 0
-                self._idle_since = self._clock()
-                with self._buf_lock:
-                    self._last_prompt_buf = b''
-                return CLIState.IDLE
+                # Trust the signal file over the silence heuristic:
+                # if the hook wrote the current state, the CLI really
+                # is waiting — don't override it.
+                signal_state = self._read_signal_state()
+                if signal_state == current:
+                    _log.debug(
+                        'GET_STATE waiting timeout %s %.1fs but '
+                        'signal file confirms — keeping',
+                        current, silence,
+                    )
+                else:
+                    _log.debug(
+                        'GET_STATE waiting timeout %s %.1fs → idle',
+                        current, silence,
+                    )
+                    with self._lock:
+                        self._state = CLIState.IDLE
+                        self._waiting_since = None
+                    self._idle_output_acc = 0
+                    self._idle_since = self._clock()
+                    with self._buf_lock:
+                        self._last_prompt_buf = b''
+                    return CLIState.IDLE
 
         return current
 

@@ -1893,7 +1893,9 @@ class TestWaitingStateTimeout:
         assert tracker.get_state(pty_alive=True) == 'interrupted'
 
     def test_needs_permission_times_out(self, tmp_path: Path) -> None:
-        """needs_permission also falls back to idle after timeout."""
+        """needs_permission falls back to idle after timeout when the
+        signal file no longer confirms the waiting state (e.g. hook
+        didn't re-fire)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -1902,9 +1904,28 @@ class TestWaitingStateTimeout:
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
         # Some output at transition
         tracker.on_output(b'prompt text')
+        # Delete signal file to simulate hook not re-firing
+        tracker._signal_file.unlink(missing_ok=True)
         # Wait beyond timeout
         t[0] = 1.0 + WAITING_STATE_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_needs_permission_no_timeout_when_signal_confirms(
+        self, tmp_path: Path,
+    ) -> None:
+        """needs_permission does NOT timeout when the signal file still
+        confirms the waiting state — this prevents rapid toggling."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Some output at transition
+        tracker.on_output(b'prompt text')
+        # Signal file still says needs_permission — should NOT timeout
+        t[0] = 1.0 + WAITING_STATE_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
     def test_codex_interrupted_times_out(self, tmp_path: Path) -> None:
         """Codex interrupted state also times out correctly."""
