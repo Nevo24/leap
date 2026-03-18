@@ -66,6 +66,12 @@ define BUILD_MONITOR_APP
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
 echo "$(PROMPT_PREFIX) Installing Leap Monitor.app to /Applications..."; \
+if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
+	echo "$(PROMPT_PREFIX) Closing running Leap Monitor..."; \
+	osascript -e 'quit app "Leap Monitor"' 2>/dev/null || true; \
+	sleep 1; \
+	pkill -f "Leap Monitor" 2>/dev/null || true; \
+fi; \
 if [ -d "/Applications/Leap Monitor.app" ]; then \
 	sudo rm -rf "/Applications/Leap Monitor.app"; \
 fi; \
