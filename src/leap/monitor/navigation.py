@@ -146,7 +146,9 @@ def open_terminal_with_command(
                 return True
             logger.debug("Warp open failed, falling back")
 
-    # Preferred IDE failed or unknown — try Terminal.app then iTerm2
+    # Preferred IDE failed or unknown — fall back to Terminal.app then iTerm2.
+    # Warp is intentionally excluded: opening a *new* terminal in an app
+    # the user doesn't use is more disruptive than navigating/closing.
     if _open_terminal_app_terminal(command):
         return True
     return _open_iterm2_terminal(command)
@@ -189,7 +191,8 @@ def close_terminal_with_title(
             if _close_terminal_app(title_pattern):
                 return True
 
-    # Preferred IDE failed or unknown — try all standalone terminals
+    # Preferred IDE failed or unknown — fall back through standalone terminals
+    # (Warp last to avoid activating it unexpectedly)
     if _close_terminal_app(title_pattern):
         return True
     if _close_iterm2(title_pattern):
@@ -237,7 +240,8 @@ def find_terminal_with_title(
             if _navigate_terminal_app(title_pattern):
                 return True
 
-    # Preferred IDE failed or unknown — try all standalone terminals
+    # Preferred IDE failed or unknown — fall back through standalone terminals
+    # (Warp last to avoid activating it unexpectedly)
     if _navigate_terminal_app(title_pattern):
         return True
     if _navigate_iterm2(title_pattern):
