@@ -134,6 +134,7 @@ class MonitorWindow(
         self._log_history = LogHistory()
         self._server_launcher = ServerLauncher(self)
         self._slack_bot_process: Optional[QProcess] = None
+        self._slack_bot_stopping: bool = False
         self._slack_bot_was_running: bool = self._is_slack_bot_running()
         self._global_event_monitor: Optional[object] = None
         self._local_event_monitor: Optional[object] = None

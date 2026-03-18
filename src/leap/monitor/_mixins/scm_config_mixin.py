@@ -6,10 +6,9 @@ import logging
 import os
 import signal
 import subprocess
-import time
 from typing import TYPE_CHECKING, Any, Optional
 
-from PyQt5.QtCore import QProcess, QProcessEnvironment, Qt
+from PyQt5.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 
 from leap.monitor.pr_tracking.base import SCMProvider
@@ -335,7 +334,10 @@ class SCMConfigMixin(_Base):
             return
 
         self.slack_bot_btn.setVisible(True)
-        self.slack_bot_btn.setEnabled(True)
+        # Don't re-enable while a stop is in progress — the button stays
+        # disabled until _cleanup_slack_bot_state runs after the process exits.
+        if not self._slack_bot_stopping:
+            self.slack_bot_btn.setEnabled(True)
         if self._is_slack_bot_running():
             self.slack_bot_btn.setText('Slack Bot Running')
             t = current_theme()
@@ -349,16 +351,14 @@ class SCMConfigMixin(_Base):
 
     def _toggle_slack_bot(self) -> None:
         """Start or stop the Slack bot."""
-        # Disable button during the operation to prevent double-clicks
-        # from causing a stop+start in the same second.
-        self.slack_bot_btn.setEnabled(False)
-        try:
-            if self._is_slack_bot_running():
-                self._stop_slack_bot()
-            else:
-                self._start_slack_bot()
-        finally:
-            self._update_slack_bot_button()
+        if self._is_slack_bot_running():
+            # Disable button until stop completes (re-enabled in
+            # _cleanup_slack_bot_state, called from _on_slack_bot_finished
+            # or from _stop_slack_bot for the terminal-launched path).
+            self.slack_bot_btn.setEnabled(False)
+            self._stop_slack_bot()
+        else:
+            self._start_slack_bot()
 
     def _start_slack_bot(self, silent: bool = False) -> None:
         """Launch the Slack bot as a QProcess.
@@ -400,34 +400,47 @@ class SCMConfigMixin(_Base):
     def _stop_slack_bot(self) -> None:
         """Stop the Slack bot — via QProcess, terminal close, or direct kill.
 
-        When the bot runs in a terminal we must both kill the process AND
-        close the terminal tab.  Strategy:
-        1. Try closing the terminal tab (kills the process too).
-        2. Kill any surviving processes (bash wrapper + Python child).
-        3. If step 1 failed, try closing the terminal tab again (now dead).
-        4. Clean up the lock directory.
+        Non-blocking: uses QTimer callbacks instead of waitForFinished /
+        time.sleep so the GUI event loop keeps running.
+
+        For QProcess-launched bots, cleanup happens in _on_slack_bot_finished
+        (triggered by the ``finished`` signal) so we don't race ahead of the
+        process exit.  For terminal-launched bots there is no QProcess, so
+        cleanup happens inline.
         """
-        from leap.monitor.navigation import close_terminal_with_title
+        # Mark that we're intentionally stopping — _on_slack_bot_finished
+        # checks this to suppress the "exited with code N" error message
+        # (SIGKILL produces a non-zero exit code).
+        self._slack_bot_stopping = True
 
         if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
             # We started it via QProcess — no terminal tab to close.
             # terminate() sends SIGTERM which doesn't reliably kill
-            # slack-bolt (blocks on Event().wait()), so follow up with kill().
+            # slack-bolt (blocks on Event().wait()), so schedule a
+            # SIGKILL after a short delay instead of blocking.
+            # Cleanup happens in _on_slack_bot_finished once the process
+            # actually exits.
             self._slack_bot_process.terminate()
-            if not self._slack_bot_process.waitForFinished(500):
-                self._slack_bot_process.kill()
+            QTimer.singleShot(500, self._force_kill_slack_qprocess)
         else:
             # Kill the processes first — this is the reliable path.
             # Then try to close the terminal tab (cosmetic cleanup).
             # Only try the preferred terminal to avoid activating
             # unrelated apps (e.g. Warp opening when using iTerm2).
             self._kill_slack_bot_processes()
+            self._cleanup_slack_bot_state()
 
-            default_term = self._prefs.get('default_terminal')
-            if default_term:
-                close_terminal_with_title('leap slack-bot',
-                                          preferred_ide=default_term)
+    def _force_kill_slack_qprocess(self) -> None:
+        """SIGKILL the Slack bot QProcess if it's still running."""
+        if (
+            self._slack_bot_process is not None
+            and self._slack_bot_process.state() != QProcess.NotRunning
+        ):
+            self._slack_bot_process.kill()
 
+    def _cleanup_slack_bot_state(self) -> None:
+        """Remove lock files and update prefs/UI after stopping the bot."""
+        self._slack_bot_stopping = False
         # Always remove lock files immediately so the button updates right
         # away and the next start doesn't see a stale lock.
         try:
@@ -445,16 +458,17 @@ class SCMConfigMixin(_Base):
         self._update_slack_bot_button()
         self._show_status('Slack bot stopped')
 
-    @staticmethod
-    def _kill_slack_bot_processes() -> None:
+    def _kill_slack_bot_processes(self) -> None:
         """Kill the Slack bot bash wrapper and Python child processes.
 
         SIGTERM alone doesn't work reliably on the Python Slack bot because
         slack-bolt's SocketModeHandler blocks on ``threading.Event().wait()``
         which is not interrupted by signals on macOS.  We therefore collect
-        all matching PIDs, send SIGTERM, wait briefly, then SIGKILL any
-        survivors.
+        all matching PIDs, send SIGTERM, then schedule a SIGKILL after a
+        short delay (non-blocking via QTimer).
         """
+        from leap.monitor.navigation import close_terminal_with_title
+
         pids: list[int] = []
         for pattern in ['leap-main.sh --slack', 'leap-slack.py']:
             try:
@@ -471,6 +485,11 @@ class SCMConfigMixin(_Base):
                 pass
 
         if not pids:
+            # Still try to close the terminal tab even if no PIDs found.
+            default_term = self._prefs.get('default_terminal')
+            if default_term:
+                close_terminal_with_title('leap slack-bot',
+                                          preferred_ide=default_term)
             return
 
         # Try graceful shutdown first
@@ -480,32 +499,47 @@ class SCMConfigMixin(_Base):
             except ProcessLookupError:
                 pass
 
-        # Give processes a moment to exit
-        time.sleep(0.3)
+        # Schedule force-kill after 300ms (non-blocking) + terminal cleanup
+        def _force_kill_and_close_tab() -> None:
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            default_term = self._prefs.get('default_terminal')
+            if default_term:
+                close_terminal_with_title('leap slack-bot',
+                                          preferred_ide=default_term)
 
-        # Force-kill any survivors (SIGTERM doesn't interrupt
-        # slack-bolt's blocking Event().wait() on macOS)
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        QTimer.singleShot(300, _force_kill_and_close_tab)
 
     def _on_slack_bot_finished(self) -> None:
-        """Clean up after the Slack bot QProcess exits."""
+        """Clean up after the Slack bot QProcess exits.
+
+        Called by QProcess.finished signal.  If we intentionally stopped the
+        bot (_slack_bot_stopping is True), run full cleanup and suppress the
+        error-exit status message.  Otherwise report unexpected exits.
+        """
+        intentional = getattr(self, '_slack_bot_stopping', False)
+        self._slack_bot_stopping = False
+
         if self._slack_bot_process:
             exit_code = self._slack_bot_process.exitCode()
             output = bytes(self._slack_bot_process.readAllStandardOutput()).decode(
                 errors='replace').strip()
             self._slack_bot_process.deleteLater()
             self._slack_bot_process = None
-            if exit_code != 0:
+            if not intentional and exit_code != 0:
                 msg = f'Slack bot exited with code {exit_code}'
                 if output:
                     last_line = output.rstrip().rsplit('\n', 1)[-1]
                     msg += f': {last_line}'
                 self._show_status(msg)
-        self._update_slack_bot_button()
+
+        if intentional:
+            self._cleanup_slack_bot_state()
+        else:
+            self._update_slack_bot_button()
 
     def _slack_bot_context_menu(self, pos: Any) -> None:
         """Show right-click context menu on the Slack Bot button."""
