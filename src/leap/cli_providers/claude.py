@@ -123,9 +123,13 @@ class ClaudeProvider(CLIProvider):
             return entry
 
         def upsert(hook_list: list[dict[str, Any]], new_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            legacy_marker = "claudeq-hook.sh"
             cleaned = [
                 e for e in hook_list
-                if not any(marker in h.get("command", "") for h in e.get("hooks", []))
+                if not any(
+                    marker in h.get("command", "") or legacy_marker in h.get("command", "")
+                    for h in e.get("hooks", [])
+                )
             ]
             cleaned.extend(new_entries)
             return cleaned
