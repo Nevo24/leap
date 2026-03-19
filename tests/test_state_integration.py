@@ -125,7 +125,7 @@ class TestPTYSignalFile:
         pty.tracker.on_send()
         assert pty.get_state() == 'running'
         pty.write_signal('idle')
-        assert pty.get_state() == 'idle'
+        assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
     def test_signal_needs_permission(self, pty: PTYFixture) -> None:
         pty.tracker.on_send()
@@ -382,7 +382,7 @@ class TestPTYFalseRunningRetrigger:
 
         # Signal idle (Claude finished)
         pty.write_signal('idle')
-        assert pty.get_state() == 'idle'
+        assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
         # More output arrives (prompt rendering) — should stay idle
         pty.send_line('printf "%0.sB" $(seq 1 300)')
@@ -400,7 +400,7 @@ class TestPTYFalseRunningRetrigger:
         assert pty.get_state() == 'running'
 
         pty.write_signal('idle')
-        assert pty.get_state() == 'idle'
+        assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
         # User types again (AFTER idle)
         time.sleep(0.1)
@@ -425,7 +425,7 @@ class TestPTYEscapeRace:
 
         # Stop hook fires first → idle
         pty.write_signal('idle')
-        assert pty.get_state() == 'idle'
+        assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
         # User pressed Escape (single byte)
         pty.tracker.on_input(b'\x1b')
@@ -449,7 +449,7 @@ class TestPTYEscapeRace:
 
         # Signal idle
         pty.write_signal('idle')
-        assert pty.get_state() == 'idle'
+        assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
         # User presses Escape
         pty.tracker.on_input(b'\x1b')

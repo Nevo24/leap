@@ -24,8 +24,8 @@ from leap.cli_providers.registry import get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
     ESCAPE_CORRECTION_WINDOW,
-    ESCAPE_RACE_WINDOW,
     IDLE_OUTPUT_THRESHOLD,
+    IDLE_SIGNAL_DEBOUNCE,
     INPUT_COOLDOWN,
     INTERRUPT_DETECT_WINDOW,
     OUTPUT_GAP_RESET,
@@ -129,6 +129,13 @@ class CLIStateTracker:
         # Timestamp when on_send() set state to running.  Used to detect
         # user input *during* the running state (i.e. interrupt attempts).
         self._running_since: float = 0.0
+        # Debounce timer for running→idle signal transitions.  When the
+        # Stop hook writes "idle", we delay accepting it so on_output()
+        # has time to detect the "Interrupted ·" pattern while still in
+        # the RUNNING state.  This single mechanism handles all interrupt
+        # types (user Escape, Ctrl+C, self-interrupt, split chunks)
+        # without needing per-case timing guards.
+        self._idle_debounce_at: float = 0.0
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
@@ -208,24 +215,32 @@ class CLIStateTracker:
                     self._signal_file.unlink(missing_ok=True)
                 except OSError:
                     pass
-            # Stop hook fires on Escape too, writing "idle",
-            # but the CLI is actually prompting "What should
-            # Claude do instead?" — keep needs_input/interrupted.
-            # Also guard running→idle when user pressed a key *during*
-            # the running state (interrupt attempt): the Stop hook fires
-            # before the PTY outputs the interrupted pattern, so delay
-            # accepting idle to let on_output() detect interruption first.
+            # Debounce running→idle: the Stop hook fires before the
+            # PTY finishes rendering "Interrupted ·".  Instead of
+            # per-case guards for each interrupt type, delay ALL
+            # running→idle signal transitions so on_output() has time
+            # to detect interrupt patterns while still in RUNNING.
             if (
                 new_state == CLIState.IDLE
                 and current == CLIState.RUNNING
-                and self._last_input_time > self._running_since
-                and (self._clock() - self._last_input_time) < ESCAPE_RACE_WINDOW
             ):
-                _log.debug(
-                    'GET_STATE signal=idle but protecting running '
-                    '(user input %.1fs ago, waiting for PTY)',
-                    self._clock() - self._last_input_time,
-                )
+                if self._idle_debounce_at == 0:
+                    self._idle_debounce_at = self._clock()
+                if (self._clock() - self._idle_debounce_at) < IDLE_SIGNAL_DEBOUNCE:
+                    _log.debug(
+                        'GET_STATE signal=idle, debouncing running→idle '
+                        '(%.0fms elapsed)',
+                        (self._clock() - self._idle_debounce_at) * 1000,
+                    )
+                else:
+                    # Debounce expired — accept the transition below.
+                    self._idle_debounce_at = 0
+            if (
+                new_state == CLIState.IDLE
+                and current == CLIState.RUNNING
+                and self._idle_debounce_at != 0
+            ):
+                pass  # debounce in progress
             elif (
                 new_state == CLIState.IDLE
                 and current in (CLIState.NEEDS_INPUT, CLIState.INTERRUPTED)
@@ -346,6 +361,8 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._idle_output_acc = 0
                 self._idle_since = self._clock()
+                with self._buf_lock:
+                    self._output_buf.clear()
                 return CLIState.IDLE
 
         # Fallback: waiting states (interrupted, needs_permission,
@@ -382,6 +399,7 @@ class CLIStateTracker:
                     self._idle_output_acc = 0
                     self._idle_since = self._clock()
                     with self._buf_lock:
+                        self._output_buf.clear()
                         self._last_prompt_buf = b''
                     return CLIState.IDLE
 
@@ -489,6 +507,7 @@ class CLIStateTracker:
         ):
             _log.debug('ON_INPUT Enter in idle → running (Ratatui)')
             self._running_since = self._clock()
+            self._idle_debounce_at = 0
             with self._lock:
                 self._state = CLIState.RUNNING
                 self._waiting_since = None
@@ -508,6 +527,7 @@ class CLIStateTracker:
         _log.debug('ON_SEND → running')
         self._seen_user_input = True
         self._running_since = self._clock()
+        self._idle_debounce_at = 0
         with self._lock:
             self._state = CLIState.RUNNING
             self._waiting_since = None
@@ -613,18 +633,20 @@ class CLIStateTracker:
         # Confirmed interrupt pattern fallback — catches interrupts
         # that reached idle (e.g. Stop hook raced ahead of PTY output,
         # Ctrl+C bypassed on_input, or silence timeout expired).
-        # Only check the CURRENT data chunk to avoid false positives
-        # from stale buffer content (silence timeout does not clear
-        # the buffer).
+        # Check the accumulated buffer so split-chunk patterns (where
+        # "Interrupted" and "·" arrive in separate TUI render frames)
+        # are detected.  The buffer is cleared on every state transition
+        # (signal and timeout paths), so it only contains output since
+        # entering idle.
         confirmed = self._provider.confirmed_interrupt_pattern
         if confirmed and self._seen_user_input:
-            compact_chunk = self._ANSI_RE.sub(
-                b'', data,
+            compact_buf = self._ANSI_RE.sub(
+                b'', bytes(self._output_buf),
             ).replace(b' ', b'')
-            if confirmed in compact_chunk:
+            if confirmed in compact_buf:
                 _log.debug(
                     'ON_OUTPUT idle→interrupted '
-                    '(confirmed interrupt pattern in chunk)',
+                    '(confirmed interrupt pattern in buffer)',
                 )
                 self._output_buf.clear()
                 self._idle_output_acc = 0
@@ -658,6 +680,7 @@ class CLIStateTracker:
                     self._idle_output_acc = 0
                     self._output_buf.clear()
                     self._running_since = self._clock()
+                    self._idle_debounce_at = 0
                     with self._lock:
                         self._state = CLIState.RUNNING
                         self._waiting_since = None
@@ -793,6 +816,7 @@ class CLIStateTracker:
                     self._state, stripped[:60],
                 )
                 self._running_since = self._clock()
+                self._idle_debounce_at = 0
                 with self._lock:
                     self._state = CLIState.RUNNING
                     self._waiting_since = None

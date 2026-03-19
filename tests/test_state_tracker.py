@@ -8,7 +8,7 @@ import pytest
 
 from leap.server.state_tracker import ClaudeStateTracker
 from leap.cli_providers.codex import CodexProvider
-from leap.utils.constants import OUTPUT_SILENCE_TIMEOUT, WAITING_STATE_TIMEOUT
+from leap.utils.constants import IDLE_SIGNAL_DEBOUNCE, OUTPUT_SILENCE_TIMEOUT, WAITING_STATE_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +230,8 @@ class TestOutputAccumulation:
         # Signal file says idle (Claude finished)
         t[0] = 5.0
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 5.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         # Prompt rendering arrives — should NOT re-trigger running
         # because user input (t=0) predates idle transition (t=5)
@@ -264,6 +266,8 @@ class TestOutputAccumulation:
         # Signal idle
         t[0] = 5.0
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 5.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         # User types again (AFTER idle transition)
         t[0] = 7.0
@@ -461,7 +465,9 @@ class TestInterruptedFalsePositive:
         tracker.on_send()
         t[0] = 1.0
         write_signal(tracker, 'idle')
-        tracker.get_state(True)
+        tracker.get_state(True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        tracker.get_state(True)  # completes debounce → idle
         t[0] = 1.5
         tracker.on_input(b'\x1b')  # Escape key
         t[0] = 2.0
@@ -485,6 +491,8 @@ class TestEscapeRace:
         tracker.on_send()
         t[0] = 1.0
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         # User presses Escape (single byte)
         t[0] = 1.5
@@ -523,7 +531,9 @@ class TestEscapeRace:
         tracker.on_send()
         t[0] = 1.0
         write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        tracker.get_state(pty_alive=True)  # completes debounce → idle
         # User pressed Escape
         t[0] = 1.5
         tracker.on_input(b'\x1b')
@@ -546,7 +556,9 @@ class TestEscapeRace:
         tracker.on_send()
         t[0] = 1.0
         write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        tracker.get_state(pty_alive=True)  # completes debounce → idle
         # User types a normal character (NOT Escape)
         t[0] = 1.5
         tracker.on_input(b'y')
@@ -1165,6 +1177,68 @@ class TestPTYDialogDetection:
         )
         assert tracker.current_state == 'interrupted'
 
+    def test_self_interrupt_debounce_protects_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """BUG FIX: Self-interrupt (no user Escape) — the Stop hook
+        writes 'idle' before PTY renders 'Interrupted ·'.  The debounce
+        keeps state as RUNNING so on_output() can detect the pattern.
+
+        This is the exact scenario that caused 17 previous fix attempts:
+        1. Claude is RUNNING and decides to self-interrupt
+        2. Stop hook fires → signal=idle
+        3. get_state() polls — debounce delays idle acceptance
+        4. PTY output with 'Interrupted ·' arrives while still RUNNING
+        5. Running handler detects confirmed pattern → INTERRUPTED
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Stop hook races ahead of PTY output
+        write_signal(tracker, 'idle')
+        # First poll: debounce starts, state stays RUNNING
+        assert tracker.get_state(pty_alive=True) == 'running'
+        t[0] = 1.1  # Within debounce window (0.3s)
+        # PTY output arrives while debounce keeps us in RUNNING
+        tracker.on_output(
+            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
+            b'1. Try again\n'
+        )
+        assert tracker.current_state == 'interrupted'
+
+    def test_self_interrupt_split_chunks_detected_in_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """BUG FIX: Self-interrupt with split chunks — debounce expires
+        before full pattern arrives, but the idle handler catches it
+        from the accumulated buffer.
+
+        1. Claude self-interrupts, Stop hook writes 'idle'
+        2. Debounce expires, state → IDLE (buffer cleared)
+        3. Chunk 1 with 'Interrupted' arrives → buffer accumulates
+        4. Chunk 2 with '·' arrives → buffer now has full pattern
+        5. Idle handler's confirmed pattern check on buffer → INTERRUPTED
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # debounce starts
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        t[0] = 2.0
+        # Chunk 1: "Interrupted" without middle dot
+        tracker.on_output(b'Interrupted ')
+        assert tracker.current_state == 'idle'  # not enough to confirm
+        t[0] = 2.05
+        # Chunk 2: middle dot and rest of prompt
+        tracker.on_output(
+            b'\xc2\xb7 What should Claude do instead?\n'
+        )
+        assert tracker.current_state == 'interrupted'
+
 
 # ---------------------------------------------------------------------------
 # Idle-state interrupt detection (confirmed pattern fallback)
@@ -1185,6 +1259,8 @@ class TestIdleInterruptDetection:
         t[0] = 1.0
         # Simulate: running → idle via signal file, then interrupt output
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         t[0] = 2.0
         # Interrupt PTY output arrives while idle
@@ -1204,6 +1280,8 @@ class TestIdleInterruptDetection:
         t[0] = 1.0
         # Simulate: running → idle via signal file
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         t[0] = 2.0
         # Interrupt PTY output arrives while idle
@@ -1222,7 +1300,9 @@ class TestIdleInterruptDetection:
         tracker.on_send()
         t[0] = 1.0
         write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        tracker.get_state(pty_alive=True)  # completes debounce → idle
         t[0] = 2.0
         tracker.on_output(
             b'The process was Interrupted due to a timeout.\n'
@@ -1338,9 +1418,11 @@ class TestInterruptedState:
         t[0] = 1.0
         # Stop hook races ahead, writes idle
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         # Notification hook writes needs_input (interrupt dialog)
-        t[0] = 1.1
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.2
         write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'needs_input'
         # Simulate Escape keypress just before
@@ -1796,6 +1878,8 @@ class TestCodexCSIFiltering:
         t[0] = 3.5
         # Stop hook writes idle
         write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] = 3.5 + IDLE_SIGNAL_DEBOUNCE + 0.1
         # Should accept idle because focus event didn't refresh
         # _last_input_time for ESCAPE_RACE_WINDOW purposes
         assert tracker.get_state(pty_alive=True) == 'idle'
