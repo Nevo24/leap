@@ -1797,7 +1797,7 @@ class TableBuilderMixin(_Base):
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
 
-        continue_action = menu.addAction("Send 'continue' message")
+        continue_action = menu.addAction("Force-send 'continue' message")
         continue_action.setToolTip(
             "Send 'continue' directly to the CLI,\n"
             'bypassing the queue')
