@@ -511,6 +511,8 @@ class TableBuilderMixin(_Base):
                 self._pr_approval_widgets.clear()
                 self._cell_cache.clear()
                 self.table.setRowCount(1)
+                # Clear row tags so SeparatorDelegate won't paint stale row colors
+                self.table.setProperty('_row_tags', [])
                 for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
                 total_cols = self.table.columnCount()
