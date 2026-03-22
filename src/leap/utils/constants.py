@@ -78,6 +78,7 @@ IDLE_SIGNAL_DEBOUNCE: Final[float] = 0.3  # Debounce running→idle signal to le
 ESCAPE_CORRECTION_WINDOW: Final[float] = 3.0  # needs_input→interrupted correction
 RESUME_GRACE_PERIOD: Final[float] = 2.0  # Wait before detecting resume from waiting state
 OUTPUT_GAP_RESET: Final[float] = 2.0  # Output gap that resets idle accumulator
+AUTO_RESUME_GRACE: Final[float] = 3.0  # Grace period before allowing idle→running without user input
 WAITING_STATE_TIMEOUT: Final[float] = 30.0  # Max time in waiting state without output before idle
 
 # Queue limits

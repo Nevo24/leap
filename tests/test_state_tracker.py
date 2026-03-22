@@ -220,7 +220,7 @@ class TestOutputAccumulation:
 
     def test_signal_idle_blocks_false_running_retrigger(self, tmp_path: Path) -> None:
         """After signal file transitions to idle, prompt rendering
-        should not falsely re-trigger running (input predates idle)."""
+        should not falsely re-trigger running (within grace period)."""
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
         # Output accumulation → running
@@ -233,15 +233,16 @@ class TestOutputAccumulation:
         tracker.get_state(pty_alive=True)  # starts debounce
         t[0] = 5.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
-        # Prompt rendering arrives — should NOT re-trigger running
-        # because user input (t=0) predates idle transition (t=5)
+        # Prompt rendering arrives within AUTO_RESUME_GRACE — blocked
+        # because user input (t=0) predates idle transition (t≈5.4)
+        # and we're within the 3s grace period.
         t[0] = 6.0
         tracker.on_output(b'B' * 300)
         assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_silence_timeout_blocks_false_running_retrigger(self, tmp_path: Path) -> None:
         """After silence timeout transitions to idle, prompt rendering
-        should not falsely re-trigger running."""
+        should not falsely re-trigger running (within grace period)."""
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
         t[0] = 1.0
@@ -250,7 +251,7 @@ class TestOutputAccumulation:
         # Silence timeout → idle
         t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'idle'
-        # Prompt rendering — should NOT re-trigger running
+        # Prompt rendering within grace period — blocked
         t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 2.0
         tracker.on_output(b'B' * 300)
         assert tracker.get_state(pty_alive=True) == 'idle'
@@ -276,6 +277,173 @@ class TestOutputAccumulation:
         t[0] = 8.0
         tracker.on_output(b'C' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume (CLI self-starts a new turn without user input)
+# ---------------------------------------------------------------------------
+
+class TestAutoResume:
+    """When the CLI auto-starts a new turn (e.g. background command results),
+    output-based idle→running should still trigger after a grace period,
+    even though no user input occurred since the idle transition."""
+
+    def _go_idle_via_signal(
+        self, tracker: ClaudeStateTracker, t: List[float],
+    ) -> float:
+        """Helper: transition running→idle via signal + debounce.
+
+        Returns the time at which idle was accepted.
+        """
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # starts debounce
+        t[0] += IDLE_SIGNAL_DEBOUNCE + 0.1
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        return t[0]
+
+    def test_auto_resume_after_grace_period(self, tmp_path: Path) -> None:
+        """Output sustained past the grace period triggers running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        assert tracker.get_state(pty_alive=True) == 'running'
+        t[0] = 5.0
+        idle_time = self._go_idle_via_signal(tracker, t)
+        # Output within grace period — must not trigger
+        t[0] = idle_time + 1.0
+        tracker.on_output(b'A' * 300)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # After grace period (3s), output SHOULD trigger running
+        t[0] = idle_time + 4.0
+        tracker.on_output(b'B' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_auto_resume_blocked_during_grace(self, tmp_path: Path) -> None:
+        """Output within the grace period does not trigger running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        t[0] = 5.0
+        idle_time = self._go_idle_via_signal(tracker, t)
+        # Output at 2s (within 3s grace) — must not trigger
+        t[0] = idle_time + 2.0
+        tracker.on_output(b'A' * 500)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_auto_resume_needs_seen_user_input(self, tmp_path: Path) -> None:
+        """Auto-resume requires at least one prior user input."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # No on_input() ever — _seen_user_input is False
+        # Even after grace period, output should not trigger running
+        t[0] = 10.0
+        tracker.on_output(b'A' * 300)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_auto_resume_multi_cycle(self, tmp_path: Path) -> None:
+        """Auto-resume works across multiple running→idle→auto-resume cycles.
+
+        Simulates: user sends → running → idle → auto-resume → running →
+        idle → auto-resume again.  Each cycle, _idle_since resets and the
+        grace period applies fresh.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+
+        # Cycle 1: user sends message
+        tracker.on_input(b'x')
+        tracker.on_send()
+        assert tracker.get_state(pty_alive=True) == 'running'
+        t[0] = 5.0
+        idle_time = self._go_idle_via_signal(tracker, t)
+
+        # Cycle 1: auto-resume
+        t[0] = idle_time + 4.0
+        tracker.on_output(b'C' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+        # Cycle 2: CLI finishes auto-resumed turn → idle
+        t[0] = idle_time + 10.0
+        idle_time_2 = self._go_idle_via_signal(tracker, t)
+
+        # Cycle 2: grace still blocks
+        t[0] = idle_time_2 + 1.0
+        tracker.on_output(b'D' * 300)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+        # Cycle 2: auto-resume again
+        t[0] = idle_time_2 + 4.0
+        tracker.on_output(b'E' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_auto_resume_stale_signal_file_no_interference(self, tmp_path: Path) -> None:
+        """A stale 'idle' signal file doesn't interfere with auto-resume.
+
+        When the CLI auto-resumes, the old signal file still says 'idle'.
+        get_state() should see idle==idle (no change) and not interfere.
+        After output accumulation triggers running, the signal file is deleted.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        t[0] = 5.0
+        idle_time = self._go_idle_via_signal(tracker, t)
+
+        # Signal file still says 'idle' — verify it exists
+        assert tracker._signal_file.exists()
+
+        # Auto-resume output after grace period
+        t[0] = idle_time + 4.0
+        tracker.on_output(b'F' * 201)
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+        # Signal file should be deleted on transition
+        assert not tracker._signal_file.exists()
+
+    def test_auto_resume_incremental_accumulation(self, tmp_path: Path) -> None:
+        """Auto-resume works with many small output chunks (spinner).
+
+        Simulates the real scenario: small spinner characters (~3 bytes
+        each) arriving every 100ms.  Accumulation should still reach
+        the threshold over time.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        t[0] = 5.0
+        idle_time = self._go_idle_via_signal(tracker, t)
+
+        # Small chunks after grace period, simulating spinner
+        t[0] = idle_time + 4.0
+        for i in range(80):
+            t[0] += 0.1  # 100ms intervals
+            tracker.on_output(b'\xe2\x9c\xb3')  # spinner char (3 bytes)
+        # 80 * 3 = 240 bytes > 200 threshold → should be running
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_auto_resume_gap_resets_accumulator(self, tmp_path: Path) -> None:
+        """A >2s output gap resets the accumulator during auto-resume."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        t[0] = 5.0
+        idle_time = self._go_idle_via_signal(tracker, t)
+
+        # Accumulate 150 bytes after grace
+        t[0] = idle_time + 4.0
+        tracker.on_output(b'G' * 150)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+        # 3s gap → accumulator resets
+        t[0] = idle_time + 8.0
+        tracker.on_output(b'H' * 150)
+        # Still idle: 150 < 200 (accumulator was reset by the gap)
+        assert tracker.get_state(pty_alive=True) == 'idle'
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
+    AUTO_RESUME_GRACE,
     ESCAPE_CORRECTION_WINDOW,
     IDLE_OUTPUT_THRESHOLD,
     IDLE_SIGNAL_DEBOUNCE,
@@ -664,8 +665,16 @@ class CLIStateTracker:
         # indistinguishable from real processing output.
         if not self._provider.output_triggers_running:
             return
-        if self._last_input_time < self._idle_since:
-            return
+        auto_resume = self._last_input_time < self._idle_since
+        if auto_resume:
+            # No user input since entering idle.  Output might be
+            # post-idle TUI rendering (prompt redraw, status bar) or
+            # the CLI auto-starting a new turn (e.g. background
+            # command results).  Allow idle→running after a grace
+            # period so TUI rendering settles before we start
+            # accumulating.
+            if now - self._idle_since < AUTO_RESUME_GRACE:
+                return
         stripped = self._ANSI_RE.sub(b'', data).strip()
         if stripped:
             if now - prev_output_time > OUTPUT_GAP_RESET:
@@ -674,8 +683,9 @@ class CLIStateTracker:
                 self._idle_output_acc += len(stripped)
                 if self._idle_output_acc > IDLE_OUTPUT_THRESHOLD:
                     _log.debug(
-                        'ON_OUTPUT idle→running (accumulated %d bytes)',
+                        'ON_OUTPUT idle→running (accumulated %d bytes%s)',
                         self._idle_output_acc,
+                        ', auto-resume' if auto_resume else '',
                     )
                     self._idle_output_acc = 0
                     self._output_buf.clear()
