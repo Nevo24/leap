@@ -536,6 +536,8 @@ class CLIStateTracker:
         """
         if self._state == CLIState.INTERRUPTED:
             self._suppress_stale_interrupt = True
+        else:
+            self._suppress_stale_interrupt = False
         _log.debug('ON_SEND → running')
         self._seen_user_input = True
         self._running_since = self._clock()
@@ -651,10 +653,6 @@ class CLIStateTracker:
         # (signal and timeout paths), so it only contains output since
         # entering idle.
         confirmed = self._provider.confirmed_interrupt_pattern
-        if self._suppress_stale_interrupt:
-            # Clear suppression once "Interrupted" scrolls out of buffer.
-            if interrupted_pattern not in self._output_buf:
-                self._suppress_stale_interrupt = False
         if confirmed and self._seen_user_input:
             if self._suppress_stale_interrupt:
                 pass  # skip confirmed check — stale scrollback
@@ -793,8 +791,6 @@ class CLIStateTracker:
                             self._waiting_since = self._clock()
                         self._write_interrupted_signal()
                         return
-            elif not has_interrupted:
-                self._suppress_stale_interrupt = False
 
     def _handle_waiting_output(self, data: bytes, now: float) -> None:
         """Handle output while in a waiting state: correction, prompt accumulation, resume."""

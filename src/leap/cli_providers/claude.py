@@ -43,11 +43,17 @@ class ClaudeProvider(CLIProvider):
 
     @property
     def confirmed_interrupt_pattern(self) -> Optional[bytes]:
-        # Claude's interrupt prompt: "Interrupted · What should Claude do
-        # instead?"  In compact form (ANSI stripped, spaces removed),
-        # the middle dot sits right after "Interrupted".  Conversational
-        # text won't have this combination.
-        return b'Interrupted\xc2\xb7'
+        # Disabled: pattern matching on raw PTY buffers is unreliable for
+        # Ink TUI — full-screen redraws include scrollback content, and
+        # after ANSI stripping + space removal, unrelated text (commit
+        # messages, code, conversation) containing "Interrupted" near a
+        # middle dot (common TUI decoration) falsely matches.
+        #
+        # Interrupt detection for Claude relies on the time-gated path
+        # (requires Escape/Ctrl+C within INTERRUPT_DETECT_WINDOW).
+        # Self-interrupts (tool timeouts) are covered by the Notification
+        # hook writing needs_input for the interrupt dialog.
+        return None
 
     @property
     def dialog_patterns(self) -> list[bytes]:

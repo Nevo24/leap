@@ -1247,43 +1247,45 @@ class TestPTYDialogDetection:
         )
         assert tracker.current_state == 'interrupted'
 
-    def test_interrupt_detected_without_escape(
+    def test_no_interrupt_without_escape_for_claude(
         self, tmp_path: Path,
     ) -> None:
-        """Interrupt detected via confirmed_interrupt_pattern
-        (Interrupted·) even without user Escape."""
+        """Claude's confirmed_interrupt_pattern is disabled — interrupt
+        detection requires a recent Escape/Ctrl+C keypress.  Without
+        one, the state stays running (self-interrupts are handled by
+        the Notification hook writing needs_input instead)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # No Escape pressed — Ctrl+C bypassed on_input or CLI
-        # self-interrupted.  TUI renders the interrupt prompt.
+        # No Escape pressed — CLI self-interrupted.
         tracker.on_output(
             b'Interrupted \xc2\xb7 What should Claude do instead?\n'
             b'1. Try again\n'
             b'2. Stop\n'
             b'Enter to select \xc2\xb7 Esc to cancel\n'
         )
-        assert tracker.current_state == 'interrupted'
+        # Without keypress, Claude stays running (no confirmed pattern)
+        assert tracker.current_state == 'running'
 
-    def test_interrupt_with_preceding_output(
+    def test_self_interrupt_handled_via_needs_input_hook(
         self, tmp_path: Path,
     ) -> None:
-        """Interrupt detected when prompt follows earlier tool output."""
+        """Self-interrupt (no Escape) is handled by the Notification
+        hook writing needs_input for the interrupt dialog."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # Tool output before the interrupt
-        tracker.on_output(b'Processing files...\nDone with step 1\n')
+        # Stop hook fires
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # debounce starts
+        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Notification hook fires for the interrupt dialog
         t[0] = 2.0
-        # CLI interrupts, TUI re-renders full screen
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
-            b'1. Try again\n'
-            b'Enter to select \xc2\xb7 Esc to cancel\n'
-        )
-        assert tracker.current_state == 'interrupted'
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
 
     def test_no_false_interrupted_from_conversation_text(
         self, tmp_path: Path,
@@ -1326,86 +1328,73 @@ class TestPTYDialogDetection:
         # needs_permission during running state
         assert tracker.current_state == 'running'
 
-    def test_interrupt_prompt_split_across_chunks(
+    def test_interrupt_prompt_split_across_chunks_no_false_positive(
         self, tmp_path: Path,
     ) -> None:
-        """Interrupt detected when 'Interrupted·' arrives in a
-        separate chunk from dialog patterns."""
+        """Claude's confirmed pattern is disabled — interrupt prompt
+        split across chunks does NOT trigger interrupted without a
+        recent Escape/Ctrl+C keypress."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # First chunk: just tool output
         tracker.on_output(b'Running command...\n')
         assert tracker.current_state == 'running'
         t[0] = 1.1
-        # Second chunk: the interrupt prompt with middle dot
         tracker.on_output(
             b'Interrupted \xc2\xb7 What should Claude do instead?\n'
         )
-        assert tracker.current_state == 'interrupted'
+        # No keypress → stays running (confirmed pattern disabled)
+        assert tracker.current_state == 'running'
 
-    def test_self_interrupt_debounce_protects_running(
+    def test_self_interrupt_debounce_still_works_for_timing(
         self, tmp_path: Path,
     ) -> None:
-        """BUG FIX: Self-interrupt (no user Escape) — the Stop hook
-        writes 'idle' before PTY renders 'Interrupted ·'.  The debounce
-        keeps state as RUNNING so on_output() can detect the pattern.
-
-        This is the exact scenario that caused 17 previous fix attempts:
-        1. Claude is RUNNING and decides to self-interrupt
-        2. Stop hook fires → signal=idle
-        3. get_state() polls — debounce delays idle acceptance
-        4. PTY output with 'Interrupted ·' arrives while still RUNNING
-        5. Running handler detects confirmed pattern → INTERRUPTED
-        """
+        """The running→idle debounce still delays idle acceptance.
+        For Claude, without confirmed_interrupt_pattern, self-interrupts
+        are handled by the Notification hook (needs_input) instead of
+        PTY pattern detection.  The debounce buys time for the hook."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # Stop hook races ahead of PTY output
+        # Stop hook races ahead
         write_signal(tracker, 'idle')
         # First poll: debounce starts, state stays RUNNING
         assert tracker.get_state(pty_alive=True) == 'running'
         t[0] = 1.1  # Within debounce window (0.3s)
-        # PTY output arrives while debounce keeps us in RUNNING
+        # PTY output arrives — no confirmed pattern for Claude
         tracker.on_output(
             b'Interrupted \xc2\xb7 What should Claude do instead?\n'
             b'1. Try again\n'
         )
-        assert tracker.current_state == 'interrupted'
-
-    def test_self_interrupt_split_chunks_detected_in_idle(
-        self, tmp_path: Path,
-    ) -> None:
-        """BUG FIX: Self-interrupt with split chunks — debounce expires
-        before full pattern arrives, but the idle handler catches it
-        from the accumulated buffer.
-
-        1. Claude self-interrupts, Stop hook writes 'idle'
-        2. Debounce expires, state → IDLE (buffer cleared)
-        3. Chunk 1 with 'Interrupted' arrives → buffer accumulates
-        4. Chunk 2 with '·' arrives → buffer now has full pattern
-        5. Idle handler's confirmed pattern check on buffer → INTERRUPTED
-        """
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # debounce starts
+        # Still running (debounce in progress, no confirmed pattern)
+        assert tracker.current_state == 'running'
+        # Debounce expires, idle accepted
         t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
-        t[0] = 2.0
-        # Chunk 1: "Interrupted" without middle dot
-        tracker.on_output(b'Interrupted ')
-        assert tracker.current_state == 'idle'  # not enough to confirm
-        t[0] = 2.05
-        # Chunk 2: middle dot and rest of prompt
+        # Notification hook fires for interrupt dialog
+        t[0] = 1.5
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
+
+    def test_no_false_interrupted_from_scrollback_content(
+        self, tmp_path: Path,
+    ) -> None:
+        """Content containing 'Interrupted' + middle dot in TUI output
+        does NOT cause false interrupted — Claude's confirmed pattern
+        is disabled."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        t[0] = 1.0
+        # Output with "Interrupted" from git commit messages and TUI
+        # decoration middle dots — this previously caused false positives
         tracker.on_output(
-            b'\xc2\xb7 What should Claude do instead?\n'
+            b'63a370d Suppress stale interrupt pattern\xc2\xb7'
         )
-        assert tracker.current_state == 'interrupted'
+        assert tracker.current_state == 'running'
 
 
 # ---------------------------------------------------------------------------
@@ -1439,29 +1428,38 @@ class TestStaleInterruptSuppression:
         # Should be running, NOT re-interrupted
         assert tracker.current_state == 'running'
 
-    def test_suppression_cleared_when_pattern_gone(self, tmp_path: Path) -> None:
-        """Suppression is lifted once 'Interrupted' scrolls out of buffer."""
+    def test_suppression_cleared_on_non_interrupted_send(self, tmp_path: Path) -> None:
+        """Suppression is cleared when on_send() is called from a
+        non-interrupted state (new turn = safe to re-enable detection)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')
         tracker.on_send()
-        # Interrupt
+        # Interrupt via Escape
         t[0] = 1.0
         tracker.on_input(b'\x1b')
         t[0] = 1.5
-        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
+        tracker.on_output(b'Interrupted\xc2\xb7 What should Claude do instead?')
         assert tracker.current_state == 'interrupted'
-        # Resume
+        # User answers → resume → idle
         t[0] = 5.0
         tracker.on_input(b'1')
         t[0] = 7.5
         tracker.on_output(b'Processing...')
         assert tracker.current_state == 'running'
         assert tracker._suppress_stale_interrupt is True
-        # Enough new output to push old text out of buffer
+        # Large output does NOT clear suppression (old behavior was buggy)
         t[0] = 8.0
-        tracker.on_output(b'A' * 9000)  # exceeds 8KB buffer
-        # Suppression should be cleared (no "Interrupted" in buffer)
+        tracker.on_output(b'A' * 9000)
+        assert tracker._suppress_stale_interrupt is True  # persists!
+        # Signal idle, then new send from idle clears suppression
+        t[0] = 20.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+        t[0] = 20.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
+        tracker.get_state(pty_alive=True)  # accepts idle
+        t[0] = 21.0
+        tracker.on_send()  # from idle → clears suppression
         assert tracker._suppress_stale_interrupt is False
 
     def test_on_send_from_interrupted_sets_suppression(self, tmp_path: Path) -> None:
@@ -1476,42 +1474,17 @@ class TestStaleInterruptSuppression:
         tracker.on_output(b'Interrupted\xc2\xb7 prompt')
         assert tracker.current_state == 'interrupted'
         # Send via client (on_send from interrupted)
-        t[0] = 15.0  # well past INTERRUPT_DETECT_WINDOW (10s)
+        t[0] = 15.0
         tracker.on_send()
         assert tracker._suppress_stale_interrupt is True
-        # Buffer re-accumulates old scrollback
+        # Buffer re-accumulates old scrollback — still suppressed
         t[0] = 16.0
         tracker.on_output(b'old scrollback Interrupted\xc2\xb7 text here')
         assert tracker.current_state == 'running'
 
-    def test_fresh_interrupt_detected_after_suppression_cleared(self, tmp_path: Path) -> None:
-        """A NEW interrupt is detected after suppression is cleared."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        # First interrupt + resume
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.5
-        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
-        assert tracker.current_state == 'interrupted'
-        t[0] = 5.0
-        tracker.on_input(b'1')
-        t[0] = 7.5
-        tracker.on_output(b'Resumed work')
-        assert tracker.current_state == 'running'
-        # Old text scrolls out
-        t[0] = 8.0
-        tracker.on_output(b'B' * 9000)
-        assert tracker._suppress_stale_interrupt is False
-        # NEW self-interrupt (no Escape — detected via confirmed pattern)
-        t[0] = 10.0
-        tracker.on_output(b'Interrupted\xc2\xb7 What should Claude do instead?')
-        assert tracker.current_state == 'interrupted'
-
-    def test_idle_confirmed_pattern_suppressed_after_interrupt(self, tmp_path: Path) -> None:
-        """In idle state, confirmed pattern from scrollback is suppressed."""
+    def test_no_scrollback_false_positive_after_interrupt_resolved(self, tmp_path: Path) -> None:
+        """After interrupt is resolved, old scrollback text with
+        Interrupted· does NOT re-trigger interrupted in any state."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')
@@ -1527,10 +1500,9 @@ class TestStaleInterruptSuppression:
         write_signal(tracker, 'idle')
         assert tracker.get_state(pty_alive=True) == 'idle'
         assert tracker._suppress_stale_interrupt is True
-        # TUI redraws with old scrollback
+        # TUI redraws with old scrollback — should stay idle
         t[0] = 11.0
         tracker.on_output(b'old Interrupted\xc2\xb7 text in scrollback')
-        # Should stay idle, NOT go to interrupted
         assert tracker.current_state == 'idle'
 
 
@@ -1541,28 +1513,30 @@ class TestStaleInterruptSuppression:
 class TestIdleInterruptDetection:
     """Test confirmed_interrupt_pattern detection while in idle state.
 
-    Covers the case where the state transitioned to idle (via Stop hook
-    or silence timeout) before the interrupt PTY output arrived.
+    Claude's confirmed pattern is disabled (returns None) to prevent
+    false positives from TUI scrollback.  Only Codex uses confirmed
+    pattern detection in idle.
     """
 
-    def test_claude_interrupt_detected_in_idle(self, tmp_path: Path) -> None:
-        """Claude interrupt prompt detected while idle."""
+    def test_claude_no_interrupt_in_idle_without_escape(self, tmp_path: Path) -> None:
+        """Claude interrupt prompt in idle does NOT trigger interrupted
+        (confirmed pattern disabled).  Hook-based needs_input is the
+        correct path for self-interrupts."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # Simulate: running → idle via signal file, then interrupt output
         write_signal(tracker, 'idle')
         tracker.get_state(pty_alive=True)  # starts debounce
         t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
         assert tracker.get_state(pty_alive=True) == 'idle'
         t[0] = 2.0
-        # Interrupt PTY output arrives while idle
+        # Interrupt PTY output arrives while idle — no confirmed pattern
         tracker.on_output(
             b'Interrupted \xc2\xb7 What should Claude do instead?\n'
             b'1. Try again\n'
         )
-        assert tracker.current_state == 'interrupted'
+        assert tracker.current_state == 'idle'
 
     def test_codex_interrupt_detected_in_idle(self, tmp_path: Path) -> None:
         """Codex interrupt prompt detected while idle (critical:
