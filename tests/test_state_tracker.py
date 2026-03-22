@@ -1409,6 +1409,132 @@ class TestPTYDialogDetection:
 
 
 # ---------------------------------------------------------------------------
+# Stale interrupt suppression (scrollback false positive prevention)
+# ---------------------------------------------------------------------------
+
+class TestStaleInterruptSuppression:
+    """After resolving an interrupt, the old 'Interrupted ·' prompt
+    remains in TUI scrollback.  The confirmed pattern check must be
+    suppressed until the text scrolls out of the buffer."""
+
+    def test_resume_from_interrupted_suppresses_confirmed_pattern(self, tmp_path: Path) -> None:
+        """After interrupted→running resume, the confirmed pattern
+        in the buffer should NOT re-trigger interrupted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # Simulate interrupt: user pressed Escape, PTY shows pattern
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.5
+        tracker.on_output(b'Interrupted\xc2\xb7 What should Claude do instead?')
+        assert tracker.current_state == 'interrupted'
+        # User answers the interrupt → resume
+        t[0] = 5.0
+        tracker.on_input(b'1')
+        t[0] = 7.5  # past RESUME_GRACE_PERIOD
+        # TUI redraws — still shows old "Interrupted·" in scrollback
+        tracker.on_output(b'Processing your request... Interrupted\xc2\xb7 old prompt')
+        # Should be running, NOT re-interrupted
+        assert tracker.current_state == 'running'
+
+    def test_suppression_cleared_when_pattern_gone(self, tmp_path: Path) -> None:
+        """Suppression is lifted once 'Interrupted' scrolls out of buffer."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # Interrupt
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.5
+        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
+        assert tracker.current_state == 'interrupted'
+        # Resume
+        t[0] = 5.0
+        tracker.on_input(b'1')
+        t[0] = 7.5
+        tracker.on_output(b'Processing...')
+        assert tracker.current_state == 'running'
+        assert tracker._suppress_stale_interrupt is True
+        # Enough new output to push old text out of buffer
+        t[0] = 8.0
+        tracker.on_output(b'A' * 9000)  # exceeds 8KB buffer
+        # Suppression should be cleared (no "Interrupted" in buffer)
+        assert tracker._suppress_stale_interrupt is False
+
+    def test_on_send_from_interrupted_sets_suppression(self, tmp_path: Path) -> None:
+        """on_send() from interrupted state activates suppression."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.5
+        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
+        assert tracker.current_state == 'interrupted'
+        # Send via client (on_send from interrupted)
+        t[0] = 15.0  # well past INTERRUPT_DETECT_WINDOW (10s)
+        tracker.on_send()
+        assert tracker._suppress_stale_interrupt is True
+        # Buffer re-accumulates old scrollback
+        t[0] = 16.0
+        tracker.on_output(b'old scrollback Interrupted\xc2\xb7 text here')
+        assert tracker.current_state == 'running'
+
+    def test_fresh_interrupt_detected_after_suppression_cleared(self, tmp_path: Path) -> None:
+        """A NEW interrupt is detected after suppression is cleared."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # First interrupt + resume
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.5
+        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
+        assert tracker.current_state == 'interrupted'
+        t[0] = 5.0
+        tracker.on_input(b'1')
+        t[0] = 7.5
+        tracker.on_output(b'Resumed work')
+        assert tracker.current_state == 'running'
+        # Old text scrolls out
+        t[0] = 8.0
+        tracker.on_output(b'B' * 9000)
+        assert tracker._suppress_stale_interrupt is False
+        # NEW self-interrupt (no Escape — detected via confirmed pattern)
+        t[0] = 10.0
+        tracker.on_output(b'Interrupted\xc2\xb7 What should Claude do instead?')
+        assert tracker.current_state == 'interrupted'
+
+    def test_idle_confirmed_pattern_suppressed_after_interrupt(self, tmp_path: Path) -> None:
+        """In idle state, confirmed pattern from scrollback is suppressed."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # Interrupt
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')
+        t[0] = 1.5
+        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
+        assert tracker.current_state == 'interrupted'
+        # Signal transitions interrupted→idle
+        t[0] = 10.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker._suppress_stale_interrupt is True
+        # TUI redraws with old scrollback
+        t[0] = 11.0
+        tracker.on_output(b'old Interrupted\xc2\xb7 text in scrollback')
+        # Should stay idle, NOT go to interrupted
+        assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
 # Idle-state interrupt detection (confirmed pattern fallback)
 # ---------------------------------------------------------------------------
 

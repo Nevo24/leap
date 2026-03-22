@@ -137,6 +137,13 @@ class CLIStateTracker:
         # types (user Escape, Ctrl+C, self-interrupt, split chunks)
         # without needing per-case timing guards.
         self._idle_debounce_at: float = 0.0
+        # Suppress the confirmed_interrupt_pattern check after leaving
+        # the interrupted state.  The Ink TUI keeps the old "Interrupted ·"
+        # prompt visible in scrollback; every TUI redraw re-renders it
+        # into _output_buf, causing an infinite interrupted→running→
+        # interrupted cycle.  Cleared when the pattern disappears from
+        # the buffer (old text scrolled out of view).
+        self._suppress_stale_interrupt: bool = False
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
@@ -277,6 +284,8 @@ class CLIStateTracker:
                 )
                 old_waiting_since = self._waiting_since
 
+                if current == CLIState.INTERRUPTED:
+                    self._suppress_stale_interrupt = True
                 _log.debug(
                     'GET_STATE signal transition %s→%s%s',
                     current, new_state,
@@ -525,6 +534,8 @@ class CLIStateTracker:
 
         Sets state to 'running' and deletes the stale signal file.
         """
+        if self._state == CLIState.INTERRUPTED:
+            self._suppress_stale_interrupt = True
         _log.debug('ON_SEND → running')
         self._seen_user_input = True
         self._running_since = self._clock()
@@ -640,22 +651,29 @@ class CLIStateTracker:
         # (signal and timeout paths), so it only contains output since
         # entering idle.
         confirmed = self._provider.confirmed_interrupt_pattern
+        if self._suppress_stale_interrupt:
+            # Clear suppression once "Interrupted" scrolls out of buffer.
+            if interrupted_pattern not in self._output_buf:
+                self._suppress_stale_interrupt = False
         if confirmed and self._seen_user_input:
-            compact_buf = self._ANSI_RE.sub(
-                b'', bytes(self._output_buf),
-            ).replace(b' ', b'')
-            if confirmed in compact_buf:
-                _log.debug(
-                    'ON_OUTPUT idle→interrupted '
-                    '(confirmed interrupt pattern in buffer)',
-                )
-                self._output_buf.clear()
-                self._idle_output_acc = 0
-                with self._lock:
-                    self._state = CLIState.INTERRUPTED
-                    self._waiting_since = self._clock()
-                self._write_interrupted_signal()
-                return
+            if self._suppress_stale_interrupt:
+                pass  # skip confirmed check — stale scrollback
+            else:
+                compact_buf = self._ANSI_RE.sub(
+                    b'', bytes(self._output_buf),
+                ).replace(b' ', b'')
+                if confirmed in compact_buf:
+                    _log.debug(
+                        'ON_OUTPUT idle→interrupted '
+                        '(confirmed interrupt pattern in buffer)',
+                    )
+                    self._output_buf.clear()
+                    self._idle_output_acc = 0
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
+                    return
 
         if not self._seen_user_input:
             return
@@ -755,20 +773,28 @@ class CLIStateTracker:
             # conversational text.
             confirmed = self._provider.confirmed_interrupt_pattern
             if has_interrupted and confirmed:
-                compact = self._ANSI_RE.sub(
-                    b'', bytes(self._output_buf),
-                ).replace(b' ', b'')
-                if confirmed in compact:
+                if self._suppress_stale_interrupt:
                     _log.debug(
-                        'ON_OUTPUT running→interrupted '
-                        '(confirmed interrupt pattern in buffer)',
+                        'ON_OUTPUT running: suppressing stale '
+                        'confirmed interrupt pattern',
                     )
-                    self._output_buf.clear()
-                    with self._lock:
-                        self._state = CLIState.INTERRUPTED
-                        self._waiting_since = self._clock()
-                    self._write_interrupted_signal()
-                    return
+                else:
+                    compact = self._ANSI_RE.sub(
+                        b'', bytes(self._output_buf),
+                    ).replace(b' ', b'')
+                    if confirmed in compact:
+                        _log.debug(
+                            'ON_OUTPUT running→interrupted '
+                            '(confirmed interrupt pattern in buffer)',
+                        )
+                        self._output_buf.clear()
+                        with self._lock:
+                            self._state = CLIState.INTERRUPTED
+                            self._waiting_since = self._clock()
+                        self._write_interrupted_signal()
+                        return
+            elif not has_interrupted:
+                self._suppress_stale_interrupt = False
 
     def _handle_waiting_output(self, data: bytes, now: float) -> None:
         """Handle output while in a waiting state: correction, prompt accumulation, resume."""
@@ -821,6 +847,8 @@ class CLIStateTracker:
                     self._last_prompt_buf = b''
                     return
 
+                if self._state == CLIState.INTERRUPTED:
+                    self._suppress_stale_interrupt = True
                 _log.debug(
                     'ON_OUTPUT %s→running (resume, stripped=%r)',
                     self._state, stripped[:60],
