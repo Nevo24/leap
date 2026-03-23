@@ -508,14 +508,17 @@ class TooltipApp(QApplication):
                 display = index.data(Qt.DisplayRole)
                 if tip and str(tip) != '':
                     show = False
+                    col_w = parent.columnWidth(index.column())
+                    text_w = parent.fontMetrics().horizontalAdvance(
+                        str(display)) if display else 0
+                    truncated = text_w > col_w - 16
                     if display and str(tip) != str(display):
-                        # Explanatory tooltip (differs from display)
-                        show = self.tooltips_enabled
+                        # Tooltip differs from display — show if
+                        # tooltips enabled OR display is truncated
+                        show = self.tooltips_enabled or truncated
                     elif display:
                         # Same text — only show when truncated
-                        col_w = parent.columnWidth(index.column())
-                        text_w = parent.fontMetrics().horizontalAdvance(str(display))
-                        show = text_w > col_w - 16
+                        show = truncated
                     if show:
                         self._show_tip(
                             event.globalPos(), str(tip), widget,
@@ -534,12 +537,14 @@ class TooltipApp(QApplication):
                     display = index.data(Qt.DisplayRole)
                     if tip and str(tip) != '':
                         show = False
+                        col_w = widget.columnWidth(index.column())
+                        text_w = widget.fontMetrics().horizontalAdvance(
+                            str(display)) if display else 0
+                        truncated = text_w > col_w - 16
                         if display and str(tip) != str(display):
-                            show = self.tooltips_enabled
+                            show = self.tooltips_enabled or truncated
                         elif display:
-                            col_w = widget.columnWidth(index.column())
-                            text_w = widget.fontMetrics().horizontalAdvance(str(display))
-                            show = text_w > col_w - 16
+                            show = truncated
                         if show:
                             self._show_tip(
                                 event.globalPos(), str(tip), vp,
