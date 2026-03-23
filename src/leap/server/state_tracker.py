@@ -542,6 +542,10 @@ class CLIStateTracker:
         self._seen_user_input = True
         self._running_since = self._clock()
         self._idle_debounce_at = 0
+        # Reset escape timestamp so stale "Interrupted" TUI scrollback
+        # doesn't snap running→interrupted via the INTERRUPT_DETECT_WINDOW
+        # check in _handle_running_output.
+        self._last_escape_time = -INTERRUPT_DETECT_WINDOW
         with self._lock:
             self._state = CLIState.RUNNING
             self._waiting_since = None
@@ -845,6 +849,7 @@ class CLIStateTracker:
 
                 if self._state == CLIState.INTERRUPTED:
                     self._suppress_stale_interrupt = True
+                    self._last_escape_time = -INTERRUPT_DETECT_WINDOW
                 _log.debug(
                     'ON_OUTPUT %s→running (resume, stripped=%r)',
                     self._state, stripped[:60],
