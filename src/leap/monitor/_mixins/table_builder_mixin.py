@@ -854,7 +854,15 @@ class TableBuilderMixin(_Base):
                                         task_display, row_color)
                     task_item = self.table.item(row, self.COL_TASK)
                     if task_item and current_task:
-                        task_item.setToolTip(current_task)
+                        # Wrap in HTML so Qt word-wraps long tooltips
+                        escaped = (current_task
+                                   .replace('&', '&amp;')
+                                   .replace('<', '&lt;')
+                                   .replace('>', '&gt;')
+                                   .replace('\n', '<br>'))
+                        task_item.setToolTip(
+                            f'<div style="max-width:600px">{escaped}</div>'
+                        )
 
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', AutoSendMode.PAUSE)
