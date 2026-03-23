@@ -1,5 +1,5 @@
 """
-Poll .last_response files and post Claude's output to Slack threads.
+Poll .last_response files and post CLI output to Slack threads.
 
 Runs in a background thread, checking for new output from all
 Slack-enabled Leap sessions every 2 seconds.
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     'claude': 'Claude Code',
     'codex': 'OpenAI Codex',
+    'cursor-agent': 'Cursor Agent',
 }
 
 # Slack message limit is ~4000 chars for best rendering
@@ -208,7 +209,7 @@ class OutputWatcher:
 
         Called once when a session is first enabled. The message is not sent
         to the Leap server — it only creates the thread so the user can
-        reply from Slack immediately. Also posts the last Claude message
+        reply from Slack immediately. Also posts the last CLI message
         (if any) so the user has context for what they're replying to.
 
         Args:
@@ -229,7 +230,7 @@ class OutputWatcher:
                 save_slack_sessions(sessions)
                 self._invalidate_sessions_cache()
 
-            # Post the last Claude message / permission request for context
+            # Post the last CLI message / permission request for context
             context = self._read_last_context(tag)
             last_msg = context.get('output', '')
             state = context.get('state', CLIState.IDLE)
@@ -376,10 +377,10 @@ class OutputWatcher:
         notification_message: str = '',
         prompt_output: str = '',
     ) -> str:
-        """Build the footer text based on Claude's state.
+        """Build the footer text based on the CLI's state.
 
         Args:
-            state: Claude's current state.
+            state: The CLI's current state.
             queue_has_next: Whether auto-send will send the next message.
             notification_message: Notification text from the hook
                 (e.g. the permission question).

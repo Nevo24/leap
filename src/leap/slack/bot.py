@@ -2,7 +2,7 @@
 SlackBot — main Slack integration daemon for Leap.
 
 Connects to Slack via Socket Mode (outbound WebSocket, no public URL
-needed), posts Claude's output to per-session DM threads, and routes
+needed), posts CLI output to per-session DM threads, and routes
 user replies back to Leap sessions.
 
 Usage:
@@ -42,7 +42,7 @@ class SlackBot:
     """Main Slack bot class.
 
     Connects via Socket Mode, listens for DM replies, and runs the
-    OutputWatcher to post Claude's output to Slack threads.
+    OutputWatcher to post CLI output to Slack threads.
     """
 
     def __init__(self) -> None:
@@ -66,7 +66,7 @@ class SlackBot:
         # Register event handlers
         self._app.event("message")(self._handle_message)
 
-        # Output watcher posts Claude output to Slack
+        # Output watcher posts CLI output to Slack
         self._watcher = OutputWatcher(
             post_fn=self._post_message,
             channel_id=self._dm_channel_id,

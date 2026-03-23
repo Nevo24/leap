@@ -265,18 +265,47 @@ These are handled automatically by the abstractions:
 - **CLI selector**: `leap-select-cli.py` reads from `list_providers()` + `get_provider().display_name`
 - **Shell flags**: `configure-shell-helper.sh` generates `LEAP_<NAME>_FLAGS` from `list_providers()`
 
-### 11. Documentation
+### 11. Documentation & String References
 
-Update these files:
+Many files contain hardcoded provider names in docstrings, comments, error messages, and user-facing text. When adding a new provider, **grep the entire codebase** for existing provider names (e.g. `claude`, `codex`, `Claude Code`, `OpenAI Codex`) and update every list that enumerates providers. Common locations:
 
 **CLAUDE.md** — Update:
+- Description (line 3): Add new CLI to the list
 - Project Structure: Add the new provider file under `cli_providers/`
 - Key Classes table: Add the new provider class
-- Any provider-specific notes (hook format, config location, etc.)
+- `get_provider()` row: Add the new provider name
+- IDE Setup section (if the new CLI has IDE-specific config)
 
-**README.md** — If user-facing changes exist:
-- Quick Start: Mention the new CLI option
-- Supported CLIs section (if one exists)
+**README.md** — Update:
+- Description line: Add the new CLI name
+- Prerequisites: Add link to the new CLI's docs
+- Features: Ensure text is generic ("the CLI") not provider-specific
+- Links footer: Add link to the new CLI's docs
+
+**Source files with hardcoded provider lists** (grep for `'claude', 'codex'` and `Claude.*Codex`):
+- `cli_providers/__init__.py` — Module docstring
+- `cli_providers/base.py` — Docstring examples for `name`, `command`, `display_name`, `hook_config_dir`
+- `cli_providers/registry.py` — `get_provider()` docstring
+- `server/server.py` — Usage messages, `LeapServer.__init__` docstring, `parse_options()` docstring
+- `server/metadata.py` — `SessionMetadata.__init__` docstring
+- `server/state_tracker.py` — Module docstring
+- `server/pty_handler.py` — Module docstring, `__init__` docstring
+- `utils/terminal.py` — `print_banner()` docstring example
+- `scripts/leap-hook.sh` — Header comments (provider list + stdin format)
+- `scripts/leap-main.sh` — Comment listing launcher scripts
+- `scripts/leap-select-cli.py` — Error message for no CLIs found
+- `scripts/leap-select.sh` — Comment about per-CLI env var flags
+
+**Slack integration** (grep for `Claude` in `src/leap/slack/`):
+- `slack/bot.py` — Module docstring, class docstring, comments
+- `slack/output_watcher.py` — Module docstring, `_PROVIDER_DISPLAY_NAMES` dict, method docstrings
+- `slack/output_capture.py` — Module docstring, method docstrings
+- `scripts/setup-slack-app.sh` — Slack app description string
+
+**Other**:
+- `__init__.py` (root package) — Module docstring
+- `pyproject.toml` — Project description
+- `monitor/leap_sender.py` — Docstrings referencing "Claude"
 
 ## Understanding State Detection
 
@@ -387,6 +416,7 @@ class TestMyCliProvider:
 
 ## Checklist
 
+### Core implementation
 - [ ] Provider class created in `src/leap/cli_providers/<name>.py`
 - [ ] All abstract properties and methods implemented
 - [ ] Provider registered in `registry.py`
@@ -394,11 +424,39 @@ class TestMyCliProvider:
 - [ ] `configure_hooks()` installs hooks correctly
 - [ ] `hook_config_dir` points to correct location
 - [ ] `requires_binary_for_hooks` set correctly
-- [ ] Optional: shell launcher script created
+
+### Shell & Makefile
+- [ ] Shell launcher script created (`src/scripts/<name>-leap-main.sh`)
+- [ ] Makefile: `chmod +x` for launcher script in `configure-shell` target
 - [ ] Makefile: hook cleanup added to `uninstall` target
+
+### String references (grep for existing provider names!)
+- [ ] `cli_providers/__init__.py` — module docstring
+- [ ] `cli_providers/base.py` — docstring examples (name, command, display_name, hook_config_dir)
+- [ ] `cli_providers/registry.py` — `get_provider()` docstring
+- [ ] `server/server.py` — usage messages, docstrings
+- [ ] `server/metadata.py` — docstring
+- [ ] `server/state_tracker.py` — module docstring
+- [ ] `server/pty_handler.py` — module docstring, `__init__` docstring
+- [ ] `utils/terminal.py` — `print_banner()` docstring
+- [ ] `scripts/leap-hook.sh` — header comments
+- [ ] `scripts/leap-main.sh` — comment listing launcher scripts
+- [ ] `scripts/leap-select-cli.py` — error message
+- [ ] `scripts/leap-select.sh` — env var flags comment
+- [ ] `slack/bot.py` — docstrings and comments
+- [ ] `slack/output_watcher.py` — `_PROVIDER_DISPLAY_NAMES` dict, docstrings
+- [ ] `slack/output_capture.py` — docstrings
+- [ ] `scripts/setup-slack-app.sh` — app description
+- [ ] `src/leap/__init__.py` — package docstring
+- [ ] `pyproject.toml` — project description
+- [ ] `monitor/leap_sender.py` — docstrings
+
+### Documentation
+- [ ] CLAUDE.md updated (description, Project Structure, Key Classes table)
+- [ ] README.md updated (description, prerequisites, links footer)
+
+### Testing & verification
 - [ ] Existing tests pass (`poetry run pytest tests/ -v`)
 - [ ] Provider-specific tests added
 - [ ] Manual testing: server startup, state transitions, monitor display
-- [ ] CLAUDE.md updated (Project Structure, Key Classes table)
-- [ ] README.md updated (if user-facing changes)
-- [ ] Self-verification: re-read all changes, trace the flow end-to-end
+- [ ] Self-verification: `grep -rn` for old provider names to catch stragglers

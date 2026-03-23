@@ -102,8 +102,8 @@ def prepend_to_leap_queue(tag: str, messages: list[str]) -> bool:
 def send_to_leap_session_direct(tag: str, message: str) -> bool:
     """Send a message directly to a Leap session, bypassing the queue.
 
-    The message is sent immediately to Claude via the PTY, regardless of
-    whether Claude is currently busy.
+    The message is sent immediately to the CLI via the PTY, regardless of
+    whether the CLI is currently busy.
 
     Args:
         tag: Session tag name.

@@ -19,7 +19,7 @@ class OutputCapture:
     """Reads hook-provided response text and writes Slack-ready snapshots.
 
     The hook script (``leap-hook.sh``) writes the ``last_assistant_message``
-    from Claude Code's stdin JSON into the signal file. This class reads that
+    from the CLI's stdin JSON into the signal file. This class reads that
     on state transitions and writes a ``.last_response`` file for the Slack bot.
 
     Enabled/disabled state is persisted in ``.storage/slack/sessions.json``
@@ -48,14 +48,14 @@ class OutputCapture:
         queue_has_next: bool,
         prompt_output: str = '',
     ) -> None:
-        """Write a .last_response file when Claude finishes a turn.
+        """Write a .last_response file when the CLI finishes a turn.
 
         Reads ``last_assistant_message`` from the signal file (written by
         the hook script) and packages it for the Slack bot.
 
         Args:
-            new_state: The state Claude just transitioned to.
-            prev_state: The state Claude was in before the transition.
+            new_state: The state the CLI just transitioned to.
+            prev_state: The state the CLI was in before the transition.
             queue_has_next: Whether the auto-sender will pick up the
                 next queued message.
             prompt_output: ANSI-stripped PTY output from the permission
@@ -107,7 +107,7 @@ class OutputCapture:
         the current context immediately.
 
         Args:
-            current_state: The current Claude state.
+            current_state: The current CLI state.
             queue_has_next: Whether the auto-sender has a queued message.
             prompt_output: ANSI-stripped PTY prompt text (for permissions).
         """

@@ -47,7 +47,7 @@ def _extract_menu_options(
 
     Args:
         prompt_output: Rendered prompt text.
-        provider: CLI provider (for custom regex). Defaults to Claude.
+        provider: CLI provider (for custom regex). Defaults to default provider.
     """
     if provider and not provider.has_numbered_menus:
         return []
@@ -119,7 +119,7 @@ class LeapServer:
         Args:
             tag: Session tag name.
             flags: Optional flags to pass to the CLI.
-            cli: CLI provider name ('claude', 'codex'). Defaults to 'claude'.
+            cli: CLI provider name ('claude', 'codex', 'cursor-agent'). Defaults to 'claude'.
         """
         self.tag = tag
         self.running = True
@@ -930,14 +930,14 @@ class LeapServer:
 def main() -> None:
     """Entry point for leap-server command."""
     if len(sys.argv) < 2:
-        print("Usage: leap-server <tag> [--cli claude|codex] [--flags...]")
+        print("Usage: leap-server <tag> [--cli claude|codex|cursor-agent] [--flags...]")
         sys.exit(1)
 
     tag = sys.argv[1]
 
     if tag.startswith('-'):
         print("Error: Tag cannot start with '-'")
-        print("Usage: leap-server <tag> [--cli claude|codex] [--flags...]")
+        print("Usage: leap-server <tag> [--cli claude|codex|cursor-agent] [--flags...]")
         sys.exit(1)
 
     # Extract --cli option (consumed by Leap, not passed to the CLI)

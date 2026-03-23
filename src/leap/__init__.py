@@ -1,7 +1,7 @@
 """
-Leap - Multi-session Claude Code with message queueing and image support.
+Leap - Multi-session AI CLI manager with message queueing and image support.
 
-A PTY-based client-server model for managing Claude CLI sessions
+A PTY-based client-server model for managing AI CLI sessions
 with native scrolling support in JetBrains IDEs.
 """
 

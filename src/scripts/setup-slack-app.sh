@@ -51,7 +51,7 @@ echo ""
 MANIFEST='{
   "display_information": {
     "name": "Leap",
-    "description": "Bidirectional Claude Code integration",
+    "description": "Bidirectional Leap integration",
     "background_color": "#2c2c2c"
   },
   "features": {

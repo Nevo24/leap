@@ -26,7 +26,6 @@ _APP_TO_DIFFTOOL: dict[str, str] = {
     'Visual Studio Code': 'vscode',
     'Visual Studio Code - Insiders': 'vscode',
     'Code': 'vscode',
-    'Cursor': 'vscode',
     'Sublime Merge': 'smerge',
     'Beyond Compare': 'bc',
     'Meld': 'meld',
@@ -63,6 +62,13 @@ _JETBRAINS_BINARY: dict[str, str] = {
     'DataGrip': 'datagrip',
     'Android Studio': 'studio',
     'Fleet': 'fleet',
+}
+
+
+# Apps with Electron-style --diff flag (resolved to full CLI binary path).
+# Maps .app display name → (relative binary path inside .app, diff flag).
+_ELECTRON_DIFF_APPS: dict[str, tuple[str, str]] = {
+    'Cursor': ('Contents/Resources/app/bin/cursor', '--diff'),
 }
 
 
@@ -328,7 +334,22 @@ class SettingsDialog(QDialog):
             self._diff_tool_edit.setText(tool_name)
             return
 
-        # 2. JetBrains IDE — resolve CLI binary inside the .app bundle
+        # 2. Electron-style app (Cursor) — resolve CLI binary with --diff flag
+        electron_info = _ELECTRON_DIFF_APPS.get(app_name)
+        if electron_info:
+            rel_binary, _ = electron_info
+            binary_path = Path(path) / rel_binary
+            if binary_path.is_file():
+                self._diff_tool_edit.setText(str(binary_path))
+                return
+            QMessageBox.warning(
+                self, 'Diff Tool',
+                f'Could not find CLI binary at:\n{binary_path}\n\n'
+                f'Is {app_name} installed correctly?',
+            )
+            return
+
+        # 3. JetBrains IDE — resolve CLI binary inside the .app bundle
         binary_name = _JETBRAINS_BINARY.get(app_name)
         if binary_name:
             binary_path = Path(path) / 'Contents' / 'MacOS' / binary_name

@@ -151,7 +151,7 @@ shift
 # Parse arguments to separate flags from messages
 # Flags (starting with --) are passed to server only
 # Messages are passed to client only
-# --cli <name> overrides LEAP_CLI env var (set by claude-leap-main.sh / codex-leap-main.sh)
+# --cli <name> overrides LEAP_CLI env var (set by claude-leap-main.sh / codex-leap-main.sh / cursor-agent-leap-main.sh)
 FLAGS=()
 ARGS=()
 CLI_FROM_ARG=""

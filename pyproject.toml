@@ -1,7 +1,7 @@
 [project]
 name = "leap"
 version = "1.0.0"
-description = "Multi-session Claude Code with message queueing and image support"
+description = "Multi-session AI CLI manager with message queueing and image support"
 authors = [{name = "Nevo Mashiach"}]
 license = {text = "MIT"}
 readme = "README.md"

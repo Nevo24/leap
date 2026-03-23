@@ -88,7 +88,7 @@ def clear_menu() -> None:
 def main() -> None:
     if not CHOICES:
         sys.stderr.write("\n  ❌ No supported CLI found on PATH.\n")
-        sys.stderr.write("     Install Claude Code (claude) or Codex (codex) and try again.\n\n")
+        sys.stderr.write("     Install Claude Code (claude), Codex (codex), or Cursor Agent (cursor-agent) and try again.\n\n")
         sys.exit(1)
 
     if len(CHOICES) == 1:

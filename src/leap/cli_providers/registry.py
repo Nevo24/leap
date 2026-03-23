@@ -9,10 +9,12 @@ from typing import Optional
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
+from leap.cli_providers.cursor_agent import CursorAgentProvider
 
 _PROVIDERS: dict[str, CLIProvider] = {
     'claude': ClaudeProvider(),
     'codex': CodexProvider(),
+    'cursor-agent': CursorAgentProvider(),
 }
 
 DEFAULT_PROVIDER: str = 'claude'
@@ -22,7 +24,7 @@ def get_provider(name: Optional[str] = None) -> CLIProvider:
     """Get a CLI provider by name.
 
     Args:
-        name: Provider name ('claude', 'codex'). Defaults to 'claude'.
+        name: Provider name ('claude', 'codex', 'cursor-agent'). Defaults to 'claude'.
 
     Returns:
         The requested CLIProvider instance.

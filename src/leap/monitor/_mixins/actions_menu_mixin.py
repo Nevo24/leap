@@ -258,17 +258,25 @@ class ActionsMenuMixin(_Base):
         # VS Code opens temp left/right folders as a workspace instead of
         # showing actual diffs, so we use file-by-file mode for it.
         _NO_DIR_DIFF_TOOLS = {'vscode'}
-        use_dir_diff = diff_tool not in _NO_DIR_DIFF_TOOLS
+        _no_dir = diff_tool in _NO_DIR_DIFF_TOOLS
+        # Full-path Electron binaries (Cursor) also don't support dir diff
+        if not _no_dir and '/' in diff_tool:
+            _no_dir = diff_tool.rsplit('/', 1)[-1] in {'cursor'}
+        use_dir_diff = not _no_dir
 
         if diff_tool and '/' in diff_tool:
-            # Full path to a CLI binary (e.g. JetBrains IDE).
+            # Full path to a CLI binary (e.g. JetBrains IDE, Cursor).
             # git difftool --extcmd doesn't use shell expansion, so we
-            # create a tiny wrapper script that calls "<binary> diff $@".
+            # create a tiny wrapper script that calls the binary.
+            # Electron apps (Cursor) use --diff flag; JetBrains uses diff subcommand.
             import tempfile
+            bin_basename = diff_tool.rsplit("/", 1)[-1]
+            _ELECTRON_DIFF_BINARIES = {'cursor'}
+            diff_flag = '--diff' if bin_basename in _ELECTRON_DIFF_BINARIES else 'diff'
             wrapper = tempfile.NamedTemporaryFile(
                 mode='w', suffix='.sh', prefix='leap-diff-', delete=False,
             )
-            wrapper.write(f'#!/bin/sh\nexec "{diff_tool}" diff "$@"\n')
+            wrapper.write(f'#!/bin/sh\nexec "{diff_tool}" {diff_flag} "$@"\n')
             wrapper.close()
             os.chmod(wrapper.name, 0o755)
             cmd = ['git', 'difftool', '-y', f'--extcmd={wrapper.name}']

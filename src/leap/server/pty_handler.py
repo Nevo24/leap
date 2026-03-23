@@ -1,7 +1,7 @@
 """
 PTY handling for Leap server.
 
-Manages spawning and interacting with a CLI process (Claude, Codex, etc.).
+Manages spawning and interacting with a CLI process (Claude, Codex, Cursor Agent, etc.).
 """
 
 import os
@@ -35,7 +35,7 @@ class PTYHandler:
             flags: Command-line flags to pass to the CLI.
             tag: Session tag name (injected as LEAP_TAG env var).
             signal_dir: Directory for signal files (injected as LEAP_SIGNAL_DIR).
-            provider: CLI provider instance. Defaults to Claude.
+            provider: CLI provider instance. Defaults to default provider.
         """
         self.flags = flags or []
         self._tag = tag
