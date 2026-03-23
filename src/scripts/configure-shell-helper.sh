@@ -108,7 +108,7 @@ echo "# Default flags per CLI (always passed when starting a server)" >> "$RC_FI
 PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
 from leap.cli_providers.registry import list_providers
 for name in list_providers():
-    var = 'LEAP_' + name.upper() + '_FLAGS'
+    var = 'LEAP_' + name.upper().replace('-', '_') + '_FLAGS'
     print(f'export {var}=\"\"')
 " >> "$RC_FILE"
 

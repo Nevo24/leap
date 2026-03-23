@@ -95,7 +95,7 @@ if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
 fi
 
 # Append default per-CLI flags from env vars (e.g. LEAP_CLAUDE_FLAGS, LEAP_CURSOR_AGENT_FLAGS)
-CLI_UPPER=$(echo "$SELECTED" | tr '[:lower:]' '[:upper:]')
+CLI_UPPER=$(echo "$SELECTED" | tr '[:lower:]-' '[:upper:]_')
 DEFAULT_FLAGS_VAR="LEAP_${CLI_UPPER}_FLAGS"
 DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR:-}"
 # shellcheck disable=SC2086

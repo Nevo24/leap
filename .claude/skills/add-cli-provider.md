@@ -263,7 +263,7 @@ These are handled automatically by the abstractions:
 - **ASCII banner**: `print_banner()` uses `provider.display_name`
 - **Monitor table**: `table_builder_mixin.py` reads `provider.display_name`
 - **CLI selector**: `leap-select-cli.py` reads from `list_providers()` + `get_provider().display_name`
-- **Shell flags**: `configure-shell-helper.sh` generates `LEAP_<NAME>_FLAGS` from `list_providers()`
+- **Shell flags**: `configure-shell-helper.sh` generates `LEAP_<NAME>_FLAGS` from `list_providers()`. Hyphens in provider names are replaced with underscores (e.g. `cursor-agent` → `LEAP_CURSOR_AGENT_FLAGS`). `leap-select.sh` does the same conversion when reading the env var. **If your provider name contains hyphens**, verify both scripts produce matching variable names — a mismatch means the user's custom flags won't be picked up
 
 ### 11. Documentation & String References
 
@@ -429,6 +429,7 @@ class TestMyCliProvider:
 - [ ] Shell launcher script created (`src/scripts/<name>-leap-main.sh`)
 - [ ] Makefile: `chmod +x` for launcher script in `configure-shell` target
 - [ ] Makefile: hook cleanup added to `uninstall` target
+- [ ] If provider name contains hyphens: verify `LEAP_<NAME>_FLAGS` uses underscores in both `configure-shell-helper.sh` and `leap-select.sh`
 
 ### String references (grep for existing provider names!)
 - [ ] `cli_providers/__init__.py` — module docstring
