@@ -39,7 +39,7 @@ fi
 
 # Run update if requested
 if [ "$1" = "--update" ]; then
-    exec make -C "$PROJECT_DIR" update
+    exec "$SCRIPT_DIR/leap-update.sh" "$PROJECT_DIR"
 fi
 
 # Run Slack bot if requested

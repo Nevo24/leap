@@ -263,45 +263,8 @@ lock: .env
 
 .PHONY: update
 update: .env
-	@echo "$(PROMPT_PREFIX) Updating Leap..."
-	@$(GET_RC_FILE); \
-	if [ ! -f "$$RC_FILE" ] || ! grep -qE "(Leap|ClaudeQ) Configuration" "$$RC_FILE"; then \
-		echo "$(YELLOW)⚠ Leap does not appear to be installed$(NC)"; \
-		echo "  No Leap or ClaudeQ configuration found in $$RC_FILE"; \
-		echo ""; \
-		echo "Please run 'make install' first to install Leap."; \
-		echo "After installation, you can use 'make update' to update to newer versions."; \
-		exit 1; \
-	fi
-	@# Restore poetry.lock if modified by a previous Poetry version mismatch
-	@git checkout -- poetry.lock 2>/dev/null || true
-	@if [ -n "$$(git status --porcelain)" ]; then \
-		echo "$(YELLOW)⚠ You have uncommitted local changes:$(NC)"; \
-		git status --short; \
-		echo ""; \
-		echo "Please commit or stash your changes before updating."; \
-		exit 1; \
-	fi
-	@UPSTREAM=$$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null); \
-	if [ -n "$$UPSTREAM" ]; then \
-		LOCAL=$$(git rev-parse HEAD); \
-		REMOTE=$$(git rev-parse "$$UPSTREAM" 2>/dev/null); \
-		BASE=$$(git merge-base HEAD "$$UPSTREAM" 2>/dev/null); \
-		if [ "$$LOCAL" != "$$REMOTE" ] && [ "$$REMOTE" = "$$BASE" ]; then \
-			echo "$(YELLOW)⚠ You have local commits that haven't been pushed:$(NC)"; \
-			git log --oneline "$$UPSTREAM"..HEAD; \
-			echo ""; \
-			read -p "  Continue updating anyway? Your commits may conflict. (y/N) " -n 1 -r REPLY; \
-			echo; \
-			if [ "$$REPLY" != "y" ] && [ "$$REPLY" != "Y" ]; then \
-				echo "Update cancelled. Push your changes first, then retry."; \
-				exit 1; \
-			fi; \
-		fi; \
-	fi
-	@echo "$(PROMPT_PREFIX) Pulling latest code from git..."
-	@git pull || (echo "$(YELLOW)⚠ Git pull failed. Please resolve conflicts and try again.$(NC)" && exit 1)
-	@$(MAKE) .update-after-pull
+	@chmod +x $(SCRIPTS_DIR)/leap-update.sh
+	@$(SCRIPTS_DIR)/leap-update.sh $(REPO_PATH)
 
 .PHONY: .update-after-pull
 .update-after-pull:
@@ -422,6 +385,7 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/codex-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/cursor-agent-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/gemini-leap-main.sh
+	@chmod +x $(SCRIPTS_DIR)/leap-update.sh
 	@chmod +x $(SCRIPTS_DIR)/leap-select.sh
 	@chmod +x $(SCRIPTS_DIR)/leap-select-cli.py
 	@chmod +x $(SCRIPTS_DIR)/leap-server.py
