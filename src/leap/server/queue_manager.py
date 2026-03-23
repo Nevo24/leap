@@ -10,6 +10,7 @@ import random
 import string
 import tempfile
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,7 @@ class QueueManager:
         self.queue: deque[dict[str, str]] = deque()  # Each entry: {'id': ..., 'msg': ...}
         self.recently_sent: list[str] = []
         self.total_sent: int = 0
+        self._last_sent_time: float = 0.0
         self._lock = threading.Lock()
         self._recently_sent_lock = threading.Lock()
 
@@ -167,14 +169,26 @@ class QueueManager:
         """
         Track a sent message for client notifications.
 
+        Messages arriving within 0.5s of the previous one are combined
+        (appended with a newline).  This merges pasted multi-line text
+        that terminals without bracketed-paste support send as rapid
+        individual lines.
+
         Args:
             message: Message that was sent.
         """
         with self._recently_sent_lock:
-            self.recently_sent.append(message)
+            now = time.monotonic()
+            if (self.recently_sent
+                    and now - self._last_sent_time < 0.5):
+                # Rapid follow-up — combine with previous message
+                self.recently_sent[-1] += '\n' + message
+            else:
+                self.recently_sent.append(message)
+                if len(self.recently_sent) > self.max_recently_sent:
+                    self.recently_sent.pop(0)
             self.total_sent += 1
-            if len(self.recently_sent) > self.max_recently_sent:
-                self.recently_sent.pop(0)
+            self._last_sent_time = now
 
     def get_recently_sent(self) -> tuple[list[str], int]:
         """
