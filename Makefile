@@ -321,6 +321,9 @@ update: .env
 	poetry install --no-root --without monitor; \
 	echo "$(GREEN)✓ Core dependencies updated$(NC)"
 	@$(MAKE) write-install-metadata
+	@echo ""
+	@echo "$(PROMPT_PREFIX) Updating shell configuration..."
+	@$(MAKE) .detect-shell-update
 	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Detected Slack integration"; \
@@ -372,33 +375,12 @@ update: .env
 	@$(MAKE) .configure-iterm2
 	@echo "$(GREEN)✓ IDE/terminal configurations updated$(NC)"
 	@$(MAKE) .configure-hooks
-	@echo ""
-	@$(GET_RC_FILE); \
-	if [ -f "$$RC_FILE" ] && grep -q "Leap Configuration START" "$$RC_FILE"; then \
-		echo "$(YELLOW)⚠ Shell configuration detected$(NC)"; \
-		echo "  Your shell config is managed between START/END markers."; \
-		echo "  If the leap function has changed, you may want to update it."; \
-		echo ""; \
-		read -p "  Update shell configuration? (y/N) " -n 1 -r REPLY; \
-		echo; \
-		if [ "$$REPLY" = "y" ] || [ "$$REPLY" = "Y" ]; then \
-			sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$$RC_FILE"; \
-			rm -f "$$RC_FILE.bak"; \
-			echo "$(GREEN)  Removed old configuration$(NC)"; \
-			$(MAKE) .detect-shell; \
-		else \
-			echo "  Skipped shell configuration update."; \
-			echo "  To update manually later, run: make install"; \
-		fi; \
-	elif [ -f "$$RC_FILE" ] && ! grep -q "Leap Configuration" "$$RC_FILE"; then \
-		echo "$(PROMPT_PREFIX) No shell configuration found — writing new Leap config..."; \
-		$(MAKE) .detect-shell; \
-	fi; \
-	echo ""; \
+	@echo ""; \
 	echo "$(GREEN)✓ Leap updated successfully!$(NC)"; \
 	echo ""; \
 	echo "Changes applied:"; \
 	echo "  • Core code and dependencies updated"; \
+	echo "  • Shell configuration updated (flags preserved)"; \
 	if [ -d "/Applications/Leap Monitor.app" ]; then \
 		echo "  • Monitor app rebuilt"; \
 	fi; \
@@ -759,6 +741,11 @@ configure-shell:
 .detect-shell:
 	@chmod +x $(SCRIPTS_DIR)/configure-shell-helper.sh
 	@$(SCRIPTS_DIR)/configure-shell-helper.sh $(REPO_PATH)
+
+.PHONY: .detect-shell-update
+.detect-shell-update:
+	@chmod +x $(SCRIPTS_DIR)/configure-shell-helper.sh
+	@$(SCRIPTS_DIR)/configure-shell-helper.sh --update $(REPO_PATH)
 
 .PHONY: uninstall-monitor
 uninstall-monitor:

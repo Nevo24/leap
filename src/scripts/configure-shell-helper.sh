@@ -9,6 +9,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+UPDATE_MODE=false
+if [ "$1" = "--update" ]; then
+    UPDATE_MODE=true
+    shift
+fi
 REPO_PATH="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 
 # Get shell RC file
@@ -23,11 +28,26 @@ else
     exit 0
 fi
 
+# Capture existing LEAP_*_FLAGS values before removing old config
+declare -A EXISTING_FLAGS
+if grep -q "LEAP_.*_FLAGS" "$RC_FILE" 2>/dev/null; then
+    while IFS= read -r line; do
+        # Extract var name and value from: export LEAP_FOO_FLAGS="value"
+        if [[ "$line" =~ export[[:space:]]+(LEAP_[A-Z_]+_FLAGS)=\"([^\"]*)\" ]]; then
+            EXISTING_FLAGS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+        fi
+    done < <(grep "LEAP_.*_FLAGS" "$RC_FILE")
+fi
+
 # Check if config already exists
 if grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
-    echo -e "${YELLOW}⚠ Leap configuration already exists in $RC_FILE${NC}"
-    read -p "  Overwrite? (y/N) " -n 1 -r REPLY
-    echo
+    if [ "$UPDATE_MODE" = true ]; then
+        REPLY="y"
+    else
+        echo -e "${YELLOW}⚠ Leap configuration already exists in $RC_FILE${NC}"
+        read -p "  Overwrite? (y/N) " -n 1 -r REPLY
+        echo
+    fi
 
     if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
         # Remove old config
@@ -103,14 +123,17 @@ if [ -n "$JETBRAINS_PATHS" ]; then
 fi
 echo "" >> "$RC_FILE"
 
-# Generate per-CLI default flags from the provider registry
+# Generate per-CLI default flags from the provider registry (preserve existing values)
 echo "# Default flags per CLI (always passed when starting a server)" >> "$RC_FILE"
-PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
+while IFS= read -r var; do
+    OLD_VALUE="${EXISTING_FLAGS[$var]:-}"
+    echo "export ${var}=\"${OLD_VALUE}\"" >> "$RC_FILE"
+done < <(PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
 from leap.cli_providers.registry import list_providers
 for name in list_providers():
     var = 'LEAP_' + name.upper().replace('-', '_') + '_FLAGS'
-    print(f'export {var}=\"\"')
-" >> "$RC_FILE"
+    print(var)
+")
 
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
