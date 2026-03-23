@@ -271,8 +271,13 @@ class ActionsMenuMixin(_Base):
             # Electron apps (Cursor) use --diff flag; JetBrains uses diff subcommand.
             import tempfile
             bin_basename = diff_tool.rsplit("/", 1)[-1]
+            # Electron apps (Cursor) use `--wait --diff` (like VS Code);
+            # JetBrains uses `diff` subcommand (no --wait needed, blocks by default).
             _ELECTRON_DIFF_BINARIES = {'cursor'}
-            diff_flag = '--diff' if bin_basename in _ELECTRON_DIFF_BINARIES else 'diff'
+            if bin_basename in _ELECTRON_DIFF_BINARIES:
+                diff_flag = '--wait --diff'
+            else:
+                diff_flag = 'diff'
             wrapper = tempfile.NamedTemporaryFile(
                 mode='w', suffix='.sh', prefix='leap-diff-', delete=False,
             )
