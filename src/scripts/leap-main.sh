@@ -39,7 +39,7 @@ fi
 
 # Run update if requested
 if [ "$1" = "--update" ]; then
-    exec "$SCRIPT_DIR/leap-update.sh" "$PROJECT_DIR"
+    exec "$SCRIPT_DIR/leap-update.sh" --skip-if-current "$PROJECT_DIR"
 fi
 
 # Run Slack bot if requested

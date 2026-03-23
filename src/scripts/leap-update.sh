@@ -14,6 +14,11 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 PROMPT_PREFIX="→"
 
+SKIP_IF_CURRENT=false
+if [ "$1" = "--skip-if-current" ]; then
+    SKIP_IF_CURRENT=true
+    shift
+fi
 PROJECT_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 # Detect shell RC file
@@ -73,7 +78,15 @@ fi
 
 # Phase 1: Pull latest code
 echo -e "$PROMPT_PREFIX Pulling latest code from git..."
+PRE_PULL_HEAD=$(git rev-parse HEAD)
 git pull || (echo -e "${YELLOW}⚠ Git pull failed. Please resolve conflicts and try again.${NC}" && exit 1)
+POST_PULL_HEAD=$(git rev-parse HEAD)
+
+if [ "$SKIP_IF_CURRENT" = true ] && [ "$PRE_PULL_HEAD" = "$POST_PULL_HEAD" ]; then
+    echo ""
+    echo -e "${GREEN}✓ Leap is already up to date${NC}"
+    exit 0
+fi
 
 # Phase 2: Run post-pull steps from the FRESHLY PULLED Makefile
 exec make -C "$PROJECT_DIR" .update-after-pull
