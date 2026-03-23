@@ -367,6 +367,7 @@ update: .env
 	@echo ""
 	@echo "$(PROMPT_PREFIX) Updating IDE/terminal configurations..."
 	@$(MAKE) .configure-vscode
+	@$(MAKE) .configure-cursor
 	@$(MAKE) .configure-jetbrains
 	@$(MAKE) .configure-iterm2
 	@echo "$(GREEN)✓ IDE/terminal configurations updated$(NC)"
@@ -450,6 +451,7 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/leap-client.py
 	@chmod +x $(SCRIPTS_DIR)/leap-monitor.py
 	@$(MAKE) .configure-vscode
+	@$(MAKE) .configure-cursor
 	@$(MAKE) .configure-jetbrains
 	@$(MAKE) .configure-iterm2
 	@$(MAKE) .detect-shell
@@ -518,6 +520,73 @@ configure-shell:
 			fi; \
 		else \
 			echo "$(YELLOW)  ⚠ code command not found, skipping extension install$(NC)"; \
+		fi; \
+	fi
+
+.PHONY: .configure-cursor
+.configure-cursor:
+	@# Configure Cursor IDE (VS Code fork) — same extension, different paths
+	@if [ -d "/Applications/Cursor.app" ]; then \
+		echo "$(PROMPT_PREFIX) Configuring Cursor..."; \
+		\
+		VENV_PY=""; \
+		if [ -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+			VENV_PY="$$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"; \
+		fi; \
+		PY=$${VENV_PY:-python3}; \
+		\
+		CURSOR_BIN="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"; \
+		CURSOR_SYMLINK="/usr/local/bin/cursor"; \
+		\
+		if [ -f "$$CURSOR_BIN" ] && [ ! -f "$$CURSOR_SYMLINK" ]; then \
+			echo "  Installing Cursor CLI command..."; \
+			sudo ln -s "$$CURSOR_BIN" "$$CURSOR_SYMLINK" 2>/dev/null && \
+			echo "$(GREEN)  ✓ Cursor CLI installed: cursor command available$(NC)" || \
+			echo "$(YELLOW)  ⚠ Could not install cursor command (may need sudo)$(NC)"; \
+		elif [ -f "$$CURSOR_SYMLINK" ]; then \
+			echo "  ✓ Cursor CLI already installed"; \
+		fi; \
+		\
+		CURSOR_SETTINGS="$$HOME/Library/Application Support/Cursor/User/settings.json"; \
+		if [ -f "$$CURSOR_SETTINGS" ]; then \
+			TITLE_VALUE=$$($$PY -c "import json; data=json.load(open('$$CURSOR_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
+			if [ "$$TITLE_VALUE" = "\$${sequence}" ]; then \
+				echo "  Removing Leap's terminal.integrated.tabs.title override..."; \
+				cp "$$CURSOR_SETTINGS" "$$CURSOR_SETTINGS.backup-$$(date +%Y%m%d-%H%M%S)"; \
+				$$PY -c "import json; \
+					data = json.load(open('$$CURSOR_SETTINGS')); \
+					data.pop('terminal.integrated.tabs.title', None); \
+					json.dump(data, open('$$CURSOR_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
+				echo "$(GREEN)  ✓ Removed tabs.title override (backup created)$(NC)" || \
+				echo "$(YELLOW)  ⚠ Could not update Cursor settings$(NC)"; \
+			fi; \
+		fi; \
+		\
+		echo "  Installing Leap Terminal Selector extension..."; \
+		CURSOR_PATH=$$(which cursor 2>/dev/null); \
+		NPM_PATH=$$(which npm 2>/dev/null); \
+		if [ -n "$$CURSOR_PATH" ]; then \
+			$$CURSOR_PATH --uninstall-extension claudeq.claudeq-terminal-selector 2>/dev/null && \
+				echo "$(GREEN)  ✓ Removed old ClaudeQ extension$(NC)" || true; \
+			REPO_VERSION=$$($$PY -c "import json; print(json.load(open('$(REPO_PATH)/src/leap/vscode-extension/package.json'))['version'])" 2>/dev/null || echo "0.0.0"); \
+			INSTALLED_VERSION=$$($$CURSOR_PATH --list-extensions --show-versions 2>/dev/null | grep "leap.leap-terminal-selector@" | sed 's/.*@//' || echo "0.0.0"); \
+			if [ "$$REPO_VERSION" != "$$INSTALLED_VERSION" ]; then \
+				if [ -n "$$NPM_PATH" ]; then \
+					cd "$(REPO_PATH)/src/leap/vscode-extension" && \
+					$$PY -c "import subprocess,sys; sys.exit(subprocess.run(['npx','--yes','@vscode/vsce','package','--out','leap-terminal-selector.vsix'],capture_output=True,timeout=60).returncode)" 2>/dev/null && \
+					$$CURSOR_PATH --install-extension leap-terminal-selector.vsix --force < /dev/null >/dev/null 2>&1 && \
+					rm -f leap-terminal-selector.vsix && \
+					echo "$(GREEN)  ✓ Leap extension installed (v$$REPO_VERSION)$(NC)" && \
+					echo "$(YELLOW)    → Reload Cursor: Cmd+Shift+P → 'Developer: Reload Window'$(NC)" || \
+					echo "$(YELLOW)  ⚠ Could not install extension$(NC)"; \
+				else \
+					echo "$(YELLOW)  ⚠ npm not found, skipping extension install$(NC)"; \
+				fi; \
+			else \
+				echo "  ✓ Leap extension up to date (v$$INSTALLED_VERSION)"; \
+			fi; \
+		else \
+			echo "$(YELLOW)  ⚠ cursor command not found, skipping extension install$(NC)"; \
 		fi; \
 	fi
 
@@ -757,6 +826,32 @@ uninstall:
 				json.dump(data, open('$$VSCODE_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
 			echo "$(GREEN)✓ Removed Leap VS Code settings$(NC)" || \
 			echo "$(YELLOW)⚠ Could not update VS Code settings$(NC)"; \
+		fi; \
+	fi
+	@echo "$(PROMPT_PREFIX) Removing Cursor configuration..."
+	@CURSOR_SYMLINK="/usr/local/bin/cursor"; \
+	if [ -L "$$CURSOR_SYMLINK" ] && [ "$$(readlink "$$CURSOR_SYMLINK")" = "/Applications/Cursor.app/Contents/Resources/app/bin/cursor" ]; then \
+		sudo rm -f "$$CURSOR_SYMLINK" 2>/dev/null && \
+		echo "$(GREEN)✓ Removed Cursor CLI symlink$(NC)" || \
+		echo "$(YELLOW)⚠ Could not remove cursor symlink (may need sudo)$(NC)"; \
+	fi; \
+	if command -v cursor >/dev/null 2>&1; then \
+		cursor --uninstall-extension leap.leap-terminal-selector 2>/dev/null && \
+			echo "$(GREEN)✓ Removed Leap Cursor extension$(NC)" || true; \
+		cursor --uninstall-extension claudeq.claudeq-terminal-selector 2>/dev/null && \
+			echo "$(GREEN)✓ Removed old ClaudeQ Cursor extension$(NC)" || true; \
+	fi; \
+	CURSOR_SETTINGS="$$HOME/Library/Application Support/Cursor/User/settings.json"; \
+	if [ -f "$$CURSOR_SETTINGS" ]; then \
+		TITLE_VALUE=$$(python3 -c "import json; data=json.load(open('$$CURSOR_SETTINGS')); print(data.get('terminal.integrated.tabs.title', 'NOT_SET'))" 2>/dev/null); \
+		if [ "$$TITLE_VALUE" = "\$${sequence}" ]; then \
+			echo "  Removing Leap's terminal.integrated.tabs.title override..."; \
+			python3 -c "import json; \
+				data = json.load(open('$$CURSOR_SETTINGS')); \
+				data.pop('terminal.integrated.tabs.title', None); \
+				json.dump(data, open('$$CURSOR_SETTINGS', 'w'), indent=4)" 2>/dev/null && \
+			echo "$(GREEN)✓ Removed Leap Cursor settings$(NC)" || \
+			echo "$(YELLOW)⚠ Could not update Cursor settings$(NC)"; \
 		fi; \
 	fi
 	@echo "$(PROMPT_PREFIX) Removing hook files..."

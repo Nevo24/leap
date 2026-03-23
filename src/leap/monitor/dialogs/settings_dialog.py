@@ -26,6 +26,7 @@ _APP_TO_DIFFTOOL: dict[str, str] = {
     'Visual Studio Code': 'vscode',
     'Visual Studio Code - Insiders': 'vscode',
     'Code': 'vscode',
+    'Cursor': 'vscode',
     'Sublime Merge': 'smerge',
     'Beyond Compare': 'bc',
     'Meld': 'meld',

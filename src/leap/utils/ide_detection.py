@@ -28,7 +28,13 @@ def detect_ide() -> str:
 
     # Check TERM_PROGRAM first — it's set by the real terminal emulator
     # and is more reliable than TERMINAL_EMULATOR which can leak.
+    # Both VS Code and Cursor set TERM_PROGRAM='vscode', so use
+    # __CFBundleIdentifier (set by macOS for GUI app child processes)
+    # to distinguish them.
     if term_program == 'vscode':
+        bundle_id = os.environ.get('__CFBundleIdentifier', '')
+        if 'todesktop' in bundle_id or 'cursor' in bundle_id.lower():
+            return 'Cursor'
         return 'VS Code'
 
     if term_program == 'iTerm.app':
@@ -54,8 +60,11 @@ def detect_ide() -> str:
             return ide
         return 'JetBrains IDE'
 
-    # VS Code also sets TERMINAL_EMULATOR in some configurations
+    # VS Code/Cursor also set TERMINAL_EMULATOR in some configurations
     if 'vscode' in terminal_emulator.lower():
+        bundle_id = os.environ.get('__CFBundleIdentifier', '')
+        if 'todesktop' in bundle_id or 'cursor' in bundle_id.lower():
+            return 'Cursor'
         return 'VS Code'
 
     return 'Unknown'

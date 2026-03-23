@@ -120,7 +120,7 @@ src/
     │   ├── output_watcher.py    # Poll .last_response files → post to Slack
     │   └── message_router.py    # Route Slack messages → Leap sessions
     │
-    └── vscode-extension/        # VS Code Extension
+    └── vscode-extension/        # VS Code / Cursor Extension
         ├── package.json         # Extension metadata
         ├── extension.js         # Terminal selector logic
         └── README.md            # Extension documentation
@@ -342,8 +342,8 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 ### JetBrains (PyCharm, IntelliJ, etc.)
 **Automatically configured during `make install`** — Terminal Engine set to Classic, "Show application title" enabled. Restart IDEs after installation.
 
-### VS Code
-**Automatically configured during `make install`** — Terminal selector extension auto-installed, tabs show numbered labels. Extension also configures Shift+Enter to send a distinct CSI u sequence so the client can distinguish it from plain Enter.
+### VS Code / Cursor
+**Automatically configured during `make install`** — Terminal selector extension auto-installed, tabs show numbered labels. Extension also configures Shift+Enter to send a distinct CSI u sequence so the client can distinguish it from plain Enter. Cursor (VS Code fork) is detected separately via `__CFBundleIdentifier` and uses its own CLI (`cursor`), settings path, and AppleScript app name. The same `.vsix` extension is installed into both editors.
 
 ### iTerm2
 **Automatically configured during `make install`** — CSI u (Kitty keyboard protocol) enabled in all profiles so Shift+Enter sends a distinct sequence. Restart iTerm2 after installation for the change to take effect.

@@ -76,8 +76,10 @@ def _jetbrains_env() -> dict[str, str]:
     return env
 
 
-def _vscode_env_and_path() -> tuple[dict[str, str], Optional[str]]:
-    """Build an env dict with VS Code CLI on PATH and return the code binary path."""
+def _vscode_env_and_path(
+    ide: str = 'VS Code',
+) -> tuple[dict[str, str], Optional[str]]:
+    """Build an env dict with VS Code/Cursor CLI on PATH and return the binary path."""
     env = os.environ.copy()
     extra_paths = ['/usr/local/bin', '/opt/homebrew/bin']
     current_path = env.get('PATH', '')
@@ -85,8 +87,15 @@ def _vscode_env_and_path() -> tuple[dict[str, str], Optional[str]]:
         if p not in current_path and os.path.exists(p):
             env['PATH'] = f"{p}:{current_path}"
             current_path = env['PATH']
-    code_path = shutil.which('code', path=env.get('PATH'))
+    # Cursor uses 'cursor' CLI, VS Code uses 'code'
+    cli_name = 'cursor' if ide == 'Cursor' else 'code'
+    code_path = shutil.which(cli_name, path=env.get('PATH'))
     return env, code_path
+
+
+def _vscode_applescript_name(ide: str = 'VS Code') -> str:
+    """Return the AppleScript application name for VS Code or Cursor."""
+    return 'Cursor' if ide == 'Cursor' else 'Visual Studio Code'
 
 
 def _escape_groovy(s: str) -> str:
@@ -130,8 +139,8 @@ def open_terminal_with_command(
         if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
             if _open_jetbrains_terminal(preferred_ide, project_path, command):
                 return True
-        elif 'VS Code' in preferred_ide:
-            if _open_vscode_terminal(project_path, command):
+        elif preferred_ide in ('VS Code', 'Cursor'):
+            if _open_vscode_terminal(project_path, command, ide=preferred_ide):
                 return True
         elif preferred_ide == 'iTerm2':
             if _open_iterm2_terminal(command):
@@ -178,8 +187,9 @@ def close_terminal_with_title(
         if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
             if _close_jetbrains(preferred_ide, project_path, terminal_title):
                 return True
-        elif 'VS Code' in preferred_ide:
-            if _close_vscode(project_path, terminal_title or title_pattern):
+        elif preferred_ide in ('VS Code', 'Cursor'):
+            if _close_vscode(project_path, terminal_title or title_pattern,
+                             ide=preferred_ide):
                 return True
         elif preferred_ide == 'Warp':
             if _close_warp(title_pattern):
@@ -227,8 +237,9 @@ def find_terminal_with_title(
         if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
             if _navigate_jetbrains(preferred_ide, project_path, terminal_title):
                 return True
-        elif 'VS Code' in preferred_ide:
-            if _navigate_vscode(project_path, terminal_title or title_pattern):
+        elif preferred_ide in ('VS Code', 'Cursor'):
+            if _navigate_vscode(project_path, terminal_title or title_pattern,
+                                ide=preferred_ide):
                 return True
         elif preferred_ide == 'Warp':
             if _navigate_warp(title_pattern):
@@ -329,19 +340,24 @@ def _navigate_jetbrains(
     return False
 
 
-def _navigate_vscode(project_path: Optional[str], terminal_name: str) -> bool:
-    """Navigate to VS Code window and select terminal tab by name.
+def _navigate_vscode(
+    project_path: Optional[str],
+    terminal_name: str,
+    ide: str = 'VS Code',
+) -> bool:
+    """Navigate to VS Code/Cursor window and select terminal tab by name.
 
-    Uses AppleScript to focus the correct VS Code window (matching the
-    project folder name) instead of the ``code`` CLI, which would open a
-    new window or replace the current workspace.
+    Uses AppleScript to focus the correct window (matching the project
+    folder name) instead of the CLI, which would open a new window or
+    replace the current workspace.
     """
     try:
-        # Focus the VS Code window whose title contains the project folder name
+        app_name = _vscode_applescript_name(ide)
+        # Focus the window whose title contains the project folder name
         if project_path:
             folder_name = _escape_applescript(os.path.basename(project_path))
             script = f'''
-            tell application "Visual Studio Code"
+            tell application "{app_name}"
                 activate
                 set found to false
                 repeat with w in windows
@@ -358,8 +374,8 @@ def _navigate_vscode(project_path: Optional[str], terminal_name: str) -> bool:
             end tell
             '''
         else:
-            script = '''
-            tell application "Visual Studio Code"
+            script = f'''
+            tell application "{app_name}"
                 activate
             end tell
             '''
@@ -570,10 +586,14 @@ IDE.application.invokeLater {{
     return False
 
 
-def _close_vscode(project_path: Optional[str], terminal_name: str) -> bool:
-    """Close a terminal tab in VS Code by writing a close request file."""
+def _close_vscode(
+    project_path: Optional[str],
+    terminal_name: str,
+    ide: str = 'VS Code',
+) -> bool:
+    """Close a terminal tab in VS Code/Cursor by writing a close request file."""
     try:
-        env, code_path = _vscode_env_and_path()
+        env, code_path = _vscode_env_and_path(ide)
         if not code_path:
             return False
 
@@ -1336,10 +1356,14 @@ def _open_iterm2_terminal(command: str) -> bool:
     return False
 
 
-def _open_vscode_terminal(project_path: Optional[str], command: str) -> bool:
-    """Open a new VS Code terminal tab and run a command."""
+def _open_vscode_terminal(
+    project_path: Optional[str],
+    command: str,
+    ide: str = 'VS Code',
+) -> bool:
+    """Open a new VS Code/Cursor terminal tab and run a command."""
     try:
-        env, code_path = _vscode_env_and_path()
+        env, code_path = _vscode_env_and_path(ide)
         if not code_path:
             return False
 
