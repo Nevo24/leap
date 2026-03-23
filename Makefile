@@ -263,8 +263,7 @@ lock: .env
 
 .PHONY: update
 update: .env
-	@chmod +x $(SCRIPTS_DIR)/leap-update.sh
-	@$(SCRIPTS_DIR)/leap-update.sh $(REPO_PATH)
+	@$(MAKE) .update-after-pull
 
 .PHONY: .update-after-pull
 .update-after-pull:
