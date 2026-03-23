@@ -1,7 +1,7 @@
 """
 PTY handling for Leap server.
 
-Manages spawning and interacting with a CLI process (Claude, Codex, Cursor Agent, etc.).
+Manages spawning and interacting with a CLI process (Claude, Codex, Cursor Agent, Gemini CLI, etc.).
 """
 
 import os

@@ -25,6 +25,7 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     'claude': 'Claude Code',
     'codex': 'OpenAI Codex',
     'cursor-agent': 'Cursor Agent',
+    'gemini': 'Gemini CLI',
 }
 
 # Slack message limit is ~4000 chars for best rendering

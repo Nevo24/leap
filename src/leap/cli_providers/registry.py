@@ -10,11 +10,13 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
 from leap.cli_providers.cursor_agent import CursorAgentProvider
+from leap.cli_providers.gemini import GeminiProvider
 
 _PROVIDERS: dict[str, CLIProvider] = {
     'claude': ClaudeProvider(),
     'codex': CodexProvider(),
     'cursor-agent': CursorAgentProvider(),
+    'gemini': GeminiProvider(),
 }
 
 DEFAULT_PROVIDER: str = 'claude'
@@ -24,7 +26,7 @@ def get_provider(name: Optional[str] = None) -> CLIProvider:
     """Get a CLI provider by name.
 
     Args:
-        name: Provider name ('claude', 'codex', 'cursor-agent'). Defaults to 'claude'.
+        name: Provider name ('claude', 'codex', 'cursor-agent', 'gemini'). Defaults to 'claude'.
 
     Returns:
         The requested CLIProvider instance.

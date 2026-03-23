@@ -94,7 +94,7 @@ if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
     exit 1
 fi
 
-# Append default per-CLI flags from env vars (e.g. LEAP_CLAUDE_FLAGS, LEAP_CURSOR_AGENT_FLAGS)
+# Append default per-CLI flags from env vars (e.g. LEAP_CLAUDE_FLAGS, LEAP_CURSOR_AGENT_FLAGS, LEAP_GEMINI_FLAGS)
 CLI_UPPER=$(echo "$SELECTED" | tr '[:lower:]-' '[:upper:]_')
 DEFAULT_FLAGS_VAR="LEAP_${CLI_UPPER}_FLAGS"
 DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR:-}"

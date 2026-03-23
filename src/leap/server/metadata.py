@@ -54,7 +54,7 @@ class SessionMetadata:
         """Save metadata about the session to disk.
 
         Args:
-            cli_provider: CLI provider name (e.g. 'claude', 'codex', 'cursor-agent').
+            cli_provider: CLI provider name (e.g. 'claude', 'codex', 'cursor-agent', 'gemini').
         """
         ide = detect_ide()
         cwd = os.getcwd()

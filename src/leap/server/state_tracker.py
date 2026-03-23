@@ -5,7 +5,7 @@ Encapsulates the state machine that detects the CLI's current state
 (idle, running, needs_permission, needs_input, interrupted) using
 hook-based signal files with a PTY silence fallback.
 
-Supports multiple CLI backends (Claude, Codex, Cursor Agent, etc.) via the
+Supports multiple CLI backends (Claude, Codex, Cursor Agent, Gemini CLI, etc.) via the
 CLIProvider abstraction.
 """
 

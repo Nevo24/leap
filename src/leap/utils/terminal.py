@@ -50,7 +50,7 @@ def print_banner(session_type: str, tag: str, cli_name: str = '') -> None:
     Args:
         session_type: Either 'server' or 'client'.
         tag: The session tag name.
-        cli_name: CLI display name (e.g. 'Claude Code', 'OpenAI Codex', 'Cursor Agent').
+        cli_name: CLI display name (e.g. 'Claude Code', 'OpenAI Codex', 'Cursor Agent', 'Gemini CLI').
     """
     subtitle = f" - {cli_name}" if cli_name else ""
     banner = rf"""

@@ -1,6 +1,6 @@
 # Leap
 
-PTY-based client-server system for managing AI CLI sessions (Claude Code, OpenAI Codex, Cursor Agent) with message queueing, image support, and native IDE scrolling.
+PTY-based client-server system for managing AI CLI sessions (Claude Code, OpenAI Codex, Cursor Agent, Gemini CLI) with message queueing, image support, and native IDE scrolling.
 
 ## Quick Start
 
@@ -43,6 +43,7 @@ src/
     │   ├── claude.py            # Claude Code provider (Ink TUI, numbered menus)
     │   ├── codex.py             # OpenAI Codex provider (Ratatui TUI, y/n approval)
     │   ├── cursor_agent.py     # Cursor Agent provider (Ink TUI, menu approval)
+    │   ├── gemini.py            # Gemini CLI provider (Ink TUI, radio-button approval)
     │   ├── registry.py          # Provider registry (name → class lookup)
     │   └── states.py            # CLIState enum + state groupings (WAITING/SIGNAL/PROMPT)
     │
@@ -146,7 +147,8 @@ assets/
 | `ClaudeProvider` | `cli_providers/claude.py` | Claude Code CLI (Ink TUI, numbered menus, Notification hooks) |
 | `CodexProvider` | `cli_providers/codex.py` | OpenAI Codex CLI (Ratatui TUI, y/n approval, Stop hook only) |
 | `CursorAgentProvider` | `cli_providers/cursor_agent.py` | Cursor Agent CLI (Ink TUI, menu approval, Stop hook only) |
-| `get_provider()` | `cli_providers/registry.py` | Provider lookup by name (`'claude'`, `'codex'`, `'cursor-agent'`) |
+| `GeminiProvider` | `cli_providers/gemini.py` | Gemini CLI (Ink TUI, radio-button approval, AfterAgent/Notification hooks) |
+| `get_provider()` | `cli_providers/registry.py` | Provider lookup by name (`'claude'`, `'codex'`, `'cursor-agent'`, `'gemini'`) |
 | `LeapServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
 | `LeapClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |

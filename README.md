@@ -2,7 +2,7 @@
 
 **A queueing system and dashboard for managing multiple AI CLI sessions.**
 
-Run AI coding agents (Claude Code, Codex CLI, Cursor Agent) in any terminal (JetBrains, VS Code, iTerm2, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
+Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, iTerm2, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
 
 ## Key Features
 
@@ -15,7 +15,7 @@ Run AI coding agents (Claude Code, Codex CLI, Cursor Agent) in any terminal (Jet
 
 **Platform:** macOS (full support). Linux works for core queueing and Slack, but the Monitor GUI is macOS only.
 
-**Prerequisites:** Python 3.11+, and one or more AI CLIs: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Cursor Agent](https://cursor.com/docs/cli/overview)
+**Prerequisites:** Python 3.11+, and one or more AI CLIs: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Cursor Agent](https://cursor.com/docs/cli/overview), [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 
 ```bash
 git clone https://github.com/nevo24/leap.git
@@ -61,4 +61,4 @@ MIT License - see [LICENSE](LICENSE)
 
 ---
 
-**Links:** [GitHub](https://github.com/nevo24/leap) • [Claude Code](https://docs.anthropic.com/en/docs/claude-code) • [Codex CLI](https://github.com/openai/codex) • [Cursor Agent](https://cursor.com/docs/cli/overview)
+**Links:** [GitHub](https://github.com/nevo24/leap) • [Claude Code](https://docs.anthropic.com/en/docs/claude-code) • [Codex CLI](https://github.com/openai/codex) • [Cursor Agent](https://cursor.com/docs/cli/overview) • [Gemini CLI](https://github.com/google-gemini/gemini-cli)

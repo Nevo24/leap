@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Leap Hook Script for CLI providers (Claude Code, Codex, Cursor Agent, etc.)
+# Leap Hook Script for CLI providers (Claude Code, Codex, Cursor Agent, Gemini CLI, etc.)
 #
 # Called by CLI hooks on Stop and Notification events.
 # Writes state (and response text) to a signal file that the Leap server reads.
@@ -13,6 +13,7 @@
 # The CLI passes JSON on stdin with session info.  Claude Code includes
 # transcript_path; Codex includes last_assistant_message directly.
 # Cursor Agent includes status and workspace_roots.
+# Gemini CLI includes prompt, prompt_response, and transcript_path.
 #
 # Environment variables (set by Leap server via PTY):
 #   LEAP_TAG        - Session tag name
@@ -176,5 +177,9 @@ with open(signal_file, 'w') as f:
 if [ $? -ne 0 ]; then
     echo "{\"state\":\"$STATE\"}" > "$SIGNAL_FILE"
 fi
+
+# Output empty JSON for CLIs that expect stdout response (e.g. Gemini CLI).
+# Harmless for CLIs that ignore hook stdout (Claude, Codex, Cursor).
+echo '{}'
 
 exit 0

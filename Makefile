@@ -428,6 +428,7 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/claude-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/codex-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/cursor-agent-leap-main.sh
+	@chmod +x $(SCRIPTS_DIR)/gemini-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/leap-select.sh
 	@chmod +x $(SCRIPTS_DIR)/leap-select-cli.py
 	@chmod +x $(SCRIPTS_DIR)/leap-server.py
@@ -846,6 +847,7 @@ uninstall:
 	@rm -f "$$HOME/.claude/hooks/leap-hook.sh" "$$HOME/.claude/hooks/claudeq-hook.sh" 2>/dev/null || true
 	@rm -f "$$HOME/.codex/leap-hook.sh" "$$HOME/.codex/claudeq-hook.sh" 2>/dev/null || true
 	@rm -f "$$HOME/.cursor/leap-hook.sh" 2>/dev/null || true
+	@rm -f "$$HOME/.gemini/leap-hook.sh" 2>/dev/null || true
 	@echo "$(GREEN)✓ Removed hook files$(NC)"
 	@echo ""
 	@echo "$(GREEN)✓ Leap fully uninstalled!$(NC)"

@@ -435,12 +435,12 @@ class TestMyCliProvider:
 - [ ] `cli_providers/__init__.py` — module docstring
 - [ ] `cli_providers/base.py` — docstring examples (name, command, display_name, hook_config_dir)
 - [ ] `cli_providers/registry.py` — `get_provider()` docstring
-- [ ] `server/server.py` — usage messages, docstrings
+- [ ] `server/server.py` — usage messages (grep `Usage:` in `main()`), docstrings
 - [ ] `server/metadata.py` — docstring
 - [ ] `server/state_tracker.py` — module docstring
 - [ ] `server/pty_handler.py` — module docstring, `__init__` docstring
 - [ ] `utils/terminal.py` — `print_banner()` docstring
-- [ ] `scripts/leap-hook.sh` — header comments
+- [ ] `scripts/leap-hook.sh` — header comments (provider list AND per-CLI stdin format comment)
 - [ ] `scripts/leap-main.sh` — comment listing launcher scripts
 - [ ] `scripts/leap-select-cli.py` — error message
 - [ ] `scripts/leap-select.sh` — env var flags comment

@@ -2,7 +2,7 @@
 Abstract base class for CLI providers.
 
 Each provider defines the patterns, timings, and behaviors specific to
-a CLI tool (Claude Code, Codex, Cursor Agent, etc.) so that the PTY handler, state
+a CLI tool (Claude Code, Codex, Cursor Agent, Gemini CLI, etc.) so that the PTY handler, state
 tracker, and server can work with any supported CLI.
 """
 
@@ -29,17 +29,17 @@ class CLIProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier used in config/metadata (e.g. 'claude', 'codex', 'cursor-agent')."""
+        """Short identifier used in config/metadata (e.g. 'claude', 'codex', 'cursor-agent', 'gemini')."""
 
     @property
     @abstractmethod
     def command(self) -> str:
-        """Binary name to search for in PATH (e.g. 'claude', 'codex', 'cursor-agent')."""
+        """Binary name to search for in PATH (e.g. 'claude', 'codex', 'cursor-agent', 'gemini')."""
 
     @property
     @abstractmethod
     def display_name(self) -> str:
-        """Human-readable name (e.g. 'Claude Code', 'OpenAI Codex', 'Cursor Agent')."""
+        """Human-readable name (e.g. 'Claude Code', 'OpenAI Codex', 'Cursor Agent', 'Gemini CLI')."""
 
     def is_installed(self) -> bool:
         """Check whether the CLI binary is available on PATH."""
@@ -279,7 +279,7 @@ class CLIProvider(ABC):
         """Directory where the CLI stores its configuration/hooks.
 
         The leap-hook.sh script will be copied into this directory
-        during installation.  E.g. ``~/.claude/hooks``, ``~/.codex``, or ``~/.cursor``.
+        during installation.  E.g. ``~/.claude/hooks``, ``~/.codex``, ``~/.cursor``, or ``~/.gemini``.
         """
 
     @property
