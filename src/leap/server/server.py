@@ -172,6 +172,7 @@ class LeapServer:
         self.output_capture = OutputCapture(tag, cli_provider=self._provider.name)
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
+        self._terminal_input_buf: bytearray = bytearray()
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -249,6 +250,7 @@ class LeapServer:
 
         elif msg_type == 'direct':
             self._send_to_cli(message)
+            self.queue.track_sent(message)
             return {'status': 'sent'}
 
         elif msg_type == 'select_option':
@@ -767,6 +769,9 @@ class LeapServer:
     def _input_filter(self, data: bytes) -> bytes:
         """Track user keyboard input for state detection.
 
+        Also accumulates typed text so that messages entered directly
+        in the server terminal are captured as the current task.
+
         Args:
             data: Raw input bytes from keyboard.
 
@@ -774,6 +779,57 @@ class LeapServer:
             Input bytes unchanged (pass-through).
         """
         self.state.on_input(data)
+
+        # Accumulate terminal input for task tracking.
+        # Enter (\r) flushes the buffer as a sent message.
+        # Backspace (\x7f) removes the last byte.
+        # Escape sequences (\x1b[...X) are skipped entirely.
+        i = 0
+        while i < len(data):
+            b = data[i]
+            if b == 0x1b:  # Escape — skip entire sequence
+                i += 1
+                if i >= len(data):
+                    continue
+                kind = data[i]
+                if kind == 0x5b:  # CSI: \x1b[
+                    i += 1
+                    # Skip parameter/intermediate bytes (0x20-0x3f)
+                    # until final byte (0x40-0x7e)
+                    while i < len(data) and 0x20 <= data[i] <= 0x3f:
+                        i += 1
+                    if i < len(data):
+                        i += 1  # skip final byte
+                elif kind in (0x5d, 0x50, 0x58, 0x5e, 0x5f):
+                    # String sequences: OSC ], DCS P, SOS X, PM ^, APC _
+                    # Skip until ST (\x1b\\) or BEL (\x07)
+                    i += 1
+                    while i < len(data):
+                        if data[i] == 0x07:
+                            i += 1
+                            break
+                        if data[i] == 0x1b and i + 1 < len(data) and data[i + 1] == 0x5c:
+                            i += 2
+                            break
+                        i += 1
+                else:
+                    i += 1  # SS2/SS3/other: skip one byte after ESC
+                continue
+            if b == 0x0d:  # Enter
+                if self._terminal_input_buf:
+                    msg = self._terminal_input_buf.decode('utf-8', errors='replace').strip()
+                    if msg:
+                        self.queue.track_sent(msg)
+                    self._terminal_input_buf.clear()
+            elif b == 0x7f:  # Backspace
+                if self._terminal_input_buf:
+                    self._terminal_input_buf.pop()
+            elif b == 0x03:  # Ctrl+C — discard buffer
+                self._terminal_input_buf.clear()
+            elif 0x20 <= b < 0x7f or b >= 0x80:  # Printable ASCII or UTF-8
+                self._terminal_input_buf.append(b)
+            i += 1
+
         return data
 
     def _output_filter(self, data: bytes) -> bytes:

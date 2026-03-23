@@ -93,7 +93,7 @@ def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and preset editor."""
 
-    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})  # All data columns
+    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})  # All data columns
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
         """Set a cell widget wrapped in a hover-aware container.
@@ -622,6 +622,9 @@ class TableBuilderMixin(_Base):
                     if status_item and not row_color:
                         status_item.setForeground(QColor(current_theme().text_primary))
 
+                    self._set_cell_text(row, self.COL_TASK, 'N/A',
+                                        row_color)
+
                     # Queue N/A with menu button
                     dead_q_state = ('dead', session.get('auto_send_mode', AutoSendMode.PAUSE),
                                     row_color)
@@ -841,6 +844,17 @@ class TableBuilderMixin(_Base):
                         label = w.findChild(ElidedLabel)
                         if label:
                             label.setToolTip(explanation)
+
+                    # Task column — last message sent to the CLI
+                    current_task = session.get('current_task', '')
+                    # Show first line only; tooltip has the full message
+                    task_display = (current_task.split('\n', 1)[0]
+                                    if current_task else 'N/A')
+                    self._set_cell_text(row, self.COL_TASK,
+                                        task_display, row_color)
+                    task_item = self.table.item(row, self.COL_TASK)
+                    if task_item and current_task:
+                        task_item.setToolTip(current_task)
 
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', AutoSendMode.PAUSE)

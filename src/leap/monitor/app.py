@@ -75,18 +75,19 @@ class MonitorWindow(
     COL_CLI = 2
     COL_PROJECT = 3
     COL_SERVER = 4
-    COL_PATH = 5
-    COL_SERVER_BRANCH = 6
-    COL_STATUS = 7
-    COL_QUEUE = 8
-    COL_CLIENT = 9
-    COL_SLACK = 10
-    COL_PR = 11
-    COL_PR_BRANCH = 12
+    COL_TASK = 5
+    COL_PATH = 6
+    COL_SERVER_BRANCH = 7
+    COL_STATUS = 8
+    COL_QUEUE = 9
+    COL_CLIENT = 10
+    COL_SLACK = 11
+    COL_PR = 12
+    COL_PR_BRANCH = 13
 
     _HEADER_LABELS = [
-        '', 'Tag', 'CLI', 'Project', 'Server', 'Path', 'Server Branch',
-        'Status', 'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
+        '', 'Tag', 'CLI', 'Project', 'Server', 'Task', 'Path',
+        'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
 
@@ -217,7 +218,7 @@ class MonitorWindow(
         self.table.setHorizontalHeader(SeparatorHeaderView(Qt.Horizontal, self.table))
         self.table.setItemDelegate(SeparatorDelegate(self.table))
         self.table.setShowGrid(False)
-        self.table.setColumnCount(13)
+        self.table.setColumnCount(14)
         self.table.setHorizontalHeaderLabels(self._HEADER_LABELS)
 
         # Column header tooltip descriptions (applied via _apply_header_tooltips)
@@ -237,6 +238,7 @@ class MonitorWindow(
                 '\u25c6 Question \u2014 asking a clarifying question\n'
                 '\u25c7 Interrupted \u2014 stopped, needs manual resume'
             ),
+            self.COL_TASK: 'Current task — the last message sent to the CLI',
             self.COL_QUEUE: 'Number of messages waiting in the queue',
             self.COL_CLIENT: 'Leap client process (green = connected)',
             self.COL_SLACK: 'Slack integration (output to DM thread)',

@@ -186,6 +186,8 @@ def get_active_sessions() -> list[dict[str, Any]]:
         cli_state = status_response.get('cli_state', CLIState.IDLE)
         auto_send_mode = status_response.get('auto_send_mode', AutoSendMode.PAUSE)
         slack_enabled = status_response.get('slack_enabled', False)
+        recently_sent = status_response.get('recently_sent', [])
+        current_task = recently_sent[-1] if recently_sent else ''
 
         # Load metadata
         metadata = load_session_metadata(tag)
@@ -244,6 +246,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'has_client': has_client,
             'slack_enabled': slack_enabled,
             'cli_provider': cli_provider,
+            'current_task': current_task,
         })
 
     # Evict stale cache entries for sockets that no longer exist
