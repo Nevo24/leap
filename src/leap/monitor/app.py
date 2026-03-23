@@ -86,7 +86,7 @@ class MonitorWindow(
     COL_PR_BRANCH = 13
 
     _HEADER_LABELS = [
-        '', 'Tag', 'CLI', 'Project', 'Server', 'Task', 'Path',
+        '', 'Tag', 'CLI', 'Project', 'Server', 'Last Msg', 'Path',
         'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
@@ -238,7 +238,7 @@ class MonitorWindow(
                 '\u25c6 Question \u2014 asking a clarifying question\n'
                 '\u25c7 Interrupted \u2014 stopped, needs manual resume'
             ),
-            self.COL_TASK: 'Current task — the last message sent to the CLI',
+            self.COL_TASK: 'The last message sent to the CLI',
             self.COL_QUEUE: 'Number of messages waiting in the queue',
             self.COL_CLIENT: 'Leap client process (green = connected)',
             self.COL_SLACK: 'Slack integration (output to DM thread)',

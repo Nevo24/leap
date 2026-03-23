@@ -289,7 +289,7 @@ MENU_BTN_STYLE = (
 )
 
 # Column groups for vertical separators.
-# Groups: [X, Tag, CLI, Project] | [Server, Task, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
+# Groups: [X, Tag, CLI, Project] | [Server, Last Msg, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
 COLUMN_GROUPS: list[list[int]] = [
     [0, 1, 2, 3],          # Info
     [4, 5, 6, 7, 8, 9],    # Server
