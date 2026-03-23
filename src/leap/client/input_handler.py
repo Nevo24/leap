@@ -15,6 +15,7 @@ try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.patch_stdout import patch_stdout
     from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.filters import in_paste_mode as _in_paste_mode
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
     from prompt_toolkit.input import ansi_escape_sequences as _ansi_seq
@@ -37,6 +38,7 @@ except ImportError:
     patch_stdout = None
     FileHistory = None
     KeyBindings = None
+    _in_paste_mode = None
     _SHIFT_ENTER_SENTINEL = None
 
 
@@ -92,10 +94,15 @@ class InputHandler:
         """
         kb = KeyBindings()
 
-        # Enter submits (override multiline default where Enter=newline)
-        @kb.add('enter')
+        # Enter submits — but during a bracketed paste, Enter inserts a
+        # newline so multi-line pastes become a single message.
+        @kb.add('enter', filter=~_in_paste_mode)
         def _submit(event: object) -> None:
             event.current_buffer.validate_and_handle()  # type: ignore[union-attr]
+
+        @kb.add('enter', filter=_in_paste_mode)
+        def _paste_newline(event: object) -> None:
+            event.current_buffer.insert_text('\n')  # type: ignore[union-attr]
 
         # Shift+Enter inserts newline — iTerm2 (with CSI u) sends 0x0a for
         # Shift+Enter vs 0x0d for plain Enter.  0x0a = Ctrl+J in prompt_toolkit.
