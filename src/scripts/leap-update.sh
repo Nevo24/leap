@@ -88,5 +88,8 @@ if [ "$SKIP_IF_CURRENT" = true ] && [ "$PRE_PULL_HEAD" = "$POST_PULL_HEAD" ]; th
     exit 0
 fi
 
+echo -e "${GREEN}✓ Code updated${NC}"
+echo ""
+
 # Phase 2: Run post-pull steps from the FRESHLY PULLED Makefile
 exec make -C "$PROJECT_DIR" .update-after-pull

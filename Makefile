@@ -267,8 +267,6 @@ update: .env
 
 .PHONY: .update-after-pull
 .update-after-pull:
-	@echo "$(GREEN)✓ Code updated$(NC)"
-	@echo ""
 	@# Run ClaudeQ → Leap migration (no-op if already on Leap)
 	@$(MAKE) .migrate-from-claudeq
 	@echo "$(PROMPT_PREFIX) Updating core dependencies..."
