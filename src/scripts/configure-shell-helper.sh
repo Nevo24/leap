@@ -29,15 +29,11 @@ else
 fi
 
 # Capture existing LEAP_*_FLAGS values before removing old config
-declare -A EXISTING_FLAGS
-if grep -q "LEAP_.*_FLAGS" "$RC_FILE" 2>/dev/null; then
-    while IFS= read -r line; do
-        # Extract var name and value from: export LEAP_FOO_FLAGS="value"
-        if [[ "$line" =~ export[[:space:]]+(LEAP_[A-Z_]+_FLAGS)=\"([^\"]*)\" ]]; then
-            EXISTING_FLAGS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
-        fi
-    done < <(grep "LEAP_.*_FLAGS" "$RC_FILE")
-fi
+# (uses a temp file instead of associative arrays for bash 3.2 compat)
+SAVED_FLAGS=$(mktemp)
+trap "rm -f '$SAVED_FLAGS'" EXIT
+grep 'LEAP_.*_FLAGS' "$RC_FILE" 2>/dev/null | \
+    sed -n 's/^export \(LEAP_[A-Z_]*_FLAGS\)="\(.*\)"/\1=\2/p' > "$SAVED_FLAGS"
 
 # Check if config already exists
 if grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
@@ -125,15 +121,15 @@ echo "" >> "$RC_FILE"
 
 # Generate per-CLI default flags from the provider registry (preserve existing values)
 echo "# Default flags per CLI (always passed when starting a server)" >> "$RC_FILE"
-while IFS= read -r var; do
-    OLD_VALUE="${EXISTING_FLAGS[$var]:-}"
-    echo "export ${var}=\"${OLD_VALUE}\"" >> "$RC_FILE"
-done < <(PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
+PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
 from leap.cli_providers.registry import list_providers
 for name in list_providers():
     var = 'LEAP_' + name.upper().replace('-', '_') + '_FLAGS'
     print(var)
-")
+" | while IFS= read -r var; do
+    OLD_VALUE=$(grep "^${var}=" "$SAVED_FLAGS" 2>/dev/null | head -1 | cut -d= -f2-)
+    echo "export ${var}=\"${OLD_VALUE}\"" >> "$RC_FILE"
+done
 
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
