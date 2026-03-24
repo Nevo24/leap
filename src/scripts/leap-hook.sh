@@ -25,7 +25,7 @@
 #
 
 STATE="$1"
-[ -z "$STATE" ] && exit 0
+[ -z "$STATE" ] && echo '{}' && exit 0
 
 # Use venv Python if available (set by Leap server), fall back to PATH python3.
 # Homebrew-only installs may not have python3 in PATH inside CLI subshells.
@@ -83,9 +83,9 @@ for _ in range(10):
     fi
 fi
 
-# Non-Leap sessions: exit silently
-[ -z "$LEAP_TAG" ] && exit 0
-[ -z "$LEAP_SIGNAL_DIR" ] && exit 0
+# Non-Leap sessions: exit silently (echo '{}' for CLIs that expect JSON stdout)
+[ -z "$LEAP_TAG" ] && echo '{}' && exit 0
+[ -z "$LEAP_SIGNAL_DIR" ] && echo '{}' && exit 0
 
 SIGNAL_FILE="$LEAP_SIGNAL_DIR/$LEAP_TAG.signal"
 

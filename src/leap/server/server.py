@@ -784,6 +784,10 @@ class LeapServer:
         # Enter (\r) flushes the buffer as a sent message.
         # Backspace (\x7f) removes the last byte.
         # Escape sequences (\x1b[...X) are skipped entirely.
+        # When the CLI is in a prompt state (permission/input dialog),
+        # skip accumulation — those keystrokes are prompt responses
+        # (e.g. "y"/"n" for Codex, digits for Claude), not user messages.
+        in_prompt = self.state.current_state in PROMPT_STATES
         i = 0
         while i < len(data):
             b = data[i]
@@ -814,6 +818,11 @@ class LeapServer:
                         i += 1
                 else:
                     i += 1  # SS2/SS3/other: skip one byte after ESC
+                continue
+            if in_prompt:
+                # Discard prompt-response input (y/n, digits, arrows)
+                # so it doesn't contaminate the next real message.
+                i += 1
                 continue
             if b == 0x0d:  # Enter
                 if self._terminal_input_buf:
