@@ -24,7 +24,7 @@ make install
 source ~/.zshrc  # ~/.bashrc on Linux
 ```
 
-Already installed? Run `leap --update` to pull the latest version and rebuild.
+Already installed? Run `leap --update` to pull the latest version and rebuild. If the update command fails, `cd` into the project directory and run `make update`.
 
 ### Upgrading from ClaudeQ
 
