@@ -15,18 +15,11 @@ import time
 from typing import Any, Callable, Optional
 
 from leap.cli_providers.states import CLIState, WAITING_STATES
+from leap.cli_providers.registry import get_display_name
 from leap.utils.constants import SOCKET_DIR
 from leap.slack.config import load_slack_sessions, save_slack_sessions
 
 logger = logging.getLogger(__name__)
-
-# Provider name → display name (lightweight, avoids importing pexpect)
-_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
-    'claude': 'Claude Code',
-    'codex': 'OpenAI Codex',
-    'cursor-agent': 'Cursor Agent',
-    'gemini': 'Gemini CLI',
-}
 
 # Slack message limit is ~4000 chars for best rendering
 _MAX_MESSAGE_LEN: int = 3900
@@ -198,9 +191,7 @@ class OutputWatcher:
                 branch = data.get('branch', '') or 'N/A'
                 cli_name = data.get('cli_provider', '')
                 if cli_name:
-                    cli_provider = _PROVIDER_DISPLAY_NAMES.get(
-                        cli_name, cli_name,
-                    )
+                    cli_provider = get_display_name(cli_name)
         except (json.JSONDecodeError, OSError):
             pass
         return f"*[tag: {tag}, CLI: {cli_provider}, project: {project}, branch: {branch}]*"

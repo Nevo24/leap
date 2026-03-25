@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Optional
 
-from leap.cli_providers.registry import DEFAULT_PROVIDER, get_provider
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR, SLACK_BOT_LOCK,
@@ -520,7 +520,7 @@ class LeapClient:
             with open(meta_file, 'r') as f:
                 data = json.load(f)
             provider_name = data.get('cli_provider', DEFAULT_PROVIDER)
-            return get_provider(provider_name).display_name
+            return get_display_name(provider_name)
         except Exception:
             return ''
 

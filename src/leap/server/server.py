@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
-from leap.cli_providers.registry import get_provider
+from leap.cli_providers.registry import get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, IMAGES_DIR, STORAGE_DIR,
@@ -872,7 +872,7 @@ class LeapServer:
 
     def _print_startup_banner(self) -> None:
         """Print the startup banner with help information."""
-        print_banner('server', self.tag, cli_name=self._provider.display_name)
+        print_banner('server', self.tag, cli_name=get_display_name(self._provider.name))
         print("  All responses will appear HERE in this window.")
         print("")
         print("  To send messages from another tab, run:")

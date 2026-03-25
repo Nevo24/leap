@@ -19,13 +19,13 @@ _SRC_DIR = _SCRIPT_DIR.parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from leap.cli_providers.registry import get_provider, list_installed_providers
+from leap.cli_providers.registry import get_display_name, list_installed_providers
 
 
 def _build_choices() -> list[tuple[str, str]]:
     """Build choices list from installed providers only."""
     return [
-        (name, get_provider(name).display_name)
+        (name, get_display_name(name))
         for name in list_installed_providers()
     ]
 

@@ -18,6 +18,9 @@ fi
 if [ "$1" = "--slack" ]; then
     exec "$SCRIPT_DIR/leap-main.sh" "$@"
 fi
+if [ "$1" = "--manage-clis" ]; then
+    exec "$SCRIPT_DIR/leap-main.sh" "$@"
+fi
 
 # Find Python (same logic as leap-main.sh)
 if [ -f "$VENV_PATH_FILE" ]; then
@@ -94,10 +97,27 @@ if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
     exit 1
 fi
 
-# Append default per-CLI flags from env vars (e.g. LEAP_CLAUDE_FLAGS, LEAP_CURSOR_AGENT_FLAGS, LEAP_GEMINI_FLAGS)
+# Append default per-CLI flags: .storage/cli_flags.json, overridden by env var if set
 CLI_UPPER=$(echo "$SELECTED" | tr '[:lower:]-' '[:upper:]_')
 DEFAULT_FLAGS_VAR="LEAP_${CLI_UPPER}_FLAGS"
-DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR:-}"
+ENV_FLAGS="${!DEFAULT_FLAGS_VAR+__SET__}"  # check if env var is set (even if empty)
+if [ "$ENV_FLAGS" = "__SET__" ]; then
+    DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR}"
+else
+    # Read from .storage/cli_flags.json
+    CLI_FLAGS_FILE="$STORAGE_DIR/cli_flags.json"
+    DEFAULT_FLAGS=""
+    if [ -f "$CLI_FLAGS_FILE" ]; then
+        DEFAULT_FLAGS=$("$PYTHON_CMD" -c "
+import json, sys
+try:
+    data = json.loads(open(sys.argv[1]).read())
+    print(data.get(sys.argv[2], ''))
+except Exception:
+    pass
+" "$CLI_FLAGS_FILE" "$SELECTED" 2>/dev/null)
+    fi
+fi
 # shellcheck disable=SC2086
 CLI_FLAGS=($DEFAULT_FLAGS)
 

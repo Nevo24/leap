@@ -28,13 +28,6 @@ else
     exit 0
 fi
 
-# Capture existing LEAP_*_FLAGS values before removing old config
-# (uses a temp file instead of associative arrays for bash 3.2 compat)
-SAVED_FLAGS=$(mktemp)
-trap "rm -f '$SAVED_FLAGS'" EXIT
-grep 'LEAP_.*_FLAGS' "$RC_FILE" 2>/dev/null | \
-    sed -n 's/^export \(LEAP_[A-Z_]*_FLAGS\)="\(.*\)"/\1=\2/p' > "$SAVED_FLAGS"
-
 # Check if config already exists
 if grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
     if [ "$UPDATE_MODE" = true ]; then
@@ -119,22 +112,9 @@ if [ -n "$JETBRAINS_PATHS" ]; then
 fi
 echo "" >> "$RC_FILE"
 
-# Generate per-CLI default flags from the provider registry (preserve existing values)
-echo "# Default flags per CLI (always passed when starting a server)" >> "$RC_FILE"
-PYTHONPATH="$REPO_PATH/src:${PYTHONPATH:-}" "$POETRY_VENV/bin/python3" -c "
-from leap.cli_providers.registry import list_providers
-for name in list_providers():
-    var = 'LEAP_' + name.upper().replace('-', '_') + '_FLAGS'
-    print(var)
-" | while IFS= read -r var; do
-    OLD_VALUE=$(grep "^${var}=" "$SAVED_FLAGS" 2>/dev/null | head -1 | cut -d= -f2-)
-    echo "export ${var}=\"${OLD_VALUE}\"" >> "$RC_FILE"
-done
-
 # Add leap function
 cat >> "$RC_FILE" <<'EOF'
 
-# Extra flags can also be passed inline: leap my-tag --some-flag
 leap() {
     "$LEAP_PROJECT_DIR/src/scripts/leap-select.sh" "$@"
 }

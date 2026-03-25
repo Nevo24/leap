@@ -15,7 +15,7 @@ from typing import Callable, Optional
 import pexpect
 
 from leap.cli_providers.base import CLIProvider
-from leap.cli_providers.registry import get_provider
+from leap.cli_providers.registry import get_cli_env, get_provider
 
 
 class PTYHandler:
@@ -67,6 +67,8 @@ class PTYHandler:
 
         env = dict(os.environ)
         env.update(self._provider.get_spawn_env(self._tag, self._signal_dir))
+        # Apply user-configured env vars (from leap --manage-clis)
+        env.update(get_cli_env(self._provider.name))
 
         self.process = pexpect.spawn(
             cli_path,

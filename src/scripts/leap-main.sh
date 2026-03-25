@@ -42,6 +42,13 @@ if [ "$1" = "--update" ]; then
     exec "$SCRIPT_DIR/leap-update.sh" --skip-if-current "$PROJECT_DIR"
 fi
 
+# Manage CLI order if requested
+if [ "$1" = "--manage-clis" ]; then
+    PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
+        "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/leap-manage-clis.py"
+    exit $?
+fi
+
 # Run Slack bot if requested
 if [ "$1" = "--slack" ]; then
     shift
@@ -84,6 +91,7 @@ USAGE:
     leap <tag> [--flags]              Start server with flags (passed to CLI)
     leap --help, -h                   Show this help
     leap --update                     Update Leap to latest version
+    leap --manage-clis                Manage CLI providers (order, flags, visibility, custom CLIs)
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
         echo "    leap --slack                      Start the Slack bot daemon"
