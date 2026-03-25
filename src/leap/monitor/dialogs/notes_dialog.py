@@ -5,6 +5,7 @@ Left panel shows a note list; right panel is the editor. Notes auto-save on
 switch, close, and Cmd+S.
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -40,13 +41,21 @@ def _migrate_old_notes_file() -> None:
 
 
 def _list_notes() -> list[str]:
-    """Return sorted list of note names (without extension)."""
+    """Return note names sorted by most recently edited first."""
     _migrate_old_notes_file()
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    return sorted(
-        (p.stem for p in NOTES_DIR.glob('*.txt') if p.is_file()),
-        key=str.lower,
-    )
+    files = [p for p in NOTES_DIR.glob('*.txt') if p.is_file()]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p.stem for p in files]
+
+
+def _format_mtime(path: Path) -> str:
+    """Return the file's mtime as a human-readable string (second precision)."""
+    try:
+        ts = path.stat().st_mtime
+        return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+    except OSError:
+        return ''
 
 
 class NotesDialog(QDialog):
@@ -107,9 +116,17 @@ class NotesDialog(QDialog):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
+        # Title + timestamp row
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QLabel('')
         self._title_label.setStyleSheet('font-weight: bold; font-size: 13px;')
-        right_layout.addWidget(self._title_label)
+        header_row.addWidget(self._title_label)
+        header_row.addStretch()
+        self._timestamp_label = QLabel('')
+        self._timestamp_label.setStyleSheet('color: #999; font-size: 11px;')
+        header_row.addWidget(self._timestamp_label)
+        right_layout.addLayout(header_row)
 
         self._editor = QPlainTextEdit()
         self._editor.setPlaceholderText('Select or create a note...')
@@ -142,6 +159,15 @@ class NotesDialog(QDialog):
                 self._list.setCurrentItem(items[0])
         self._list.blockSignals(False)
 
+    def _update_timestamp(self) -> None:
+        """Update the timestamp label for the current note."""
+        if not self._current_name:
+            self._timestamp_label.setText('')
+            return
+        path = _note_path(self._current_name)
+        ts = _format_mtime(path)
+        self._timestamp_label.setText(f'Last edited: {ts}' if ts else '')
+
     def _on_item_changed(
         self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem],
     ) -> None:
@@ -153,6 +179,7 @@ class NotesDialog(QDialog):
             self._editor.setPlainText('')
             self._editor.setEnabled(False)
             self._title_label.setText('')
+            self._timestamp_label.setText('')
             return
         name = current.text()
         self._current_name = name
@@ -165,6 +192,7 @@ class NotesDialog(QDialog):
         self._saved_text = text
         self._editor.setEnabled(True)
         self._title_label.setText(name)
+        self._update_timestamp()
 
     # ── CRUD ─────────────────────────────────────────────────────────
 
@@ -277,6 +305,7 @@ class NotesDialog(QDialog):
                 NOTES_DIR.mkdir(parents=True, exist_ok=True)
                 _note_path(self._current_name).write_text(text, encoding='utf-8')
                 self._saved_text = text
+                self._update_timestamp()
             except OSError:
                 pass
 
