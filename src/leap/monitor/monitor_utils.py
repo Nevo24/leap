@@ -71,8 +71,8 @@ def find_icon() -> Optional[Path]:
     return None
 
 
-def find_notes_icon() -> Optional[Path]:
-    """Find the notes icon (pen-to-square), works from source and .app bundle."""
+def _find_notes_icon_path() -> Optional[Path]:
+    """Find the notes icon PNG, works from source and .app bundle."""
     candidate = Path(__file__).parent.parent.parent.parent / "assets" / "notes-icon.png"
     if candidate.exists():
         return candidate
@@ -85,6 +85,31 @@ def find_notes_icon() -> Optional[Path]:
             break
 
     return None
+
+
+def notes_icon(size: int = 16) -> Optional['QIcon']:
+    """Return a theme-tinted notes icon, or None if the asset is missing."""
+    icon_path = _find_notes_icon_path()
+    if not icon_path:
+        return None
+
+    from PyQt5.QtGui import QColor, QIcon, QPainter, QPixmap
+    from PyQt5.QtCore import Qt
+    from leap.monitor.themes import current_theme
+
+    src = QPixmap(str(icon_path))
+    if src.isNull():
+        return None
+
+    scaled = src.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    # Create a same-size pixmap filled with the theme icon color,
+    # then apply the original alpha as a mask so only the icon shape is colored.
+    tinted = QPixmap(scaled.size())
+    tinted.fill(QColor(current_theme().icon_color))
+    tinted.setMask(scaled.createMaskFromColor(Qt.transparent, Qt.MaskInColor))
+
+    return QIcon(tinted)
 
 
 def _remove_client_lock(tag: str) -> None:

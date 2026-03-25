@@ -63,8 +63,8 @@ SLACK_BOT_LOCK: Final[Path] = SLACK_DIR / "slack-bot.lock"
 # Settings file
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
-# Notes file (free-form user notes)
-NOTES_FILE: Final[Path] = STORAGE_DIR / "notes.txt"
+# Notes directory (free-form user notes, one .txt per note)
+NOTES_DIR: Final[Path] = STORAGE_DIR / "notes"
 
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
@@ -129,6 +129,7 @@ def ensure_storage_dirs() -> None:
     SOCKET_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
     SLACK_DIR.mkdir(parents=True, exist_ok=True)
 
 
