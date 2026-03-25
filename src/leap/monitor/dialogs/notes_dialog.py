@@ -495,9 +495,6 @@ class NotesDialog(QDialog):
         header_row.addWidget(self._mode_combo)
 
         header_row.addStretch()
-        self._timestamp_label = QLabel('')
-        self._timestamp_label.setStyleSheet('color: #999; font-size: 11px;')
-        header_row.addWidget(self._timestamp_label)
         right_layout.addLayout(header_row)
 
         # Stacked widget: page 0 = text, page 1 = checklist
@@ -533,20 +530,49 @@ class NotesDialog(QDialog):
         self._list.blockSignals(True)
         self._list.clear()
         for name in _list_notes():
-            self._list.addItem(QListWidgetItem(name))
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, name)
+            ts = _format_mtime(_note_path(name))
+            widget = QWidget()
+            layout = QVBoxLayout(widget)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(1)
+            name_label = QLabel(name)
+            name_label.setStyleSheet('font-weight: bold; font-size: 12px;')
+            layout.addWidget(name_label)
+            if ts:
+                ts_label = QLabel(ts)
+                ts_label.setStyleSheet('color: #999; font-size: 10px;')
+                layout.addWidget(ts_label)
+            item.setSizeHint(widget.sizeHint())
+            self._list.addItem(item)
+            self._list.setItemWidget(item, widget)
         if select_name:
-            items = self._list.findItems(select_name, Qt.MatchExactly)
-            if items:
-                self._list.setCurrentItem(items[0])
+            for i in range(self._list.count()):
+                if self._list.item(i).data(Qt.UserRole) == select_name:
+                    self._list.setCurrentRow(i)
+                    break
         self._list.blockSignals(False)
 
     def _update_timestamp(self) -> None:
-        """Update the timestamp label for the current note."""
+        """Update the timestamp in the list for the current note."""
         if not self._current_name:
-            self._timestamp_label.setText('')
             return
-        ts = _format_mtime(_note_path(self._current_name))
-        self._timestamp_label.setText(f'Last edited: {ts}' if ts else '')
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item.data(Qt.UserRole) == self._current_name:
+                widget = self._list.itemWidget(item)
+                if widget:
+                    labels = widget.findChildren(QLabel)
+                    ts = _format_mtime(_note_path(self._current_name))
+                    if len(labels) >= 2 and ts:
+                        labels[1].setText(ts)
+                    elif len(labels) == 1 and ts:
+                        ts_label = QLabel(ts)
+                        ts_label.setStyleSheet('color: #999; font-size: 10px;')
+                        widget.layout().addWidget(ts_label)
+                    item.setSizeHint(widget.sizeHint())
+                break
 
     def _current_mode(self) -> int:
         return self._stack.currentIndex()
@@ -566,10 +592,9 @@ class NotesDialog(QDialog):
             self._mode_combo.setEnabled(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText('')
-            self._timestamp_label.setText('')
             return
 
-        name = current.text()
+        name = current.data(Qt.UserRole)
         self._current_name = name
         path = _note_path(name)
         try:
