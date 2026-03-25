@@ -172,7 +172,7 @@ class _ChecklistItemWidget(QFrame):
 
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 2, 4, 2)
-        row.setSpacing(6)
+        row.setSpacing(12)
 
         self._cb = QCheckBox()
         self._cb.setChecked(checked)
