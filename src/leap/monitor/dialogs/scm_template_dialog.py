@@ -297,6 +297,15 @@ class PresetEditorDialog(QDialog):
         name = self._combo.currentText()
         if not name:
             return
+        # Check for unsaved changes before switching away
+        if not self._maybe_save_unsaved():
+            # User cancelled — revert combo to previous preset
+            self._refreshing = True
+            idx = self._combo.findText(self._current_name)
+            if idx >= 0:
+                self._combo.setCurrentIndex(idx)
+            self._refreshing = False
+            return
         presets = load_saved_presets()
         self._messages = list(presets.get(name, ['']))
         if not self._messages:
@@ -343,6 +352,8 @@ class PresetEditorDialog(QDialog):
         self._refresh_combo(name)
 
     def _on_new(self) -> None:
+        if not self._maybe_save_unsaved():
+            return
         prev_name = ''
         while True:
             dlg = QInputDialog(self)
@@ -461,6 +472,12 @@ class PresetEditorDialog(QDialog):
             return
         save_selected_preset_name(self._current_name)
         self.accept()
+
+    def reject(self) -> None:
+        """Intercept Cancel / X-button to check for unsaved changes."""
+        if not self._maybe_save_unsaved():
+            return  # User cancelled — stay in dialog
+        super().reject()
 
     def done(self, result: int) -> None:
         """Save dialog size on close."""
