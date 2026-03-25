@@ -542,7 +542,7 @@ class NotesDialog(QDialog):
             layout.addWidget(name_label)
             if ts:
                 ts_label = QLabel(ts)
-                ts_label.setStyleSheet('color: #999; font-size: 10px;')
+                ts_label.setStyleSheet('color: #ccc; font-size: 10px;')
                 layout.addWidget(ts_label)
             item.setSizeHint(widget.sizeHint())
             self._list.addItem(item)
@@ -569,7 +569,7 @@ class NotesDialog(QDialog):
                         labels[1].setText(ts)
                     elif len(labels) == 1 and ts:
                         ts_label = QLabel(ts)
-                        ts_label.setStyleSheet('color: #999; font-size: 10px;')
+                        ts_label.setStyleSheet('color: #ccc; font-size: 10px;')
                         widget.layout().addWidget(ts_label)
                     item.setSizeHint(widget.sizeHint())
                 break
