@@ -451,6 +451,14 @@ class NotesDialog(QDialog):
         left_layout.addWidget(QLabel('Notes'))
 
         self._list = QListWidget()
+        t = current_theme()
+        self._list.setStyleSheet(
+            f'QListWidget::item:selected {{'
+            f'  background: transparent;'
+            f'  border: 2px solid {t.accent_blue};'
+            f'  border-radius: 4px;'
+            f'}}'
+        )
         self._list.currentItemChanged.connect(self._on_item_changed)
         left_layout.addWidget(self._list, 1)
 
