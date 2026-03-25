@@ -1459,6 +1459,12 @@ class TableBuilderMixin(_Base):
                 self._register_global_shortcut()
             self._show_status('Settings saved')
 
+    def _open_notes(self) -> None:
+        """Open the notes dialog."""
+        from leap.monitor.dialogs.notes_dialog import NotesDialog
+        dialog = NotesDialog(parent=self)
+        dialog.exec_()
+
     def _show_queue_context_menu(
         self, label: QLabel, pos: 'QPoint', tag: str,
     ) -> None:

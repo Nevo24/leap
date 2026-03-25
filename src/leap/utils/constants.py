@@ -63,6 +63,9 @@ SLACK_BOT_LOCK: Final[Path] = SLACK_DIR / "slack-bot.lock"
 # Settings file
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
+# Notes file (free-form user notes)
+NOTES_FILE: Final[Path] = STORAGE_DIR / "notes.txt"
+
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval

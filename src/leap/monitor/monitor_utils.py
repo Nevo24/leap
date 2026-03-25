@@ -71,6 +71,22 @@ def find_icon() -> Optional[Path]:
     return None
 
 
+def find_notes_icon() -> Optional[Path]:
+    """Find the notes icon (pen-to-square), works from source and .app bundle."""
+    candidate = Path(__file__).parent.parent.parent.parent / "assets" / "notes-icon.png"
+    if candidate.exists():
+        return candidate
+
+    for parent in Path(__file__).parents:
+        if parent.name == 'Resources' and parent.parent.name == 'Contents':
+            candidate = parent / "notes-icon.png"
+            if candidate.exists():
+                return candidate
+            break
+
+    return None
+
+
 def _remove_client_lock(tag: str) -> None:
     """Kill the old client process (if alive) and remove the lock file.
 

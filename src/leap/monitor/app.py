@@ -34,7 +34,7 @@ from leap.monitor.scm_polling import (
     SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
 )
 from leap.monitor.session_manager import get_active_sessions
-from leap.monitor.monitor_utils import find_icon, load_shell_env
+from leap.monitor.monitor_utils import find_icon, find_notes_icon, load_shell_env
 from leap.monitor.server_launcher import ServerLauncher
 from leap.monitor.ui.dock_badge import DockBadge
 from leap.monitor.ui.log_history import LogHistory, LogHistoryDialog
@@ -360,6 +360,14 @@ class MonitorWindow(
         settings_btn.setToolTip('Monitor settings')
         settings_btn.clicked.connect(self._open_settings)
         buttons_layout.addWidget(settings_btn)
+
+        notes_btn = QPushButton(' Notes')
+        notes_btn.setToolTip('Open personal notes')
+        notes_icon_path = find_notes_icon()
+        if notes_icon_path:
+            notes_btn.setIcon(QIcon(str(notes_icon_path)))
+        notes_btn.clicked.connect(self._open_notes)
+        buttons_layout.addWidget(notes_btn)
 
         buttons_layout.addStretch()
 
