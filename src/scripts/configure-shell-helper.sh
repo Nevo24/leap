@@ -28,6 +28,14 @@ else
     exit 0
 fi
 
+# Remove legacy LEAP_*_FLAGS exports (now stored in .storage/cli_flags.json)
+if [ -f "$RC_FILE" ]; then
+    sed -i.bak '/^export LEAP_[A-Z_]*_FLAGS="/d' "$RC_FILE"
+    sed -i.bak '/^# Default flags per CLI/d' "$RC_FILE"
+    sed -i.bak '/^# Extra flags can also be passed inline/d' "$RC_FILE"
+    rm -f "$RC_FILE.bak"
+fi
+
 # Check if config already exists
 if grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
     if [ "$UPDATE_MODE" = true ]; then
