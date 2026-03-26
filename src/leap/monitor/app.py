@@ -449,12 +449,13 @@ class MonitorWindow(
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setContentsMargins(0, 6, 0, 4)
 
-        add_btn = QPushButton('  Add Session')
-        add_btn.setObjectName('_leapAddBtn')
-        add_btn.setToolTip('Add session from Git URL or local path')
-        add_btn.setIcon(self._make_plus_icon(b'#ffffff'))
-        add_btn.clicked.connect(self._add_row_menu)
-        toolbar_layout.addWidget(add_btn)
+        self._add_btn = QPushButton('  Add Session')
+        self._add_btn.setObjectName('_leapAddBtn')
+        self._add_btn.setToolTip('Add session from Git URL or local path')
+        self._add_btn.setIcon(self._make_plus_icon(
+            current_theme().accent_blue.encode()))
+        self._add_btn.clicked.connect(self._add_row_menu)
+        toolbar_layout.addWidget(self._add_btn)
         toolbar_layout.addStretch()
         layout.addLayout(toolbar_layout)
 
@@ -1617,12 +1618,10 @@ class MonitorWindow(
                 border-color: {btn_border};
             }}
 
-            /* --- Add Session button (primary action, solid accent) --- */
+            /* --- Add Session button (outlined accent) --- */
             #_leapAddBtn {{
-                color: #ffffff;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {t.accent_blue},
-                    stop:1 {t.input_focus_border});
+                color: {t.accent_blue};
+                background-color: {btn_bg};
                 border: 1px solid {t.accent_blue};
                 border-radius: {r}px;
                 padding: 6px 20px;
@@ -1630,14 +1629,12 @@ class MonitorWindow(
                 font-size: {t.font_size_base}px;
             }}
             #_leapAddBtn:hover {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 {t.input_focus_border},
-                    stop:1 {t.accent_blue});
+                background-color: rgba({self._hex_rgb(t.accent_blue)}, 18);
                 border-color: {t.input_focus_border};
+                color: {t.input_focus_border};
             }}
             #_leapAddBtn:pressed {{
-                background-color: {t.accent_blue};
-                border-color: {t.accent_blue};
+                background-color: rgba({self._hex_rgb(t.accent_blue)}, 30);
             }}
 
             /* --- Close button (danger outline) --- */
@@ -1700,6 +1697,9 @@ class MonitorWindow(
         if self._drop_indicator:
             self._drop_indicator.setStyleSheet(
                 f'background-color: {t.accent_blue};')
+
+        # Update Add Session button icon color
+        self._add_btn.setIcon(self._make_plus_icon(t.accent_blue.encode()))
 
     # ------------------------------------------------------------------
     #  Global keyboard shortcut
