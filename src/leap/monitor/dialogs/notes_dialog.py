@@ -335,21 +335,23 @@ class _ChecklistItemWidget(QFrame):
 
     def _dismiss_popup_if_active(self) -> None:
         """Dismiss this item's popup if it's open."""
-        if self._popup is not None:
-            import sip
-            wrap = self._popup
-            self._popup = None
-            if _ChecklistItemWidget._active_expand is self:
-                _ChecklistItemWidget._active_expand = None
-            if not sip.isdeleted(wrap):
-                new_text = wrap.toPlainText().replace('\n', ' ')
-                wrap.setVisible(False)
-                self.layout().removeWidget(wrap)
-                wrap.deleteLater()
-            if not sip.isdeleted(self._edit):
-                self._edit.setVisible(True)
-                if new_text != self._edit.text():
-                    self._edit.setText(new_text)
+        if self._popup is None:
+            return
+        import sip
+        wrap = self._popup
+        self._popup = None
+        if _ChecklistItemWidget._active_expand is self:
+            _ChecklistItemWidget._active_expand = None
+        new_text = ''
+        if not sip.isdeleted(wrap):
+            new_text = wrap.toPlainText().replace('\n', ' ')
+            wrap.setVisible(False)
+            self.layout().removeWidget(wrap)
+            wrap.deleteLater()
+        if not sip.isdeleted(self._edit):
+            self._edit.setVisible(True)
+            if new_text and new_text != self._edit.text():
+                self._edit.setText(new_text)
 
     def _show_expand_popup(self) -> None:
         """Replace QLineEdit with inline wrapping editor."""
@@ -360,7 +362,6 @@ class _ChecklistItemWidget(QFrame):
         if prev is not None and prev is not self:
             prev._dismiss_popup_if_active()
         _ChecklistItemWidget._active_expand = self
-        import time
         row_layout = self.layout()
         edit_idx = row_layout.indexOf(self._edit)
 
@@ -396,6 +397,8 @@ class _ChecklistItemWidget(QFrame):
             if self._popup is not wrap:
                 return
             self._popup = None
+            if _ChecklistItemWidget._active_expand is self:
+                _ChecklistItemWidget._active_expand = None
             if sip.isdeleted(wrap):
                 return
             new_text = wrap.toPlainText().replace('\n', ' ') if save else None
@@ -504,6 +507,9 @@ class _ChecklistWidget(QWidget):
         # if the focused widget is destroyed, macOS deactivates the
         # window and subsequent setFocus() calls silently fail.
         self._scroll.setFocus()
+        # Reset class-level active expand — widgets are about to be destroyed
+        _ChecklistItemWidget._active_expand = None
+        self._add_popup = None
         while self._layout.count():
             child = self._layout.takeAt(0)
             w = child.widget()
