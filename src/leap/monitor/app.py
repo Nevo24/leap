@@ -144,6 +144,7 @@ class MonitorWindow(
         # Row drag-and-drop state
         self._drag_source_row: int = -1
         self._drag_start_pos: QPoint = QPoint()
+        self._drag_press_time: float = 0.0
         self._drop_indicator: Optional[QWidget] = None
 
         # User notification tracking state
@@ -988,11 +989,15 @@ class MonitorWindow(
     # ------------------------------------------------------------------
 
     def _is_in_table(self, widget: object) -> bool:
-        """Check if a widget is inside the session table."""
-        while widget is not None:
-            if widget is self.table:
+        """Check if a widget is inside the session table (excludes scrollbars)."""
+        from PyQt5.QtWidgets import QScrollBar
+        w = widget
+        while w is not None:
+            if isinstance(w, QScrollBar):
+                return False
+            if w is self.table:
                 return True
-            widget = widget.parent() if hasattr(widget, 'parent') else None
+            w = w.parent() if hasattr(w, 'parent') else None
         return False
 
     def eventFilter(self, obj: object, event: QEvent) -> bool:
@@ -1008,6 +1013,7 @@ class MonitorWindow(
                 if row >= 0 and col != self.COL_DELETE:
                     self._drag_source_row = row
                     self._drag_start_pos = event.globalPos()
+                    self._drag_press_time = time.time()
                 else:
                     self._drag_source_row = -1
 
@@ -1015,8 +1021,11 @@ class MonitorWindow(
             if (self._drag_source_row >= 0
                     and event.buttons() & Qt.LeftButton
                     and self._is_in_table(obj)):
+                # Require both distance (30px) and hold time (300ms)
+                # to distinguish intentional drag from scroll gestures
+                held_ms = (time.time() - self._drag_press_time) * 1000
                 dist = (event.globalPos() - self._drag_start_pos).manhattanLength()
-                if dist >= QApplication.startDragDistance():
+                if dist >= 30 and held_ms >= 300:
                     self._perform_row_drag(self._drag_source_row)
                     self._drag_source_row = -1
                     return True

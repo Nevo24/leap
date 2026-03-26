@@ -256,7 +256,7 @@ class _ChecklistItemWidget(QFrame):
         self._del_btn.clicked.connect(
             lambda: self.delete_requested.emit(self._index),
         )
-        row.addWidget(self._del_btn)
+        row.addWidget(self._del_btn, 0, Qt.AlignVCenter)
 
         self._apply_checked_style(checked)
         self.setStyleSheet(
