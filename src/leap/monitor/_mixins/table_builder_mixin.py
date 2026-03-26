@@ -251,12 +251,13 @@ class TableBuilderMixin(_Base):
             font.setItalic(True)
             tag_label.setFont(font)
         else:
-            # Tag name styled as a subtle code chip
+            # Tag name styled as a subtle code chip (full capsule)
+            tag_label.setFixedHeight(22)
             tag_label.setStyleSheet(
                 f'QLabel {{'
                 f'  background-color: rgba({_hex_to_rgb_str(t_tag.accent_blue)}, 0.10);'
-                f'  border-radius: {t_tag.border_radius - 2}px;'
-                f'  padding: 2px 6px;'
+                f'  border-radius: 11px;'
+                f'  padding: 0px 8px;'
                 f'  font-weight: 600;'
                 f'}}'
             )
@@ -613,7 +614,7 @@ class TableBuilderMixin(_Base):
                     del_layout.setContentsMargins(0, 0, 0, 0)
                     del_layout.setSpacing(0)
                     del_btn = QPushButton('\u00d7')
-                    del_btn.setFixedSize(26, del_btn.sizeHint().height())
+                    del_btn.setFixedSize(30, del_btn.sizeHint().height())
                     del_btn.setStyleSheet(close_btn_style())
                     del_btn.setProperty('_btn_role', 'close')
                     del_btn.setToolTip(f'Remove row for {tag}')
@@ -970,14 +971,12 @@ class TableBuilderMixin(_Base):
                         q_label.setAlignment(Qt.AlignCenter)
                         if queue_size > 0:
                             t_q = current_theme()
+                            q_label.setFixedSize(22, 22)
                             q_label.setStyleSheet(
                                 f'QLabel {{'
                                 f'  background-color: {t_q.accent_blue};'
                                 f'  color: #ffffff;'
-                                f'  border-radius: 10px;'
-                                f'  min-width: 20px;'
-                                f'  max-width: 28px;'
-                                f'  padding: 1px 4px;'
+                                f'  border-radius: 11px;'
                                 f'  font-size: {t_q.font_size_small}px;'
                                 f'  font-weight: bold;'
                                 f'}}'
@@ -1031,7 +1030,7 @@ class TableBuilderMixin(_Base):
 
                     if not is_dead:
                         server_x = QPushButton('\u00d7')
-                        server_x.setFixedSize(26, server_x.sizeHint().height())
+                        server_x.setFixedSize(30, server_x.sizeHint().height())
                         server_x.setStyleSheet(close_btn_style())
                         server_x.setProperty('_btn_role', 'close')
                         server_x.setToolTip(f'Close server {tag}')
@@ -1065,7 +1064,7 @@ class TableBuilderMixin(_Base):
                             server_btn.setProperty('always_tooltip', True)
                             server_btn.setProperty('_btn_role', 'orange')
                         else:
-                            server_btn = QPushButton('\u25cf  Terminal')
+                            server_btn = QPushButton('Terminal')
                             server_btn.setStyleSheet(active_btn_style())
                             server_btn.setProperty('_btn_role', 'active')
                             server_btn.setToolTip(
@@ -1095,7 +1094,7 @@ class TableBuilderMixin(_Base):
 
                     if has_client:
                         client_x = QPushButton('\u00d7')
-                        client_x.setFixedSize(26, client_x.sizeHint().height())
+                        client_x.setFixedSize(30, client_x.sizeHint().height())
                         client_x.setStyleSheet(close_btn_style())
                         client_x.setProperty('_btn_role', 'close')
                         client_x.setToolTip(f'Close client {tag}')
@@ -1106,17 +1105,17 @@ class TableBuilderMixin(_Base):
                         client_layout.addWidget(client_x, 0, Qt.AlignVCenter)
 
                     if is_dead and not has_client:
-                        client_btn = QPushButton('\u25cb  Terminal')
+                        client_btn = QPushButton('Terminal')
                         client_btn.setEnabled(False)
                         client_btn.setToolTip('No client connected')
                     elif has_client:
-                        client_btn = QPushButton('\u25cf  Terminal')
+                        client_btn = QPushButton('Terminal')
                         client_btn.setStyleSheet(active_btn_style())
                         client_btn.setProperty('_btn_role', 'active')
                         client_btn.setToolTip(
                             f'Jump to client terminal for {tag}')
                     else:
-                        client_btn = QPushButton('\u25cb  Terminal')
+                        client_btn = QPushButton('Terminal')
                         client_btn.setToolTip(
                             f'Open new client for {tag}')
                     if not (is_dead and not has_client):
@@ -1170,7 +1169,7 @@ class TableBuilderMixin(_Base):
                         slack_layout.setSpacing(2)
 
                         slack_x = QPushButton('\u00d7')
-                        slack_x.setFixedSize(26, slack_x.sizeHint().height())
+                        slack_x.setFixedSize(30, slack_x.sizeHint().height())
                         slack_x.setStyleSheet(close_btn_style())
                         slack_x.setProperty('_btn_role', 'close')
                         slack_x.setToolTip(f'Disconnect Slack for {tag}')

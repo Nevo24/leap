@@ -93,7 +93,9 @@ ROW_COLOR_PRESETS: list[str] = [
     '#3c1414',  # dark bean
 ]
 
-_HOVER_COLOR = b'#ff4444'
+def _hover_color() -> bytes:
+    """Return the accent red as bytes for SVG icon hover recoloring."""
+    return current_theme().accent_red.encode()
 
 
 def _render_svg(svg_data: bytes, size: int, color: Optional[bytes] = None) -> QIcon:
@@ -119,7 +121,7 @@ class HoverIconButton(QPushButton):
         self._svg_data = svg_data
         self._svg_size = size
         self._normal_icon = _render_svg(svg_data, size)
-        self._hover_icon = _render_svg(svg_data, size, _HOVER_COLOR)
+        self._hover_icon = _render_svg(svg_data, size, _hover_color())
         self.setIcon(self._normal_icon)
         self._hover_timer = QTimer(self)
         self._hover_timer.timeout.connect(self._check_hover)
@@ -180,27 +182,28 @@ class ColorPickerPopup(QFrame):
         super().__init__(parent, Qt.Popup)
         self._callback = on_color_selected
         t = current_theme()
+        r = t.border_radius
         self.setStyleSheet(
             f'ColorPickerPopup {{'
             f'  background-color: {t.popup_bg};'
             f'  border: 1px solid {t.popup_border};'
-            f'  border-radius: 4px;'
+            f'  border-radius: {r}px;'
             f'}}'
         )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
         grid = QGridLayout()
-        grid.setSpacing(3)
+        grid.setSpacing(4)
         cols = 4
         for i, color in enumerate(ROW_COLOR_PRESETS):
             btn = QPushButton()
-            btn.setFixedSize(24, 24)
-            border = f'2px solid {t.text_primary}' if color == current_color else '1px solid #555'
+            btn.setFixedSize(28, 28)
+            border = f'2px solid {t.text_primary}' if color == current_color else f'1px solid {t.popup_border}'
             btn.setStyleSheet(
                 f'QPushButton {{ background-color: {color}; border: {border};'
-                f' border-radius: 3px; }}'
+                f' border-radius: {r}px; }}'
                 f'QPushButton:hover {{ border: 2px solid {t.accent_blue}; }}'
             )
             btn.setToolTip(color)
@@ -210,10 +213,11 @@ class ColorPickerPopup(QFrame):
 
         clear_btn = QPushButton('Clear')
         clear_btn.setStyleSheet(
-            f'QPushButton {{ color: {t.text_primary}; font-size: 11px;'
+            f'QPushButton {{ color: {t.text_primary}; font-size: {t.font_size_small}px;'
             f' background: transparent; border: 1px solid {t.popup_border};'
-            f' border-radius: 3px; padding: 2px 8px; }}'
-            f'QPushButton:hover {{ border-color: {t.accent_blue}; }}'
+            f' border-radius: {r}px; padding: 4px 12px; }}'
+            f'QPushButton:hover {{ border-color: {t.accent_blue};'
+            f' background-color: {t.button_hover_bg or t.border_solid}; }}'
         )
         clear_btn.clicked.connect(lambda: self._pick(None))
         layout.addWidget(clear_btn)
@@ -253,9 +257,15 @@ def close_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for close/delete buttons."""
     t = current_theme()
     fg = fg_override or t.text_muted
+    # Parse accent_red hex to rgb for the translucent hover background
+    h = t.accent_red.lstrip('#')
+    rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return (
-        f'QPushButton {{ color: {fg}; font-size: 11px; padding: 0 0 2px 0; }}'
-        f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold; }}'
+        f'QPushButton {{ color: {fg}; font-size: {t.font_size_base + 2}px;'
+        f' padding: 2px 6px; background: transparent; border: none;'
+        f' border-radius: {t.border_radius}px; }}'
+        f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold;'
+        f' background-color: rgba({rr}, {gg}, {bb}, 0.12); }}'
     )
 
 
@@ -263,7 +273,10 @@ def active_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for active/connected indicator buttons."""
     t = current_theme()
     fg = fg_override or t.accent_green
-    return f'QPushButton {{ color: {fg}; }}'
+    return (
+        f'QPushButton {{ color: {fg}; background: transparent;'
+        f' border: none; padding: 2px 4px; }}'
+    )
 
 
 def menu_btn_style(fg_override: Optional[str] = None) -> str:
@@ -271,22 +284,15 @@ def menu_btn_style(fg_override: Optional[str] = None) -> str:
     t = current_theme()
     fg = fg_override or t.icon_color
     hover = fg_override or t.text_primary
+    hover_bg = t.button_hover_bg or t.border_solid
     return (
-        f'QPushButton {{ color: {fg}; font-size: 14px; padding: 0; }}'
-        f'QPushButton:hover {{ color: {hover}; }}'
+        f'QPushButton {{ color: {fg}; font-size: {t.font_size_base}px;'
+        f' padding: 2px 4px; background: transparent; border: none;'
+        f' border-radius: {t.border_radius}px; }}'
+        f'QPushButton:hover {{ color: {hover};'
+        f' background-color: {hover_bg}; }}'
     )
 
-
-# Legacy constants kept for backward compatibility (imports in other files)
-CLOSE_BTN_STYLE = (
-    'QPushButton { color: #999; font-size: 11px; padding: 0 0 2px 0; }'
-    'QPushButton:hover { color: #ff4444; font-weight: bold; }'
-)
-ACTIVE_BTN_STYLE = 'QPushButton { color: #00ff00; }'
-MENU_BTN_STYLE = (
-    'QPushButton { color: #aaa; font-size: 14px; padding: 0; }'
-    'QPushButton:hover { color: #ffffff; }'
-)
 
 # Column groups for vertical separators.
 # Groups: [X, Tag, CLI, Project] | [Server, Last Msg, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
@@ -302,13 +308,6 @@ COLUMN_GROUPS: list[list[int]] = [
 _COL_TO_GROUP: dict[int, int] = {
     col: gi for gi, group in enumerate(COLUMN_GROUPS) for col in group
 }
-
-# Legacy constants kept for backward compatibility (used by _set_cell_widget static fallback)
-GROUP_BOUNDARY_COLS = frozenset({0, 3, 9, 10, 11})    # Solid white (between groups)
-INTRA_GROUP_COLS = frozenset({1, 2, 4, 5, 6, 7, 8, 12})  # Semi-transparent white (within groups)
-
-BORDER_SOLID = QPen(QColor(255, 255, 255), 1)
-BORDER_SUBTLE = QPen(QColor(255, 255, 255, 50), 1)
 
 
 def border_solid_pen() -> QPen:
@@ -362,9 +361,6 @@ def column_border_type(col: int, table: Any) -> int:
 
     # Last visible column overall — no border
     return BORDER_NONE
-ROW_HOVER_BG = QColor(255, 255, 255, 20)
-
-
 def row_hover_bg() -> QColor:
     """Return the QColor for row hover background."""
     t = current_theme()
@@ -666,9 +662,30 @@ class SeparatorDelegate(QStyledItemDelegate):
                     rc = row_colors.get(row_tags[row])
                     if rc:
                         painter.fillRect(option.rect, QColor(rc))
-        if table is not None and index.row() == table.property('_hovered_row'):
+        is_hovered = table is not None and index.row() == table.property('_hovered_row')
+        if is_hovered:
             painter.fillRect(option.rect, row_hover_bg())
         super().paint(painter, option, index)
+        if is_hovered:
+            t_h = current_theme()
+            # Left accent bar (first column only)
+            if index.column() == 0:
+                painter.save()
+                accent = QColor(t_h.accent_blue)
+                painter.fillRect(
+                    option.rect.left(), option.rect.top(),
+                    3, option.rect.height(),
+                    accent,
+                )
+                painter.restore()
+            # Bottom highlight line across all columns
+            painter.save()
+            bottom_color = QColor(t_h.accent_blue)
+            bottom_color.setAlpha(40)
+            painter.setPen(QPen(bottom_color, 1))
+            y = option.rect.bottom()
+            painter.drawLine(option.rect.left(), y, option.rect.right(), y)
+            painter.restore()
         col = index.column()
         border = column_border_type(col, table) if table is not None else BORDER_NONE
         if border == BORDER_GROUP:
