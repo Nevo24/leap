@@ -809,7 +809,11 @@ class LeapServer:
         Returns:
             Input bytes to forward to the CLI (swallowed in capture mode).
         """
-        self.state.on_input(data)
+        # Note: on_input() is called AFTER the byte loop (see end of
+        # method) with only the bytes that reach the CLI.  This prevents
+        # capture-mode keystrokes from corrupting state tracker timing
+        # (e.g. false idle→running on Enter for Ratatui CLIs, or false
+        # resume from waiting states due to _last_input_time updates).
 
         in_prompt = self.state.current_state in PROMPT_STATES
 
@@ -963,6 +967,13 @@ class LeapServer:
             else:
                 out.append(b)
             i += 1
+
+        # Track input for state detection using only the bytes that
+        # actually reach the CLI.  Capture-mode keystrokes are excluded
+        # so they don't affect _last_input_time, _last_escape_time, or
+        # trigger enter_triggers_running.
+        if out:
+            self.state.on_input(bytes(out))
 
         return bytes(out)
 

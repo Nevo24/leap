@@ -80,6 +80,20 @@ class CLIStateTracker:
         rb'|\r'
     )
 
+    # Box-drawing and TUI decoration characters (UTF-8 encoded).
+    # These survive ANSI stripping but are not real content — they're
+    # borders, separators, and block elements from TUI rendering.
+    # Used to avoid false idle→running from terminal resize redraws.
+    _BOX_DRAWING_RE: re.Pattern[bytes] = re.compile(
+        # Box Drawing: U+2500–U+257F (UTF-8: \xe2\x94\x80–\xe2\x95\xbf)
+        rb'[\xe2][\x94\x95][\x80-\xbf]'
+        # Block Elements: U+2580–U+259F (UTF-8: \xe2\x96\x80–\xe2\x96\x9f)
+        rb'|[\xe2][\x96][\x80-\x9f]'
+        # Braille Patterns: U+2800–U+28FF (UTF-8: \xe2\xa0\x80–\xe2\xa3\xbf)
+        # Used by some TUIs for spinners/progress.
+        rb'|[\xe2][\xa0-\xa3][\x80-\xbf]'
+    )
+
     def __init__(
         self,
         signal_file: Path,
@@ -700,7 +714,12 @@ class CLIStateTracker:
             if now - prev_output_time > OUTPUT_GAP_RESET:
                 self._idle_output_acc = 0
             if now - self._last_input_time > INPUT_COOLDOWN:
-                self._idle_output_acc += len(stripped)
+                # Strip TUI decoration (box-drawing, block elements)
+                # before counting — a terminal resize causes a full
+                # TUI redraw whose borders survive ANSI stripping and
+                # would otherwise false-trigger idle→running.
+                content = self._BOX_DRAWING_RE.sub(b'', stripped).strip()
+                self._idle_output_acc += len(content)
                 if self._idle_output_acc > IDLE_OUTPUT_THRESHOLD:
                     _log.debug(
                         'ON_OUTPUT idle→running (accumulated %d bytes%s)',
