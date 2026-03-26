@@ -390,7 +390,7 @@ THEMES: dict[str, Theme] = {
     'Dawn': _DAWN,
 }
 
-_current_theme_name: str = 'Midnight'
+_current_theme_name: str = 'Leap'
 
 
 def current_theme() -> Theme:
