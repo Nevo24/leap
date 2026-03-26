@@ -142,10 +142,37 @@ def _serialize_checklist(items: list[dict]) -> str:
 # ══════════════════════════════════════════════════════════════════════
 
 class _ItemLineEdit(QLineEdit):
-    """QLineEdit that signals Enter and Backspace-when-empty."""
+    """QLineEdit that signals Enter and Backspace-when-empty.
+
+    Shows full text as tooltip when truncated.
+    """
 
     enter_pressed: pyqtSignal = pyqtSignal()
     empty_backspace: pyqtSignal = pyqtSignal()
+    expand_requested: pyqtSignal = pyqtSignal()  # double-click on truncated text
+
+    def _is_truncated(self) -> bool:
+        if self.width() <= 0:
+            return False
+        return self.fontMetrics().horizontalAdvance(self.text()) > self.width() - 8
+
+    def resizeEvent(self, event: 'QResizeEvent') -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._refresh_tooltip()
+
+    def _refresh_tooltip(self) -> None:
+        if self._is_truncated():
+            self.setToolTip(self.text())
+            self.setProperty('always_tooltip', True)
+        else:
+            self.setToolTip('')
+            self.setProperty('always_tooltip', False)
+
+    def mouseDoubleClickEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
+        if self._is_truncated():
+            self.expand_requested.emit()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -215,6 +242,8 @@ class _ChecklistItemWidget(QFrame):
     ) -> None:
         super().__init__(parent)
         self._index = index
+        self._checked = checked
+        self._popup: Optional[QPlainTextEdit] = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 2, 4, 2)
@@ -240,6 +269,7 @@ class _ChecklistItemWidget(QFrame):
         self._edit.enter_pressed.connect(
             lambda: self.new_item_after.emit(self._index),
         )
+        self._edit.expand_requested.connect(self._show_expand_popup)
         self._edit.empty_backspace.connect(
             lambda: self.merge_up.emit(self._index),
         )
@@ -272,9 +302,14 @@ class _ChecklistItemWidget(QFrame):
             f'QLineEdit {{ color: {t.text_muted}; background: transparent; }}'
             if checked else 'QLineEdit { background: transparent; }'
         )
+        self._checked = checked
 
     def focus_edit(self, cursor_at_end: bool = True) -> None:
         """Focus this item's text field."""
+        from PyQt5.QtWidgets import QApplication
+        win = self.window()
+        if win:
+            QApplication.setActiveWindow(win)
         self._edit.setFocus()
         if cursor_at_end:
             self._edit.end(False)
@@ -286,6 +321,93 @@ class _ChecklistItemWidget(QFrame):
     def leaveEvent(self, event: 'QEvent') -> None:  # type: ignore[override]
         self._del_btn.setVisible(False)
         super().leaveEvent(event)
+
+    def _show_expand_popup(self) -> None:
+        """Replace QLineEdit with inline wrapping editor on double-click."""
+        if self._popup is not None:
+            return
+        import time
+        row_layout = self.layout()
+        edit_idx = row_layout.indexOf(self._edit)
+
+        wrap = QPlainTextEdit()
+        wrap.setFrameShape(QFrame.NoFrame)
+        wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        wrap.setTabChangesFocus(True)
+        wrap.document().setDocumentMargin(2)
+        wrap.setFont(self._edit.font())
+        t = current_theme()
+        color = t.text_muted if self._checked else t.text_primary
+        wrap.setStyleSheet(
+            f'QPlainTextEdit {{ color: {color}; background: transparent;'
+            f' border: 1px solid {t.accent_green}; }}'
+        )
+        wrap.setPlainText(self._edit.text())
+
+        self._edit.setVisible(False)
+        row_layout.insertWidget(edit_idx + 1, wrap, 1)
+        self._popup = wrap
+
+        def resize_wrap() -> None:
+            if self._popup is not wrap:
+                return
+            line_h = wrap.fontMetrics().lineSpacing()
+            line_count = max(1, int(wrap.document().size().height()))
+            wrap.setFixedHeight(max(self._edit.height(), line_count * line_h + 10))
+
+        def dismiss(save: bool) -> None:
+            import sip
+            if self._popup is not wrap:
+                return
+            self._popup = None
+            if sip.isdeleted(wrap):
+                return
+            new_text = wrap.toPlainText().replace('\n', ' ') if save else None
+            wrap.setVisible(False)
+            row_layout.removeWidget(wrap)
+            wrap.deleteLater()
+            if sip.isdeleted(self._edit):
+                return
+            self._edit.setVisible(True)
+            if new_text is not None and new_text != self._edit.text():
+                self._edit.setText(new_text)
+
+        def on_key(event: 'QKeyEvent') -> None:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                dismiss(True)
+                self.new_item_after.emit(self._index)
+                return
+            if event.key() == Qt.Key_Escape:
+                dismiss(False)
+                self._edit.setFocus()
+                return
+            if event.key() == Qt.Key_Backspace and not wrap.toPlainText():
+                dismiss(True)
+                self.merge_up.emit(self._index)
+                return
+            QPlainTextEdit.keyPressEvent(wrap, event)
+            self.text_edited.emit(self._index, wrap.toPlainText().replace('\n', ' '))
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, resize_wrap)
+
+        def on_focus_out(event: 'QFocusEvent') -> None:
+            try:
+                QPlainTextEdit.focusOutEvent(wrap, event)
+            except RuntimeError:
+                return
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: dismiss(True))
+
+        wrap.keyPressEvent = on_key
+        wrap.focusOutEvent = on_focus_out
+
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, resize_wrap)
+        wrap.setFocus()
+        cursor = wrap.textCursor()
+        cursor.movePosition(cursor.End)
+        wrap.setTextCursor(cursor)
 
 
 class _ChecklistWidget(QWidget):
@@ -343,6 +465,10 @@ class _ChecklistWidget(QWidget):
     # ── Layout rebuild ───────────────────────────────────────────────
 
     def _clear_layout(self) -> None:
+        # Move focus to the scroll area BEFORE destroying children —
+        # if the focused widget is destroyed, macOS deactivates the
+        # window and subsequent setFocus() calls silently fail.
+        self._scroll.setFocus()
         while self._layout.count():
             child = self._layout.takeAt(0)
             w = child.widget()
@@ -404,16 +530,21 @@ class _ChecklistWidget(QWidget):
 
         self._layout.addStretch()
 
-        # Restore focus (deferred so widgets are fully laid out)
+        # Restore focus (deferred so widgets are fully laid out).
+        from PyQt5.QtCore import QTimer
         if focus_widget is not None:
             w_ref = focus_widget
             at_end = focus_at_end
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: w_ref.focus_edit(cursor_at_end=at_end))
         elif self._focus_add_after_rebuild and self._add_field is not None:
             field = self._add_field
-            from PyQt5.QtCore import QTimer
-            QTimer.singleShot(0, field.setFocus)
+            def _focus_add() -> None:
+                from PyQt5.QtWidgets import QApplication
+                win = field.window()
+                if win:
+                    QApplication.setActiveWindow(win)
+                field.setFocus()
+            QTimer.singleShot(0, _focus_add)
         self._focus_after_rebuild = None
         self._focus_add_after_rebuild = False
 
