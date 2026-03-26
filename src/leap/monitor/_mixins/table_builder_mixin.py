@@ -381,21 +381,31 @@ class TableBuilderMixin(_Base):
             role = btn.property('_btn_role')
             if role == 'active':
                 green_fg = ensure_contrast(t.accent_green, row_color)
-                if green_fg != t.accent_green:
-                    btn.setStyleSheet(active_btn_style(green_fg))
+                btn.setStyleSheet(active_btn_style(green_fg))
             elif role == 'orange':
                 orange_fg = ensure_contrast(t.accent_orange, row_color)
-                if orange_fg != t.accent_orange:
-                    btn.setStyleSheet(
-                        f'QPushButton {{ color: {orange_fg}; }}')
+                # Rebuild full inactive style with orange text
+                h = orange_fg.lstrip('#')
+                rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+                btn.setStyleSheet(
+                    f'QPushButton {{ color: {orange_fg};'
+                    f' background-color: rgba({rr}, {gg}, {bb}, 0.10);'
+                    f' border: 1px solid rgba({rr}, {gg}, {bb}, 0.30);'
+                    f' border-radius: {t.border_radius}px;'
+                    f' padding: 0px 8px; }}'
+                    f'QPushButton:hover {{ background-color: rgba({rr}, {gg}, {bb}, 0.20);'
+                    f' border-color: {orange_fg}; }}'
+                )
             elif role == 'menu':
                 menu_fg = ensure_contrast(t.icon_color, row_color)
-                if menu_fg != t.icon_color:
-                    btn.setStyleSheet(menu_btn_style(menu_fg))
+                btn.setStyleSheet(menu_btn_style(menu_fg))
             elif role == 'close':
                 muted_fg = ensure_contrast(t.text_muted, row_color)
-                if muted_fg != t.text_muted:
-                    btn.setStyleSheet(close_btn_style(muted_fg))
+                btn.setStyleSheet(close_btn_style(muted_fg))
+            else:
+                # Inactive/unstyled buttons — ensure text is readable
+                primary_fg = ensure_contrast(t.text_primary, row_color)
+                btn.setStyleSheet(inactive_btn_style(primary_fg))
 
     def _build_path_cell(self, row: int, tag: str, path_text: str,
                          row_color: Optional[str] = None) -> None:
