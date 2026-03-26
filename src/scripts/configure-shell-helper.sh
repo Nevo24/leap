@@ -33,6 +33,8 @@ if [ -f "$RC_FILE" ]; then
     sed -i.bak '/^export LEAP_[A-Z_]*_FLAGS="/d' "$RC_FILE"
     sed -i.bak '/^# Default flags per CLI/d' "$RC_FILE"
     sed -i.bak '/^# Extra flags can also be passed inline/d' "$RC_FILE"
+    # Remove legacy leap-cleanup comment (auto-cleanup runs on every leap invocation)
+    sed -i.bak '/^#        leap-cleanup$/d' "$RC_FILE"
     rm -f "$RC_FILE.bak"
 fi
 
@@ -86,7 +88,6 @@ cat >> "$RC_FILE" <<'EOF'
 # Server in JetBrains, client in any terminal
 #
 # Usage: leap [tag] [--flags]
-#        leap-cleanup
 #
 # You can modify the content below, but keep the START/END marker lines
 # for proper uninstallation.
