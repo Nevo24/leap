@@ -78,8 +78,10 @@ class CustomCLIProvider(CLIProvider):
     def get_spawn_env(
         self, tag: Optional[str], signal_dir: Optional[Path],
     ) -> dict[str, str]:
+        import os
         env = self._base.get_spawn_env(tag, signal_dir)
-        env.update(self._env_vars)
+        for k, v in self._env_vars.items():
+            env[k] = os.path.expanduser(os.path.expandvars(v))
         return env
 
 

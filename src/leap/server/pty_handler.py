@@ -68,7 +68,9 @@ class PTYHandler:
         env = dict(os.environ)
         env.update(self._provider.get_spawn_env(self._tag, self._signal_dir))
         # Apply user-configured env vars (from leap --manage-clis)
-        env.update(get_cli_env(self._provider.name))
+        # Expand ~ and $HOME/$ENV_VAR so paths resolve correctly
+        for k, v in get_cli_env(self._provider.name).items():
+            env[k] = os.path.expanduser(os.path.expandvars(v))
 
         self.process = pexpect.spawn(
             cli_path,
