@@ -1008,12 +1008,9 @@ class TableBuilderMixin(_Base):
                         q_label.setAlignment(Qt.AlignCenter)
                         if queue_size > 0:
                             t_q = current_theme()
-                            q_label.setFixedSize(22, 22)
                             q_label.setStyleSheet(
                                 f'QLabel {{'
-                                f'  background-color: {t_q.accent_blue};'
-                                f'  color: #ffffff;'
-                                f'  border-radius: 11px;'
+                                f'  color: {t_q.accent_blue};'
                                 f'  font-size: {t_q.font_size_small}px;'
                                 f'  font-weight: bold;'
                                 f'}}'
