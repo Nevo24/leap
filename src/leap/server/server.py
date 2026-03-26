@@ -929,13 +929,8 @@ class LeapServer:
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
                 out.append(b)
-            elif b == 0x5e and (not self._terminal_input_buf
-                               or not self._user_has_typed):
+            elif b == 0x5e and not self._terminal_input_buf:
                 # "^" at start of line → enter queue capture mode.
-                # Before the user's first Enter, the buffer may contain
-                # stale bytes from split terminal escape sequences, so
-                # we also allow "^" when no real input has been sent yet.
-                self._terminal_input_buf.clear()
                 self._queue_capture_mode = True
                 self._queue_capture_buf.clear()
                 self._capture_display("")
