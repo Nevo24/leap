@@ -197,15 +197,29 @@ class SCMConfigMixin(_Base):
             f'dialog and test the connection to re-enable.',
         )
 
-    def _update_scm_buttons(self) -> None:
-        """Update SCM button text/style based on connection state."""
+    @staticmethod
+    def _connected_btn_style() -> str:
+        """Full QPushButton style for 'connected' state buttons.
+
+        Includes all geometry properties (padding, border, min-height) so the
+        per-widget stylesheet doesn't partially override the global one — which
+        can cause subtle vertical misalignment on macOS Qt.
+        """
         t = current_theme()
-        connected_style = (
+        btn_bg = t.button_bg or t.window_bg
+        return (
             f'QPushButton {{ color: {t.accent_green};'
-            f' border-color: {t.accent_green}; }}'
+            f' background-color: {btn_bg};'
+            f' border: 1px solid {t.accent_green};'
+            f' padding: 5px 16px;'
+            f' min-height: 18px; }}'
             f'QPushButton:hover {{ background-color: {t.button_hover_bg or t.border_solid};'
             f' border-color: {t.accent_green}; }}'
         )
+
+    def _update_scm_buttons(self) -> None:
+        """Update SCM button text/style based on connection state."""
+        connected_style = self._connected_btn_style()
         if SCMType.GITLAB.value in self._scm_providers:
             self.gitlab_btn.setText('GitLab Connected')
             self.gitlab_btn.setStyleSheet(connected_style)
@@ -345,13 +359,7 @@ class SCMConfigMixin(_Base):
             self.slack_bot_btn.setEnabled(True)
         if self._is_slack_bot_running():
             self.slack_bot_btn.setText('Slack Bot Running')
-            t = current_theme()
-            self.slack_bot_btn.setStyleSheet(
-                f'QPushButton {{ color: {t.accent_green};'
-                f' border-color: {t.accent_green}; }}'
-                f'QPushButton:hover {{ background-color: {t.button_hover_bg or t.border_solid};'
-                f' border-color: {t.accent_green}; }}'
-            )
+            self.slack_bot_btn.setStyleSheet(self._connected_btn_style())
             self.slack_bot_btn.setToolTip('Slack bot is running — click to stop')
         else:
             self.slack_bot_btn.setText('Run Slack Bot')

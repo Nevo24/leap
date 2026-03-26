@@ -477,7 +477,7 @@ class MonitorWindow(
         self.bots_check.setToolTip('Count bot comments as responses in PR thread detection')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
-        bottom_inner.addWidget(self.bots_check)
+        bottom_inner.addWidget(self.bots_check, 0, Qt.AlignVCenter)
 
         self.auto_leap_check = QCheckBox("Auto '/leap' fetch")
         self.auto_leap_check.setToolTip(
@@ -485,22 +485,29 @@ class MonitorWindow(
         )
         self.auto_leap_check.setChecked(self._prefs.get('auto_fetch_leap', True))
         self.auto_leap_check.stateChanged.connect(self._toggle_auto_fetch_leap)
-        bottom_inner.addWidget(self.auto_leap_check)
+        bottom_inner.addWidget(self.auto_leap_check, 0, Qt.AlignVCenter)
 
 
 
         bottom_inner.addStretch()
 
-        # SCM connect buttons
+        # SCM connect buttons — grouped in a tight container so they
+        # share identical vertical alignment independent of the left-side
+        # checkboxes (works around a macOS Qt rendering quirk).
+        btn_group = QWidget()
+        btn_group_layout = QHBoxLayout(btn_group)
+        btn_group_layout.setContentsMargins(0, 0, 0, 0)
+        btn_group_layout.setSpacing(8)
+
         self.gitlab_btn = QPushButton('Connect GitLab')
         self.gitlab_btn.setToolTip('Configure GitLab connection for PR tracking')
         self.gitlab_btn.clicked.connect(self._open_gitlab_setup)
-        bottom_inner.addWidget(self.gitlab_btn)
+        btn_group_layout.addWidget(self.gitlab_btn)
 
         self.github_btn = QPushButton('Connect GitHub')
         self.github_btn.setToolTip('Configure GitHub connection for PR tracking')
         self.github_btn.clicked.connect(self._open_github_setup)
-        bottom_inner.addWidget(self.github_btn)
+        btn_group_layout.addWidget(self.github_btn)
 
         self.slack_bot_btn = QPushButton('Slack Bot')
         self.slack_bot_btn.setToolTip('Start/stop the Slack bot daemon')
@@ -509,7 +516,9 @@ class MonitorWindow(
         self.slack_bot_btn.customContextMenuRequested.connect(
             self._slack_bot_context_menu)
         self.slack_bot_btn.setVisible(self._slack_available)
-        bottom_inner.addWidget(self.slack_bot_btn)
+        btn_group_layout.addWidget(self.slack_bot_btn)
+
+        bottom_inner.addWidget(btn_group)
 
         layout.addWidget(bottom_card)
 
