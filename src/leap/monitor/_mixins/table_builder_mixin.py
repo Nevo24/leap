@@ -375,37 +375,62 @@ class TableBuilderMixin(_Base):
         if icon_fg != t.icon_color:
             for btn in widget.findChildren(HoverIconButton):
                 btn.set_icon_color(icon_fg)
+        # On colored rows, buttons need opaque backgrounds to stand out.
+        # Use the theme's button_bg as a solid base.
+        btn_bg = t.button_bg or t.window_bg
+        btn_hover = t.button_hover_bg or t.border_solid
+        btn_border = t.button_border or t.border_solid
+        r_radius = t.border_radius
+        def _solid_btn(fg: str, border_color: Optional[str] = None) -> str:
+            bc = border_color or btn_border
+            return (
+                f'QPushButton {{ color: {fg};'
+                f' background-color: {btn_bg};'
+                f' border: 1px solid {bc};'
+                f' border-radius: {r_radius}px;'
+                f' padding: 0px 8px; }}'
+                f'QPushButton:hover {{ background-color: {btn_hover};'
+                f' border-color: {fg}; }}'
+                f'QPushButton:disabled {{ color: {t.text_muted};'
+                f' background-color: {btn_bg};'
+                f' border-color: {btn_border}; }}'
+            )
         for btn in widget.findChildren(QPushButton):
             if isinstance(btn, HoverIconButton):
                 continue
             role = btn.property('_btn_role')
             if role == 'active':
                 green_fg = ensure_contrast(t.accent_green, row_color)
-                btn.setStyleSheet(active_btn_style(green_fg))
+                btn.setStyleSheet(_solid_btn(green_fg, green_fg))
             elif role == 'orange':
                 orange_fg = ensure_contrast(t.accent_orange, row_color)
-                # Rebuild full inactive style with orange text
-                h = orange_fg.lstrip('#')
-                rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-                btn.setStyleSheet(
-                    f'QPushButton {{ color: {orange_fg};'
-                    f' background-color: rgba({rr}, {gg}, {bb}, 0.10);'
-                    f' border: 1px solid rgba({rr}, {gg}, {bb}, 0.30);'
-                    f' border-radius: {t.border_radius}px;'
-                    f' padding: 0px 8px; }}'
-                    f'QPushButton:hover {{ background-color: rgba({rr}, {gg}, {bb}, 0.20);'
-                    f' border-color: {orange_fg}; }}'
-                )
+                btn.setStyleSheet(_solid_btn(orange_fg, orange_fg))
             elif role == 'menu':
                 menu_fg = ensure_contrast(t.icon_color, row_color)
-                btn.setStyleSheet(menu_btn_style(menu_fg))
+                btn.setStyleSheet(
+                    f'QPushButton {{ color: {menu_fg};'
+                    f' background-color: {btn_bg};'
+                    f' border: 1px solid {btn_border};'
+                    f' border-radius: {r_radius}px;'
+                    f' padding: 0px 4px; }}'
+                    f'QPushButton:hover {{ color: {fg};'
+                    f' background-color: {btn_hover}; }}'
+                )
             elif role == 'close':
                 muted_fg = ensure_contrast(t.text_muted, row_color)
-                btn.setStyleSheet(close_btn_style(muted_fg))
+                btn.setStyleSheet(
+                    f'QPushButton {{ color: {muted_fg};'
+                    f' font-size: {t.font_size_base + 2}px;'
+                    f' background-color: {btn_bg};'
+                    f' border: 1px solid {btn_border};'
+                    f' border-radius: {r_radius}px;'
+                    f' padding: 0px 6px; }}'
+                    f'QPushButton:hover {{ color: {t.accent_red};'
+                    f' border-color: {t.accent_red}; }}'
+                )
             else:
-                # Inactive/unstyled buttons — ensure text is readable
                 primary_fg = ensure_contrast(t.text_primary, row_color)
-                btn.setStyleSheet(inactive_btn_style(primary_fg))
+                btn.setStyleSheet(_solid_btn(primary_fg))
 
     def _build_path_cell(self, row: int, tag: str, path_text: str,
                          row_color: Optional[str] = None) -> None:

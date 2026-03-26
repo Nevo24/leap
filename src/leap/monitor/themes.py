@@ -467,7 +467,13 @@ def _adjust_lightness(fg_hex: str, bg_hex: str, min_ratio: float) -> str:
         # large-text = 3:1) for a more vivid, recognizable alternative.
         relaxed = _best_of(min(min_ratio, 3.0))
         if relaxed is not None:
-            return relaxed
+            # Only use the relaxed result if it actually meets the
+            # original min_ratio.  Otherwise fall back to the strict
+            # result which does meet min_ratio (even if near-white/black).
+            relaxed_ratio = _contrast_ratio(
+                _relative_luminance(relaxed), lum_bg)
+            if relaxed_ratio >= min_ratio:
+                return relaxed
         return strict
     # Hue cannot reach contrast — fall back to black/white
     return '#000000' if lum_bg > 0.5 else '#ffffff'

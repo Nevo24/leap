@@ -263,8 +263,8 @@ def close_btn_style(fg_override: Optional[str] = None) -> str:
     h = t.accent_red.lstrip('#')
     rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return (
-        f'QPushButton {{ color: {fg}; font-size: {t.font_size_base + 2}px;'
-        f' padding: 0px 6px;'
+        f'QPushButton {{ color: {fg}; font-size: {t.font_size_base}px;'
+        f' padding: 0px 6px 1px 6px;'
         f' background-color: {t.button_bg or t.window_bg};'
         f' border: 1px solid {t.button_border or t.border_solid};'
         f' border-radius: {t.border_radius}px; }}'
