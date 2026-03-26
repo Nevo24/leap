@@ -816,6 +816,21 @@ class LeapServer:
         out = bytearray()
         i = 0
 
+        # Check if the very first byte is "^" for queue capture mode
+        # BEFORE escape handling and the in_prompt bypass, so neither
+        # a stale _partial_escape nor in_prompt can swallow the caret.
+        if (not self._queue_capture_mode
+                and i < len(data)
+                and data[i] == 0x5e
+                and (not self._terminal_input_buf
+                     or not self._user_has_typed)):
+            self._partial_escape = False
+            self._terminal_input_buf.clear()
+            self._queue_capture_mode = True
+            self._queue_capture_buf.clear()
+            self._capture_display("")
+            i += 1  # consume the "^"
+
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape:
             self._partial_escape = False
@@ -865,14 +880,10 @@ class LeapServer:
                 out.extend(data[esc_start:i])
                 continue
 
-            if in_prompt:
-                out.append(b)
-                i += 1
-                continue
-
             # --- Queue-capture mode: swallow input, queue on Enter ---
             # The terminal title bar shows "[Q] <text>" as live feedback
             # since we can't echo into the TUI content area.
+            # Must be checked before in_prompt so capture works in any state.
             if self._queue_capture_mode:
                 if b == 0x0d:  # Enter — queue the message
                     self._user_has_typed = True
@@ -912,6 +923,23 @@ class LeapServer:
                 i += 1
                 continue
 
+            # "^" at start of line → enter queue capture mode.
+            # Checked before in_prompt so it works in any CLI state.
+            if (b == 0x5e
+                    and (not self._terminal_input_buf
+                         or not self._user_has_typed)):
+                self._terminal_input_buf.clear()
+                self._queue_capture_mode = True
+                self._queue_capture_buf.clear()
+                self._capture_display("")
+                i += 1
+                continue
+
+            if in_prompt:
+                out.append(b)
+                i += 1
+                continue
+
             # --- Normal handling ---
             if b == 0x0d:  # Enter
                 self._user_has_typed = True
@@ -929,11 +957,6 @@ class LeapServer:
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
                 out.append(b)
-            elif b == 0x5e and not self._terminal_input_buf:
-                # "^" at start of line → enter queue capture mode.
-                self._queue_capture_mode = True
-                self._queue_capture_buf.clear()
-                self._capture_display("")
             elif 0x20 <= b < 0x7f or b >= 0x80:
                 self._terminal_input_buf.append(b)
                 out.append(b)
