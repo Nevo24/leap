@@ -364,14 +364,14 @@ class MonitorWindow(
         settings_btn.clicked.connect(self._open_settings)
         buttons_layout.addWidget(settings_btn)
 
-        notes_btn = QPushButton(' Notes')
-        notes_btn.setObjectName('_leapGhostBtn')
-        notes_btn.setToolTip('Open personal notes')
+        self._notes_btn = QPushButton(' Notes')
+        self._notes_btn.setObjectName('_leapGhostBtn')
+        self._notes_btn.setToolTip('Open personal notes')
         _notes_icon = notes_icon(size=16)
         if _notes_icon:
-            notes_btn.setIcon(_notes_icon)
-        notes_btn.clicked.connect(self._open_notes)
-        buttons_layout.addWidget(notes_btn)
+            self._notes_btn.setIcon(_notes_icon)
+        self._notes_btn.clicked.connect(self._open_notes)
+        buttons_layout.addWidget(self._notes_btn)
 
         buttons_layout.addStretch()
 
@@ -1705,6 +1705,11 @@ class MonitorWindow(
         # Re-apply SCM button styles
         self._update_scm_buttons()
         self._update_slack_bot_button()
+
+        # Refresh Notes button icon with new theme color
+        _ni = notes_icon(size=16)
+        if _ni and hasattr(self, '_notes_btn'):
+            self._notes_btn.setIcon(_ni)
 
         # Log label color is handled by #_leapStatusLabel in the global QSS
 

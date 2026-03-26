@@ -146,12 +146,13 @@ def _serialize_checklist(items: list[dict]) -> str:
 class _ItemLineEdit(QLineEdit):
     """QLineEdit that signals Enter and Backspace-when-empty.
 
-    Shows full text as tooltip when truncated.
+    Shows full text as tooltip when truncated.  Emits ``expand_requested``
+    on any click so the parent can swap in a wrapping editor.
     """
 
     enter_pressed: pyqtSignal = pyqtSignal()
     empty_backspace: pyqtSignal = pyqtSignal()
-    expand_requested: pyqtSignal = pyqtSignal()  # double-click on truncated text
+    expand_requested: pyqtSignal = pyqtSignal()
 
     def _is_truncated(self) -> bool:
         if self.width() <= 0:
@@ -171,19 +172,13 @@ class _ItemLineEdit(QLineEdit):
             self.setProperty('always_tooltip', False)
 
     def mousePressEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
-        # Re-activate the window on every click — it may have been
-        # deactivated by a popup dismiss or widget rebuild.
         from PyQt5.QtWidgets import QApplication
         win = self.window()
         if win and not win.isActiveWindow():
             QApplication.setActiveWindow(win)
         super().mousePressEvent(event)
-
-    def mouseDoubleClickEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
-        if self._is_truncated():
-            self.expand_requested.emit()
-            return
-        super().mouseDoubleClickEvent(event)
+        # Always request expand on click — parent decides whether to swap
+        self.expand_requested.emit()
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -240,6 +235,9 @@ class _DragGrip(QLabel):
 
 class _ChecklistItemWidget(QFrame):
     """Single checklist row: [grip] [checkbox] [editable text] [x]."""
+
+    # Class-level: only one expand popup may be open at a time.
+    _active_expand: Optional['_ChecklistItemWidget'] = None
 
     toggled: pyqtSignal = pyqtSignal(int, bool)
     text_edited: pyqtSignal = pyqtSignal(int, str)
@@ -316,7 +314,7 @@ class _ChecklistItemWidget(QFrame):
         self._checked = checked
 
     def focus_edit(self, cursor_at_end: bool = True) -> None:
-        """Focus this item's text field."""
+        """Focus this item's text field and expand into wrapping editor."""
         from PyQt5.QtWidgets import QApplication
         win = self.window()
         if win:
@@ -324,6 +322,8 @@ class _ChecklistItemWidget(QFrame):
         self._edit.setFocus()
         if cursor_at_end:
             self._edit.end(False)
+        # Auto-expand so the user is always in the wrapping editor
+        self._show_expand_popup()
 
     def enterEvent(self, event: 'QEvent') -> None:  # type: ignore[override]
         self._del_btn.setVisible(True)
@@ -333,10 +333,33 @@ class _ChecklistItemWidget(QFrame):
         self._del_btn.setVisible(False)
         super().leaveEvent(event)
 
+    def _dismiss_popup_if_active(self) -> None:
+        """Dismiss this item's popup if it's open."""
+        if self._popup is not None:
+            import sip
+            wrap = self._popup
+            self._popup = None
+            if _ChecklistItemWidget._active_expand is self:
+                _ChecklistItemWidget._active_expand = None
+            if not sip.isdeleted(wrap):
+                new_text = wrap.toPlainText().replace('\n', ' ')
+                wrap.setVisible(False)
+                self.layout().removeWidget(wrap)
+                wrap.deleteLater()
+            if not sip.isdeleted(self._edit):
+                self._edit.setVisible(True)
+                if new_text != self._edit.text():
+                    self._edit.setText(new_text)
+
     def _show_expand_popup(self) -> None:
-        """Replace QLineEdit with inline wrapping editor on double-click."""
+        """Replace QLineEdit with inline wrapping editor."""
         if self._popup is not None:
             return
+        # Dismiss any other item's active popup first
+        prev = _ChecklistItemWidget._active_expand
+        if prev is not None and prev is not self:
+            prev._dismiss_popup_if_active()
+        _ChecklistItemWidget._active_expand = self
         import time
         row_layout = self.layout()
         edit_idx = row_layout.indexOf(self._edit)
@@ -352,7 +375,7 @@ class _ChecklistItemWidget(QFrame):
         color = t.text_muted if self._checked else t.text_primary
         wrap.setStyleSheet(
             f'QPlainTextEdit {{ color: {color}; background: transparent;'
-            f' border: 1px solid {t.accent_green}; }}'
+            f' border: 1px solid {t.text_secondary}; }}'
         )
         wrap.setPlainText(self._edit.text())
 
@@ -514,7 +537,9 @@ class _ChecklistWidget(QWidget):
             'QLineEdit { padding: 6px 4px; background: transparent; }'
         )
         self._add_field.enter_pressed.connect(self._on_add_item)
+        self._add_field.expand_requested.connect(self._expand_add_field)
         self._layout.addWidget(self._add_field)
+        self._add_popup: Optional[QPlainTextEdit] = None
 
         # Completed section
         if completed:
@@ -556,6 +581,7 @@ class _ChecklistWidget(QWidget):
                 if win:
                     QApplication.setActiveWindow(win)
                 field.setFocus()
+                self._expand_add_field()
             QTimer.singleShot(0, _focus_add)
         self._focus_after_rebuild = None
         self._focus_add_after_rebuild = False
@@ -741,15 +767,115 @@ class _ChecklistWidget(QWidget):
         self.content_changed.emit()
 
     def _on_add_item(self) -> None:
-        if self._add_field is None:
+        # If the add popup is active, read from it
+        if self._add_popup is not None:
+            text = self._add_popup.toPlainText().replace('\n', ' ').strip()
+            self._dismiss_add_popup(save=False)  # don't save back, we're consuming it
+        elif self._add_field is not None:
+            text = self._add_field.text().strip()
+        else:
             return
-        text = self._add_field.text().strip()
         if not text:
             return
         self._items.append({'text': text, 'checked': False})
         self._focus_add_after_rebuild = True
         self._rebuild()
         self.content_changed.emit()
+
+    def _expand_add_field(self) -> None:
+        """Swap the Add item QLineEdit for a wrapping editor."""
+        if self._add_field is None:
+            return
+        # Dismiss any active item popup
+        prev = _ChecklistItemWidget._active_expand
+        if prev is not None:
+            prev._dismiss_popup_if_active()
+            _ChecklistItemWidget._active_expand = None
+        # Dismiss any stale add popup
+        if self._add_popup is not None:
+            self._dismiss_add_popup(save=True)
+        import time
+        row_layout = self._layout
+        edit_idx = row_layout.indexOf(self._add_field)
+
+        wrap = QPlainTextEdit()
+        wrap.setFrameShape(QFrame.NoFrame)
+        wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        wrap.setTabChangesFocus(True)
+        wrap.document().setDocumentMargin(2)
+        wrap.setFont(self._add_field.font())
+        t = current_theme()
+        wrap.setStyleSheet(
+            f'QPlainTextEdit {{ color: {t.text_primary}; background: transparent;'
+            f' border: 1px solid {t.text_secondary}; padding: 4px; }}'
+        )
+        wrap.setPlainText(self._add_field.text())
+        wrap.setPlaceholderText('Add item')
+
+        self._add_field.setVisible(False)
+        row_layout.insertWidget(edit_idx + 1, wrap, 1)
+        self._add_popup = wrap
+
+        def resize_wrap() -> None:
+            if self._add_popup is not wrap:
+                return
+            line_h = wrap.fontMetrics().lineSpacing()
+            line_count = max(1, int(wrap.document().size().height()))
+            wrap.setFixedHeight(max(self._add_field.height(), (line_count + 1) * line_h))
+
+        def on_key(event: 'QKeyEvent') -> None:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                # Treat Enter as "add this item"
+                self._on_add_item()
+                return
+            if event.key() == Qt.Key_Escape:
+                self._dismiss_add_popup(save=True)
+                self._add_field.setFocus()
+                return
+            QPlainTextEdit.keyPressEvent(wrap, event)
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, resize_wrap)
+
+        def on_focus_out(event: 'QFocusEvent') -> None:
+            try:
+                QPlainTextEdit.focusOutEvent(wrap, event)
+            except RuntimeError:
+                return
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._dismiss_add_popup(save=True))
+
+        wrap.keyPressEvent = on_key
+        wrap.focusOutEvent = on_focus_out
+
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QApplication
+        QTimer.singleShot(0, resize_wrap)
+        win = wrap.window()
+        if win:
+            QApplication.setActiveWindow(win)
+        wrap.setFocus()
+        cursor = wrap.textCursor()
+        cursor.movePosition(cursor.End)
+        wrap.setTextCursor(cursor)
+
+    def _dismiss_add_popup(self, save: bool) -> None:
+        """Collapse the add-field wrapping editor back to QLineEdit."""
+        import sip
+        wrap = self._add_popup
+        if wrap is None:
+            return
+        self._add_popup = None
+        if sip.isdeleted(wrap):
+            return
+        new_text = wrap.toPlainText().replace('\n', ' ') if save else ''
+        wrap.setVisible(False)
+        self._layout.removeWidget(wrap)
+        wrap.deleteLater()
+        if self._add_field and not sip.isdeleted(self._add_field):
+            self._add_field.setVisible(True)
+            if save and new_text:
+                self._add_field.setText(new_text)
 
     def _toggle_completed(self) -> None:
         self._completed_visible = not self._completed_visible
