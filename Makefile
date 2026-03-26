@@ -227,9 +227,15 @@ install-monitor: .env ensure-storage write-install-metadata
 	if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
 		open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
 	fi
-	@read -p "  Open Notifications settings? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
-	if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-		open "x-apple.systempreferences:com.apple.preference.notifications"; \
+	@NOTIF_KNOWN=$$(python3 -c "import plistlib,pathlib; \
+		p=pathlib.Path.home()/'Library/Preferences/com.apple.ncprefs.plist'; \
+		data=plistlib.load(open(p,'rb')) if p.exists() else {}; \
+		print('yes' if any(a.get('bundle-id')=='com.leap.monitor' for a in data.get('apps',[])) else 'no')" 2>/dev/null || echo "no"); \
+	if [ "$$NOTIF_KNOWN" != "yes" ]; then \
+		read -p "  Open Notifications settings? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
+		if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
+			open "x-apple.systempreferences:com.apple.preference.notifications"; \
+		fi; \
 	fi
 
 .PHONY: install-slack-app
