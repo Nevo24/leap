@@ -326,6 +326,8 @@ class CLIStateTracker:
                         self._idle_since = old_waiting_since
                     else:
                         self._idle_since = self._clock()
+                    if self._trust_dialog_phase:
+                        self._seen_user_input = False
                     self._trust_dialog_phase = False
                 return new_state
 
@@ -778,6 +780,7 @@ class CLIStateTracker:
                         '(trust dialog startup)',
                     )
                     self._trust_dialog_phase = False
+                    self._seen_user_input = False
                     self._output_buf.clear()
                     with self._lock:
                         self._state = CLIState.IDLE
@@ -845,6 +848,39 @@ class CLIStateTracker:
         if len(self._last_prompt_buf) > 16384:
             self._last_prompt_buf = self._last_prompt_buf[-16384:]
         ws = self._waiting_since
+
+        # Trust dialog recovery: if we entered needs_permission from a
+        # startup trust dialog and the user has typed (Enter to dismiss),
+        # any non-empty output means the dialog was dismissed and the
+        # idle prompt is rendering.  Skip the grace period — the user
+        # may dismiss the dialog so fast that all post-dismiss output
+        # arrives within RESUME_GRACE_PERIOD, after which Claude is
+        # idle and produces no more output to trigger recovery.
+        if (
+            self._trust_dialog_phase
+            and ws is not None
+            and self._seen_user_input
+        ):
+            stripped = self._ANSI_RE.sub(b'', data).strip()
+            if stripped:
+                _log.debug(
+                    'ON_OUTPUT %s→idle (trust dialog startup)',
+                    self._state,
+                )
+                self._trust_dialog_phase = False
+                # Reset _seen_user_input — the Enter was for the trust
+                # dialog, not a prompt submission.  Without this,
+                # _handle_idle_output() would treat post-trust-dialog
+                # startup output as idle→running.
+                self._seen_user_input = False
+                with self._lock:
+                    self._state = CLIState.IDLE
+                    self._waiting_since = None
+                self._idle_since = self._clock()
+                self._idle_output_acc = 0
+                self._last_prompt_buf = b''
+                return
+
         if (
             ws is not None
             and (self._clock() - ws) > RESUME_GRACE_PERIOD
@@ -852,20 +888,6 @@ class CLIStateTracker:
         ):
             stripped = self._ANSI_RE.sub(b'', data).strip()
             if stripped:
-                if self._trust_dialog_phase:
-                    _log.debug(
-                        'ON_OUTPUT %s→idle (trust dialog startup)',
-                        self._state,
-                    )
-                    self._trust_dialog_phase = False
-                    with self._lock:
-                        self._state = CLIState.IDLE
-                        self._waiting_since = None
-                    self._idle_since = self._clock()
-                    self._idle_output_acc = 0
-                    self._last_prompt_buf = b''
-                    return
-
                 if self._state == CLIState.INTERRUPTED:
                     self._suppress_stale_interrupt = True
                     self._last_escape_time = -INTERRUPT_DETECT_WINDOW
