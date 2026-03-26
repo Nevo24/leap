@@ -170,8 +170,6 @@ class LeapServer:
             provider=self._provider,
         )
         self.output_capture = OutputCapture(tag, cli_provider=self._provider.name)
-        self.pending_notifications: list[str] = []
-        self._notification_lock = threading.Lock()
         self._terminal_input_buf: bytearray = bytearray()
         self._partial_escape: bool = False  # True when last data ended mid-escape
         self._user_has_typed: bool = False  # True after first Enter in the terminal
@@ -345,11 +343,6 @@ class LeapServer:
             if message:
                 self._send_to_cli(message)
                 self.queue.track_sent(message)
-                with self._notification_lock:
-                    remaining = self.queue.size
-                    self.pending_notifications.append(
-                        f"\U0001f525 Force-sent from queue ({remaining} remaining)"
-                    )
                 return {
                     'status': 'sent',
                     'message': message,
@@ -895,11 +888,7 @@ class LeapServer:
                     msg = self._queue_capture_buf.decode(
                         'utf-8', errors='replace').strip()
                     if msg:
-                        size = self.queue.add(msg)
-                        with self._notification_lock:
-                            self.pending_notifications.append(
-                                f"[queued #{size}] {msg[:60]}"
-                                + ("\u2026" if len(msg) > 60 else ""))
+                        self.queue.add(msg)
                     self._queue_capture_buf.clear()
                     self._queue_capture_mode = False
                     self._terminal_input_buf.clear()
@@ -999,11 +988,6 @@ class LeapServer:
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
 
-        with self._notification_lock:
-            if self.pending_notifications and data.endswith(b'\n'):
-                notifications = '   '.join(self.pending_notifications)
-                self.pending_notifications.clear()
-                return data + f"\033[33m{notifications}\033[0m\n".encode()
         return data
 
     def _print_startup_banner(self) -> None:
