@@ -152,8 +152,13 @@ class MonitorWindow(
         self._notification_seen: dict[str, set[str]] = {
             k: set(v) for k, v in raw_seen.items()
         }
-        # Track which SCM types have been seeded (first-run per type)
-        self._notification_seeded: set[str] = set(raw_seen.keys())
+        # Track which SCM types have been seeded (first-run per type).
+        # Only count as seeded if the persisted list was non-empty —
+        # an empty list (e.g. after prune or all todos resolved) should
+        # re-seed on the next poll to avoid firing stale notifications.
+        self._notification_seeded: set[str] = {
+            k for k, v in raw_seen.items() if v
+        }
 
         # Setup auto-refresh timer before init_ui
         self.timer = QTimer()

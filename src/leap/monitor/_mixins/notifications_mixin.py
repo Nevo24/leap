@@ -146,14 +146,20 @@ class NotificationsMixin(_Base):
             # Merge current IDs into seen set (never prune — once seen, always seen)
             self._notification_seen[scm_type] = seen_ids | current_ids
 
-        # Cap seen sets to prevent unbounded growth (keep most recent 500)
-        _MAX_SEEN = 500
+        # Cap seen sets to prevent unbounded growth.  When pruning,
+        # always keep IDs from the current poll (still active on the
+        # server) and fill remaining slots with historical IDs.  This
+        # prevents active notifications from being evicted and then
+        # re-firing as "new" after a restart.
+        _MAX_SEEN = 5000
         for scm_type in list(self._notification_seen):
             seen = self._notification_seen[scm_type]
             if len(seen) > _MAX_SEEN:
-                # Keep only IDs that are still current (active on the server)
                 current = {n.id for n in notifications if n.scm_type == scm_type}
-                self._notification_seen[scm_type] = current
+                historical = seen - current
+                max_historical = max(0, _MAX_SEEN - len(current))
+                trimmed = set(list(historical)[:max_historical])
+                self._notification_seen[scm_type] = current | trimmed
 
         # Persist seen IDs
         serializable = {k: list(v) for k, v in self._notification_seen.items()}
