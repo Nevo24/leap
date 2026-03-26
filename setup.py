@@ -24,8 +24,8 @@ OPTIONS = {
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '10.13',
     },
-    'packages': ['PyQt5', 'leap', 'ApplicationServices'],
-    'includes': ['PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets'],
+    'packages': ['PyQt5', 'leap', 'ApplicationServices', 'cffi'],
+    'includes': ['PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', '_cffi_backend'],
 }
 
 setup(
