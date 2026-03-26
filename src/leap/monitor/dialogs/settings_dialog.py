@@ -17,7 +17,7 @@ from PyQt5.QtGui import QKeySequence
 from leap.monitor.dialogs.notifications_dialog import NotificationsDialog
 from leap.cli_providers.states import AutoSendMode
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
-from leap.monitor.themes import THEMES
+from leap.monitor.themes import THEMES, current_theme
 
 DEFAULT_REPOS_DIR = os.path.expanduser('~/leap-repos')
 
@@ -190,7 +190,7 @@ class SettingsDialog(QDialog):
             'Grant in: System Settings > Privacy & Security > Accessibility\n'
             '> enable "Leap Monitor" (or your IDE/terminal if running from source)'
         )
-        self._warp_hint.setStyleSheet('color: grey; font-size: 11px;')
+        self._warp_hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
         self._warp_hint.setWordWrap(True)
         self._warp_hint.setVisible(self._terminal_combo.currentText() == 'Warp')
         grid.addWidget(self._warp_hint, 2, 0, 1, 4)
@@ -290,7 +290,7 @@ class SettingsDialog(QDialog):
             'Grant in: System Settings > Privacy & Security > Accessibility\n'
             '> enable "Leap Monitor" (or "Python" if running from source)'
         )
-        shortcut_hint.setStyleSheet('color: grey; font-size: 11px;')
+        shortcut_hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
         shortcut_hint.setWordWrap(True)
         grid.addWidget(shortcut_hint, 10, 0, 1, 4)
 
@@ -544,20 +544,32 @@ class _ShortcutEdit(QLineEdit):
     QLineEdit captures one key combo on press and is done.
     """
 
-    _STYLE_NORMAL = (
-        'QLineEdit { border: 1px solid #555; border-radius: 3px; padding: 3px; }'
-    )
-    _STYLE_FOCUSED = (
-        'QLineEdit { border: 2px solid #5B9BD5; border-radius: 3px; padding: 2px; '
-        'background-color: #2a2a3a; }'
-    )
+    @staticmethod
+    def _style_normal() -> str:
+        t = current_theme()
+        return (
+            f'QLineEdit {{ border: 1px solid {t.input_border};'
+            f' border-radius: {t.border_radius}px; padding: 5px 8px;'
+            f' background-color: {t.input_bg};'
+            f' color: {t.text_primary}; }}'
+        )
+
+    @staticmethod
+    def _style_focused() -> str:
+        t = current_theme()
+        return (
+            f'QLineEdit {{ border: 2px solid {t.input_focus_border};'
+            f' border-radius: {t.border_radius}px; padding: 4px 7px;'
+            f' background-color: {t.input_bg};'
+            f' color: {t.text_primary}; }}'
+        )
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._seq = QKeySequence()
         self.setReadOnly(True)
         self.setPlaceholderText('Click to set shortcut')
-        self.setStyleSheet(self._STYLE_NORMAL)
+        self.setStyleSheet(self._style_normal())
 
     def keySequence(self) -> QKeySequence:
         return self._seq
@@ -574,7 +586,7 @@ class _ShortcutEdit(QLineEdit):
 
     def focusInEvent(self, event: Any) -> None:
         super().focusInEvent(event)
-        self.setStyleSheet(self._STYLE_FOCUSED)
+        self.setStyleSheet(self._style_focused())
         if not self._seq.isEmpty():
             self.setPlaceholderText('Press new shortcut…')
         else:
@@ -582,7 +594,7 @@ class _ShortcutEdit(QLineEdit):
 
     def focusOutEvent(self, event: Any) -> None:
         super().focusOutEvent(event)
-        self.setStyleSheet(self._STYLE_NORMAL)
+        self.setStyleSheet(self._style_normal())
         self.setPlaceholderText('Click to set shortcut')
 
     def keyPressEvent(self, event: Any) -> None:

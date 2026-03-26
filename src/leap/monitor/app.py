@@ -20,7 +20,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QTimer, Qt
 from PyQt5.QtGui import (
-    QColor, QCursor, QDrag, QIcon, QCloseEvent, QPalette, QPixmap, QResizeEvent,
+    QColor, QCursor, QDrag, QIcon, QImage, QCloseEvent, QPalette, QPixmap,
+    QResizeEvent,
 )
 
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
@@ -162,6 +163,7 @@ class MonitorWindow(
         self._scm_poll_timer.timeout.connect(self._start_scm_poll)
 
         self._init_ui()
+        self._apply_window_effects()
         # Synchronous initial load — UI needs sessions before first paint
         self.sessions = self._merge_sessions(get_active_sessions())
         self._update_table()
@@ -209,9 +211,15 @@ class MonitorWindow(
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout()
-        margins = layout.contentsMargins()
-        layout.setContentsMargins(margins.left(), 0, margins.right(), margins.bottom())
+        layout.setContentsMargins(12, 0, 12, 8)
+        layout.setSpacing(6)
         main_widget.setLayout(layout)
+
+        # Accent stripe — animated gradient bar at the very top (brand identity)
+        from leap.monitor.ui.ui_widgets import ShimmerBar
+        self._accent_bar = ShimmerBar()
+        self._accent_bar.setFixedHeight(3)
+        layout.addWidget(self._accent_bar)
 
         # Table
         self.table = QTableWidget()
@@ -250,7 +258,7 @@ class MonitorWindow(
         # Enable interactive column resizing (columns never exceed viewport)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         header = self.table.horizontalHeader()
-        header.setStyleSheet('QHeaderView::section { border: none; padding: 4px; }')
+        header.setStyleSheet('QHeaderView::section { border: none; padding: 6px 4px; }')
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setStretchLastSection(False)
         self._resizing_columns = False  # guard against re-entrant sectionResized
@@ -258,6 +266,7 @@ class MonitorWindow(
 
         # Hide vertical header (row indices) — delete button is in COL_DELETE
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)  # taller rows for pill badges
 
         # Delete column: narrow fixed width
         self.table.setColumnWidth(self.COL_DELETE, 30)
@@ -322,6 +331,7 @@ class MonitorWindow(
 
         # Logo row: buttons on sides, logo absolutely centered on window
         logo_container = QFrame()
+        logo_container.setObjectName('_leapLogoBar')
         logo_container.setFrameShape(QFrame.NoFrame)
         logo_container.setContentsMargins(0, 0, 0, 0)
         logo_container.setFixedHeight(50)
@@ -357,11 +367,13 @@ class MonitorWindow(
         buttons_layout.setContentsMargins(0, 0, 0, 0)
 
         settings_btn = QPushButton('\u2699  Settings')
+        settings_btn.setObjectName('_leapGhostBtn')
         settings_btn.setToolTip('Monitor settings')
         settings_btn.clicked.connect(self._open_settings)
         buttons_layout.addWidget(settings_btn)
 
         notes_btn = QPushButton(' Notes')
+        notes_btn.setObjectName('_leapGhostBtn')
         notes_btn.setToolTip('Open personal notes')
         _notes_icon = notes_icon(size=16)
         if _notes_icon:
@@ -372,6 +384,7 @@ class MonitorWindow(
         buttons_layout.addStretch()
 
         reset_cols_btn = QPushButton('Reset Window Sizes')
+        reset_cols_btn.setObjectName('_leapGhostBtn')
         reset_cols_btn.setToolTip('Reset all window and column sizes to defaults')
         reset_cols_btn.clicked.connect(self._reset_window_size)
         buttons_layout.addWidget(reset_cols_btn)
@@ -379,25 +392,32 @@ class MonitorWindow(
 
         layout.addWidget(logo_container)
 
-        # Top controls (presets) — centered
-        top_layout = QHBoxLayout()
-        top_layout.addStretch()
+        # ═══════════════════════════════════════════════════════════════
+        #  PRESETS PANEL — inside a subtle card
+        # ═══════════════════════════════════════════════════════════════
+        preset_card = QFrame()
+        preset_card.setObjectName('_leapCard')
+        preset_card_layout = QHBoxLayout(preset_card)
+        preset_card_layout.setContentsMargins(16, 10, 16, 10)
+        preset_card_layout.addStretch()
 
         edit_preset_btn = QPushButton('\u270e  Presets')
         edit_preset_btn.setToolTip('Edit presets')
         edit_preset_btn.clicked.connect(self._open_preset_editor)
-        top_layout.addWidget(edit_preset_btn)
+        preset_card_layout.addWidget(edit_preset_btn)
 
         preset_grid = QGridLayout()
-        preset_grid.setSpacing(4)
+        preset_grid.setHorizontalSpacing(10)
+        preset_grid.setVerticalSpacing(6)
 
         pr_label = QLabel(PR_PRESET_LABEL)
-        preset_grid.addWidget(pr_label, 0, 0)
+        pr_label.setObjectName('_leapDimLabel')
+        preset_grid.addWidget(pr_label, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
 
         self.preset_combo = QComboBox()
         self.preset_combo.setObjectName('preset_combo')
-        self.preset_combo.setMinimumWidth(180)
-        self.preset_combo.setMaximumWidth(300)
+        self.preset_combo.setMinimumWidth(220)
+        self.preset_combo.setMaximumWidth(340)
         self.preset_combo.setToolTip(PR_PRESET_TOOLTIP)
         self._populate_preset_combo()
         self.preset_combo.currentIndexChanged.connect(
@@ -405,42 +425,61 @@ class MonitorWindow(
         preset_grid.addWidget(self.preset_combo, 0, 1)
 
         direct_label = QLabel(QUICK_MSG_PRESET_LABEL)
-        preset_grid.addWidget(direct_label, 1, 0)
+        direct_label.setObjectName('_leapDimLabel')
+        preset_grid.addWidget(direct_label, 1, 0, Qt.AlignRight | Qt.AlignVCenter)
 
         self.direct_preset_combo = QComboBox()
         self.direct_preset_combo.setObjectName('direct_preset_combo')
-        self.direct_preset_combo.setMinimumWidth(180)
-        self.direct_preset_combo.setMaximumWidth(300)
+        self.direct_preset_combo.setMinimumWidth(220)
+        self.direct_preset_combo.setMaximumWidth(340)
         self.direct_preset_combo.setToolTip(QUICK_MSG_PRESET_TOOLTIP)
         self._populate_direct_preset_combo()
         self.direct_preset_combo.currentIndexChanged.connect(
             self._on_direct_preset_combo_changed)
         preset_grid.addWidget(self.direct_preset_combo, 1, 1)
 
-        top_layout.addLayout(preset_grid)
-        top_layout.addStretch()
-        layout.addLayout(top_layout)
+        preset_card_layout.addLayout(preset_grid)
+        preset_card_layout.addStretch()
+        layout.addWidget(preset_card)
 
-        add_row_layout = QHBoxLayout()
-        add_btn = QPushButton('+')
-        add_btn.setFixedWidth(30)
+        # ═══════════════════════════════════════════════════════════════
+        #  TABLE TOOLBAR — "+ Add Session" prominent on the left
+        # ═══════════════════════════════════════════════════════════════
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setContentsMargins(0, 6, 0, 4)
+
+        add_btn = QPushButton('  Add Session')
+        add_btn.setObjectName('_leapAddBtn')
         add_btn.setToolTip('Add session from Git URL or local path')
+        add_btn.setIcon(self._make_plus_icon(b'#ffffff'))
         add_btn.clicked.connect(self._add_row_menu)
-        add_row_layout.addWidget(add_btn)
-        add_row_layout.addStretch()
-        layout.addLayout(add_row_layout)
+        toolbar_layout.addWidget(add_btn)
+        toolbar_layout.addStretch()
+        layout.addLayout(toolbar_layout)
 
-        layout.addWidget(self.table)
+        # Table (with subtle top/bottom border)
+        table_frame = QFrame()
+        table_frame.setObjectName('_leapTableFrame')
+        table_frame_layout = QVBoxLayout(table_frame)
+        table_frame_layout.setContentsMargins(0, 0, 0, 0)
+        table_frame_layout.setSpacing(0)
+        table_frame_layout.addWidget(self.table)
+        layout.addWidget(table_frame, 1)
 
-        # Bottom controls
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(8, 0, 0, 0)
+        # ═══════════════════════════════════════════════════════════════
+        #  BOTTOM BAR — options left, connections right
+        # ═══════════════════════════════════════════════════════════════
+        bottom_card = QFrame()
+        bottom_card.setObjectName('_leapCard')
+        bottom_inner = QHBoxLayout(bottom_card)
+        bottom_inner.setContentsMargins(16, 8, 16, 8)
+        bottom_inner.setSpacing(16)
 
         self.bots_check = QCheckBox('Include git bots')
         self.bots_check.setToolTip('Count bot comments as responses in PR thread detection')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
-        bottom_layout.addWidget(self.bots_check)
+        bottom_inner.addWidget(self.bots_check)
 
         self.auto_leap_check = QCheckBox("Auto '/leap' fetch")
         self.auto_leap_check.setToolTip(
@@ -448,20 +487,26 @@ class MonitorWindow(
         )
         self.auto_leap_check.setChecked(self._prefs.get('auto_fetch_leap', True))
         self.auto_leap_check.stateChanged.connect(self._toggle_auto_fetch_leap)
-        bottom_layout.addWidget(self.auto_leap_check)
+        bottom_inner.addWidget(self.auto_leap_check)
 
-        bottom_layout.addStretch()
+        # Vertical separator between options and connections
+        vsep = QFrame()
+        vsep.setFrameShape(QFrame.VLine)
+        vsep.setObjectName('_leapDivider')
+        bottom_inner.addWidget(vsep)
+
+        bottom_inner.addStretch()
 
         # SCM connect buttons
         self.gitlab_btn = QPushButton('Connect GitLab')
         self.gitlab_btn.setToolTip('Configure GitLab connection for PR tracking')
         self.gitlab_btn.clicked.connect(self._open_gitlab_setup)
-        bottom_layout.addWidget(self.gitlab_btn)
+        bottom_inner.addWidget(self.gitlab_btn)
 
         self.github_btn = QPushButton('Connect GitHub')
         self.github_btn.setToolTip('Configure GitHub connection for PR tracking')
         self.github_btn.clicked.connect(self._open_github_setup)
-        bottom_layout.addWidget(self.github_btn)
+        bottom_inner.addWidget(self.github_btn)
 
         self.slack_bot_btn = QPushButton('Slack Bot')
         self.slack_bot_btn.setToolTip('Start/stop the Slack bot daemon')
@@ -470,22 +515,24 @@ class MonitorWindow(
         self.slack_bot_btn.customContextMenuRequested.connect(
             self._slack_bot_context_menu)
         self.slack_bot_btn.setVisible(self._slack_available)
-        bottom_layout.addWidget(self.slack_bot_btn)
+        bottom_inner.addWidget(self.slack_bot_btn)
 
-        layout.addLayout(bottom_layout)
+        layout.addWidget(bottom_card)
 
-        # Status / log bar at the very bottom
+        # ═══════════════════════════════════════════════════════════════
+        #  STATUS BAR — logs + progress left, close right
+        # ═══════════════════════════════════════════════════════════════
         status_layout = QHBoxLayout()
+        status_layout.setContentsMargins(4, 4, 4, 4)
 
         full_log_btn = QPushButton('Logs')
+        full_log_btn.setObjectName('_leapLogsBtn')
         full_log_btn.setToolTip('View full status message history')
         full_log_btn.clicked.connect(self._open_log_history)
         status_layout.addWidget(full_log_btn)
 
         self._log_label = QLabel('')
-        self._log_label.setStyleSheet(
-            f'color: {current_theme().text_secondary}; font-size: 11px;'
-        )
+        self._log_label.setObjectName('_leapStatusLabel')
         self._log_label.setOpenExternalLinks(True)
         status_layout.addWidget(self._log_label)
 
@@ -501,6 +548,7 @@ class MonitorWindow(
         status_layout.addStretch()
 
         close_btn = QPushButton('Close')
+        close_btn.setObjectName('_leapCloseBtn')
         close_btn.setToolTip('Close the monitor')
         close_btn.clicked.connect(self._confirm_close)
         status_layout.addWidget(close_btn)
@@ -510,6 +558,143 @@ class MonitorWindow(
     # ------------------------------------------------------------------
     #  Core utilities
     # ------------------------------------------------------------------
+
+    def _apply_window_effects(self) -> None:
+        """Apply macOS-specific visual effects (titlebar blending)."""
+        try:
+            from AppKit import NSApplication, NSWindow
+            from PyQt5.QtGui import QWindow
+            # Make the window titlebar transparent and blend with content
+            ns_window = None
+            win_handle = self.windowHandle()
+            if win_handle:
+                # Get the NSWindow from the QWindow
+                view = int(win_handle.winId())
+                for w in NSApplication.sharedApplication().windows():
+                    if w.contentView() and int(w.contentView().window().windowNumber()) == int(
+                        NSApplication.sharedApplication().keyWindow().windowNumber()
+                        if NSApplication.sharedApplication().keyWindow() else -1
+                    ):
+                        ns_window = w
+                        break
+            if ns_window is None:
+                # Fallback: get the last window
+                windows = NSApplication.sharedApplication().windows()
+                if windows:
+                    ns_window = windows[-1]
+            if ns_window:
+                # Transparent titlebar that blends with content
+                ns_window.setTitlebarAppearsTransparent_(True)
+                # Use full-size content view so content extends behind titlebar
+                from AppKit import (
+                    NSFullSizeContentViewWindowMask,
+                    NSWindowStyleMaskFullSizeContentView,
+                )
+                mask = ns_window.styleMask()
+                ns_window.setStyleMask_(mask | NSWindowStyleMaskFullSizeContentView)
+        except Exception:
+            pass  # Non-macOS or pyobjc not available
+
+    @staticmethod
+    def _make_plus_icon(color: bytes = b'#ffffff', size: int = 16) -> QIcon:
+        """Render a plus (+) icon as SVG at the given size and color."""
+        from PyQt5.QtSvg import QSvgRenderer
+        svg = (
+            b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+            b'<line x1="8" y1="2" x2="8" y2="14" stroke="' + color +
+            b'" stroke-width="2.5" stroke-linecap="round"/>'
+            b'<line x1="2" y1="8" x2="14" y2="8" stroke="' + color +
+            b'" stroke-width="2.5" stroke-linecap="round"/>'
+            b'</svg>'
+        )
+        renderer = QSvgRenderer(svg)
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        from PyQt5.QtGui import QPainter as _P
+        p = _P(pm)
+        renderer.render(p)
+        p.end()
+        return QIcon(pm)
+
+    @staticmethod
+    def _ensure_chevron_icon(color_hex: str) -> str:
+        """Generate a small chevron-down PNG for combobox dropdown arrows.
+
+        A separate file is generated per color so theme switches work.
+        Returns the file path as a string.
+        """
+        from leap.utils.constants import STORAGE_DIR
+        safe_name = color_hex.lstrip('#')
+        path = STORAGE_DIR / f'chevron_{safe_name}.png'
+        if not path.exists():
+            pm = QPixmap(12, 12)
+            pm.fill(Qt.transparent)
+            from PyQt5.QtGui import QPainter, QPen
+            from PyQt5.QtGui import QPainterPath
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.Antialiasing)
+            pen = QPen(QColor(color_hex))
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            arrow = QPainterPath()
+            arrow.moveTo(2, 4)
+            arrow.lineTo(6, 8)
+            arrow.lineTo(10, 4)
+            painter.drawPath(arrow)
+            painter.end()
+            pm.save(str(path), 'PNG')
+        return str(path)
+
+    @staticmethod
+    def _ensure_checkmark_icon() -> str:
+        """Generate a white checkmark PNG for checkbox indicators.
+
+        Returns the file path as a string.  The icon is cached in
+        ``.storage/`` so it's only generated once per install.
+        """
+        from leap.utils.constants import STORAGE_DIR
+        path = STORAGE_DIR / 'checkmark.png'
+        if not path.exists():
+            pm = QPixmap(18, 18)
+            pm.fill(Qt.transparent)
+            from PyQt5.QtGui import QPainter, QPen
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.Antialiasing)
+            pen = QPen(QColor('#ffffff'))
+            pen.setWidth(3)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            # Draw checkmark path: ✓
+            from PyQt5.QtGui import QPainterPath
+            check_path = QPainterPath()
+            check_path.moveTo(3.5, 9.5)
+            check_path.lineTo(7, 13.5)
+            check_path.lineTo(14.5, 4.5)
+            painter.drawPath(check_path)
+            painter.end()
+            pm.save(str(path), 'PNG')
+        return str(path)
+
+    @staticmethod
+    def _ensure_radio_icon() -> str:
+        """Generate a white dot PNG for radio button indicators."""
+        from leap.utils.constants import STORAGE_DIR
+        path = STORAGE_DIR / 'radio_dot.png'
+        if not path.exists():
+            pm = QPixmap(18, 18)
+            pm.fill(Qt.transparent)
+            from PyQt5.QtGui import QPainter
+            painter = QPainter(pm)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setBrush(QColor('#ffffff'))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(5, 5, 8, 8)
+            painter.end()
+            pm.save(str(path), 'PNG')
+        return str(path)
 
     def _open_log_history(self) -> None:
         """Open the log history dialog."""
@@ -529,14 +714,15 @@ class MonitorWindow(
             e = entries[-1]
             ts = time.strftime('%H:%M:%S', time.localtime(e.timestamp))
             if e.url:
+                t = current_theme()
                 display_msg = e.message.replace(
                     '[Notification]',
-                    '<span style="color: cyan;">[Notification]</span>',
+                    f'<span style="color: {t.accent_blue};">[Notification]</span>',
                     1,
                 ) if '[Notification]' in e.message else e.message
                 self._log_label.setText(
                     f'[{ts}] {display_msg} '
-                    f'<a href="{e.url}" style="color: #5B9BD5;">(link)</a>'
+                    f'<a href="{e.url}" style="color: {t.accent_blue};">(link)</a>'
                 )
             else:
                 self._log_label.setText(f'[{ts}] {e.message}')
@@ -939,15 +1125,14 @@ class MonitorWindow(
     def _apply_theme(self, theme_name: str) -> None:
         """Switch the active theme and rebuild the UI to reflect new colors.
 
-        Uses QPalette for base colors so native macOS widget rendering
-        (buttons, checkboxes, spinbox arrows, etc.) is preserved.  Only
-        applies minimal QSS for things the palette can't control (table
-        grid, tooltips, header sections).
+        Applies a comprehensive QSS for a modern look (rounded buttons,
+        styled inputs, scrollbars, menus) on top of a QPalette base.
         """
         if theme_name not in THEMES:
             return
         set_theme(theme_name)
         t = current_theme()
+        r = t.border_radius
 
         # Set macOS appearance (dark/light) — must come before palette
         try:
@@ -964,15 +1149,14 @@ class MonitorWindow(
 
         app = QApplication.instance()
 
-        # Set palette — this controls native widget colors without
-        # replacing the platform style engine the way QSS does.
+        # QPalette — base colors for native widget integration
         pal = QPalette()
         pal.setColor(QPalette.Window, QColor(t.window_bg))
         pal.setColor(QPalette.WindowText, QColor(t.text_primary))
         pal.setColor(QPalette.Base, QColor(t.input_bg))
         pal.setColor(QPalette.AlternateBase, QColor(t.cell_bg_alt))
         pal.setColor(QPalette.Text, QColor(t.text_primary))
-        pal.setColor(QPalette.Button, QColor(t.window_bg))
+        pal.setColor(QPalette.Button, QColor(t.button_bg or t.window_bg))
         pal.setColor(QPalette.ButtonText, QColor(t.text_primary))
         pal.setColor(QPalette.Highlight, QColor(t.accent_blue))
         pal.setColor(QPalette.HighlightedText, QColor('#ffffff' if t.is_dark else '#000000'))
@@ -980,24 +1164,486 @@ class MonitorWindow(
         pal.setColor(QPalette.ToolTipText, QColor(t.text_primary))
         pal.setColor(QPalette.PlaceholderText, QColor(t.text_muted))
         pal.setColor(QPalette.Link, QColor(t.accent_blue))
-        # Disabled state
         pal.setColor(QPalette.Disabled, QPalette.WindowText, QColor(t.text_muted))
         pal.setColor(QPalette.Disabled, QPalette.Text, QColor(t.text_muted))
         pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(t.text_muted))
         app.setPalette(pal)
 
-        # Minimal QSS — only for things QPalette can't control.
-        # NO QWidget/QPushButton/QCheckBox rules so native rendering
-        # is fully preserved.
+        # Resolve scrollbar colors (fall back to border colors)
+        sb_bg = t.scrollbar_bg or t.window_bg
+        sb_handle = t.scrollbar_handle or t.border_solid
+        sb_hover = t.scrollbar_handle_hover or t.text_muted
+        btn_bg = t.button_bg or t.window_bg
+        btn_hover = t.button_hover_bg or t.border_solid
+        btn_border = t.button_border or t.border_solid
+
+        # Comprehensive QSS for modern appearance
         app.setStyleSheet(f"""
+            /* --- Global font --- */
+            * {{
+                font-size: {t.font_size_base}px;
+            }}
+
+            /* --- Buttons --- */
+            QPushButton {{
+                background-color: {btn_bg};
+                color: {t.text_primary};
+                border: 1px solid {btn_border};
+                border-radius: {r}px;
+                padding: 5px 16px;
+                font-size: {t.font_size_base}px;
+                font-weight: 500;
+                min-height: 18px;
+            }}
+            QPushButton:hover {{
+                background-color: {btn_hover};
+                border-color: {t.accent_blue};
+                color: {t.text_primary};
+            }}
+            QPushButton:pressed {{
+                background-color: {t.window_bg};
+                border-color: {t.accent_blue};
+            }}
+            QPushButton:disabled {{
+                color: {t.text_muted};
+                border-color: {btn_border};
+                background-color: {btn_bg};
+            }}
+            QPushButton:flat {{
+                background: transparent;
+                border: none;
+            }}
+
+            /* --- Combo boxes --- */
+            QComboBox {{
+                background-color: {btn_bg};
+                color: {t.text_primary};
+                border: 1px solid {btn_border};
+                border-radius: {r}px;
+                padding: 5px 10px;
+                font-size: {t.font_size_base}px;
+                min-height: 18px;
+            }}
+            QComboBox:hover {{
+                border-color: {t.accent_blue};
+            }}
+            QComboBox:focus {{
+                border-color: {t.input_focus_border};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QComboBox::down-arrow {{
+                image: url({self._ensure_chevron_icon(t.text_secondary)});
+                width: 10px;
+                height: 10px;
+                margin-right: 6px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {t.popup_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.popup_border};
+                border-radius: {r}px;
+                selection-background-color: {btn_hover};
+                selection-color: {t.text_primary};
+                padding: 4px;
+                outline: none;
+            }}
+
+            /* --- Check boxes --- */
+            QCheckBox {{
+                spacing: 8px;
+                font-size: {t.font_size_base}px;
+                color: {t.text_primary};
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {btn_border};
+                border-radius: 4px;
+                background-color: {btn_bg};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {t.accent_blue};
+                border-color: {t.accent_blue};
+                image: url({self._ensure_checkmark_icon()});
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {t.accent_blue};
+            }}
+
+            /* --- Radio buttons --- */
+            QRadioButton {{
+                spacing: 8px;
+                font-size: {t.font_size_base}px;
+                color: {t.text_primary};
+            }}
+            QRadioButton::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {btn_border};
+                border-radius: 10px;
+                background-color: {btn_bg};
+            }}
+            QRadioButton::indicator:checked {{
+                background-color: {t.accent_blue};
+                border-color: {t.accent_blue};
+                image: url({self._ensure_radio_icon()});
+            }}
+            QRadioButton::indicator:hover {{
+                border-color: {t.accent_blue};
+            }}
+
+            /* --- Line edits --- */
+            QLineEdit {{
+                background-color: {t.input_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.input_border};
+                border-radius: {r}px;
+                padding: 6px 10px;
+                font-size: {t.font_size_base}px;
+                selection-background-color: {t.accent_blue};
+            }}
+            QLineEdit:focus {{
+                border: 2px solid {t.input_focus_border};
+                padding: 5px 9px;
+            }}
+
+            /* --- Text edits --- */
+            QTextEdit, QPlainTextEdit {{
+                background-color: {t.input_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.input_border};
+                border-radius: {r}px;
+                padding: 4px;
+                font-size: {t.font_size_base}px;
+                selection-background-color: {t.accent_blue};
+            }}
+            QTextEdit:focus, QPlainTextEdit:focus {{
+                border: 2px solid {t.input_focus_border};
+                padding: 3px;
+            }}
+
+            /* --- Spin boxes --- */
+            QSpinBox {{
+                background-color: {t.input_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.input_border};
+                border-radius: {r}px;
+                padding: 4px 8px;
+                font-size: {t.font_size_base}px;
+            }}
+            QSpinBox:focus {{
+                border: 2px solid {t.input_focus_border};
+                padding: 3px 7px;
+            }}
+
+            /* --- Table --- */
             QTableWidget {{
                 background-color: {t.cell_bg};
                 alternate-background-color: {t.cell_bg_alt};
                 gridline-color: transparent;
+                border: none;
+                font-size: {t.font_size_base}px;
             }}
             QHeaderView::section {{
+                background-color: {t.header_bg};
+                color: {t.text_muted};
                 border: none;
-                padding: 4px;
+                border-bottom: 2px solid {t.border_solid};
+                padding: 8px 6px;
+                font-size: {t.font_size_small}px;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }}
+
+            /* --- Menus --- */
+            QMenu {{
+                background-color: {t.popup_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.popup_border};
+                border-radius: {r + 2}px;
+                padding: 6px;
+                font-size: {t.font_size_base}px;
+            }}
+            QMenu::item {{
+                padding: 8px 28px 8px 14px;
+                border-radius: {r}px;
+                margin: 1px 2px;
+            }}
+            QMenu::item:selected {{
+                background-color: {btn_hover};
+            }}
+            QMenu::item:disabled {{
+                color: {t.text_muted};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background-color: {t.popup_border};
+                margin: 6px 10px;
+            }}
+
+            /* --- Tooltips --- */
+            QToolTip {{
+                background-color: {t.popup_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.popup_border};
+                border-radius: {r}px;
+                padding: 8px 12px;
+                font-size: {t.font_size_base}px;
+                line-height: 1.4;
+            }}
+
+            /* --- Scrollbars (thin modern) --- */
+            QScrollBar:vertical {{
+                background: {sb_bg};
+                width: 8px;
+                margin: 0;
+                border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {sb_handle};
+                min-height: 30px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {sb_hover};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: none;
+            }}
+            QScrollBar:horizontal {{
+                background: {sb_bg};
+                height: 8px;
+                margin: 0;
+                border: none;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {sb_handle};
+                min-width: 30px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: {sb_hover};
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0;
+            }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+                background: none;
+            }}
+
+            /* --- Tab widgets --- */
+            QTabWidget::pane {{
+                border: 1px solid {t.popup_border};
+                border-radius: {r}px;
+                background-color: {t.window_bg};
+            }}
+            QTabBar::tab {{
+                background-color: {btn_bg};
+                color: {t.text_secondary};
+                border: 1px solid {btn_border};
+                border-bottom: none;
+                padding: 6px 16px;
+                border-top-left-radius: {r}px;
+                border-top-right-radius: {r}px;
+                font-size: {t.font_size_base}px;
+            }}
+            QTabBar::tab:selected {{
+                background-color: {t.window_bg};
+                color: {t.text_primary};
+                border-color: {t.popup_border};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background-color: {btn_hover};
+            }}
+
+            /* --- Progress bar --- */
+            QProgressBar {{
+                background-color: {btn_bg};
+                border: none;
+                border-radius: 6px;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {t.accent_blue},
+                    stop:1 {t.input_focus_border});
+                border-radius: 6px;
+            }}
+
+            /* --- Dialogs --- */
+            QDialog {{
+                background-color: {t.window_bg};
+            }}
+
+            /* --- Dialog button box (OK/Cancel/Apply) --- */
+            QDialogButtonBox QPushButton {{
+                min-width: 80px;
+            }}
+
+            /* --- Labels (base) --- */
+            QLabel {{
+                font-size: {t.font_size_base}px;
+            }}
+
+            /* --- Group boxes --- */
+            QGroupBox {{
+                border: 1px solid {t.popup_border};
+                border-radius: {r}px;
+                margin-top: 8px;
+                padding-top: 14px;
+                font-size: {t.font_size_base}px;
+                color: {t.text_secondary};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+            }}
+
+            /* --- List widgets --- */
+            QListWidget {{
+                background-color: {t.cell_bg};
+                color: {t.text_primary};
+                border: 1px solid {t.input_border};
+                border-radius: {r}px;
+                font-size: {t.font_size_base}px;
+            }}
+            QListWidget::item {{
+                padding: 4px 8px;
+                border-radius: {max(1, r - 2)}px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {btn_hover};
+            }}
+            QListWidget::item:hover:!selected {{
+                background-color: {t.hover_bg};
+            }}
+
+            /* --- Message box --- */
+            QMessageBox {{
+                background-color: {t.window_bg};
+            }}
+
+            /* --- Cell wrapper transparency (for table cell widgets) --- */
+            #_leapSep {{
+                background: transparent;
+            }}
+
+            /* --- Section dividers (horizontal & vertical) --- */
+            #_leapDivider {{
+                color: {t.border_solid};
+                background-color: {t.border_solid};
+                border: none;
+            }}
+
+            /* --- Card panels (presets, bottom bar) --- */
+            #_leapCard {{
+                background-color: {t.cell_bg_alt};
+                border: 1px solid {t.border_solid};
+                border-top: 1px solid {t.popup_border};
+                border-radius: {r}px;
+                margin: 2px 0px;
+            }}
+
+            /* --- Table frame (subtle border) --- */
+            #_leapTableFrame {{
+                border-top: 1px solid {t.border_solid};
+                border-bottom: 1px solid {t.border_solid};
+            }}
+
+            /* --- Dim labels (preset labels, section hints) --- */
+            #_leapDimLabel {{
+                color: {t.text_muted};
+                font-size: {t.font_size_small}px;
+            }}
+
+            /* --- Ghost buttons (toolbar: Settings, Notes, Reset) --- */
+            #_leapGhostBtn {{
+                color: {t.text_secondary};
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: {r}px;
+                padding: 4px 12px;
+                font-weight: normal;
+            }}
+            #_leapGhostBtn:hover {{
+                color: {t.text_primary};
+                background-color: {btn_hover};
+                border-color: {btn_border};
+            }}
+
+            /* --- Add Session button (primary action, solid accent) --- */
+            #_leapAddBtn {{
+                color: #ffffff;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {t.accent_blue},
+                    stop:1 {t.input_focus_border});
+                border: 1px solid {t.accent_blue};
+                border-radius: {r}px;
+                padding: 6px 20px;
+                font-weight: bold;
+                font-size: {t.font_size_base}px;
+            }}
+            #_leapAddBtn:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {t.input_focus_border},
+                    stop:1 {t.accent_blue});
+                border-color: {t.input_focus_border};
+            }}
+            #_leapAddBtn:pressed {{
+                background-color: {t.accent_blue};
+                border-color: {t.accent_blue};
+            }}
+
+            /* --- Close button (danger outline) --- */
+            #_leapCloseBtn {{
+                color: {t.accent_red};
+                background: transparent;
+                border: 1px solid {t.accent_red};
+                border-radius: {r}px;
+                padding: 4px 14px;
+                font-weight: normal;
+            }}
+            #_leapCloseBtn:hover {{
+                background-color: {t.accent_red};
+                color: #ffffff;
+            }}
+            #_leapCloseBtn:pressed {{
+                background-color: {t.accent_red};
+                border-width: 2px;
+                padding: 3px 13px;
+            }}
+
+            /* --- Logs button --- */
+            #_leapLogsBtn {{
+                color: {t.text_secondary};
+                background: transparent;
+                border: 1px solid {t.text_secondary};
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-weight: normal;
+            }}
+            #_leapLogsBtn:hover {{
+                color: {t.text_primary};
+                border-color: {t.text_primary};
+            }}
+
+            /* --- Status bar label --- */
+            #_leapStatusLabel {{
+                color: {t.text_secondary};
+                font-size: {t.font_size_small}px;
+            }}
+
+            /* --- Logo/toolbar bar --- */
+            #_leapLogoBar {{
+                background-color: {t.header_bg};
+                border-bottom: 1px solid {t.border_solid};
             }}
         """)
 
@@ -1009,10 +1655,7 @@ class MonitorWindow(
         self._update_scm_buttons()
         self._update_slack_bot_button()
 
-        # Update status log label color
-        self._log_label.setStyleSheet(
-            f'color: {t.text_secondary}; font-size: 11px;'
-        )
+        # Log label color is handled by #_leapStatusLabel in the global QSS
 
         # Update drop indicator color
         if self._drop_indicator:
