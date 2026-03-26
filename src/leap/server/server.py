@@ -831,14 +831,28 @@ class LeapServer:
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape:
             self._partial_escape = False
-            # Consume remaining escape bytes: parameter/intermediate (0x20-0x3f)
-            # then one final byte (0x40-0x7e), pass them all through.
-            while i < len(data) and 0x20 <= data[i] <= 0x3f:
+            if i < len(data) and data[i] == 0x5b:
+                # CSI: skip introducer, parameter bytes, and final byte
+                out.append(data[i])  # '['
+                i += 1
+                while i < len(data) and 0x20 <= data[i] <= 0x3f:
+                    out.append(data[i])
+                    i += 1
+                if i < len(data):
+                    out.append(data[i])  # final byte
+                    i += 1
+            elif i < len(data) and data[i] == 0x4f:
+                # SS3: skip 'O' + one final byte
                 out.append(data[i])
                 i += 1
-            if i < len(data):
-                out.append(data[i])  # final byte
-                i += 1
+                if i < len(data):
+                    out.append(data[i])
+                    i += 1
+            else:
+                # Single-char escape: one byte after ESC
+                if i < len(data):
+                    out.append(data[i])
+                    i += 1
 
         while i < len(data):
             b = data[i]
@@ -872,6 +886,10 @@ class LeapServer:
                             i += 2
                             break
                         i += 1
+                elif kind == 0x4f:  # SS3 (e.g. \x1bOP for F1)
+                    i += 1
+                    if i < len(data):
+                        i += 1  # consume the final byte
                 else:
                     i += 1
                 out.extend(data[esc_start:i])
