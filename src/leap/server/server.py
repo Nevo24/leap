@@ -173,6 +173,13 @@ class LeapServer:
         self.pending_notifications: list[str] = []
         self._notification_lock = threading.Lock()
         self._terminal_input_buf: bytearray = bytearray()
+        self._partial_escape: bool = False  # True when last data ended mid-escape
+        self._user_has_typed: bool = False  # True after first Enter in the terminal
+        # Queue-from-server: "^" prefix capture mode.
+        # When "^" is the first char on a line we enter capture mode
+        # and swallow all subsequent input until Enter → queue.
+        self._queue_capture_mode: bool = False
+        self._queue_capture_buf: bytearray = bytearray()
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -766,47 +773,84 @@ class LeapServer:
         except Exception:
             pass
 
+    def _capture_display(self, text: Optional[str] = None) -> None:
+        """Show queue-capture buffer on the TUI's input line.
+
+        Writes ``\\r`` + erase-line + the text in a single ``os.write``
+        call.  Since we are not feeding input to the Ink TUI while in
+        capture mode, it has no reason to repaint, so the text persists
+        on screen until the next keystroke updates it.
+        """
+        try:
+            if text is None:
+                # Clear the capture line
+                os.write(sys.stdout.fileno(), b'\r\x1b[K')
+            else:
+                payload = f"\r\x1b[K\x1b[33m[Q] {text}\x1b[0m".encode()
+                os.write(sys.stdout.fileno(), payload)
+        except OSError:
+            pass
+
     def _input_filter(self, data: bytes) -> bytes:
         """Track user keyboard input for state detection.
 
         Also accumulates typed text so that messages entered directly
         in the server terminal are captured as the current task.
 
+        **Queue from server**: When the user types ``^`` at the start of
+        a line, capture mode activates — subsequent chars are swallowed
+        (the CLI never sees them).  On Enter the message is added to
+        the queue.  A notification is injected into the output stream
+        as confirmation.
+
         Args:
             data: Raw input bytes from keyboard.
 
         Returns:
-            Input bytes unchanged (pass-through).
+            Input bytes to forward to the CLI (swallowed in capture mode).
         """
         self.state.on_input(data)
 
-        # Accumulate terminal input for task tracking.
-        # Enter (\r) flushes the buffer as a sent message.
-        # Backspace (\x7f) removes the last byte.
-        # Escape sequences (\x1b[...X) are skipped entirely.
-        # When the CLI is in a prompt state (permission/input dialog),
-        # skip accumulation — those keystrokes are prompt responses
-        # (e.g. "y"/"n" for Codex, digits for Claude), not user messages.
         in_prompt = self.state.current_state in PROMPT_STATES
+
+        out = bytearray()
         i = 0
+
+        # If a previous call ended mid-escape, skip continuation bytes.
+        if self._partial_escape:
+            self._partial_escape = False
+            # Consume remaining escape bytes: parameter/intermediate (0x20-0x3f)
+            # then one final byte (0x40-0x7e), pass them all through.
+            while i < len(data) and 0x20 <= data[i] <= 0x3f:
+                out.append(data[i])
+                i += 1
+            if i < len(data):
+                out.append(data[i])  # final byte
+                i += 1
+
         while i < len(data):
             b = data[i]
-            if b == 0x1b:  # Escape — skip entire sequence
+
+            # --- Escape sequences: always pass through ---
+            if b == 0x1b:
+                esc_start = i
                 i += 1
                 if i >= len(data):
+                    # ESC at end of chunk — mark partial, pass through
+                    self._partial_escape = True
+                    out.append(b)
                     continue
                 kind = data[i]
-                if kind == 0x5b:  # CSI: \x1b[
+                if kind == 0x5b:  # CSI
                     i += 1
-                    # Skip parameter/intermediate bytes (0x20-0x3f)
-                    # until final byte (0x40-0x7e)
                     while i < len(data) and 0x20 <= data[i] <= 0x3f:
                         i += 1
                     if i < len(data):
-                        i += 1  # skip final byte
+                        i += 1
+                    else:
+                        # CSI truncated at end of chunk
+                        self._partial_escape = True
                 elif kind in (0x5d, 0x50, 0x58, 0x5e, 0x5f):
-                    # String sequences: OSC ], DCS P, SOS X, PM ^, APC _
-                    # Skip until ST (\x1b\\) or BEL (\x07)
                     i += 1
                     while i < len(data):
                         if data[i] == 0x07:
@@ -817,29 +861,92 @@ class LeapServer:
                             break
                         i += 1
                 else:
-                    i += 1  # SS2/SS3/other: skip one byte after ESC
+                    i += 1
+                out.extend(data[esc_start:i])
                 continue
+
             if in_prompt:
-                # Discard prompt-response input (y/n, digits, arrows)
-                # so it doesn't contaminate the next real message.
+                out.append(b)
                 i += 1
                 continue
+
+            # --- Queue-capture mode: swallow input, queue on Enter ---
+            # The terminal title bar shows "[Q] <text>" as live feedback
+            # since we can't echo into the TUI content area.
+            if self._queue_capture_mode:
+                if b == 0x0d:  # Enter — queue the message
+                    self._user_has_typed = True
+                    self._capture_display()  # clear the line
+                    msg = self._queue_capture_buf.decode(
+                        'utf-8', errors='replace').strip()
+                    if msg:
+                        size = self.queue.add(msg)
+                        with self._notification_lock:
+                            self.pending_notifications.append(
+                                f"[queued #{size}] {msg[:60]}"
+                                + ("\u2026" if len(msg) > 60 else ""))
+                    self._queue_capture_buf.clear()
+                    self._queue_capture_mode = False
+                    self._terminal_input_buf.clear()
+                elif b == 0x7f:  # Backspace
+                    if self._queue_capture_buf:
+                        self._queue_capture_buf.pop()
+                        self._capture_display(
+                            self._queue_capture_buf.decode(
+                                'utf-8', errors='replace'))
+                    else:
+                        # Backspaced past all content — exit capture
+                        self._capture_display()  # clear
+                        self._queue_capture_mode = False
+                elif b == 0x03:  # Ctrl+C — cancel capture
+                    self._capture_display()  # clear
+                    self._queue_capture_buf.clear()
+                    self._queue_capture_mode = False
+                    self._terminal_input_buf.clear()
+                elif 0x20 <= b < 0x7f or b >= 0x80:
+                    self._queue_capture_buf.append(b)
+                    self._capture_display(
+                        self._queue_capture_buf.decode(
+                            'utf-8', errors='replace'))
+                # Swallowed — nothing goes to out.
+                i += 1
+                continue
+
+            # --- Normal handling ---
             if b == 0x0d:  # Enter
+                self._user_has_typed = True
                 if self._terminal_input_buf:
-                    msg = self._terminal_input_buf.decode('utf-8', errors='replace').strip()
+                    msg = self._terminal_input_buf.decode(
+                        'utf-8', errors='replace').strip()
                     if msg:
                         self.queue.track_sent(msg)
                     self._terminal_input_buf.clear()
+                out.append(b)
             elif b == 0x7f:  # Backspace
                 if self._terminal_input_buf:
                     self._terminal_input_buf.pop()
+                out.append(b)
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
-            elif 0x20 <= b < 0x7f or b >= 0x80:  # Printable ASCII or UTF-8
+                out.append(b)
+            elif b == 0x5e and (not self._terminal_input_buf
+                               or not self._user_has_typed):
+                # "^" at start of line → enter queue capture mode.
+                # Before the user's first Enter, the buffer may contain
+                # stale bytes from split terminal escape sequences, so
+                # we also allow "^" when no real input has been sent yet.
+                self._terminal_input_buf.clear()
+                self._queue_capture_mode = True
+                self._queue_capture_buf.clear()
+                self._capture_display("")
+            elif 0x20 <= b < 0x7f or b >= 0x80:
                 self._terminal_input_buf.append(b)
+                out.append(b)
+            else:
+                out.append(b)
             i += 1
 
-        return data
+        return bytes(out)
 
     def _output_filter(self, data: bytes) -> bytes:
         """
@@ -881,6 +988,7 @@ class LeapServer:
         print("  \u2705 Native scrolling in IntelliJ")
         print("  \u2705 Full terminal width")
         print("  \u2705 No tmux needed!")
+        print("  \u2705 Type ^msg to queue from here")
         print("")
         print("  Ctrl+C to exit")
         print("=" * 80)

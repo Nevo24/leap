@@ -200,6 +200,10 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Slack config | `.storage/slack/config.json` |
 | Slack sessions | `.storage/slack/sessions.json` |
 
+## Server Queue Shortcut
+
+Type `^msg` in the server terminal to queue a message without opening a client. The `^` prefix activates capture mode — characters are hidden from the CLI and shown in a `[Q]` prompt on the input line. Press Enter to queue, Ctrl+C to cancel.
+
 ## Client Commands
 
 | Command | Action |
