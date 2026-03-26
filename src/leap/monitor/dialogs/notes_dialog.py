@@ -119,10 +119,10 @@ def _parse_checklist(text: str) -> list[dict]:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith('- [x] ') or stripped.startswith('- [X] '):
-            items.append({'text': stripped[6:], 'checked': True})
-        elif stripped.startswith('- [ ] '):
-            items.append({'text': stripped[6:], 'checked': False})
+        if stripped in ('- [x]', '- [X]') or stripped.startswith('- [x] ') or stripped.startswith('- [X] '):
+            items.append({'text': stripped[6:] if len(stripped) > 6 else '', 'checked': True})
+        elif stripped == '- [ ]' or stripped.startswith('- [ ] '):
+            items.append({'text': stripped[6:] if len(stripped) > 6 else '', 'checked': False})
         else:
             items.append({'text': stripped, 'checked': False})
     return items
@@ -132,6 +132,8 @@ def _serialize_checklist(items: list[dict]) -> str:
     """Serialize item dicts to markdown-style checklist text."""
     lines: list[str] = []
     for item in items:
+        if not item['text'] and not item['checked']:
+            continue  # skip empty unchecked items
         mark = 'x' if item['checked'] else ' '
         lines.append(f'- [{mark}] {item["text"]}')
     return '\n'.join(lines)
@@ -354,7 +356,8 @@ class _ChecklistItemWidget(QFrame):
                 return
             line_h = wrap.fontMetrics().lineSpacing()
             line_count = max(1, int(wrap.document().size().height()))
-            wrap.setFixedHeight(max(self._edit.height(), line_count * line_h + 10))
+            # Extra line of padding so the last line isn't clipped
+            wrap.setFixedHeight(max(self._edit.height(), (line_count + 1) * line_h))
 
         def dismiss(save: bool) -> None:
             import sip
