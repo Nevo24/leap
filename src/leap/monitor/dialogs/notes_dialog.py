@@ -170,6 +170,15 @@ class _ItemLineEdit(QLineEdit):
             self.setToolTip('')
             self.setProperty('always_tooltip', False)
 
+    def mousePressEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
+        # Re-activate the window on every click — it may have been
+        # deactivated by a popup dismiss or widget rebuild.
+        from PyQt5.QtWidgets import QApplication
+        win = self.window()
+        if win and not win.isActiveWindow():
+            QApplication.setActiveWindow(win)
+        super().mousePressEvent(event)
+
     def mouseDoubleClickEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
         if self._is_truncated():
             self.expand_requested.emit()
