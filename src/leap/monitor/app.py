@@ -346,19 +346,10 @@ class MonitorWindow(
         logo_center_layout = QHBoxLayout(logo_center_widget)
         logo_center_layout.setContentsMargins(0, 0, 0, 0)
         logo_center_layout.addStretch()
-        # Logo banner — check source tree first, then .app bundle Resources/
-        logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "leap-text.png"
-        if not logo_path.exists():
-            for parent in Path(__file__).parents:
-                if parent.name == 'Resources' and parent.parent.name == 'Contents':
-                    logo_path = parent / "leap-text.png"
-                    break
-        if logo_path.exists():
-            logo_pixmap = QPixmap(str(logo_path)).scaledToHeight(
-                40, Qt.SmoothTransformation)
-            logo_label = QLabel()
-            logo_label.setPixmap(logo_pixmap)
-            logo_center_layout.addWidget(logo_label)
+        # Logo banner — themed variant per theme
+        self._logo_label = QLabel()
+        self._update_logo_pixmap()
+        logo_center_layout.addWidget(self._logo_label)
         logo_center_layout.addStretch()
         stacked.addWidget(logo_center_widget)
 
@@ -592,6 +583,30 @@ class MonitorWindow(
                 ns_window.setStyleMask_(mask | NSWindowStyleMaskFullSizeContentView)
         except Exception:
             pass  # Non-macOS or pyobjc not available
+
+    def _update_logo_pixmap(self) -> None:
+        """Load the themed logo variant for the current theme."""
+        t = current_theme()
+        # Map theme name to logo filename suffix
+        suffix = t.name.lower().replace(' ', '-')
+        # Try themed variant first, fall back to original
+        assets = Path(__file__).parent.parent.parent.parent / 'assets'
+        bundle_assets: Optional[Path] = None
+        for p in Path(__file__).parents:
+            if p.name == 'Resources' and p.parent.name == 'Contents':
+                bundle_assets = p
+                break
+        logo_path = assets / f'leap-text-{suffix}.png'
+        if not logo_path.exists() and bundle_assets:
+            logo_path = bundle_assets / f'leap-text-{suffix}.png'
+        if not logo_path.exists():
+            logo_path = assets / 'leap-text.png'
+        if not logo_path.exists() and bundle_assets:
+            logo_path = bundle_assets / 'leap-text.png'
+        if logo_path.exists():
+            pm = QPixmap(str(logo_path)).scaledToHeight(
+                40, Qt.SmoothTransformation)
+            self._logo_label.setPixmap(pm)
 
     @staticmethod
     def _hex_rgb(hex_color: str) -> str:
@@ -1700,6 +1715,9 @@ class MonitorWindow(
 
         # Update Add Session button icon color
         self._add_btn.setIcon(self._make_plus_icon(t.accent_blue.encode()))
+
+        # Update logo to themed variant
+        self._update_logo_pixmap()
 
     # ------------------------------------------------------------------
     #  Global keyboard shortcut
