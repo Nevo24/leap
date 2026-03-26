@@ -200,7 +200,12 @@ class SCMConfigMixin(_Base):
     def _update_scm_buttons(self) -> None:
         """Update SCM button text/style based on connection state."""
         t = current_theme()
-        connected_style = f'QPushButton {{ color: {t.accent_green}; }}'
+        connected_style = (
+            f'QPushButton {{ color: {t.accent_green};'
+            f' border-color: {t.accent_green}; }}'
+            f'QPushButton:hover {{ background-color: {t.button_hover_bg or t.border_solid};'
+            f' border-color: {t.accent_green}; }}'
+        )
         if SCMType.GITLAB.value in self._scm_providers:
             self.gitlab_btn.setText('GitLab Connected')
             self.gitlab_btn.setStyleSheet(connected_style)
@@ -342,7 +347,11 @@ class SCMConfigMixin(_Base):
             self.slack_bot_btn.setText('Slack Bot Running')
             t = current_theme()
             self.slack_bot_btn.setStyleSheet(
-                f'QPushButton {{ color: {t.accent_green}; }}')
+                f'QPushButton {{ color: {t.accent_green};'
+                f' border-color: {t.accent_green}; }}'
+                f'QPushButton:hover {{ background-color: {t.button_hover_bg or t.border_solid};'
+                f' border-color: {t.accent_green}; }}'
+            )
             self.slack_bot_btn.setToolTip('Slack bot is running — click to stop')
         else:
             self.slack_bot_btn.setText('Run Slack Bot')

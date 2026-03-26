@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
+from leap.monitor.themes import current_theme
 from leap.monitor.ui.image_text_edit import ImageTextEdit
 
 from leap.monitor.pr_tracking.config import (
@@ -45,9 +46,11 @@ class _MessageCard(QFrame):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
         self.setObjectName('messageCard')
+        t = current_theme()
         self.setStyleSheet(
-            'QFrame#messageCard { border: 1px solid #555; border-radius: 4px; '
-            'padding: 4px; margin: 2px 0px; }'
+            f'QFrame#messageCard {{ border: 1px solid {t.popup_border};'
+            f' border-radius: {t.border_radius}px;'
+            f' padding: 4px; margin: 2px 0px; }}'
         )
 
         layout = QVBoxLayout(self)
@@ -58,14 +61,15 @@ class _MessageCard(QFrame):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         self._label = QLabel(f'Message {index + 1}')
-        self._label.setStyleSheet('border: none; font-weight: bold; font-size: 12px;')
+        self._label.setStyleSheet(f'border: none; font-weight: bold; font-size: {current_theme().font_size_base}px;')
         header.addWidget(self._label)
         header.addStretch()
         self._remove_btn = QPushButton('\u00d7')
         self._remove_btn.setFixedSize(20, 20)
+        t = current_theme()
         self._remove_btn.setStyleSheet(
-            'QPushButton { border: none; color: #999; font-size: 14px; }'
-            'QPushButton:hover { color: #ff4444; font-weight: bold; }'
+            f'QPushButton {{ border: none; color: {t.text_muted}; font-size: {t.font_size_base}px; }}'
+            f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold; }}'
         )
         self._remove_btn.setToolTip('Remove this message')
         self._remove_btn.clicked.connect(on_remove)
@@ -119,13 +123,13 @@ class PresetEditorDialog(QDialog):
         hint_pr = QLabel(PR_PRESET_HINT)
         hint_pr.setWordWrap(True)
         hint_pr.setIndent(0)
-        hint_pr.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 0px;')
+        hint_pr.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px; margin-bottom: 0px;')
         dlg_layout.addWidget(hint_pr)
 
         hint_quick = QLabel(QUICK_MSG_PRESET_HINT)
         hint_quick.setWordWrap(True)
         hint_quick.setIndent(0)
-        hint_quick.setStyleSheet('color: #999; font-size: 12px; margin-bottom: 4px;')
+        hint_quick.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px; margin-bottom: 4px;')
         dlg_layout.addWidget(hint_quick)
 
         # Preset row: combo + New + Save + Save As... + Delete
@@ -241,10 +245,11 @@ class PresetEditorDialog(QDialog):
 
         # "+ Add Message" button
         self._add_btn = QPushButton('+ Add Message')
+        t = current_theme()
         self._add_btn.setStyleSheet(
-            'QPushButton { color: #aaa; border: 1px dashed #666; '
-            'border-radius: 4px; padding: 6px; }'
-            'QPushButton:hover { color: #fff; border-color: #999; }'
+            f'QPushButton {{ color: {t.text_muted}; border: 1px dashed {t.border_solid};'
+            f' border-radius: {t.border_radius}px; padding: 6px; }}'
+            f'QPushButton:hover {{ color: {t.text_primary}; border-color: {t.text_secondary}; }}'
         )
         self._add_btn.clicked.connect(self._add_message)
         self._scroll_layout.addWidget(self._add_btn)

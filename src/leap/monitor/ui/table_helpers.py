@@ -253,19 +253,24 @@ MAX_COMBO_DISPLAY = 40
 
 # Theme-aware stylesheet functions for cell buttons
 
+CELL_BTN_H = 24  # consistent height for all cell buttons
+
+
 def close_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for close/delete buttons."""
     t = current_theme()
     fg = fg_override or t.text_muted
-    # Parse accent_red hex to rgb for the translucent hover background
     h = t.accent_red.lstrip('#')
     rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return (
         f'QPushButton {{ color: {fg}; font-size: {t.font_size_base + 2}px;'
-        f' padding: 2px 6px; background: transparent; border: none;'
+        f' padding: 0px 6px;'
+        f' background-color: {t.button_bg or t.window_bg};'
+        f' border: 1px solid {t.button_border or t.border_solid};'
         f' border-radius: {t.border_radius}px; }}'
-        f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold;'
-        f' background-color: rgba({rr}, {gg}, {bb}, 0.12); }}'
+        f'QPushButton:hover {{ color: {t.accent_red};'
+        f' background-color: rgba({rr}, {gg}, {bb}, 0.15);'
+        f' border-color: {t.accent_red}; }}'
     )
 
 
@@ -273,21 +278,48 @@ def active_btn_style(fg_override: Optional[str] = None) -> str:
     """Return stylesheet for active/connected indicator buttons."""
     t = current_theme()
     fg = fg_override or t.accent_green
+    h = fg.lstrip('#')
+    rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return (
-        f'QPushButton {{ color: {fg}; background: transparent;'
-        f' border: none; padding: 2px 4px; }}'
+        f'QPushButton {{ color: {fg};'
+        f' background-color: rgba({rr}, {gg}, {bb}, 0.10);'
+        f' border: 1px solid rgba({rr}, {gg}, {bb}, 0.30);'
+        f' border-radius: {t.border_radius}px;'
+        f' padding: 0px 8px; }}'
+        f'QPushButton:hover {{ background-color: rgba({rr}, {gg}, {bb}, 0.20);'
+        f' border-color: {fg}; }}'
+    )
+
+
+def inactive_btn_style(fg_override: Optional[str] = None) -> str:
+    """Return stylesheet for inactive/dead cell buttons (same size as active)."""
+    t = current_theme()
+    fg = fg_override or t.text_primary
+    return (
+        f'QPushButton {{ color: {fg};'
+        f' background-color: {t.button_bg or t.window_bg};'
+        f' border: 1px solid {t.button_border or t.border_solid};'
+        f' border-radius: {t.border_radius}px;'
+        f' padding: 0px 8px; }}'
+        f'QPushButton:hover {{ background-color: {t.button_hover_bg or t.border_solid};'
+        f' border-color: {t.accent_blue}; }}'
+        f'QPushButton:disabled {{ color: {t.text_muted};'
+        f' background-color: {t.button_bg or t.window_bg};'
+        f' border-color: {t.button_border or t.border_solid}; }}'
     )
 
 
 def menu_btn_style(fg_override: Optional[str] = None) -> str:
-    """Return stylesheet for three-dot menu buttons."""
+    """Return stylesheet for icon/menu buttons in table cells."""
     t = current_theme()
     fg = fg_override or t.icon_color
     hover = fg_override or t.text_primary
     hover_bg = t.button_hover_bg or t.border_solid
     return (
         f'QPushButton {{ color: {fg}; font-size: {t.font_size_base}px;'
-        f' padding: 2px 4px; background: transparent; border: none;'
+        f' padding: 0px 4px;'
+        f' background-color: {t.button_bg or t.window_bg};'
+        f' border: 1px solid {t.button_border or t.border_solid};'
         f' border-radius: {t.border_radius}px; }}'
         f'QPushButton:hover {{ color: {hover};'
         f' background-color: {hover_bg}; }}'
@@ -311,18 +343,20 @@ _COL_TO_GROUP: dict[int, int] = {
 
 
 def border_solid_pen() -> QPen:
-    """Return a QPen for solid group-boundary separators."""
-    return QPen(QColor(current_theme().border_solid), 1)
+    """Return a QPen for solid group-boundary separators (2px, fully opaque)."""
+    return QPen(QColor(current_theme().border_solid), 2)
 
 
 def border_subtle_pen() -> QPen:
-    """Return a QPen for subtle intra-group separators."""
+    """Return a QPen for subtle intra-group separators (1px, semi-transparent)."""
     t = current_theme()
-    # Parse rgba() or hex
+    # Parse rgba() or hex — bump alpha for better visibility
     bs = t.border_subtle
     if bs.startswith('rgba('):
         parts = bs[5:-1].split(',')
-        return QPen(QColor(int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])), 1)
+        # Increase alpha to make intra-group lines more visible
+        alpha = min(255, int(int(parts[3]) * 2.5))
+        return QPen(QColor(int(parts[0]), int(parts[1]), int(parts[2]), alpha), 1)
     return QPen(QColor(bs), 1)
 
 # Border type constants returned by column_border_type()

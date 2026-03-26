@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from leap.monitor.pr_tracking.config import (
     MACOS_SYSTEM_SOUNDS, load_dialog_geometry, save_dialog_geometry,
 )
+from leap.monitor.themes import current_theme
 from leap.monitor.ui.table_helpers import HoverIconButton, menu_btn_style
 
 # Speaker SVG icon — uses #aaa as the recolorable placeholder (same as other icons).
@@ -100,7 +101,7 @@ class NotificationsDialog(QDialog):
                 row += 1
             header = QLabel(title)
             header.setFont(QFont(header.font().family(), -1, QFont.Bold))
-            header.setStyleSheet('color: #aaaaaa;')
+            header.setStyleSheet(f'color: {current_theme().text_secondary};')
             grid.addWidget(header, row, 0, 1, 4)
             row += 1
 
@@ -174,7 +175,7 @@ class NotificationsDialog(QDialog):
             'Enable in: System Settings > Notifications > Leap Monitor\n'
             '(or "Python" if running from source)'
         )
-        hint.setStyleSheet('color: grey; font-size: 11px;')
+        hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
         hint.setWordWrap(True)
         layout.addWidget(hint)
 

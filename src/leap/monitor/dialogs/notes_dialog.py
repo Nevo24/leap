@@ -12,12 +12,13 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStackedWidget,
-    QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout,
+    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QMimeData, QPoint, Qt, pyqtSignal
+from PyQt5.QtGui import QCursor, QDrag, QPixmap
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
@@ -156,14 +157,58 @@ class _ItemLineEdit(QLineEdit):
         super().keyPressEvent(event)
 
 
+class _DragGrip(QLabel):
+    """Drag handle for checklist items — initiates a QDrag on mouse move.
+
+    The drag is deferred to a zero-timer so that the QDrag event loop
+    runs *after* the mouse handler returns.  This prevents a segfault
+    when the rebuild (triggered inside the drag) destroys this widget
+    while its mouseMoveEvent is still on the stack.
+    """
+
+    drag_started: pyqtSignal = pyqtSignal(int)  # emits the item index
+
+    def __init__(self, index: int, parent: Optional[QWidget] = None) -> None:
+        super().__init__('\u2261', parent)  # ≡ hamburger grip
+        self._index = index
+        self._drag_start: Optional[QPoint] = None
+        t = current_theme()
+        self.setFixedWidth(16)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(QCursor(Qt.OpenHandCursor))
+        self.setStyleSheet(
+            f'QLabel {{ color: {t.text_muted}; font-size: {t.font_size_large}px;'
+            f' font-weight: bold; }}'
+        )
+        self.setToolTip('Drag to reorder')
+
+    def mousePressEvent(self, event: 'QMouseEvent') -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_start = event.pos()
+
+    def mouseMoveEvent(self, event: 'QMouseEvent') -> None:
+        if (self._drag_start is not None
+                and (event.pos() - self._drag_start).manhattanLength()
+                >= QApplication.startDragDistance()):
+            self._drag_start = None
+            # Defer the drag so this handler fully returns first
+            idx = self._index
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self.drag_started.emit(idx))
+
+    def mouseReleaseEvent(self, event: 'QMouseEvent') -> None:
+        self._drag_start = None
+
+
 class _ChecklistItemWidget(QFrame):
-    """Single checklist row: [checkbox] [editable text] [x]."""
+    """Single checklist row: [grip] [checkbox] [editable text] [x]."""
 
     toggled: pyqtSignal = pyqtSignal(int, bool)
     text_edited: pyqtSignal = pyqtSignal(int, str)
     delete_requested: pyqtSignal = pyqtSignal(int)
     new_item_after: pyqtSignal = pyqtSignal(int)
     merge_up: pyqtSignal = pyqtSignal(int)
+    drag_started: pyqtSignal = pyqtSignal(int)
 
     def __init__(
         self, index: int, text: str, checked: bool, parent: Optional[QWidget] = None,
@@ -173,7 +218,14 @@ class _ChecklistItemWidget(QFrame):
 
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 2, 4, 2)
-        row.setSpacing(12)
+        row.setSpacing(8)
+
+        # Drag handle (only for unchecked items — checked ones live
+        # in the Completed section which has its own order)
+        self._grip = _DragGrip(index)
+        self._grip.drag_started.connect(lambda idx: self.drag_started.emit(idx))
+        self._grip.setVisible(not checked)
+        row.addWidget(self._grip)
 
         self._cb = QCheckBox()
         self._cb.setChecked(checked)
@@ -195,9 +247,10 @@ class _ChecklistItemWidget(QFrame):
 
         self._del_btn = QPushButton('\u00d7')
         self._del_btn.setFixedSize(20, 20)
+        t = current_theme()
         self._del_btn.setStyleSheet(
-            'QPushButton { border: none; color: #999; font-size: 14px; }'
-            'QPushButton:hover { color: #ff4444; }'
+            f'QPushButton {{ border: none; color: {t.text_muted}; font-size: {t.font_size_base}px; }}'
+            f'QPushButton:hover {{ color: {t.accent_red}; }}'
         )
         self._del_btn.setVisible(False)
         self._del_btn.clicked.connect(
@@ -207,15 +260,16 @@ class _ChecklistItemWidget(QFrame):
 
         self._apply_checked_style(checked)
         self.setStyleSheet(
-            '_ChecklistItemWidget { border-bottom: 1px solid rgba(128,128,128,0.15); }'
+            f'_ChecklistItemWidget {{ border-bottom: 1px solid {current_theme().border_subtle}; }}'
         )
 
     def _apply_checked_style(self, checked: bool) -> None:
         font = self._edit.font()
         font.setStrikeOut(checked)
         self._edit.setFont(font)
+        t = current_theme()
         self._edit.setStyleSheet(
-            'QLineEdit { color: #888; background: transparent; }'
+            f'QLineEdit {{ color: {t.text_muted}; background: transparent; }}'
             if checked else 'QLineEdit { background: transparent; }'
         )
 
@@ -245,6 +299,7 @@ class _ChecklistWidget(QWidget):
         self._completed_visible: bool = True
         self._focus_after_rebuild: Optional[tuple[int, bool]] = None
         self._focus_add_after_rebuild: bool = False
+        self._dragging_index: int = -1
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -254,6 +309,9 @@ class _ChecklistWidget(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setAcceptDrops(True)
+        self._scroll.viewport().setAcceptDrops(True)
+        self._scroll.viewport().installEventFilter(self)
 
         self._container = QWidget()
         self._layout = QVBoxLayout(self._container)
@@ -264,6 +322,14 @@ class _ChecklistWidget(QWidget):
         outer.addWidget(self._scroll)
 
         self._add_field: Optional[_ItemLineEdit] = None
+
+        # Drop indicator line (hidden by default)
+        self._drop_indicator = QWidget(self._scroll.viewport())
+        self._drop_indicator.setFixedHeight(2)
+        self._drop_indicator.setStyleSheet(
+            f'background-color: {current_theme().accent_blue};')
+        self._drop_indicator.setVisible(False)
+        self._drop_indicator.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     def set_items(self, items: list[dict]) -> None:
         """Load items and rebuild the UI."""
@@ -317,10 +383,11 @@ class _ChecklistWidget(QWidget):
             arrow = '\u25be' if self._completed_visible else '\u25b8'
             sep = QPushButton(f'{arrow}  Completed ({len(completed)})')
             sep.setFlat(True)
+            t = current_theme()
             sep.setStyleSheet(
-                'QPushButton { text-align: left; color: #999; font-size: 12px; '
-                'padding: 8px 4px 4px 4px; border: none; }'
-                'QPushButton:hover { color: #ccc; }'
+                f'QPushButton {{ text-align: left; color: {t.text_muted}; font-size: {t.font_size_base}px; '
+                f'padding: 8px 4px 4px 4px; border: none; }}'
+                f'QPushButton:hover {{ color: {t.text_secondary}; }}'
             )
             sep.setCursor(Qt.PointingHandCursor)
             sep.clicked.connect(self._toggle_completed)
@@ -337,11 +404,16 @@ class _ChecklistWidget(QWidget):
 
         self._layout.addStretch()
 
-        # Restore focus
+        # Restore focus (deferred so widgets are fully laid out)
         if focus_widget is not None:
-            focus_widget.focus_edit(cursor_at_end=focus_at_end)
+            w_ref = focus_widget
+            at_end = focus_at_end
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: w_ref.focus_edit(cursor_at_end=at_end))
         elif self._focus_add_after_rebuild and self._add_field is not None:
-            self._add_field.setFocus()
+            field = self._add_field
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, field.setFocus)
         self._focus_after_rebuild = None
         self._focus_add_after_rebuild = False
 
@@ -354,7 +426,133 @@ class _ChecklistWidget(QWidget):
         w.delete_requested.connect(self._on_delete)
         w.new_item_after.connect(self._on_new_after)
         w.merge_up.connect(self._on_merge_up)
+        w.drag_started.connect(self._start_item_drag)
         return w
+
+    # ── Drag-and-drop reordering ──────────────────────────────────────
+
+    def _start_item_drag(self, index: int) -> None:
+        """Initiate a QDrag for the given item index."""
+        if index < 0 or index >= len(self._items):
+            return
+        self._dragging_index = index
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData('application/x-leap-checklist-item', str(index).encode())
+        drag.setMimeData(mime)
+
+        # Grab a pixmap snapshot of the item widget for visual feedback
+        for i in range(self._layout.count()):
+            item_at = self._layout.itemAt(i)
+            if item_at is None:
+                continue
+            w = item_at.widget()
+            if isinstance(w, _ChecklistItemWidget) and w._index == index:
+                pixmap = w.grab()
+                drag.setPixmap(pixmap)
+                drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+                break
+
+        drag.exec_(Qt.MoveAction)
+        self._drop_indicator.setVisible(False)
+        self._dragging_index = -1
+
+    def _active_indices(self) -> list[int]:
+        """Return the indices of unchecked items in their current order."""
+        return [i for i, d in enumerate(self._items) if not d['checked']]
+
+    def _drop_target_index(self, viewport_y: int) -> int:
+        """Determine which active-item position a drop at *viewport_y* maps to.
+
+        Returns the index in self._items where the dragged item should be
+        inserted BEFORE.
+        """
+        active = self._active_indices()
+        for layout_pos in range(self._layout.count()):
+            w = self._layout.itemAt(layout_pos).widget()
+            if not isinstance(w, _ChecklistItemWidget):
+                continue
+            if w._index not in active:
+                continue
+            mapped = self._scroll.viewport().mapFromGlobal(
+                w.mapToGlobal(QPoint(0, 0)))
+            mid = mapped.y() + w.height() // 2
+            if viewport_y < mid:
+                return w._index
+        # Past the last active item → append after the last one
+        if active:
+            return active[-1] + 1
+        return 0
+
+    def eventFilter(self, obj: 'QObject', event: 'QEvent') -> bool:
+        """Handle drag-over and drop events on the scroll viewport."""
+        from PyQt5.QtCore import QEvent as _QE
+        if obj is not self._scroll.viewport():
+            return super().eventFilter(obj, event)
+
+        if event.type() == _QE.DragEnter:
+            if event.mimeData().hasFormat('application/x-leap-checklist-item'):
+                event.acceptProposedAction()
+                return True
+
+        elif event.type() == _QE.DragMove:
+            if event.mimeData().hasFormat('application/x-leap-checklist-item'):
+                event.acceptProposedAction()
+                target = self._drop_target_index(event.pos().y())
+                self._show_drop_indicator(target)
+                return True
+
+        elif event.type() == _QE.DragLeave:
+            self._drop_indicator.setVisible(False)
+            return True
+
+        elif event.type() == _QE.Drop:
+            self._drop_indicator.setVisible(False)
+            if event.mimeData().hasFormat('application/x-leap-checklist-item'):
+                event.acceptProposedAction()
+                src = self._dragging_index
+                dst = self._drop_target_index(event.pos().y())
+                if src >= 0 and src != dst:
+                    self._move_item(src, dst)
+                return True
+
+        return super().eventFilter(obj, event)
+
+    def _show_drop_indicator(self, target_index: int) -> None:
+        """Position the 2px indicator line above the target item."""
+        active = self._active_indices()
+        # Find the widget at target_index (or after the last active)
+        target_y = 0
+        for layout_pos in range(self._layout.count()):
+            w = self._layout.itemAt(layout_pos).widget()
+            if isinstance(w, _ChecklistItemWidget) and w._index == target_index:
+                mapped = self._scroll.viewport().mapFromGlobal(
+                    w.mapToGlobal(QPoint(0, 0)))
+                target_y = mapped.y()
+                break
+        else:
+            # Past the last active item — position after the last active widget
+            for layout_pos in range(self._layout.count() - 1, -1, -1):
+                w = self._layout.itemAt(layout_pos).widget()
+                if isinstance(w, _ChecklistItemWidget) and w._index in active:
+                    mapped = self._scroll.viewport().mapFromGlobal(
+                        w.mapToGlobal(QPoint(0, 0)))
+                    target_y = mapped.y() + w.height()
+                    break
+        self._drop_indicator.setGeometry(
+            0, target_y, self._scroll.viewport().width(), 2)
+        self._drop_indicator.setVisible(True)
+        self._drop_indicator.raise_()
+
+    def _move_item(self, src: int, dst: int) -> None:
+        """Move an item from src index to before dst index in self._items."""
+        item = self._items.pop(src)
+        # Adjust dst if it was after the removed item
+        if dst > src:
+            dst -= 1
+        self._items.insert(dst, item)
+        self._rebuild()
+        self.content_changed.emit()
 
     # ── Item actions ─────────────────────────────────────────────────
 
@@ -456,7 +654,7 @@ class NotesDialog(QDialog):
             f'QListWidget::item:selected {{'
             f'  background: transparent;'
             f'  border: 2px solid {t.accent_blue};'
-            f'  border-radius: 4px;'
+            f'  border-radius: {t.border_radius}px;'
             f'}}'
         )
         self._list.currentItemChanged.connect(self._on_item_changed)
@@ -465,7 +663,7 @@ class NotesDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
         new_btn = QPushButton('+')
-        new_btn.setFixedWidth(32)
+        new_btn.setFixedWidth(44)
         new_btn.setToolTip('New note')
         new_btn.clicked.connect(self._on_new)
 
@@ -493,7 +691,7 @@ class NotesDialog(QDialog):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QLabel('')
-        self._title_label.setStyleSheet('font-weight: bold; font-size: 13px;')
+        self._title_label.setStyleSheet(f'font-weight: bold; font-size: {current_theme().font_size_large}px;')
         header_row.addWidget(self._title_label)
 
         self._mode_combo = QComboBox()
@@ -527,6 +725,12 @@ class NotesDialog(QDialog):
 
         root_layout.addWidget(splitter, 1)
 
+        # Bottom bar with Close button
+        from PyQt5.QtWidgets import QDialogButtonBox
+        bottom_btns = QDialogButtonBox(QDialogButtonBox.Close)
+        bottom_btns.rejected.connect(self.close)
+        root_layout.addWidget(bottom_btns)
+
         # Populate list and auto-select first note
         self._refresh_list()
         if self._list.count() > 0:
@@ -547,11 +751,11 @@ class NotesDialog(QDialog):
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(1)
             name_label = QLabel(name)
-            name_label.setStyleSheet('font-weight: bold; font-size: 12px;')
+            name_label.setStyleSheet(f'font-weight: bold; font-size: {current_theme().font_size_base}px;')
             layout.addWidget(name_label)
             if ts:
                 ts_label = QLabel(ts)
-                ts_label.setStyleSheet(f'color: {current_theme().text_secondary}; font-size: 10px;')
+                ts_label.setStyleSheet(f'color: {current_theme().text_secondary}; font-size: {current_theme().font_size_small}px;')
                 layout.addWidget(ts_label)
             item.setSizeHint(widget.sizeHint())
             self._list.addItem(item)
@@ -578,7 +782,7 @@ class NotesDialog(QDialog):
                         labels[1].setText(ts)
                     elif len(labels) == 1 and ts:
                         ts_label = QLabel(ts)
-                        ts_label.setStyleSheet(f'color: {current_theme().text_secondary}; font-size: 10px;')
+                        ts_label.setStyleSheet(f'color: {current_theme().text_secondary}; font-size: {current_theme().font_size_small}px;')
                         widget.layout().addWidget(ts_label)
                     item.setSizeHint(widget.sizeHint())
                 break

@@ -17,6 +17,7 @@ from PyQt5.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import QApplication
 
 from leap.monitor.pr_tracking.base import PRState, PRStatus
+from leap.monitor.themes import current_theme
 
 
 class NotificationType(Enum):
@@ -301,14 +302,14 @@ class DockBadge:
         badge_size = 52
         x = pixmap.width() - badge_size - 2
         y = 2
-        painter.setBrush(QBrush(QColor(220, 40, 40)))
+        painter.setBrush(QBrush(QColor(current_theme().accent_red)))
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(x, y, badge_size, badge_size)
 
         # White text centered in the circle
         font = QFont('Helvetica', 28, QFont.Bold)
         painter.setFont(font)
-        painter.setPen(QColor(255, 255, 255))
+        painter.setPen(QColor('#ffffff'))
         painter.drawText(QRect(x, y, badge_size, badge_size), Qt.AlignCenter, label)
 
         painter.end()

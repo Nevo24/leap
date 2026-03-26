@@ -13,6 +13,7 @@ from leap.utils.constants import SCM_POLL_INTERVAL
 from leap.monitor.pr_tracking.base import ConnectionTestResult
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.scm_polling import TestConnectionWorker
+from leap.monitor.themes import current_theme
 
 
 class SCMSetupDialog(QDialog):
@@ -145,7 +146,7 @@ class SCMSetupDialog(QDialog):
         self.poll_input.setValue(SCM_POLL_INTERVAL)
         poll_layout.addWidget(self.poll_input)
         poll_note = QLabel('(min: 5s)')
-        poll_note.setStyleSheet('color: grey; font-size: 11px;')
+        poll_note.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
         poll_layout.addWidget(poll_note)
         poll_layout.addStretch()
         layout.addLayout(poll_layout)
@@ -162,7 +163,7 @@ class SCMSetupDialog(QDialog):
         # Warnings label (shown when token has limited permissions)
         self.warnings_label = QLabel('')
         self.warnings_label.setWordWrap(True)
-        self.warnings_label.setStyleSheet('color: orange; font-size: 12px;')
+        self.warnings_label.setStyleSheet(f'color: {current_theme().accent_orange}; font-size: {current_theme().font_size_base}px;')
         self.warnings_label.setVisible(False)
         layout.addWidget(self.warnings_label)
 
@@ -250,7 +251,7 @@ class SCMSetupDialog(QDialog):
             self._verified_username = config['username']
             self.save_btn.setEnabled(True)
             self.status_label.setText(f'Connected as: {self._verified_username}')
-            self.status_label.setStyleSheet('color: green;')
+            self.status_label.setStyleSheet(f'color: {current_theme().accent_green};')
 
     def _test_connection(self) -> None:
         url = self.url_input.text().strip() or self._url_default()
@@ -260,7 +261,7 @@ class SCMSetupDialog(QDialog):
                 self.status_label.setText('Please enter an environment variable name.')
             else:
                 self.status_label.setText('Please enter a token.')
-            self.status_label.setStyleSheet('color: red;')
+            self.status_label.setStyleSheet(f'color: {current_theme().accent_red};')
             return
 
         if not self._validate_token_mode():
@@ -272,13 +273,13 @@ class SCMSetupDialog(QDialog):
             if not token:
                 self.status_label.setText(
                     f'Environment variable ${raw_token} is not set.')
-                self.status_label.setStyleSheet('color: red;')
+                self.status_label.setStyleSheet(f'color: {current_theme().accent_red};')
                 return
         else:
             token = raw_token
 
         self.status_label.setText('Testing...')
-        self.status_label.setStyleSheet('color: grey;')
+        self.status_label.setStyleSheet(f'color: {current_theme().text_muted};')
         self.test_btn.setEnabled(False)
 
         self._test_worker = TestConnectionWorker(self)
@@ -293,7 +294,7 @@ class SCMSetupDialog(QDialog):
         if result.success:
             self._verified_username = result.username
             self.status_label.setText(f'Connected as: {result.username}')
-            self.status_label.setStyleSheet('color: green;')
+            self.status_label.setStyleSheet(f'color: {current_theme().accent_green};')
             self.save_btn.setEnabled(True)
             if result.warnings:
                 self.warnings_label.setText('\n'.join(result.warnings))
@@ -303,7 +304,7 @@ class SCMSetupDialog(QDialog):
         else:
             self._verified_username = None
             self.status_label.setText(f'Failed: {result.username}')
-            self.status_label.setStyleSheet('color: red;')
+            self.status_label.setStyleSheet(f'color: {current_theme().accent_red};')
             self.save_btn.setEnabled(False)
             self.warnings_label.setVisible(False)
 

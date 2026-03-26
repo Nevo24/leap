@@ -6,9 +6,62 @@ from typing import Optional
 
 from PyQt5.QtWidgets import QAction, QApplication, QLabel, QMenu, QWidget
 from PyQt5.QtCore import QPoint, QTimer, Qt
-from PyQt5.QtGui import QColor, QCursor, QMouseEvent, QPainter
+from PyQt5.QtGui import (
+    QColor, QCursor, QLinearGradient, QMouseEvent, QPainter,
+)
 
 from leap.monitor.themes import current_theme
+
+
+class ShimmerBar(QWidget):
+    """A thin gradient bar with a slowly moving highlight shimmer."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._phase: float = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+
+    def _tick(self) -> None:
+        self._phase += 0.004
+        if self._phase > 2.0:
+            self._phase -= 2.0
+        self.update()
+
+    def paintEvent(self, event: object) -> None:
+        t = current_theme()
+        w = self.width()
+        h = self.height()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        grad = QLinearGradient(0, 0, w, 0)
+        c1 = QColor(t.accent_blue)
+        c2 = QColor(t.input_focus_border)
+
+        # Base gradient
+        grad.setColorAt(0.0, c1)
+        grad.setColorAt(0.5, c2)
+        grad.setColorAt(1.0, c1)
+
+        # Add a bright shimmer spot that moves across
+        shimmer_pos = self._phase if self._phase <= 1.0 else 2.0 - self._phase
+        shimmer = QColor(c2)
+        shimmer.setAlpha(255)
+        bright = QColor('#ffffff') if t.is_dark else QColor('#000000')
+        bright.setAlpha(60)
+
+        lo = max(0.0, shimmer_pos - 0.08)
+        hi = min(1.0, shimmer_pos + 0.08)
+        grad.setColorAt(max(0.001, lo), c2 if lo > 0.4 else c1)
+        if 0.01 < shimmer_pos < 0.99:
+            grad.setColorAt(shimmer_pos, bright)
+        grad.setColorAt(min(0.999, hi), c1 if hi < 0.6 else c2)
+
+        painter.fillRect(0, 0, w, h, grad)
+        painter.end()
 
 
 class ElidedLabel(QLabel):
@@ -48,12 +101,12 @@ class IndicatorPopup(QLabel):
             f'  background-color: {t.popup_bg};'
             f'  color: {t.text_primary};'
             f'  border: 1px solid {t.popup_border};'
-            '  border-radius: 4px;'
-            '  padding: 6px 8px;'
-            '  font-size: 12px;'
+            f'  border-radius: {t.border_radius}px;'
+            f'  padding: 8px 12px;'
+            f'  font-size: {t.font_size_base}px;'
             '}'
         )
-        self.setMaximumWidth(260)
+        self.setMaximumWidth(280)
 
 
 class IndicatorLabel(QLabel):
@@ -142,7 +195,7 @@ class PulsingLabel(QLabel):
         self._preserve_popup: bool = False
 
         self._pulse_timer = QTimer(self)
-        self._pulse_timer.setInterval(50)
+        self._pulse_timer.setInterval(32)  # ~30fps for smoother animation
         self._pulse_timer.timeout.connect(self._animate)
 
         self.setAlignment(Qt.AlignCenter)
@@ -307,13 +360,18 @@ class PulsingLabel(QLabel):
 
     def _animate(self) -> None:
         try:
-            self._phase += 0.05
-            # Oscillate opacity between 0.3 and 1.0
-            opacity = 0.65 + 0.35 * math.sin(self._phase)
+            self._phase += 0.035  # slower, more gentle breathing
+            # Smooth ease-in-out oscillation (0.4 → 1.0)
+            raw = math.sin(self._phase)
+            eased = raw * raw if raw >= 0 else -(raw * raw)  # ease-in-out
+            opacity = 0.70 + 0.30 * eased
             t = current_theme()
             c = QColor(t.accent_orange)
             r, g, b = c.red(), c.green(), c.blue()
-            self.setStyleSheet(f'color: rgba({r}, {g}, {b}, {opacity:.2f}); font-weight: bold;')
+            self.setStyleSheet(
+                f'color: rgba({r}, {g}, {b}, {opacity:.2f});'
+                f' font-weight: bold;'
+                f' font-size: {t.font_size_base}px;'
+            )
         except Exception:
-            # Silently stop pulsing if animation fails
             self._pulse_timer.stop()

@@ -36,7 +36,7 @@ from leap.monitor.ui.table_helpers import (
     MAX_COMBO_DISPLAY, PR_PRESET_TOOLTIP,
     QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_PRESET_TOOLTIP,
     ColorPickerPopup, HoverIconButton,
-    active_btn_style, close_btn_style, menu_btn_style,
+    CELL_BTN_H, active_btn_style, close_btn_style, inactive_btn_style, menu_btn_style,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _PALETTE_SVG, _SEND_SVG,
     _THREE_DOT_SVG,
 )
@@ -118,8 +118,13 @@ class TableBuilderMixin(_Base):
         )
         widget.setAttribute(Qt.WA_TranslucentBackground)
         lay = QHBoxLayout(wrapper)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(3, 2, 3, 2)
         lay.setSpacing(0)
+        # Enforce consistent height on all buttons inside cell widgets
+        for btn in widget.findChildren(QPushButton):
+            btn.setFixedHeight(CELL_BTN_H)
+        if isinstance(widget, QPushButton):
+            widget.setFixedHeight(CELL_BTN_H)
         lay.addWidget(widget)
         self.table.setCellWidget(row, col, wrapper)
 
@@ -251,16 +256,7 @@ class TableBuilderMixin(_Base):
             font.setItalic(True)
             tag_label.setFont(font)
         else:
-            # Tag name styled as a subtle code chip (full capsule)
-            tag_label.setFixedHeight(22)
-            tag_label.setStyleSheet(
-                f'QLabel {{'
-                f'  background-color: rgba({_hex_to_rgb_str(t_tag.accent_blue)}, 0.10);'
-                f'  border-radius: 11px;'
-                f'  padding: 0px 8px;'
-                f'  font-weight: 600;'
-                f'}}'
-            )
+            tag_label.setStyleSheet(f'QLabel {{ font-weight: 600; }}')
         tag_layout.addWidget(tag_label, 1)
 
         palette_btn = HoverIconButton(_PALETTE_SVG, 14)
@@ -614,7 +610,7 @@ class TableBuilderMixin(_Base):
                     del_layout.setContentsMargins(0, 0, 0, 0)
                     del_layout.setSpacing(0)
                     del_btn = QPushButton('\u00d7')
-                    del_btn.setFixedSize(30, del_btn.sizeHint().height())
+                    del_btn.setFixedSize(28, del_btn.sizeHint().height())
                     del_btn.setStyleSheet(close_btn_style())
                     del_btn.setProperty('_btn_role', 'close')
                     del_btn.setToolTip(f'Remove row for {tag}')
@@ -650,13 +646,14 @@ class TableBuilderMixin(_Base):
                         if row_color:
                             fg = ensure_contrast(t_cli.text_secondary, row_color)
                             border_c = ensure_contrast(t_cli.border_solid, row_color)
+                        cli_label.setFixedHeight(24)
                         cli_label.setStyleSheet(
                             f'QLabel {{'
                             f'  color: {fg};'
                             f'  border: 1px solid {border_c};'
-                            f'  border-radius: {t_cli.border_radius - 2}px;'
-                            f'  padding: 1px 8px;'
-                            f'  font-size: {t_cli.font_size_small}px;'
+                            f'  border-radius: 12px;'
+                            f'  padding: 0px 10px;'
+                            f'  font-size: {t_cli.font_size_base}px;'
                             f'}}'
                         )
                     self._set_cell_widget(row, self.COL_CLI, cli_label)
@@ -803,42 +800,41 @@ class TableBuilderMixin(_Base):
                         c_layout.setContentsMargins(0, 0, 2, 0)
                         c_layout.setSpacing(0)
 
-                        # Left spacer balances the fire icon width
+                        # Left spacer balances the indicator dot width
                         spacer = QWidget()
-                        spacer.setFixedWidth(18)
+                        spacer.setFixedWidth(14)
                         c_layout.addWidget(spacer)
 
-                        # Status pill — colored capsule badge
-                        r, g, b = color.red(), color.green(), color.blue()
-                        pill_bg = f'rgba({r}, {g}, {b}, 0.15)'
-                        pill_fg = color.name()
+                        # Status text — colored, bold, centered
+                        status_fg = color.name()
                         if row_color:
-                            pill_fg = ensure_contrast(
+                            status_fg = ensure_contrast(
                                 color.name(), row_color)
-                        status_label = QLabel(f' {text} ')
+                        status_label = ElidedLabel(text)
                         status_label.setAlignment(Qt.AlignCenter)
-                        status_label.setFixedHeight(22)
-                        status_label.setStyleSheet(
-                            f'QLabel {{'
-                            f'  background-color: {pill_bg};'
-                            f'  color: {pill_fg};'
-                            f'  border-radius: 11px;'
-                            f'  padding: 0px 10px;'
-                            f'  font-size: {t.font_size_small}px;'
-                            f'  font-weight: bold;'
-                            f'}}'
-                        )
-                        c_layout.addWidget(status_label, 0, Qt.AlignCenter)
+                        pal = status_label.palette()
+                        pal.setColor(QPalette.WindowText, QColor(status_fg))
+                        status_label.setPalette(pal)
+                        font = status_label.font()
+                        font.setBold(True)
+                        status_label.setFont(font)
+                        status_label.setToolTip(text)
+                        c_layout.addWidget(status_label, 1)
 
-                        # Right-aligned fire icon (always occupies
-                        # space; text hidden when inactive to keep
-                        # the centered label stable)
+                        # Right-aligned change indicator dot
                         fire_label = QLabel(
                             '\U0001f525' if show_fire else '')
                         fire_label.setObjectName('_fireLabel')
-                        fire_label.setFixedWidth(18)
+                        fire_label.setFixedWidth(14)
                         fire_label.setAlignment(
-                            Qt.AlignRight | Qt.AlignVCenter)
+                            Qt.AlignCenter | Qt.AlignVCenter)
+                        if show_fire:
+                            fire_color = t.accent_orange
+                            if row_color:
+                                fire_color = ensure_contrast(
+                                    t.accent_orange, row_color)
+                            fire_label.setStyleSheet(
+                                f'color: {fire_color}; font-size: 10px;')
                         c_layout.addWidget(fire_label)
 
                         # Left-click: dismiss fire indicator.
@@ -916,13 +912,19 @@ class TableBuilderMixin(_Base):
                                 f' (changed {ago}s ago'
                                 ' — click to dismiss)')
                     if s_item:
-                        s_item.setToolTip(text)
+                        s_item.setToolTip('')
                     if w:
                         w.setProperty('_extra_tooltip',
                                       explanation or None)
                         label = w.findChild(ElidedLabel)
                         if label:
-                            label.setToolTip(explanation)
+                            # Keep status text for truncation tooltip;
+                            # append explanation when hover tooltips are on
+                            if explanation:
+                                label.setToolTip(
+                                    f'{text}\n{explanation}')
+                            else:
+                                label.setToolTip(text)
 
                     # Task column — last message sent to the CLI
                     current_task = session.get('current_task', '')
@@ -1030,7 +1032,7 @@ class TableBuilderMixin(_Base):
 
                     if not is_dead:
                         server_x = QPushButton('\u00d7')
-                        server_x.setFixedSize(30, server_x.sizeHint().height())
+                        server_x.setFixedSize(28, server_x.sizeHint().height())
                         server_x.setStyleSheet(close_btn_style())
                         server_x.setProperty('_btn_role', 'close')
                         server_x.setToolTip(f'Close server {tag}')
@@ -1043,6 +1045,7 @@ class TableBuilderMixin(_Base):
                     if is_dead:
                         server_btn = QPushButton(
                             'Starting...' if starting else '\u25cb  Terminal')
+                        server_btn.setStyleSheet(inactive_btn_style())
                         server_btn.setToolTip(
                             f'Server is starting for {tag}...' if starting
                             else f'Start server for {tag}'
@@ -1094,7 +1097,7 @@ class TableBuilderMixin(_Base):
 
                     if has_client:
                         client_x = QPushButton('\u00d7')
-                        client_x.setFixedSize(30, client_x.sizeHint().height())
+                        client_x.setFixedSize(28, client_x.sizeHint().height())
                         client_x.setStyleSheet(close_btn_style())
                         client_x.setProperty('_btn_role', 'close')
                         client_x.setToolTip(f'Close client {tag}')
@@ -1106,6 +1109,7 @@ class TableBuilderMixin(_Base):
 
                     if is_dead and not has_client:
                         client_btn = QPushButton('Terminal')
+                        client_btn.setStyleSheet(inactive_btn_style())
                         client_btn.setEnabled(False)
                         client_btn.setToolTip('No client connected')
                     elif has_client:
@@ -1116,6 +1120,7 @@ class TableBuilderMixin(_Base):
                             f'Jump to client terminal for {tag}')
                     else:
                         client_btn = QPushButton('Terminal')
+                        client_btn.setStyleSheet(inactive_btn_style())
                         client_btn.setToolTip(
                             f'Open new client for {tag}')
                     if not (is_dead and not has_client):
@@ -1141,18 +1146,20 @@ class TableBuilderMixin(_Base):
                                          row, self.COL_SLACK):
                     if not slack_installed:
                         slack_btn = QPushButton('Slack')
+                        slack_btn.setStyleSheet(inactive_btn_style())
                         slack_btn.setEnabled(False)
                         slack_btn.setToolTip(
                             'Install Slack app first (make install-slack-app)')
                         self._set_cell_widget(row, self.COL_SLACK, slack_btn)
                     elif is_dead:
                         slack_btn = QPushButton('Slack')
+                        slack_btn.setStyleSheet(inactive_btn_style())
                         slack_btn.setEnabled(False)
                         slack_btn.setToolTip('Start server first')
                         self._set_cell_widget(row, self.COL_SLACK, slack_btn)
                     elif not bot_running:
-                        # Bot not running — grey button, prompt to start bot
                         slack_btn = QPushButton('Slack')
+                        slack_btn.setStyleSheet(inactive_btn_style())
                         tip = ('Slack bot is not running — will reconnect '
                                'when started' if slack_enabled
                                else 'Start the Slack bot first')
@@ -1169,7 +1176,7 @@ class TableBuilderMixin(_Base):
                         slack_layout.setSpacing(2)
 
                         slack_x = QPushButton('\u00d7')
-                        slack_x.setFixedSize(30, slack_x.sizeHint().height())
+                        slack_x.setFixedSize(28, slack_x.sizeHint().height())
                         slack_x.setStyleSheet(close_btn_style())
                         slack_x.setProperty('_btn_role', 'close')
                         slack_x.setToolTip(f'Disconnect Slack for {tag}')
@@ -1195,6 +1202,7 @@ class TableBuilderMixin(_Base):
                             slack_container, row_color)
                     else:
                         slack_btn = QPushButton('Slack')
+                        slack_btn.setStyleSheet(inactive_btn_style())
                         slack_btn.setToolTip(
                             f'Enable Slack integration for {tag}')
                         slack_btn.clicked.connect(
@@ -1266,8 +1274,8 @@ class TableBuilderMixin(_Base):
                         pr_layout.setContentsMargins(0, 0, 0, 0)
                         pr_layout.setSpacing(2)
 
-                        pr_x = QPushButton('X')
-                        pr_x.setFixedSize(24, pr_x.sizeHint().height())
+                        pr_x = QPushButton('\u00d7')
+                        pr_x.setFixedSize(28, pr_x.sizeHint().height())
                         pr_x.setStyleSheet(close_btn_style())
                         pr_x.setProperty('_btn_role', 'close')
                         pr_x.setToolTip(f'Stop tracking PR for {tag}')
@@ -1281,17 +1289,22 @@ class TableBuilderMixin(_Base):
                         pr_layout.addWidget(pr_widget)
                         pr_layout.addStretch()
 
-                        # Right-aligned fire icon (matches Status column
-                        # pattern — always occupies space; text hidden when
-                        # inactive to keep the centered label stable)
+                        # Right-aligned change indicator dot
                         show_pr_fire = self._should_show_pr_fire(tag)
                         pr_fire_label = QLabel(
                             '\U0001f525' if show_pr_fire else '')
                         pr_fire_label.setObjectName('_prFireLabel')
-                        pr_fire_label.setFixedWidth(24)
+                        pr_fire_label.setFixedWidth(14)
                         pr_fire_label.setAlignment(
-                            Qt.AlignRight | Qt.AlignVCenter)
+                            Qt.AlignCenter | Qt.AlignVCenter)
                         if show_pr_fire:
+                            t_pf = current_theme()
+                            pf_color = t_pf.accent_orange
+                            if row_color:
+                                pf_color = ensure_contrast(
+                                    t_pf.accent_orange, row_color)
+                            pr_fire_label.setStyleSheet(
+                                f'color: {pf_color}; font-size: 10px;')
                             pr_fire_label.setToolTip(
                                 self._pr_fire_tooltip(tag))
 
@@ -1365,7 +1378,7 @@ class TableBuilderMixin(_Base):
                         else:
                             track_btn.setToolTip(
                                 f'Start tracking PR for {tag}')
-                        track_btn.setStyleSheet(f'font-size: {current_theme().font_size_small}px;')
+                        track_btn.setStyleSheet(inactive_btn_style())
                         track_btn.clicked.connect(
                             lambda checked, t=tag: self._start_tracking(t)
                         )
@@ -1388,8 +1401,8 @@ class TableBuilderMixin(_Base):
                             pr_br_layout.setContentsMargins(0, 0, 0, 0)
                             pr_br_layout.setSpacing(4)
 
-                            pr_br_x = QPushButton('X')
-                            pr_br_x.setFixedSize(24, pr_br_x.sizeHint().height())
+                            pr_br_x = QPushButton('\u00d7')
+                            pr_br_x.setFixedSize(28, pr_br_x.sizeHint().height())
                             pr_br_x.setStyleSheet(close_btn_style())
                             pr_br_x.setProperty('_btn_role', 'close')
                             pr_br_x.setToolTip(

@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QMimeData, Qt
 from PyQt5.QtGui import QImage
 
+from leap.monitor.themes import current_theme
 from leap.utils.constants import IMAGES_DIR
 
 
@@ -182,7 +183,7 @@ class SendMessageDialog(QDialog):
 
         hint = QLabel('Tip: paste an image from clipboard to attach it\n'
                       'Tip: cmd+Enter to send')
-        hint.setStyleSheet('color: #888; font-size: 11px;')
+        hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
         layout.addWidget(hint)
 
         btn_layout = QHBoxLayout()

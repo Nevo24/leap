@@ -269,7 +269,7 @@ class MonitorWindow(
         self.table.verticalHeader().setDefaultSectionSize(36)  # taller rows for pill badges
 
         # Delete column: narrow fixed width
-        self.table.setColumnWidth(self.COL_DELETE, 30)
+        self.table.setColumnWidth(self.COL_DELETE, 34)
         header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
 
         # Hide Slack column when Slack app is not installed
@@ -489,11 +489,7 @@ class MonitorWindow(
         self.auto_leap_check.stateChanged.connect(self._toggle_auto_fetch_leap)
         bottom_inner.addWidget(self.auto_leap_check)
 
-        # Vertical separator between options and connections
-        vsep = QFrame()
-        vsep.setFrameShape(QFrame.VLine)
-        vsep.setObjectName('_leapDivider')
-        bottom_inner.addWidget(vsep)
+
 
         bottom_inner.addStretch()
 
@@ -596,6 +592,12 @@ class MonitorWindow(
             pass  # Non-macOS or pyobjc not available
 
     @staticmethod
+    def _hex_rgb(hex_color: str) -> str:
+        """Convert '#rrggbb' to 'r, g, b' for rgba() in QSS."""
+        h = hex_color.lstrip('#')
+        return f'{int(h[0:2], 16)}, {int(h[2:4], 16)}, {int(h[4:6], 16)}'
+
+    @staticmethod
     def _make_plus_icon(color: bytes = b'#ffffff', size: int = 16) -> QIcon:
         """Render a plus (+) icon as SVG at the given size and color."""
         from PyQt5.QtSvg import QSvgRenderer
@@ -617,20 +619,19 @@ class MonitorWindow(
         return QIcon(pm)
 
     @staticmethod
-    def _ensure_chevron_icon(color_hex: str) -> str:
-        """Generate a small chevron-down PNG for combobox dropdown arrows.
+    def _ensure_chevron_icon(color_hex: str, up: bool = False) -> str:
+        """Generate a small chevron PNG for dropdown/spinbox arrows.
 
-        A separate file is generated per color so theme switches work.
-        Returns the file path as a string.
+        A separate file is generated per color+direction so theme switches work.
         """
         from leap.utils.constants import STORAGE_DIR
         safe_name = color_hex.lstrip('#')
-        path = STORAGE_DIR / f'chevron_{safe_name}.png'
+        direction = 'up' if up else 'down'
+        path = STORAGE_DIR / f'chevron_{direction}_{safe_name}.png'
         if not path.exists():
             pm = QPixmap(12, 12)
             pm.fill(Qt.transparent)
-            from PyQt5.QtGui import QPainter, QPen
-            from PyQt5.QtGui import QPainterPath
+            from PyQt5.QtGui import QPainter, QPen, QPainterPath
             painter = QPainter(pm)
             painter.setRenderHint(QPainter.Antialiasing)
             pen = QPen(QColor(color_hex))
@@ -639,9 +640,14 @@ class MonitorWindow(
             pen.setJoinStyle(Qt.RoundJoin)
             painter.setPen(pen)
             arrow = QPainterPath()
-            arrow.moveTo(2, 4)
-            arrow.lineTo(6, 8)
-            arrow.lineTo(10, 4)
+            if up:
+                arrow.moveTo(2, 8)
+                arrow.lineTo(6, 4)
+                arrow.lineTo(10, 8)
+            else:
+                arrow.moveTo(2, 4)
+                arrow.lineTo(6, 8)
+                arrow.lineTo(10, 4)
             painter.drawPath(arrow)
             painter.end()
             pm.save(str(path), 'PNG')
@@ -1331,12 +1337,37 @@ class MonitorWindow(
                 color: {t.text_primary};
                 border: 1px solid {t.input_border};
                 border-radius: {r}px;
-                padding: 4px 8px;
+                padding: 4px 24px 4px 8px;
                 font-size: {t.font_size_base}px;
             }}
             QSpinBox:focus {{
                 border: 2px solid {t.input_focus_border};
-                padding: 3px 7px;
+                padding: 3px 23px 3px 7px;
+            }}
+            QSpinBox::up-button, QSpinBox::down-button {{
+                background-color: {btn_bg};
+                border: none;
+                border-left: 1px solid {t.input_border};
+                width: 20px;
+            }}
+            QSpinBox::up-button {{
+                border-top-right-radius: {r}px;
+            }}
+            QSpinBox::down-button {{
+                border-bottom-right-radius: {r}px;
+            }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+                background-color: {btn_hover};
+            }}
+            QSpinBox::up-arrow {{
+                image: url({self._ensure_chevron_icon(t.text_secondary, up=True)});
+                width: 10px;
+                height: 10px;
+            }}
+            QSpinBox::down-arrow {{
+                image: url({self._ensure_chevron_icon(t.text_secondary)});
+                width: 10px;
+                height: 10px;
             }}
 
             /* --- Table --- */
@@ -1387,13 +1418,12 @@ class MonitorWindow(
 
             /* --- Tooltips --- */
             QToolTip {{
-                background-color: {t.popup_bg};
+                background-color: rgba({self._hex_rgb(t.popup_bg)}, 200);
                 color: {t.text_primary};
                 border: 1px solid {t.popup_border};
-                border-radius: {r}px;
-                padding: 8px 12px;
+                border-radius: {r - 2}px;
+                padding: 3px 6px;
                 font-size: {t.font_size_base}px;
-                line-height: 1.4;
             }}
 
             /* --- Scrollbars (thin modern) --- */

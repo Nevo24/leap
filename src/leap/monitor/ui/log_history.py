@@ -12,6 +12,7 @@ from typing import List, Optional
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QWidget
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from leap.monitor.themes import current_theme
 
 
 @dataclass
@@ -75,17 +76,18 @@ class LogHistoryDialog(QDialog):
                 ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
                 msg = html.escape(entry.message)
                 # Color [Notification] messages in cyan, errors in red
+                t = current_theme()
                 if msg.startswith('[Notification]'):
                     rest = msg[len('[Notification]'):]
-                    msg = f'<span style="color: cyan;">[Notification]</span>{rest}'
+                    msg = f'<span style="color: {t.accent_blue};">[Notification]</span>{rest}'
                 elif _is_error_message(msg):
-                    msg = f'<span style="color: #FFB6C1;">{msg}</span>'
+                    msg = f'<span style="color: {t.accent_red};">{msg}</span>'
                 line = f'[{ts}] {msg}'
                 if entry.url:
                     escaped_url = html.escape(entry.url)
                     line += (
                         f' <a href="{escaped_url}" '
-                        f'style="color: #5B9BD5;">(link)</a>'
+                        f'style="color: {t.accent_blue};">(link)</a>'
                     )
                 html_lines.append(line)
             text_edit.setHtml(

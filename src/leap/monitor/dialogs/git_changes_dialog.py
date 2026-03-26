@@ -23,8 +23,8 @@ def _commit_item_style() -> str:
     return f"""
 QWidget#commit_item {{
     border: 1px solid {t.popup_border};
-    border-radius: 6px;
-    padding: 8px;
+    border-radius: {t.border_radius}px;
+    padding: 10px;
     margin: 2px;
     background: {t.popup_bg};
 }}
@@ -61,9 +61,10 @@ class _CommitItemWidget(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(1)
 
+        t = current_theme()
         # Line 1: "commit <full_sha>" + (refs)
         commit_html = (
-            f'<span style="color: #e5c07b; font-family: {mono};">commit {full_sha}</span>'
+            f'<span style="color: {t.accent_yellow}; font-family: {mono};">commit {full_sha}</span>'
         )
         if refs:
             ref_parts = []
@@ -72,47 +73,47 @@ class _CommitItemWidget(QWidget):
                 if '->' in r:
                     parts = r.split('->')
                     ref_parts.append(
-                        f'<span style="color: #56b6c2;">{parts[0].strip()}</span>'
+                        f'<span style="color: {t.accent_blue};">{parts[0].strip()}</span>'
                         f' \u2192 '
-                        f'<span style="color: #98c379;">{parts[1].strip()}</span>'
+                        f'<span style="color: {t.accent_green};">{parts[1].strip()}</span>'
                     )
                 elif r.startswith('origin/'):
-                    ref_parts.append(f'<span style="color: #e06c75;">{r}</span>')
+                    ref_parts.append(f'<span style="color: {t.accent_red};">{r}</span>')
                 elif r.startswith('tag:'):
-                    ref_parts.append(f'<span style="color: #c678dd;">{r}</span>')
+                    ref_parts.append(f'<span style="color: {t.accent_orange};">{r}</span>')
                 else:
-                    ref_parts.append(f'<span style="color: #98c379;">{r}</span>')
-            commit_html += f' <span style="font-size: 11px;">({", ".join(ref_parts)})</span>'
+                    ref_parts.append(f'<span style="color: {t.accent_green};">{r}</span>')
+            commit_html += f' <span style="font-size: {t.font_size_small}px;">({", ".join(ref_parts)})</span>'
         commit_label = QLabel(commit_html)
         commit_label.setWordWrap(False)
         layout.addWidget(commit_label)
 
         # Line 2: Author
         author_label = QLabel(
-            f'<span style="color: #aaa; font-family: {mono}; font-size: 12px;">'
+            f'<span style="color: {t.text_secondary}; font-family: {mono}; font-size: {t.font_size_base}px;">'
             f'Author: {author_name} &lt;{author_email}&gt;</span>'
         )
         layout.addWidget(author_label)
 
         # Line 3: Date (absolute + relative)
         date_label = QLabel(
-            f'<span style="color: #aaa; font-family: {mono}; font-size: 12px;">'
+            f'<span style="color: {t.text_secondary}; font-family: {mono}; font-size: {t.font_size_base}px;">'
             f'Date:   {date_abs}'
-            f'  <span style="color: #98c379;">({date_rel})</span></span>'
+            f'  <span style="color: {t.accent_green};">({date_rel})</span></span>'
         )
         layout.addWidget(date_label)
 
         # Line 4: Subject (indented, bold)
         subj_label = QLabel(subject)
-        subj_label.setStyleSheet('color: #ffffff; font-weight: bold; padding-left: 16px;')
+        subj_label.setStyleSheet(f'color: {t.text_primary}; font-weight: bold; padding-left: 16px;')
         subj_label.setWordWrap(True)
         layout.addWidget(subj_label)
 
         # Line 5+: Changed files
         if files:
             files_html = '<br>'.join(
-                f'<span style="color: #61afef; font-family: {mono}; '
-                f'font-size: 11px;">{f}</span>'
+                f'<span style="color: {t.accent_blue}; font-family: {mono}; '
+                f'font-size: {t.font_size_small}px;">{f}</span>'
                 for f in files
             )
             files_label = QLabel(files_html)
@@ -278,8 +279,8 @@ class CommitListDialog(QDialog):
         t = current_theme()
         label = QLabel(
             f'<span style="color: {t.accent_red};">Failed to load commits</span>'
-            f'<br><span style="color: #aaa; font-size: 12px;">{message}</span>'
-            f'<br><br><span style="color: #aaa; font-size: 12px;">Path: {self._project_path}</span>'
+            f'<br><span style="color: {t.text_secondary}; font-size: {t.font_size_base}px;">{message}</span>'
+            f'<br><br><span style="color: {t.text_secondary}; font-size: {t.font_size_base}px;">Path: {self._project_path}</span>'
         )
         label.setWordWrap(True)
         label.setContentsMargins(12, 12, 12, 12)
@@ -294,7 +295,7 @@ class CommitListDialog(QDialog):
         t = current_theme()
         btn.setStyleSheet(
             f'QPushButton {{ color: {t.accent_blue}; border: 1px solid {t.popup_border}; '
-            f'border-radius: 6px; padding: 10px; background: {t.popup_bg}; }}'
+            f'border-radius: {t.border_radius}px; padding: 10px; background: {t.popup_bg}; }}'
             f'QPushButton:hover {{ background: {t.input_bg}; border-color: {t.accent_blue}; }}'
         )
         btn.setCursor(Qt.PointingHandCursor)
