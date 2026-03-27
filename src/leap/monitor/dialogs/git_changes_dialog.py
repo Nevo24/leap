@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QSize, Qt
+from PyQt5.QtCore import QEvent, QSize, Qt
 from PyQt5.QtGui import QTextDocument
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
@@ -54,7 +54,7 @@ class _CommitItemWidget(QWidget):
         super().__init__(parent)
         self.setObjectName('commit_item')
         self.setStyleSheet(_commit_item_style())
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.ArrowCursor)
 
         mono = 'Menlo, Monaco, Courier'
         layout = QVBoxLayout(self)
@@ -86,6 +86,8 @@ class _CommitItemWidget(QWidget):
             commit_html += f' <span style="font-size: {t.font_size_small}px;">({", ".join(ref_parts)})</span>'
         commit_label = QLabel(commit_html)
         commit_label.setWordWrap(False)
+        commit_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        commit_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(commit_label)
 
         # Line 2: Author
@@ -93,6 +95,8 @@ class _CommitItemWidget(QWidget):
             f'<span style="color: {t.text_secondary}; font-family: {mono}; font-size: {t.font_size_base}px;">'
             f'Author: {author_name} &lt;{author_email}&gt;</span>'
         )
+        author_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        author_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(author_label)
 
         # Line 3: Date (absolute + relative)
@@ -101,12 +105,16 @@ class _CommitItemWidget(QWidget):
             f'Date:   {date_abs}'
             f'  <span style="color: {t.accent_green};">({date_rel})</span></span>'
         )
+        date_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        date_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(date_label)
 
         # Line 4: Subject (indented, bold)
         subj_label = QLabel(subject)
         subj_label.setStyleSheet(f'color: {t.text_primary}; font-weight: bold; padding-left: 16px;')
         subj_label.setWordWrap(True)
+        subj_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        subj_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(subj_label)
 
         # Line 5+: Changed files
@@ -118,6 +126,8 @@ class _CommitItemWidget(QWidget):
             )
             files_label = QLabel(files_html)
             files_label.setWordWrap(False)
+            files_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            files_label.setCursor(Qt.IBeamCursor)
             files_label.setContentsMargins(16, 2, 0, 0)
             layout.addWidget(files_label)
 
@@ -133,6 +143,35 @@ class _CommitItemWidget(QWidget):
                 doc.setDefaultFont(w.font())
                 max_w = max(max_w, int(doc.idealWidth()))
         self._ideal_width = max_w + pad
+
+        # Install event filter on all child labels so clicks also select the
+        # parent QListWidget row (labels with TextSelectableByMouse eat clicks).
+        for i in range(layout.count()):
+            child = layout.itemAt(i).widget()
+            if isinstance(child, QLabel):
+                child.installEventFilter(self)
+
+    def eventFilter(self, obj: object, event: QEvent) -> bool:
+        """On mouse press inside a child label, also select the list row."""
+        if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            list_widget = self._find_parent_list()
+            if list_widget is not None:
+                for i in range(list_widget.count()):
+                    if list_widget.itemWidget(list_widget.item(i)) is self:
+                        list_widget.setCurrentRow(i)
+                        if event.type() == QEvent.MouseButtonDblClick:
+                            list_widget.itemDoubleClicked.emit(list_widget.item(i))
+                        break
+        return super().eventFilter(obj, event)
+
+    def _find_parent_list(self) -> Optional[QListWidget]:
+        """Walk up the widget tree to find the owning QListWidget."""
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, QListWidget):
+                return p
+            p = p.parent()
+        return None
 
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
