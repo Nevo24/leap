@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, QSize, Qt
-from PyQt5.QtGui import QTextDocument
+from PyQt5.QtGui import QColor, QPainter, QPen, QTextDocument
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.pr_tracking.git_utils import detect_default_branch
@@ -87,7 +87,6 @@ class _CommitItemWidget(QWidget):
         commit_label = QLabel(commit_html)
         commit_label.setWordWrap(False)
         commit_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        commit_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(commit_label)
 
         # Line 2: Author
@@ -96,7 +95,6 @@ class _CommitItemWidget(QWidget):
             f'Author: {author_name} &lt;{author_email}&gt;</span>'
         )
         author_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        author_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(author_label)
 
         # Line 3: Date (absolute + relative)
@@ -106,7 +104,6 @@ class _CommitItemWidget(QWidget):
             f'  <span style="color: {t.accent_green};">({date_rel})</span></span>'
         )
         date_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        date_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(date_label)
 
         # Line 4: Subject (indented, bold)
@@ -114,7 +111,6 @@ class _CommitItemWidget(QWidget):
         subj_label.setStyleSheet(f'color: {t.text_primary}; font-weight: bold; padding-left: 16px;')
         subj_label.setWordWrap(True)
         subj_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        subj_label.setCursor(Qt.IBeamCursor)
         layout.addWidget(subj_label)
 
         # Line 5+: Changed files
@@ -127,7 +123,6 @@ class _CommitItemWidget(QWidget):
             files_label = QLabel(files_html)
             files_label.setWordWrap(False)
             files_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            files_label.setCursor(Qt.IBeamCursor)
             files_label.setContentsMargins(16, 2, 0, 0)
             layout.addWidget(files_label)
 
@@ -173,6 +168,26 @@ class _CommitItemWidget(QWidget):
             p = p.parent()
         return None
 
+    def setSelected(self, selected: bool) -> None:
+        """Toggle selection frame."""
+        self._selected = selected
+        self.update()
+
+    def paintEvent(self, event: object) -> None:
+        """Draw a visible frame around the widget when selected."""
+        super().paintEvent(event)
+        if getattr(self, '_selected', False):
+            t = current_theme()
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            pen = QPen(QColor(t.accent_blue))
+            pen.setWidth(3)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            r = self.rect().adjusted(2, 2, -2, -2)
+            painter.drawRoundedRect(r, t.border_radius, t.border_radius)
+            painter.end()
+
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
         return QSize(max(hint.width(), self._ideal_width), hint.height())
@@ -214,6 +229,8 @@ class CommitListDialog(QDialog):
             f'QListWidget::item:selected {{ background: {t.hover_bg}; }}'
         )
         self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.currentRowChanged.connect(self._on_row_changed)
+        self._prev_selected_row: int = -1
         layout.addWidget(self._list)
 
         # Bottom row: manual entry + OK/Cancel
@@ -343,6 +360,22 @@ class CommitListDialog(QDialog):
         self._load_more_item.setFlags(Qt.NoItemFlags)  # not selectable
         self._load_more_item.setSizeHint(QSize(0, btn.sizeHint().height() + 12))
         self._list.setItemWidget(self._load_more_item, btn)
+
+    def _on_row_changed(self, current: int) -> None:
+        """Update border highlight when the selected row changes."""
+        if self._prev_selected_row >= 0:
+            prev_item = self._list.item(self._prev_selected_row)
+            if prev_item is not None:
+                prev_widget = self._list.itemWidget(prev_item)
+                if isinstance(prev_widget, _CommitItemWidget):
+                    prev_widget.setSelected(False)
+        if current >= 0:
+            cur_item = self._list.item(current)
+            if cur_item is not None:
+                cur_widget = self._list.itemWidget(cur_item)
+                if isinstance(cur_widget, _CommitItemWidget):
+                    cur_widget.setSelected(True)
+        self._prev_selected_row = current
 
     def _on_double_click(self, item: QListWidgetItem) -> None:
         """Handle double-click on a commit (ignore the Load More item)."""
