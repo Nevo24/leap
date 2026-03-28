@@ -235,6 +235,7 @@ Type `^msg` in the server terminal to queue a message without opening a client. 
   2. Add a `.mkdir()` call in `ensure_storage_dirs()` in `utils/constants.py`
   3. Add the path to the `ensure-storage` target in `Makefile`
 - **Theming** → Use `current_theme()` from `monitor/themes.py` to access colors. Never hardcode colors in monitor code — use theme properties (e.g. `t.accent_green`, `t.text_primary`). Theme colors are applied via `QPalette` (preserves native macOS widget rendering) + minimal QSS. Cell button styles use `close_btn_style()` / `active_btn_style()` / `menu_btn_style()` from `table_helpers.py`. Theme persists as `"theme"` in `monitor_prefs.json` (default: `"Midnight"`). Six built-in themes: Midnight, Ocean, Monokai, Nord, Solarized Dark, Dawn.
+- **New assets (images, icons, themed variants)** → Any new asset file in `assets/` that the monitor uses at runtime **must** also be added to `DATA_FILES` in `setup.py`. The py2app bundle only includes explicitly listed files — assets missing from `setup.py` will work in `make run-monitor` (dev mode) but silently fail in the installed app. Logo text variants use `glob('assets/leap-text*.png')` so new theme logos are auto-included, but other new assets need manual addition.
 
 ## Testing
 
