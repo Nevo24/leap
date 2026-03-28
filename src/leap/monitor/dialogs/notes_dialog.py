@@ -31,6 +31,7 @@ from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR
 MAX_NOTE_NAME_LEN = 80
 _NOTES_META_FILE: Path = NOTES_DIR / '.notes_meta.json'
 _IMAGE_MARKER_RE = re.compile(r'!\[image\]\(([a-f0-9]+\.png)\)')
+_CHECKLIST_PLACEHOLDER_RE = re.compile(r'\[Image #\d+\]')
 _NOTE_IMAGE_MAX_WIDTH = 400
 
 
@@ -422,11 +423,21 @@ class _ItemLineEdit(QLineEdit):
 
     Shows full text as tooltip when truncated.  Emits ``expand_requested``
     on any click so the parent can swap in a wrapping editor.
+    Supports pasting images as ``![image](hash.png)`` markers with hover preview.
     """
 
     enter_pressed: pyqtSignal = pyqtSignal()
     empty_backspace: pyqtSignal = pyqtSignal()
     expand_requested: pyqtSignal = pyqtSignal()
+    image_pasted: pyqtSignal = pyqtSignal(str)  # emits the filename
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.setMouseTracking(True)
+        self._preview: Optional[_ImagePreviewPopup] = None
+        self._pasted_images: set[str] = set()
+        self._register_image_fn: Optional[object] = None  # callback: filename → placeholder
+        self._resolve_placeholder_fn: Optional[object] = None  # callback: placeholder → filename
 
     def _is_truncated(self) -> bool:
         if self.width() <= 0:
@@ -454,6 +465,40 @@ class _ItemLineEdit(QLineEdit):
         # Always request expand on click — parent decides whether to swap
         self.expand_requested.emit()
 
+    def mouseMoveEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
+        name = self._image_marker_name_at(event.pos())
+        if name:
+            if self._preview is None:
+                self._preview = _ImagePreviewPopup()
+            self._preview.show_for_image(name, event.globalPos())
+        elif self._preview and self._preview.isVisible():
+            self._preview.hide_preview()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: 'QEvent') -> None:  # type: ignore[override]
+        if self._preview and self._preview.isVisible():
+            self._preview.hide_preview()
+        super().leaveEvent(event)
+
+    def _image_marker_name_at(self, pos: QPoint) -> Optional[str]:
+        """Return image filename if cursor is over an image placeholder or marker."""
+        col = self.cursorPositionAt(pos)
+        text = self.text()
+        # Check [Image #N] placeholders (displayed in checklist mode)
+        if self._resolve_placeholder_fn:
+            for m in _CHECKLIST_PLACEHOLDER_RE.finditer(text):
+                if m.start() <= col < m.end():
+                    filename = self._resolve_placeholder_fn(m.group())
+                    if filename and (NOTE_IMAGES_DIR / filename).is_file():
+                        return filename
+        # Check ![image](hash.png) markers (fallback)
+        for m in _IMAGE_MARKER_RE.finditer(text):
+            if m.start() <= col < m.end():
+                filename = m.group(1)
+                if (NOTE_IMAGES_DIR / filename).is_file():
+                    return filename
+        return None
+
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.enter_pressed.emit()
@@ -461,6 +506,24 @@ class _ItemLineEdit(QLineEdit):
         if event.key() == Qt.Key_Backspace and not self.text():
             self.empty_backspace.emit()
             return
+        # Cmd+V / Ctrl+V — check clipboard for images
+        if (event.key() == Qt.Key_V
+                and event.modifiers() & Qt.ControlModifier):
+            clipboard = QApplication.clipboard()
+            mime = clipboard.mimeData()
+            if mime and mime.hasImage():
+                image = mime.imageData()
+                if isinstance(image, QImage) and not image.isNull():
+                    filename = _save_note_image(image)
+                    if filename:
+                        self._pasted_images.add(filename)
+                        if self._register_image_fn:
+                            placeholder = self._register_image_fn(filename)
+                        else:
+                            placeholder = f'![image]({filename})'
+                        self.insert(placeholder)
+                        self.image_pasted.emit(filename)
+                        return
         super().keyPressEvent(event)
 
 
@@ -698,6 +761,27 @@ class _ChecklistItemWidget(QFrame):
                 dismiss(True)
                 self.merge_up.emit(self._index)
                 return
+            # Cmd+V / Ctrl+V — paste image
+            if (event.key() == Qt.Key_V
+                    and event.modifiers() & Qt.ControlModifier):
+                clipboard = QApplication.clipboard()
+                mime = clipboard.mimeData()
+                if mime and mime.hasImage():
+                    image = mime.imageData()
+                    if isinstance(image, QImage) and not image.isNull():
+                        filename = _save_note_image(image)
+                        if filename:
+                            self._edit._pasted_images.add(filename)
+                            self._edit.image_pasted.emit(filename)
+                            if self._edit._register_image_fn:
+                                placeholder = self._edit._register_image_fn(filename)
+                            else:
+                                placeholder = f'![image]({filename})'
+                            wrap.insertPlainText(placeholder)
+                            self.text_edited.emit(self._index, wrap.toPlainText().replace('\n', ' '))
+                            from PyQt5.QtCore import QTimer
+                            QTimer.singleShot(0, resize_wrap)
+                            return
             QPlainTextEdit.keyPressEvent(wrap, event)
             self.text_edited.emit(self._index, wrap.toPlainText().replace('\n', ' '))
             from PyQt5.QtCore import QTimer
@@ -711,6 +795,7 @@ class _ChecklistItemWidget(QFrame):
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: dismiss(True))
 
+        _setup_plaintext_image_hover(wrap, self._edit._resolve_placeholder_fn)
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -720,6 +805,53 @@ class _ChecklistItemWidget(QFrame):
         cursor = wrap.textCursor()
         cursor.movePosition(cursor.End)
         wrap.setTextCursor(cursor)
+
+
+def _setup_plaintext_image_hover(
+    wrap: QPlainTextEdit,
+    resolve_placeholder_fn: Optional[object] = None,
+) -> None:
+    """Add image hover preview to a QPlainTextEdit via monkey-patching."""
+    wrap.setMouseTracking(True)
+    wrap.viewport().setMouseTracking(True)
+    _preview_ref: list[Optional[_ImagePreviewPopup]] = [None]
+
+    def on_mouse_move(event: 'QMouseEvent') -> None:
+        cursor = wrap.cursorForPosition(event.pos())
+        block_text = cursor.block().text()
+        col = cursor.positionInBlock()
+        name: Optional[str] = None
+        # Check [Image #N] placeholders
+        if resolve_placeholder_fn:
+            for m in _CHECKLIST_PLACEHOLDER_RE.finditer(block_text):
+                if m.start() <= col < m.end():
+                    fname = resolve_placeholder_fn(m.group())
+                    if fname and (NOTE_IMAGES_DIR / fname).is_file():
+                        name = fname
+                    break
+        # Check ![image](hash.png) markers
+        if name is None:
+            for m in _IMAGE_MARKER_RE.finditer(block_text):
+                if m.start() <= col < m.end():
+                    fname = m.group(1)
+                    if (NOTE_IMAGES_DIR / fname).is_file():
+                        name = fname
+                    break
+        if name:
+            if _preview_ref[0] is None:
+                _preview_ref[0] = _ImagePreviewPopup()
+            _preview_ref[0].show_for_image(name, event.globalPos())
+        elif _preview_ref[0] and _preview_ref[0].isVisible():
+            _preview_ref[0].hide_preview()
+        QPlainTextEdit.mouseMoveEvent(wrap, event)
+
+    def on_leave(event: 'QEvent') -> None:
+        if _preview_ref[0] and _preview_ref[0].isVisible():
+            _preview_ref[0].hide_preview()
+        QPlainTextEdit.leaveEvent(wrap, event)
+
+    wrap.mouseMoveEvent = on_mouse_move
+    wrap.leaveEvent = on_leave
 
 
 class _ChecklistWidget(QWidget):
@@ -734,6 +866,11 @@ class _ChecklistWidget(QWidget):
         self._focus_after_rebuild: Optional[tuple[int, bool]] = None
         self._focus_add_after_rebuild: bool = False
         self._dragging_index: int = -1
+        self._pasted_images: set[str] = set()  # track images pasted in checklist
+        self._image_counter: int = 0
+        # Maps "[Image #N]" ↔ filename for display/storage conversion
+        self._placeholder_to_file: dict[str, str] = {}
+        self._file_to_placeholder: dict[str, str] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -767,12 +904,60 @@ class _ChecklistWidget(QWidget):
 
     def set_items(self, items: list[dict]) -> None:
         """Load items and rebuild the UI."""
-        self._items = [dict(i) for i in items]
+        # Reset image mapping for new note
+        self._image_counter = 0
+        self._placeholder_to_file.clear()
+        self._file_to_placeholder.clear()
+        # Convert ![image](hash.png) markers to [Image #N] for display
+        self._items = []
+        for i in items:
+            d = dict(i)
+            d['text'] = self._markers_to_placeholders(d['text'])
+            self._items.append(d)
         self._rebuild()
 
     def get_items(self) -> list[dict]:
-        """Return the current item list."""
-        return [dict(i) for i in self._items]
+        """Return items with [Image #N] converted back to ![image](hash.png)."""
+        result = []
+        for i in self._items:
+            d = dict(i)
+            d['text'] = self._placeholders_to_markers(d['text'])
+            result.append(d)
+        return result
+
+    def take_pasted_images(self) -> set[str]:
+        """Return and clear all images pasted in checklist items."""
+        imgs = self._pasted_images
+        self._pasted_images = set()
+        return imgs
+
+    def _register_image(self, filename: str) -> str:
+        """Register a filename and return its [Image #N] placeholder."""
+        if filename in self._file_to_placeholder:
+            return self._file_to_placeholder[filename]
+        self._image_counter += 1
+        placeholder = f'[Image #{self._image_counter}]'
+        self._placeholder_to_file[placeholder] = filename
+        self._file_to_placeholder[filename] = placeholder
+        return placeholder
+
+    def _markers_to_placeholders(self, text: str) -> str:
+        """Convert ![image](hash.png) markers to [Image #N] for display."""
+        def _replace(m: re.Match) -> str:
+            return self._register_image(m.group(1))
+        return _IMAGE_MARKER_RE.sub(_replace, text)
+
+    def _placeholders_to_markers(self, text: str) -> str:
+        """Convert [Image #N] placeholders back to ![image](hash.png) for storage."""
+        def _replace(m: re.Match) -> str:
+            placeholder = m.group()
+            filename = self._placeholder_to_file.get(placeholder)
+            return f'![image]({filename})' if filename else placeholder
+        return _CHECKLIST_PLACEHOLDER_RE.sub(_replace, text)
+
+    def _resolve_placeholder(self, placeholder: str) -> Optional[str]:
+        """Return the filename for a [Image #N] placeholder, or None."""
+        return self._placeholder_to_file.get(placeholder)
 
     # ── Layout rebuild ───────────────────────────────────────────────
 
@@ -781,6 +966,16 @@ class _ChecklistWidget(QWidget):
         # if the focused widget is destroyed, macOS deactivates the
         # window and subsequent setFocus() calls silently fail.
         self._scroll.setFocus()
+        # Collect pasted images from items being destroyed
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item is None:
+                continue
+            w = item.widget()
+            if isinstance(w, _ChecklistItemWidget):
+                self._pasted_images |= w._edit._pasted_images
+        if self._add_field:
+            self._pasted_images |= self._add_field._pasted_images
         # Reset class-level active expand — widgets are about to be destroyed
         _ChecklistItemWidget._active_expand = None
         self._add_popup = None
@@ -812,6 +1007,9 @@ class _ChecklistWidget(QWidget):
         # "Add item" field
         self._add_field = _ItemLineEdit()
         self._add_field.setPlaceholderText('Add item')
+        self._add_field.image_pasted.connect(lambda fn: self._pasted_images.add(fn))
+        self._add_field._register_image_fn = self._register_image
+        self._add_field._resolve_placeholder_fn = self._resolve_placeholder
         self._add_field.setFrame(False)
         self._add_field.setStyleSheet(
             'QLineEdit { padding: 6px 4px; background: transparent; }'
@@ -876,6 +1074,9 @@ class _ChecklistWidget(QWidget):
         w.new_item_after.connect(self._on_new_after)
         w.merge_up.connect(self._on_merge_up)
         w.drag_started.connect(self._start_item_drag)
+        w._edit.image_pasted.connect(lambda fn: self._pasted_images.add(fn))
+        w._edit._register_image_fn = self._register_image
+        w._edit._resolve_placeholder_fn = self._resolve_placeholder
         return w
 
     # ── Drag-and-drop reordering ──────────────────────────────────────
@@ -1006,21 +1207,29 @@ class _ChecklistWidget(QWidget):
     # ── Item actions ─────────────────────────────────────────────────
 
     def _on_toggle(self, index: int, checked: bool) -> None:
+        if index < 0 or index >= len(self._items):
+            return
         self._items[index]['checked'] = checked
         self._rebuild()
         self.content_changed.emit()
 
     def _on_text_edited(self, index: int, text: str) -> None:
+        if index < 0 or index >= len(self._items):
+            return
         self._items[index]['text'] = text
         self.content_changed.emit()
 
     def _on_delete(self, index: int) -> None:
+        if index < 0 or index >= len(self._items):
+            return
         del self._items[index]
         self._rebuild()
         self.content_changed.emit()
 
     def _on_new_after(self, index: int) -> None:
         """Insert a new empty item after the given index."""
+        if index < 0 or index >= len(self._items):
+            return
         new_idx = index + 1
         self._items.insert(new_idx, {'text': '', 'checked': False})
         self._focus_after_rebuild = (new_idx, True)
@@ -1029,6 +1238,8 @@ class _ChecklistWidget(QWidget):
 
     def _on_merge_up(self, index: int) -> None:
         """Backspace on empty item → delete it and focus the previous one."""
+        if index < 0 or index >= len(self._items):
+            return
         if self._items[index]['text']:
             return
         unchecked = [i for i, d in enumerate(self._items) if not d['checked']]
@@ -1113,6 +1324,26 @@ class _ChecklistWidget(QWidget):
                 self._dismiss_add_popup(save=True)
                 self._add_field.setFocus()
                 return
+            # Cmd+V / Ctrl+V — paste image
+            if (event.key() == Qt.Key_V
+                    and event.modifiers() & Qt.ControlModifier):
+                clipboard = QApplication.clipboard()
+                mime = clipboard.mimeData()
+                if mime and mime.hasImage():
+                    image = mime.imageData()
+                    if isinstance(image, QImage) and not image.isNull():
+                        filename = _save_note_image(image)
+                        if filename:
+                            if self._add_field:
+                                self._add_field._pasted_images.add(filename)
+                                self._add_field.image_pasted.emit(filename)
+                            else:
+                                self._pasted_images.add(filename)
+                            placeholder = self._register_image(filename)
+                            wrap.insertPlainText(placeholder)
+                            from PyQt5.QtCore import QTimer
+                            QTimer.singleShot(0, resize_wrap)
+                            return
             QPlainTextEdit.keyPressEvent(wrap, event)
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, resize_wrap)
@@ -1125,6 +1356,7 @@ class _ChecklistWidget(QWidget):
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: self._dismiss_add_popup(save=True))
 
+        _setup_plaintext_image_hover(wrap, self._resolve_placeholder)
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -1391,6 +1623,8 @@ class NotesDialog(QDialog):
         if index == self._MODE_CHECKLIST:
             # Text → Checklist: each non-empty line becomes an unchecked item
             text = self._editor.get_note_content()
+            # Transfer pasted images from text editor to checklist before switching
+            self._checklist._pasted_images |= self._editor.take_pasted_images()
             items = _parse_checklist(text) if text.strip() else []
             self._checklist.set_items(items)
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
@@ -1400,6 +1634,8 @@ class NotesDialog(QDialog):
         else:
             # Checklist → Text: convert items to plain text lines
             items = self._checklist.get_items()
+            # Transfer pasted images from checklist to text editor before switching
+            self._editor._pasted_images |= self._checklist.take_pasted_images()
             lines = [item['text'] for item in items if item['text']]
             text = '\n'.join(lines)
             self._editor.set_note_content(text)
@@ -1522,7 +1758,7 @@ class NotesDialog(QDialog):
             disk_text = ''
         # Union of editor, disk, and pasted-this-session to catch all cases
         # (including images pasted then removed from editor before save)
-        pasted = self._editor.take_pasted_images()
+        pasted = self._editor.take_pasted_images() | self._checklist.take_pasted_images()
         all_refs = _collect_image_refs(live_text) | _collect_image_refs(disk_text) | pasted
         other_refs = _all_note_image_refs(exclude_name=self._current_name)
         for filename in all_refs - other_refs:
@@ -1557,7 +1793,7 @@ class NotesDialog(QDialog):
             try:
                 NOTES_DIR.mkdir(parents=True, exist_ok=True)
                 _note_path(self._current_name).write_text(text, encoding='utf-8')
-                pasted = self._editor.take_pasted_images()
+                pasted = self._editor.take_pasted_images() | self._checklist.take_pasted_images()
                 _cleanup_orphaned_images(text, self._saved_text, self._current_name, pasted)
                 self._saved_text = text
                 self._update_timestamp()
