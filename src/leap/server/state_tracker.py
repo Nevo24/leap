@@ -35,21 +35,35 @@ from leap.utils.constants import (
     RESUME_GRACE_PERIOD,
     STATE_PROTECTION_WINDOW,
     STATE_LOG_DIR,
+    STORAGE_DIR,
     WAITING_STATE_TIMEOUT,
 )
 
 _log = logging.getLogger('leap.state')
 
 
-def _setup_debug_log(tag: str) -> None:
-    """Set up per-session debug log at .storage/state_logs/<tag>.log."""
+def _setup_debug_log(signal_file: Path) -> None:
+    """Set up per-session debug log.
+
+    Real sessions: .storage/state_logs/<tag>.log
+    Tests (tmp_path): <tmp_dir>/<tag>.state.log (avoids .storage pollution)
+    """
     # Remove any stale handlers (e.g. from a previous session in the
     # same process — shouldn't happen, but be safe).
     for h in _log.handlers[:]:
         _log.removeHandler(h)
         h.close()
-    STATE_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = STATE_LOG_DIR / f'{tag}.log'
+    tag = signal_file.stem
+    try:
+        is_real = signal_file.parent.resolve().is_relative_to(
+            STORAGE_DIR.resolve())
+    except (OSError, ValueError):
+        is_real = False
+    if is_real:
+        STATE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = STATE_LOG_DIR / f'{tag}.log'
+    else:
+        log_path = signal_file.parent / f'{tag}.state.log'
     handler = logging.FileHandler(str(log_path), mode='w')
     handler.setFormatter(logging.Formatter(
         '%(asctime)s.%(msecs)03d %(message)s', datefmt='%H:%M:%S',
@@ -177,7 +191,7 @@ class CLIStateTracker:
         except OSError:
             pass
 
-        _setup_debug_log(signal_file.stem)
+        _setup_debug_log(signal_file)
         _log.debug(
             'INIT state=idle signal_file=%s provider=%s',
             signal_file, self._provider.name,
@@ -472,6 +486,38 @@ class CLIStateTracker:
         # 'pause' mode (default): only send when idle
         return state == CLIState.IDLE
 
+    @staticmethod
+    def _is_csi_u_interrupt(data: bytes) -> bool:
+        """Check if a CSI sequence is a kitty-protocol Ctrl+C or Escape.
+
+        CSI u format: ``\\x1b[<codepoint>;<modifiers>u``
+        Ctrl+C: codepoint 3 (raw) or 99 with Ctrl modifier (bit 4).
+        Escape: codepoint 27.
+        """
+        if len(data) < 4 or data[-1] != 0x75:  # must end with 'u'
+            return False
+        # Extract the parameter string between '[' and 'u'.
+        # Sub-parameters use ':' (e.g. 99;5:3u for key release).
+        # Split on ':' before parsing ints.
+        params = data[2:-1]
+        # First parameter is the codepoint (before first ';')
+        semi = params.find(0x3b)  # ';'
+        codepoint_raw = params[:semi] if semi >= 0 else params
+        try:
+            codepoint = int(codepoint_raw.split(b':')[0])
+        except ValueError:
+            return False
+        if codepoint in (3, 27):  # Ctrl+C or Escape
+            return True
+        if codepoint == 99 and semi >= 0:  # 'c' with modifiers
+            try:
+                mod_raw = params[semi + 1:].split(b';')[0]
+                modifiers = int(mod_raw.split(b':')[0])
+            except ValueError:
+                return False
+            return (modifiers - 1) & 0x04 != 0  # Ctrl bit set
+        return False
+
     def on_input(self, data: bytes) -> None:
         """Called when the user types in the server terminal.
 
@@ -503,11 +549,23 @@ class CLIStateTracker:
                 # starts with \x1b\x1b[ (double escape), which this
                 # check correctly lets through.
                 if len(data) >= 2 and data[1] == 0x5b:  # \x1b[
-                    _log.debug(
-                        'ON_INPUT filtered CSI seq len=%d in running '
-                        '(not updating _last_input_time)',
-                        len(data),
-                    )
+                    # CSI u (kitty keyboard protocol) encodes Ctrl+C
+                    # and Escape as escape sequences.  Detect them so
+                    # interrupt detection still works.
+                    if self._is_csi_u_interrupt(data):
+                        self._last_input_time = self._clock()
+                        self._last_escape_time = self._last_input_time
+                        _log.debug(
+                            'ON_INPUT CSI u interrupt seq len=%d '
+                            '(updating _last_escape_time)',
+                            len(data),
+                        )
+                    else:
+                        _log.debug(
+                            'ON_INPUT filtered CSI seq len=%d in running '
+                            '(not updating _last_input_time)',
+                            len(data),
+                        )
                 else:
                     _log.debug(
                         'ON_INPUT filtered escape seq len=%d '
@@ -517,7 +575,23 @@ class CLIStateTracker:
                     self._last_input_time = self._clock()
                     self._last_escape_time = self._last_input_time
             else:
-                _log.debug('ON_INPUT filtered escape seq len=%d', len(data))
+                # Not running — still check CSI u for Ctrl+C/Escape
+                # so _last_escape_time is set for idle-state interrupt
+                # detection (the Stop hook can race ahead).
+                if (len(data) >= 2 and data[1] == 0x5b
+                        and self._is_csi_u_interrupt(data)):
+                    self._last_input_time = self._clock()
+                    self._last_escape_time = self._last_input_time
+                    _log.debug(
+                        'ON_INPUT CSI u interrupt seq len=%d in %s '
+                        '(updating _last_escape_time)',
+                        len(data), self._state,
+                    )
+                else:
+                    _log.debug(
+                        'ON_INPUT filtered escape seq len=%d',
+                        len(data),
+                    )
             return
         _log.debug(
             'ON_INPUT state=%s data=%r len=%d',
