@@ -146,7 +146,7 @@ class SettingsDialog(QDialog):
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
         current_global_shortcut: str = '',
-        current_theme_name: str = 'Midnight',
+        current_theme_name: str = 'Nord',
         on_theme_change: Optional[Callable[[str], None]] = None,
         parent: Optional[object] = None,
     ) -> None:

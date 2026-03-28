@@ -1573,7 +1573,7 @@ class TableBuilderMixin(_Base):
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
             new_status_seconds=self._prefs.get('new_status_seconds', 60),
             current_global_shortcut=self._prefs.get('global_shortcut', ''),
-            current_theme_name=self._prefs.get('theme', 'Midnight'),
+            current_theme_name=self._prefs.get('theme', 'Nord'),
             on_theme_change=self._apply_theme,
             parent=self,
         )

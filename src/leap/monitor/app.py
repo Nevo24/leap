@@ -1930,7 +1930,7 @@ def main() -> None:
 
     # Load saved theme before creating the window
     prefs = load_monitor_prefs()
-    saved_theme = prefs.get('theme', 'Midnight')
+    saved_theme = prefs.get('theme', 'Nord')
     set_theme(saved_theme)
 
     # Set macOS appearance based on theme (dark/light)
