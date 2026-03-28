@@ -883,8 +883,11 @@ class LeapServer:
                     out.append(data[i])
                     i += 1
             else:
-                # Single-char escape: one byte after ESC
-                if i < len(data):
+                # Two-byte escape: only consume if the byte is a valid
+                # final byte (0x40-0x5F, e.g. ESC M for reverse index).
+                # Otherwise the \x1b was a standalone Escape key press
+                # and the current byte is new input — leave it alone.
+                if i < len(data) and 0x40 <= data[i] <= 0x5f:
                     out.append(data[i])
                     i += 1
 
@@ -924,8 +927,15 @@ class LeapServer:
                     i += 1
                     if i < len(data):
                         i += 1  # consume the final byte
-                else:
+                elif 0x40 <= kind <= 0x5f:
+                    # Valid two-byte escape (e.g. ESC M = reverse index).
                     i += 1
+                else:
+                    # Not a recognized escape introducer — treat \x1b as
+                    # a standalone Escape key press.  Leave i at esc_start+1
+                    # so the byte after \x1b is processed normally in the
+                    # next loop iteration (only \x1b goes to out here).
+                    pass
                 out.extend(data[esc_start:i])
                 continue
 
