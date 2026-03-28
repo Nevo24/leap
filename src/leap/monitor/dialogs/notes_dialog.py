@@ -1530,7 +1530,9 @@ class NotesDialog(QDialog):
 
         right_layout.addWidget(self._stack, 1)
 
+        right.setMinimumWidth(230)
         splitter.addWidget(right)
+        splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
 
