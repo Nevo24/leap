@@ -171,7 +171,10 @@ class LeapServer:
         )
         self.output_capture = OutputCapture(tag, cli_provider=self._provider.name)
         self._terminal_input_buf: bytearray = bytearray()
-        self._partial_escape: bool = False  # True when last data ended mid-escape
+        # Tracks incomplete escape sequences split across os.read() chunks.
+        # None = no partial.  'esc' = bare \x1b at end (need type byte).
+        # 'csi' = \x1b[ + optional params at end (need final byte 0x40-0x7e).
+        self._partial_escape: Optional[str] = None
         self._user_has_typed: bool = False  # True after first Enter in the terminal
         # Queue-from-server: "^" prefix capture mode.
         # When "^" is the first char on a line we enter capture mode
@@ -822,7 +825,7 @@ class LeapServer:
                 and data[i] == 0x5e
                 and (not self._terminal_input_buf
                      or not self._user_has_typed)):
-            self._partial_escape = False
+            self._partial_escape = None
             self._terminal_input_buf.clear()
             self._queue_capture_mode = True
             self._queue_capture_buf.clear()
@@ -830,8 +833,22 @@ class LeapServer:
             i += 1  # consume the "^"
 
         # If a previous call ended mid-escape, skip continuation bytes.
-        if self._partial_escape:
-            self._partial_escape = False
+        if self._partial_escape == 'csi':
+            # CSI was already started (\x1b[ consumed in previous chunk).
+            # Continue consuming parameter bytes and the final byte.
+            self._partial_escape = None
+            while i < len(data) and 0x20 <= data[i] <= 0x3f:
+                out.append(data[i])
+                i += 1
+            if i < len(data):
+                out.append(data[i])  # final byte (0x40-0x7e)
+                i += 1
+            else:
+                # Still truncated — remain in CSI state
+                self._partial_escape = 'csi'
+        elif self._partial_escape == 'esc':
+            # Bare \x1b was at end of previous chunk — need type byte.
+            self._partial_escape = None
             if i < len(data) and data[i] == 0x5b:
                 # CSI: skip introducer, parameter bytes, and final byte
                 out.append(data[i])  # '['
@@ -842,6 +859,9 @@ class LeapServer:
                 if i < len(data):
                     out.append(data[i])  # final byte
                     i += 1
+                else:
+                    # CSI truncated — switch to csi state
+                    self._partial_escape = 'csi'
             elif i < len(data) and data[i] == 0x4f:
                 # SS3: skip 'O' + one final byte
                 out.append(data[i])
@@ -864,7 +884,7 @@ class LeapServer:
                 i += 1
                 if i >= len(data):
                     # ESC at end of chunk — mark partial, pass through
-                    self._partial_escape = True
+                    self._partial_escape = 'esc'
                     out.append(b)
                     continue
                 kind = data[i]
@@ -876,7 +896,7 @@ class LeapServer:
                         i += 1
                     else:
                         # CSI truncated at end of chunk
-                        self._partial_escape = True
+                        self._partial_escape = 'csi'
                 elif kind in (0x5d, 0x50, 0x58, 0x5e, 0x5f):
                     i += 1
                     while i < len(data):
