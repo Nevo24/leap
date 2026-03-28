@@ -8,18 +8,22 @@ resolved to ``@/path/to/image`` when the text is retrieved for sending.
 
 import hashlib
 import os
+import re
+from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit,
+    QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QMimeData, Qt
-from PyQt5.QtGui import QImage
+from PyQt5.QtCore import QMimeData, QPoint, Qt
+from PyQt5.QtGui import QImage, QPixmap, QTextCursor
 
 from leap.monitor.themes import current_theme
 from leap.utils.constants import QUEUE_IMAGES_DIR
 
-from pathlib import Path
+_PLACEHOLDER_RE = re.compile(r'\[Image #\d+\]')
+_PREVIEW_MAX = 400
 
 
 def _save_qimage(image: QImage, target_dir: Optional[Path] = None) -> Optional[str]:
@@ -74,6 +78,45 @@ def resolve_image_placeholders(
     return message
 
 
+class _ImagePreviewPopup(QLabel):
+    """Frameless popup showing an image preview on hover."""
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setStyleSheet('background: transparent; padding: 0px;')
+        self._current_path: Optional[str] = None
+
+    def show_for_path(self, path: str, global_pos: QPoint) -> None:
+        if path == self._current_path and self.isVisible():
+            return
+        px = QPixmap(path)
+        if px.isNull():
+            self.hide()
+            return
+        if px.width() > _PREVIEW_MAX or px.height() > _PREVIEW_MAX:
+            px = px.scaled(
+                _PREVIEW_MAX, _PREVIEW_MAX,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            )
+        self._current_path = path
+        self.setPixmap(px)
+        self.adjustSize()
+        screen = QApplication.screenAt(global_pos)
+        if screen:
+            sg = screen.availableGeometry()
+            x = min(global_pos.x() + 12, sg.right() - self.width())
+            y = min(global_pos.y() + 12, sg.bottom() - self.height())
+            self.move(max(x, sg.left()), max(y, sg.top()))
+        else:
+            self.move(global_pos.x() + 12, global_pos.y() + 12)
+        self.show()
+
+    def hide_preview(self) -> None:
+        self._current_path = None
+        self.hide()
+
+
 class ImageTextEdit(QTextEdit):
     """QTextEdit that intercepts paste to handle clipboard images.
 
@@ -85,14 +128,42 @@ class ImageTextEdit(QTextEdit):
 
     def __init__(self, parent: Optional[QWidget] = None, image_dir: Optional[Path] = None) -> None:
         super().__init__(parent)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
         self._image_dir: Optional[Path] = image_dir
         self._image_counter: int = 0
         self._image_placeholders: dict[str, str] = {}
         self._submit_callback: Optional[object] = None
+        self._preview: Optional[_ImagePreviewPopup] = None
 
     def set_submit_callback(self, callback: object) -> None:
         """Set a custom callback for Cmd+Enter instead of dialog accept."""
         self._submit_callback = callback
+
+    def _placeholder_path_at(self, pos: QPoint) -> Optional[str]:
+        """Return the image path if the cursor is over a [Image #N] placeholder."""
+        cursor = self.cursorForPosition(pos)
+        block_text = cursor.block().text()
+        col = cursor.positionInBlock()
+        for m in _PLACEHOLDER_RE.finditer(block_text):
+            if m.start() <= col < m.end():
+                return self._image_placeholders.get(m.group())
+        return None
+
+    def mouseMoveEvent(self, event: 'QMouseEvent') -> None:
+        path = self._placeholder_path_at(event.pos())
+        if path:
+            if self._preview is None:
+                self._preview = _ImagePreviewPopup()
+            self._preview.show_for_path(path, event.globalPos())
+        elif self._preview and self._preview.isVisible():
+            self._preview.hide_preview()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: 'QEvent') -> None:
+        if self._preview and self._preview.isVisible():
+            self._preview.hide_preview()
+        super().leaveEvent(event)
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:
         """Accept Cmd+Enter / Cmd+Return as submit shortcut."""
@@ -117,7 +188,13 @@ class ImageTextEdit(QTextEdit):
                     # Deduplicate: if identical image already pasted, reuse placeholder
                     existing = self._find_duplicate(path)
                     if existing:
-                        os.unlink(path)
+                        # Only delete if it's a different file (not the same dedup hit)
+                        existing_path = self._image_placeholders.get(existing)
+                        if existing_path and os.path.realpath(path) != os.path.realpath(existing_path):
+                            try:
+                                os.unlink(path)
+                            except OSError:
+                                pass
                         cursor = self.textCursor()
                         cursor.insertText(f'{existing} ')
                         self.setTextCursor(cursor)
