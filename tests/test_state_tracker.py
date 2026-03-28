@@ -162,8 +162,8 @@ class TestOutputAccumulation:
     def test_output_accumulation_triggers_running(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
-        # Advance past input cooldown (0.5s)
-        t[0] = 1.0
+        # Advance past input cooldown (1.0s)
+        t[0] = 1.1
         # Send enough printable output to cross the 200-byte threshold
         tracker.on_output(b'A' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
@@ -224,7 +224,7 @@ class TestOutputAccumulation:
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
         # Output accumulation → running
-        t[0] = 1.0
+        t[0] = 1.1
         tracker.on_output(b'A' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
         # Signal file says idle (Claude finished)
@@ -245,7 +245,7 @@ class TestOutputAccumulation:
         should not falsely re-trigger running (within grace period)."""
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.0
+        t[0] = 1.1
         tracker.on_output(b'A' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
         # Silence timeout → idle
@@ -261,7 +261,7 @@ class TestOutputAccumulation:
         accumulation to detect running again."""
         t = [0.0]
         tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.0
+        t[0] = 1.1
         tracker.on_output(b'A' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
         # Signal idle
@@ -274,7 +274,7 @@ class TestOutputAccumulation:
         t[0] = 7.0
         tracker.on_input(b'x')
         # New output → should trigger running
-        t[0] = 8.0
+        t[0] = 8.1
         tracker.on_output(b'C' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
 
@@ -531,7 +531,7 @@ class TestInterruptedWordInOutputNotFalsePositive:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'hello')
-        t[0] = 1.0
+        t[0] = 1.1
         tracker.on_output(b'A' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
         t[0] = 2.0
@@ -677,7 +677,7 @@ class TestEscapeRace:
         tracker = make_tracker(tmp_path, t)
         # User types directly → output accumulation → running
         tracker.on_input(b'x')
-        t[0] = 1.0
+        t[0] = 1.1
         tracker.on_output(b'A' * 201)
         assert tracker.get_state(pty_alive=True) == 'running'
         # User presses Escape

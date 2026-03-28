@@ -150,8 +150,8 @@ class TestPTYOutputAccumulation:
         time.sleep(0.1)
         pty.send_input(b'\n')
 
-        # Wait past the 0.5s input cooldown
-        time.sleep(0.6)
+        # Wait past the 1.0s input cooldown
+        time.sleep(1.1)
 
         # Generate substantial output through bash
         pty.send_line('printf "%0.sA" $(seq 1 300)')
@@ -375,7 +375,7 @@ class TestPTYFalseRunningRetrigger:
         # User types → output accumulation → running
         pty.send_input(b'x')
         pty.send_input(b'\n')
-        time.sleep(0.6)
+        time.sleep(1.1)
         pty.send_line('printf "%0.sA" $(seq 1 300)')
         pty.drain_to_tracker(timeout=1.0)
         assert pty.get_state() == 'running'
@@ -394,7 +394,7 @@ class TestPTYFalseRunningRetrigger:
         # running → idle cycle
         pty.send_input(b'x')
         pty.send_input(b'\n')
-        time.sleep(0.6)
+        time.sleep(1.1)
         pty.send_line('printf "%0.sA" $(seq 1 300)')
         pty.drain_to_tracker(timeout=1.0)
         assert pty.get_state() == 'running'
@@ -406,7 +406,7 @@ class TestPTYFalseRunningRetrigger:
         time.sleep(0.1)
         pty.send_input(b'y')
         pty.send_input(b'\n')
-        time.sleep(0.6)
+        time.sleep(1.1)
 
         # New output after fresh input → should trigger running
         pty.send_line('printf "%0.sC" $(seq 1 300)')
@@ -442,7 +442,7 @@ class TestPTYEscapeRace:
         # User types → running (via accumulation)
         pty.send_input(b'h')
         pty.send_input(b'\n')
-        time.sleep(0.6)
+        time.sleep(1.1)
         pty.send_line('printf "%0.sA" $(seq 1 300)')
         pty.drain_to_tracker(timeout=1.0)
         assert pty.get_state() == 'running'
