@@ -375,6 +375,13 @@ class LeapServer:
                 return {'status': 'ok', 'message': 'Message edited'}
             return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
 
+        elif msg_type == 'reorder_queue':
+            ordered_ids = msg.get('ordered_ids', [])
+            if not ordered_ids or not isinstance(ordered_ids, list):
+                return {'status': 'error', 'message': 'ordered_ids list required'}
+            self.queue.reorder_by_ids(ordered_ids)
+            return {'status': 'ok', 'message': 'Queue reordered'}
+
         elif msg_type == 'get_queue_details':
             return {'status': 'ok', 'messages': self.queue.get_details()}
 

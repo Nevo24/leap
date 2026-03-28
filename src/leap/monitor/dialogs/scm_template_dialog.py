@@ -7,12 +7,15 @@ message is shown as a card in a scrollable area. Preset management
 (Apply & Close).
 """
 
+import sip
+
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QFrame, QHBoxLayout, QInputDialog,
     QLabel, QMessageBox, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QTimer, Qt
+from PyQt5.QtGui import QDrag, QPainter, QPixmap
 
 from leap.monitor.themes import current_theme
 from leap.monitor.ui.image_text_edit import ImageTextEdit
@@ -32,6 +35,57 @@ from leap.monitor.ui.table_helpers import (
 MAX_PRESET_NAME_LEN = 70
 
 
+class _DragHandle(QLabel):
+    """A grip label that initiates a drag on mouse-press-and-move."""
+
+    def __init__(self, parent: '_MessageCard') -> None:
+        super().__init__('\u2261', parent)  # ≡ hamburger icon
+        t = current_theme()
+        self.setFixedWidth(20)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.OpenHandCursor)
+        self.setStyleSheet(
+            f'border: none; color: {t.text_muted}; font-size: {t.font_size_base + 4}px;'
+        )
+        self.setToolTip('Drag to reorder')
+        self._drag_start: QPoint = QPoint()
+        self._card = parent
+
+    def mousePressEvent(self, event: object) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event: object) -> None:
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if (event.pos() - self._drag_start).manhattanLength() < 10:
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData('application/x-leap-preset-card', str(self._card.card_index).encode())
+        drag.setMimeData(mime)
+        # Create a small translucent pixmap of the card
+        pixmap = self._card.grab()
+        scaled = pixmap.scaledToWidth(min(pixmap.width(), 320), Qt.SmoothTransformation)
+        scaled_pixmap = QPixmap(scaled.size())
+        scaled_pixmap.fill(Qt.transparent)
+        painter = QPainter(scaled_pixmap)
+        painter.setOpacity(0.7)
+        painter.drawPixmap(0, 0, scaled)
+        painter.end()
+        drag.setPixmap(scaled_pixmap)
+        drag.exec_(Qt.MoveAction)
+        # The card (and this handle) may have been destroyed by _rebuild_cards
+        # during the blocking drag.exec_() call.
+        if not sip.isdeleted(self):
+            self.setCursor(Qt.OpenHandCursor)
+
+    def mouseReleaseEvent(self, event: object) -> None:
+        if not sip.isdeleted(self):
+            self.setCursor(Qt.OpenHandCursor)
+
+
 class _MessageCard(QFrame):
     """A single message card with a header, text editor, and remove button."""
 
@@ -44,6 +98,7 @@ class _MessageCard(QFrame):
         parent: QWidget = None,
     ) -> None:
         super().__init__(parent)
+        self.card_index: int = index
         self.setFrameShape(QFrame.StyledPanel)
         self.setObjectName('messageCard')
         t = current_theme()
@@ -57,9 +112,11 @@ class _MessageCard(QFrame):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(2)
 
-        # Header row: label + remove button
+        # Header row: drag handle + label + remove button
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
+        self._drag_handle = _DragHandle(self)
+        header.addWidget(self._drag_handle)
         self._label = QLabel(f'Message {index + 1}')
         self._label.setStyleSheet(f'border: none; font-weight: bold; font-size: {current_theme().font_size_base}px;')
         header.addWidget(self._label)
@@ -78,6 +135,7 @@ class _MessageCard(QFrame):
 
         # Text editor (supports image paste via Cmd+V)
         self._text_edit = ImageTextEdit()
+        self._text_edit.setAcceptDrops(False)  # let drag events reach the scroll viewport
         self._text_edit.setPlaceholderText(f'Message {index + 1} content... (paste images with Cmd+V)')
         self._text_edit.setPlainText(text)
         self._text_edit.setFixedHeight(80)
@@ -160,6 +218,16 @@ class PresetEditorDialog(QDialog):
         self._scroll_layout.setSpacing(4)
         self._scroll.setWidget(self._scroll_content)
         dlg_layout.addWidget(self._scroll, 1)
+
+        # Drop indicator line (hidden by default, shown between cards during drag)
+        self._drop_indicator = QWidget(self._scroll.viewport())
+        self._drop_indicator.setFixedHeight(2)
+        self._drop_indicator.setStyleSheet(
+            f'background-color: {current_theme().accent_blue};')
+        self._drop_indicator.setVisible(False)
+        self._drop_indicator.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._scroll.viewport().setAcceptDrops(True)
+        self._scroll.viewport().installEventFilter(self)
 
         # Load the currently selected preset (if any)
         selected_name = load_selected_preset_name()
@@ -271,6 +339,78 @@ class PresetEditorDialog(QDialog):
             return
         del self._messages[index]
         self._rebuild_cards()
+
+    # -- Drag-and-drop (event filter on scroll viewport) ---------------------
+
+    def _drop_target_index(self, viewport_y: int) -> int:
+        """Return the card index where a drop at viewport_y should insert BEFORE."""
+        for card in self._cards:
+            mapped = self._scroll.viewport().mapFromGlobal(
+                card.mapToGlobal(QPoint(0, 0)))
+            mid = mapped.y() + card.height() // 2
+            if viewport_y < mid:
+                return card.card_index
+        # Past the last card → append at the end
+        return len(self._cards)
+
+    def _show_drop_indicator(self, target_index: int) -> None:
+        """Position the 2px indicator line above the target card."""
+        target_y = 0
+        if target_index < len(self._cards):
+            card = self._cards[target_index]
+            mapped = self._scroll.viewport().mapFromGlobal(
+                card.mapToGlobal(QPoint(0, 0)))
+            target_y = mapped.y()
+        elif self._cards:
+            # After the last card
+            card = self._cards[-1]
+            mapped = self._scroll.viewport().mapFromGlobal(
+                card.mapToGlobal(QPoint(0, 0)))
+            target_y = mapped.y() + card.height()
+        self._drop_indicator.setGeometry(
+            0, target_y - 1, self._scroll.viewport().width(), 2)
+        self._drop_indicator.setVisible(True)
+        self._drop_indicator.raise_()
+
+    _MIME_TYPE = 'application/x-leap-preset-card'
+
+    def eventFilter(self, obj: object, event: object) -> bool:
+        """Handle drag events on the scroll viewport to show drop indicator."""
+        if obj is not self._scroll.viewport():
+            return super().eventFilter(obj, event)
+
+        if event.type() == QEvent.DragEnter:
+            if event.mimeData().hasFormat(self._MIME_TYPE):
+                event.acceptProposedAction()
+                return True
+
+        elif event.type() == QEvent.DragMove:
+            if event.mimeData().hasFormat(self._MIME_TYPE):
+                event.acceptProposedAction()
+                target = self._drop_target_index(event.pos().y())
+                self._show_drop_indicator(target)
+                return True
+
+        elif event.type() == QEvent.DragLeave:
+            self._drop_indicator.setVisible(False)
+            return True
+
+        elif event.type() == QEvent.Drop:
+            self._drop_indicator.setVisible(False)
+            if event.mimeData().hasFormat(self._MIME_TYPE):
+                event.acceptProposedAction()
+                src = int(bytes(event.mimeData().data(self._MIME_TYPE)).decode())
+                dst = self._drop_target_index(event.pos().y())
+                # Adjust destination when moving down (item removed before insert)
+                if dst > src:
+                    dst -= 1
+                if src != dst and 0 <= src < len(self._messages):
+                    msg = self._messages.pop(src)
+                    self._messages.insert(dst, msg)
+                    QTimer.singleShot(0, self._rebuild_cards)
+                return True
+
+        return super().eventFilter(obj, event)
 
     def _on_card_text_changed(self, index: int, text: str) -> None:
         """Update the internal message list when a card's text changes."""

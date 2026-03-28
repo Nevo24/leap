@@ -238,6 +238,35 @@ class QueueManager:
                 return dict(self.queue[index])  # Return a copy
             return None
 
+    def reorder_by_ids(self, ordered_ids: list[str]) -> bool:
+        """
+        Reorder the queue to match the given ID order.
+
+        IDs not found in the queue are silently skipped. Queue entries
+        whose IDs are not in ``ordered_ids`` are appended at the end.
+
+        Args:
+            ordered_ids: Message IDs in the desired order.
+
+        Returns:
+            True if the queue was reordered successfully.
+        """
+        with self._lock:
+            by_id = {entry['id']: entry for entry in self.queue}
+            new_order: list[dict[str, str]] = []
+            seen: set[str] = set()
+            for mid in ordered_ids:
+                if mid in by_id and mid not in seen:
+                    new_order.append(by_id[mid])
+                    seen.add(mid)
+            # Append any entries not mentioned (safety net)
+            for entry in self.queue:
+                if entry['id'] not in seen:
+                    new_order.append(entry)
+            self.queue = deque(new_order)
+            self.save()
+            return True
+
     def edit_message_by_id(self, msg_id: str, new_message: str) -> bool:
         """
         Edit a message by its ID.

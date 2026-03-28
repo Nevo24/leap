@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QSplitter, QVBoxLayout,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, Qt, QTimer
 
 from leap.monitor.ui.image_text_edit import ImageTextEdit
 
@@ -31,6 +31,8 @@ class QueueEditDialog(QDialog):
         self._messages: list[dict[str, str]] = []
         self._current_index: int = -1
         self._modified: bool = False
+        self._order_modified: bool = False  # True after drag reorder, until saved
+        self._reordering: bool = False  # True from drop until reorder sync completes
 
         self.setWindowTitle(f'Edit Queue — {tag}')
         self.resize(600, 450)
@@ -47,9 +49,14 @@ class QueueEditDialog(QDialog):
 
         splitter = QSplitter(Qt.Vertical)
 
-        # Top: message list
+        # Top: message list (drag-and-drop to reorder)
         self._list = QListWidget()
+        self._list.setDragDropMode(QListWidget.InternalMove)
+        self._list.setDefaultDropAction(Qt.MoveAction)
         self._list.currentRowChanged.connect(self._on_row_changed)
+        # InternalMove uses takeItem/insertItem (not moveRows), so rowsMoved
+        # never fires.  Detect drops via an event filter on the viewport.
+        self._list.viewport().installEventFilter(self)
         splitter.addWidget(self._list)
 
         # Bottom: editor (supports image paste via Cmd+V)
@@ -123,12 +130,115 @@ class QueueEditDialog(QDialog):
         if self._messages:
             self._list.setCurrentRow(0)
 
+    # -- Drag-and-drop reorder ------------------------------------------------
+
+    def eventFilter(self, obj: object, event: object) -> bool:
+        """Detect drop events on the list viewport to trigger reorder sync."""
+        if obj is self._list.viewport() and event.type() == QEvent.Drop:
+            # Set flag BEFORE the default handler runs, so _on_row_changed
+            # (fired during dropEvent) is suppressed.
+            self._reordering = True
+            # Schedule reorder sync for after dropEvent finishes.
+            QTimer.singleShot(0, self._sync_after_reorder)
+        return super().eventFilter(obj, event)
+
+    def _sync_after_reorder(self) -> None:
+        """Sync _messages and server with the list's new visual order."""
+        try:
+            self._sync_after_reorder_inner()
+        finally:
+            self._reordering = False
+            # Error paths may have rebuilt the list while _on_row_changed was
+            # suppressed, leaving the editor stale.  Always resync.
+            self._resync_editor()
+
+    def _sync_after_reorder_inner(self) -> None:
+        """Inner reorder sync (separated so the finally always clears the flag)."""
+        # Save any pending edit to the server before reordering
+        if self._modified and self._current_index >= 0:
+            if not self._do_save(self._current_index):
+                # Save failed (message was sent/removed) — _do_save already
+                # refreshed the list, so abort the reorder.
+                return
+
+        # Rebuild _messages from the list widget's current visual order.
+        # Each item's UserRole holds its original index in _messages.
+        new_messages: list[dict[str, str]] = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            old_index = item.data(Qt.UserRole)
+            if old_index is None or old_index >= len(self._messages):
+                self._order_modified = False
+                self._load_queue()
+                return
+            new_messages.append(self._messages[old_index])
+
+        # Verify the queue hasn't changed server-side (messages sent during edit)
+        response = send_socket_request(
+            self._socket_path, {'type': 'get_queue_details'},
+        )
+        if response and response.get('status') == 'ok':
+            server_ids = {m['id'] for m in response.get('messages', [])}
+            local_ids = {m['id'] for m in new_messages}
+            if server_ids != local_ids:
+                QMessageBox.information(
+                    self, 'Queue Changed',
+                    'The queue was modified while you were editing.\n'
+                    'The list has been refreshed.',
+                )
+                self._current_index = -1
+                self._modified = False
+                self._order_modified = False
+                self._save_btn.setEnabled(False)
+                self._editor.setEnabled(False)
+                self._editor.clear()
+                self._messages = response.get('messages', [])
+                self._populate_list()
+                return
+
+        self._messages = new_messages
+
+        # Update UserRole data and display labels to match the new order
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            item.setData(Qt.UserRole, i)
+            preview = self._messages[i]['msg'].split('\n', 1)[0]
+            if len(preview) > 80:
+                preview = preview[:77] + '...'
+            item.setText(f'[{i + 1}] {preview}')
+
+        # Mark order as changed — committed to server when Save is clicked.
+        # Editor resync is handled by _resync_editor in the finally block.
+        self._order_modified = True
+
+    def _resync_editor(self) -> None:
+        """Ensure editor matches the currently selected list row."""
+        row = self._list.currentRow()
+        if 0 <= row < len(self._messages):
+            self._current_index = row
+            self._editor.setEnabled(True)
+            self._editor.reset_images()
+            self._editor.blockSignals(True)
+            self._editor.setPlainText(self._messages[row]['msg'])
+            self._editor.blockSignals(False)
+            self._modified = False
+            self._save_btn.setEnabled(self._order_modified)
+        else:
+            self._current_index = -1
+            self._modified = False
+            self._order_modified = False
+            self._save_btn.setEnabled(False)
+            self._editor.setEnabled(False)
+            self._editor.clear()
+
+    # -- Row selection --------------------------------------------------------
+
     def _on_row_changed(self, row: int) -> None:
         """Handle list selection change."""
-        if row < 0:
+        if row < 0 or self._reordering:
             return
 
-        # Prompt for unsaved changes on the previous item
+        # Prompt for unsaved text changes on the previous item
         if self._modified and self._current_index >= 0:
             result = self._prompt_unsaved()
             if result == QMessageBox.Cancel:
@@ -152,7 +262,7 @@ class QueueEditDialog(QDialog):
         self._editor.setPlainText(self._messages[row]['msg'])
         self._editor.blockSignals(False)
         self._modified = False
-        self._save_btn.setEnabled(False)
+        self._save_btn.setEnabled(self._order_modified)
 
     def _on_text_changed(self) -> None:
         """Mark the current message as modified."""
@@ -162,10 +272,11 @@ class QueueEditDialog(QDialog):
         self._save_btn.setEnabled(True)
 
     def _save_current(self) -> None:
-        """Save the currently edited message."""
-        if self._current_index < 0:
-            return
-        self._do_save(self._current_index)
+        """Save the currently edited message and/or pending reorder."""
+        if self._current_index >= 0 and self._modified:
+            if not self._do_save(self._current_index):
+                return
+        self._commit_reorder()
 
     def _do_save(self, index: int) -> bool:
         """Send edit_message to the server. Returns True on success."""
@@ -203,7 +314,7 @@ class QueueEditDialog(QDialog):
         # Success — update local state
         self._messages[index]['msg'] = new_text
         self._modified = False
-        self._save_btn.setEnabled(False)
+        self._save_btn.setEnabled(self._order_modified)
 
         # Update preview in the list
         preview = new_text.split('\n', 1)[0]
@@ -213,6 +324,28 @@ class QueueEditDialog(QDialog):
         if item:
             item.setText(f'[{index + 1}] {preview}')
         return True
+
+    def _commit_reorder(self) -> None:
+        """Send the pending reorder to the server (if any)."""
+        if not self._order_modified:
+            return
+        ordered_ids = [entry['id'] for entry in self._messages]
+        response = send_socket_request(
+            self._socket_path, {'type': 'reorder_queue', 'ordered_ids': ordered_ids},
+        )
+        if response and response.get('status') == 'ok':
+            self._order_modified = False
+            if not self._modified:
+                self._save_btn.setEnabled(False)
+        else:
+            QMessageBox.warning(
+                self, 'Save Failed',
+                'Could not save the new message order (server offline).',
+            )
+
+    def _has_unsaved_changes(self) -> bool:
+        """Return True if there are any unsaved changes (text or order)."""
+        return self._modified or self._order_modified
 
     def _prompt_unsaved(self) -> int:
         """Ask whether to save unsaved changes. Returns QMessageBox button."""
@@ -225,12 +358,14 @@ class QueueEditDialog(QDialog):
 
     def closeEvent(self, event: object) -> None:
         """Prompt for unsaved changes before closing."""
-        if self._modified and self._current_index >= 0:
+        if self._has_unsaved_changes() and self._current_index >= 0:
             result = self._prompt_unsaved()
             if result == QMessageBox.Cancel:
                 event.ignore()
                 return
             if result == QMessageBox.Yes:
-                self._do_save(self._current_index)
+                if self._modified:
+                    self._do_save(self._current_index)
+                self._commit_reorder()
         save_dialog_geometry('queue_edit', self.width(), self.height())
         event.accept()
