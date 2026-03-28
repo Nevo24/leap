@@ -9,6 +9,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STORAGE_DIR="$PROJECT_DIR/.storage"
 SOCKET_DIR="$STORAGE_DIR/sockets"
 QUEUE_DIR="$STORAGE_DIR/queues"
+STATE_LOG_DIR="$STORAGE_DIR/state_logs"
 
 echo "🧹 Cleaning up dead Leap sessions..."
 echo ""
@@ -35,6 +36,7 @@ if [ -d "$SOCKET_DIR" ]; then
         rm -f "$SOCKET_DIR/$tag.signal" 2>/dev/null
         rm -f "$SOCKET_DIR/$tag.client.lock" 2>/dev/null
         rmdir "$SOCKET_DIR/$tag.server.lock" 2>/dev/null
+        rm -f "$STATE_LOG_DIR/$tag.log" 2>/dev/null
         ((removed_count++))
     done
 fi

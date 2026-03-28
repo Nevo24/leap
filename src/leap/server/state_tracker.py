@@ -34,18 +34,22 @@ from leap.utils.constants import (
     RESIZE_SUPPRESS_WINDOW,
     RESUME_GRACE_PERIOD,
     STATE_PROTECTION_WINDOW,
-    STORAGE_DIR,
+    STATE_LOG_DIR,
     WAITING_STATE_TIMEOUT,
 )
 
 _log = logging.getLogger('leap.state')
 
 
-def _setup_debug_log() -> None:
-    """Write state tracker debug messages to .storage/state_debug.log."""
-    if _log.handlers:
-        return
-    log_path = STORAGE_DIR / 'state_debug.log'
+def _setup_debug_log(tag: str) -> None:
+    """Set up per-session debug log at .storage/state_logs/<tag>.log."""
+    # Remove any stale handlers (e.g. from a previous session in the
+    # same process — shouldn't happen, but be safe).
+    for h in _log.handlers[:]:
+        _log.removeHandler(h)
+        h.close()
+    STATE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = STATE_LOG_DIR / f'{tag}.log'
     handler = logging.FileHandler(str(log_path), mode='w')
     handler.setFormatter(logging.Formatter(
         '%(asctime)s.%(msecs)03d %(message)s', datefmt='%H:%M:%S',
@@ -173,7 +177,7 @@ class CLIStateTracker:
         except OSError:
             pass
 
-        _setup_debug_log()
+        _setup_debug_log(signal_file.stem)
         _log.debug(
             'INIT state=idle signal_file=%s provider=%s',
             signal_file, self._provider.name,

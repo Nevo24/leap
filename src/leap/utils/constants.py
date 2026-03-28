@@ -72,6 +72,9 @@ NOTE_IMAGES_DIR: Final[Path] = STORAGE_DIR / "note_images"
 # Icon cache directory (ephemeral — wiped on each monitor launch)
 ICON_CACHE_DIR: Final[Path] = STORAGE_DIR / "icon_cache"
 
+# State debug logs directory (one log per session, overwritten on server start)
+STATE_LOG_DIR: Final[Path] = STORAGE_DIR / "state_logs"
+
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
@@ -141,6 +144,7 @@ def ensure_storage_dirs() -> None:
     NOTE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     SLACK_DIR.mkdir(parents=True, exist_ok=True)
     ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def atomic_json_write(path: Path, data: Any, **json_kwargs: Any) -> None:
