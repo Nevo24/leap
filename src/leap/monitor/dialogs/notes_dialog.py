@@ -1511,7 +1511,7 @@ class NotesDialog(QDialog):
 
         # Bottom bar with hint + Close button
         bottom_row = QHBoxLayout()
-        hint = QLabel('Cmd+N: New note  |  Cmd+click: Multi-select')
+        hint = QLabel('Cmd+N: New note  |  Cmd+click: Multi-select  |  Delete/⌫: Delete selected')
         hint.setStyleSheet(
             f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;'
         )
@@ -1848,12 +1848,17 @@ class NotesDialog(QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
-        """Handle Cmd+S (save) and Cmd+N (new note)."""
+        """Handle Cmd+S (save), Cmd+N (new note), Delete/Backspace (delete note)."""
         if event.modifiers() & Qt.ControlModifier:
             if event.key() == Qt.Key_S:
                 self._save_current()
                 return
             if event.key() == Qt.Key_N:
                 self._on_new()
+                return
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not event.modifiers():
+            # Only delete when the note list has focus (not while editing)
+            if self._list.hasFocus() and self._list.currentItem():
+                self._on_delete()
                 return
         super().keyPressEvent(event)
