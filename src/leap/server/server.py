@@ -762,6 +762,7 @@ class LeapServer:
         """Handle terminal resize signal."""
         try:
             cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            self.state.on_resize()
             self.pty.resize(rows, cols)
         except Exception:
             pass

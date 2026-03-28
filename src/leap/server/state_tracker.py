@@ -31,6 +31,7 @@ from leap.utils.constants import (
     INTERRUPT_DETECT_WINDOW,
     OUTPUT_GAP_RESET,
     OUTPUT_SILENCE_TIMEOUT,
+    RESIZE_SUPPRESS_WINDOW,
     RESUME_GRACE_PERIOD,
     STATE_PROTECTION_WINDOW,
     STORAGE_DIR,
@@ -158,6 +159,10 @@ class CLIStateTracker:
         # interrupted cycle.  Cleared when the pattern disappears from
         # the buffer (old text scrolled out of view).
         self._suppress_stale_interrupt: bool = False
+        # Timestamp of the last terminal resize.  TUI redraws after a
+        # resize produce large amounts of text content that would
+        # otherwise false-trigger idle→running.
+        self._last_resize_time: float = -RESIZE_SUPPRESS_WINDOW
 
         # Delete any stale signal file from a previous server (e.g. after
         # SIGKILL).  Since get_state() now reads the signal file even while
@@ -575,6 +580,16 @@ class CLIStateTracker:
         except OSError:
             pass
 
+    def on_resize(self) -> None:
+        """Called when the terminal is resized.
+
+        Resets the idle output accumulator and records the resize time
+        so the TUI redraw burst doesn't false-trigger idle→running.
+        """
+        self._last_resize_time = self._clock()
+        self._idle_output_acc = 0
+        _log.debug('ON_RESIZE suppressing idle→running for %.1fs', RESIZE_SUPPRESS_WINDOW)
+
     def on_output(self, data: bytes) -> None:
         """Called when PTY output is received.
 
@@ -711,6 +726,11 @@ class CLIStateTracker:
             # accumulating.
             if now - self._idle_since < AUTO_RESUME_GRACE:
                 return
+        # Suppress output accumulation during a terminal resize — the
+        # TUI redraw burst contains real text (conversation history)
+        # that would otherwise false-trigger idle→running.
+        if now - self._last_resize_time < RESIZE_SUPPRESS_WINDOW:
+            return
         stripped = self._ANSI_RE.sub(b'', data).strip()
         if stripped:
             if now - prev_output_time > OUTPUT_GAP_RESET:
