@@ -176,6 +176,10 @@ class LeapServer:
         # 'csi' = \x1b[ + optional params at end (need final byte 0x40-0x7e).
         self._partial_escape: Optional[str] = None
         self._user_has_typed: bool = False  # True after first Enter in the terminal
+        # Previous state seen by _input_filter — used to clear stale bytes
+        # when transitioning from running to idle (prevents keyboard-layout
+        # artefacts from leaking into the tracked "last message").
+        self._prev_filter_state: Optional[CLIState] = None
         # Queue-from-server: "^" prefix capture mode.
         # When "^" is the first char on a line we enter capture mode
         # and swallow all subsequent input until Enter → queue.
@@ -812,7 +816,16 @@ class LeapServer:
         # (e.g. false idle→running on Enter for Ratatui CLIs, or false
         # resume from waiting states due to _last_input_time updates).
 
-        in_prompt = self.state.current_state in PROMPT_STATES
+        current_state = self.state.current_state
+        in_prompt = current_state in PROMPT_STATES
+
+        # Discard stale keystrokes when exiting "running" state.
+        # Bytes typed while the CLI was busy (e.g. accidental keystrokes
+        # or keyboard-layout artefacts) should not prefix the next message.
+        if (self._prev_filter_state == CLIState.RUNNING
+                and current_state != CLIState.RUNNING):
+            self._terminal_input_buf.clear()
+        self._prev_filter_state = current_state
 
         out = bytearray()
         i = 0
@@ -933,7 +946,11 @@ class LeapServer:
                     self._terminal_input_buf.clear()
                 elif b == 0x7f:  # Backspace
                     if self._queue_capture_buf:
-                        self._queue_capture_buf.pop()
+                        while (self._queue_capture_buf
+                               and self._queue_capture_buf[-1] & 0xC0 == 0x80):
+                            self._queue_capture_buf.pop()
+                        if self._queue_capture_buf:
+                            self._queue_capture_buf.pop()
                         self._capture_display(
                             self._queue_capture_buf.decode(
                                 'utf-8', errors='replace'))
@@ -984,7 +1001,16 @@ class LeapServer:
                 out.append(b)
             elif b == 0x7f:  # Backspace
                 if self._terminal_input_buf:
-                    self._terminal_input_buf.pop()
+                    # Pop a full UTF-8 character (1–4 bytes), not just
+                    # one byte.  The TUI deletes one character per
+                    # backspace, so the buffer must stay in sync.
+                    # First strip continuation bytes (10xxxxxx), then
+                    # the lead byte.
+                    while (self._terminal_input_buf
+                           and self._terminal_input_buf[-1] & 0xC0 == 0x80):
+                        self._terminal_input_buf.pop()
+                    if self._terminal_input_buf:
+                        self._terminal_input_buf.pop()
                 out.append(b)
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
