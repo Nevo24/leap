@@ -1430,6 +1430,7 @@ class NotesDialog(QDialog):
         left_layout.addWidget(QLabel('Notes'))
 
         self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.ExtendedSelection)
         t = current_theme()
         self._list.setStyleSheet(
             f'QListWidget::item:selected {{'
@@ -1506,11 +1507,18 @@ class NotesDialog(QDialog):
 
         root_layout.addWidget(splitter, 1)
 
-        # Bottom bar with Close button
-        from PyQt5.QtWidgets import QDialogButtonBox
-        bottom_btns = QDialogButtonBox(QDialogButtonBox.Close)
-        bottom_btns.rejected.connect(self.close)
-        root_layout.addWidget(bottom_btns)
+        # Bottom bar with hint + Close button
+        bottom_row = QHBoxLayout()
+        hint = QLabel('Cmd+N: New note  |  Cmd+click: Multi-select')
+        hint.setStyleSheet(
+            f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;'
+        )
+        bottom_row.addWidget(hint)
+        bottom_row.addStretch()
+        close_btn = QPushButton('Close')
+        close_btn.clicked.connect(self.close)
+        bottom_row.addWidget(close_btn)
+        root_layout.addLayout(bottom_row)
 
         # Populate list and auto-select first note
         self._refresh_list()
@@ -1735,42 +1743,67 @@ class NotesDialog(QDialog):
         self._on_item_changed(self._list.currentItem(), None)
 
     def _on_delete(self) -> None:
-        """Delete the selected note."""
-        if not self._current_name:
+        """Delete the selected note(s)."""
+        selected = self._list.selectedItems()
+        if not selected:
             return
+        names = [item.data(Qt.UserRole) for item in selected if item.data(Qt.UserRole)]
+        if not names:
+            return
+        if len(names) == 1:
+            msg = f"Delete note '{names[0]}'?"
+        else:
+            msg = f"Delete {len(names)} notes?"
         reply = QMessageBox.question(
-            self, 'Delete Note',
-            f"Delete note '{self._current_name}'?",
+            self, 'Delete Note', msg,
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        # Collect image refs from both the live editor and on-disk text,
-        # in case the note hasn't been saved since images were pasted.
-        if self._current_mode() == self._MODE_CHECKLIST:
-            live_text = _serialize_checklist(self._checklist.get_items())
-        else:
-            live_text = self._editor.get_note_content()
-        path = _note_path(self._current_name)
-        try:
-            disk_text = path.read_text(encoding='utf-8') if path.exists() else ''
-        except OSError:
-            disk_text = ''
-        # Union of editor, disk, and pasted-this-session to catch all cases
-        # (including images pasted then removed from editor before save)
-        pasted = self._editor.take_pasted_images() | self._checklist.take_pasted_images()
-        all_refs = _collect_image_refs(live_text) | _collect_image_refs(disk_text) | pasted
-        other_refs = _all_note_image_refs(exclude_name=self._current_name)
-        for filename in all_refs - other_refs:
+
+        # For the currently displayed note, also collect live editor/pasted images
+        pasted: set[str] = set()
+        if self._current_name and self._current_name in names:
+            if self._current_mode() == self._MODE_CHECKLIST:
+                live_text = _serialize_checklist(self._checklist.get_items())
+            else:
+                live_text = self._editor.get_note_content()
+            pasted = self._editor.take_pasted_images() | self._checklist.take_pasted_images()
+            pasted |= _collect_image_refs(live_text)
+
+        # Collect all image refs from the notes being deleted
+        all_refs: set[str] = set(pasted)
+        for name in names:
+            path = _note_path(name)
+            try:
+                if path.exists():
+                    all_refs |= _collect_image_refs(path.read_text(encoding='utf-8'))
+            except OSError:
+                pass
+
+        # Only delete images not referenced by any note that is NOT being deleted
+        surviving_refs: set[str] = set()
+        NOTES_DIR.mkdir(parents=True, exist_ok=True)
+        for p in NOTES_DIR.glob('*.txt'):
+            if p.stem not in names:
+                try:
+                    surviving_refs |= _collect_image_refs(p.read_text(encoding='utf-8'))
+                except OSError:
+                    pass
+        for filename in all_refs - surviving_refs:
             try:
                 (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
             except OSError:
                 pass
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        _remove_note_meta(self._current_name)
+
+        # Delete note files and metadata
+        for name in names:
+            try:
+                _note_path(name).unlink(missing_ok=True)
+            except OSError:
+                pass
+            _remove_note_meta(name)
+
         self._current_name = None
         self._saved_text = ''
         self._refresh_list()
@@ -1813,8 +1846,12 @@ class NotesDialog(QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
-        """Save on Cmd+S / Ctrl+S."""
-        if event.key() == Qt.Key_S and event.modifiers() & Qt.ControlModifier:
-            self._save_current()
-            return
+        """Handle Cmd+S (save) and Cmd+N (new note)."""
+        if event.modifiers() & Qt.ControlModifier:
+            if event.key() == Qt.Key_S:
+                self._save_current()
+                return
+            if event.key() == Qt.Key_N:
+                self._on_new()
+                return
         super().keyPressEvent(event)
