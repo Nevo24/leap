@@ -488,31 +488,50 @@ class CLIStateTracker:
 
     @staticmethod
     def _is_csi_u_interrupt(data: bytes) -> bool:
-        """Check if a CSI sequence is a kitty-protocol Ctrl+C or Escape.
+        """Check if a CSI sequence encodes Ctrl+C or Escape.
 
-        CSI u format: ``\\x1b[<codepoint>;<modifiers>u``
+        Kitty CSI u: ``\\x1b[<codepoint>;<modifiers>u``
+        Legacy xterm: ``\\x1b[27;<modifier>;<keycode>~``
+
         Ctrl+C: codepoint 3 (raw) or 99 with Ctrl modifier (bit 4).
-        Escape: codepoint 27.
+        Escape: codepoint 27 (standalone).
         """
-        if len(data) < 4 or data[-1] != 0x75:  # must end with 'u'
+        if len(data) < 4:
             return False
-        # Extract the parameter string between '[' and 'u'.
-        # Sub-parameters use ':' (e.g. 99;5:3u for key release).
-        # Split on ':' before parsing ints.
+        final = data[-1]
         params = data[2:-1]
-        # First parameter is the codepoint (before first ';')
-        semi = params.find(0x3b)  # ';'
-        codepoint_raw = params[:semi] if semi >= 0 else params
+        parts = params.split(b';')
+
+        # Legacy xterm format: \x1b[27;<mod>;<keycode>~
+        if final == 0x7e and len(parts) == 3:  # ends with '~'
+            try:
+                prefix = int(parts[0].split(b':')[0])
+                mod = int(parts[1].split(b':')[0])
+                keycode = int(parts[2].split(b':')[0])
+            except ValueError:
+                return False
+            if prefix == 27:
+                # Ctrl+'c' (keycode 99) or raw Ctrl+C (keycode 3)
+                if keycode in (3, 99) and (mod - 1) & 0x04 != 0:
+                    return True
+                # Standalone Escape (keycode 27, any modifier)
+                if keycode == 27:
+                    return True
+            return False
+
+        # Kitty CSI u format: \x1b[<codepoint>;<modifiers>u
+        if final != 0x75:  # must end with 'u'
+            return False
+        codepoint_raw = parts[0] if parts else b''
         try:
             codepoint = int(codepoint_raw.split(b':')[0])
         except ValueError:
             return False
         if codepoint in (3, 27):  # Ctrl+C or Escape
             return True
-        if codepoint == 99 and semi >= 0:  # 'c' with modifiers
+        if codepoint == 99 and len(parts) >= 2:  # 'c' with modifiers
             try:
-                mod_raw = params[semi + 1:].split(b';')[0]
-                modifiers = int(mod_raw.split(b':')[0])
+                modifiers = int(parts[1].split(b':')[0])
             except ValueError:
                 return False
             return (modifiers - 1) & 0x04 != 0  # Ctrl bit set
@@ -562,9 +581,9 @@ class CLIStateTracker:
                         )
                     else:
                         _log.debug(
-                            'ON_INPUT filtered CSI seq len=%d in running '
-                            '(not updating _last_input_time)',
-                            len(data),
+                            'ON_INPUT filtered CSI seq len=%d data=%r '
+                            'in running (not updating _last_input_time)',
+                            len(data), data,
                         )
                 else:
                     _log.debug(
