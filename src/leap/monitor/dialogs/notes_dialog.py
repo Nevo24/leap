@@ -66,24 +66,105 @@ def _collect_image_refs(text: str) -> set[str]:
     return set(_IMAGE_MARKER_RE.findall(text))
 
 
-def _cleanup_orphaned_images(current_text: str, previous_text: str) -> None:
-    """Delete images from note_images/ that were in previous but not in current."""
+def _all_note_image_refs(exclude_name: Optional[str] = None) -> set[str]:
+    """Scan all notes on disk and return the union of referenced image filenames.
+
+    Args:
+        exclude_name: Note name to skip (e.g. the note being saved/deleted).
+    """
+    refs: set[str] = set()
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    for p in NOTES_DIR.glob('*.txt'):
+        if exclude_name and p.stem == exclude_name:
+            continue
+        try:
+            refs |= _collect_image_refs(p.read_text(encoding='utf-8'))
+        except OSError:
+            pass
+    return refs
+
+
+def _cleanup_orphaned_images(
+    current_text: str, previous_text: str, note_name: str,
+    pasted: Optional[set[str]] = None,
+) -> None:
+    """Delete images removed from a note, unless still used by another note.
+
+    *pasted* includes images saved to disk this session that may not appear
+    in *previous_text* (e.g. pasted then deleted before save).
+    """
     old_refs = _collect_image_refs(previous_text)
+    if pasted:
+        old_refs |= pasted
     new_refs = _collect_image_refs(current_text)
-    for filename in old_refs - new_refs:
+    candidates = old_refs - new_refs
+    if not candidates:
+        return
+    # Check all other notes before deleting
+    other_refs = _all_note_image_refs(exclude_name=note_name)
+    for filename in candidates - other_refs:
         try:
             (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
         except OSError:
             pass
 
 
-def _delete_note_images(text: str) -> None:
-    """Delete all images referenced by a note's text."""
-    for filename in _collect_image_refs(text):
+def _delete_note_images(text: str, note_name: str) -> None:
+    """Delete images referenced by a note, unless still used by another note."""
+    candidates = _collect_image_refs(text)
+    if not candidates:
+        return
+    other_refs = _all_note_image_refs(exclude_name=note_name)
+    for filename in candidates - other_refs:
         try:
             (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
         except OSError:
             pass
+
+
+_NOTE_IMAGE_PREVIEW_MAX = 600
+
+
+class _ImagePreviewPopup(QLabel):
+    """Frameless popup that shows a larger version of a note image."""
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setStyleSheet('background: transparent; padding: 0px;')
+        self._current_name: Optional[str] = None
+
+    def show_for_image(self, name: str, global_pos: QPoint) -> None:
+        """Show the popup near *global_pos* for the image *name*."""
+        if name == self._current_name and self.isVisible():
+            return
+        path = str(NOTE_IMAGES_DIR / name)
+        px = QPixmap(path)
+        if px.isNull():
+            self.hide()
+            return
+        if px.width() > _NOTE_IMAGE_PREVIEW_MAX or px.height() > _NOTE_IMAGE_PREVIEW_MAX:
+            px = px.scaled(
+                _NOTE_IMAGE_PREVIEW_MAX, _NOTE_IMAGE_PREVIEW_MAX,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            )
+        self._current_name = name
+        self.setPixmap(px)
+        self.adjustSize()
+        # Position below and to the right of cursor, clamped to screen
+        screen = QApplication.screenAt(global_pos)
+        if screen:
+            sg = screen.availableGeometry()
+            x = min(global_pos.x() + 12, sg.right() - self.width())
+            y = min(global_pos.y() + 12, sg.bottom() - self.height())
+            self.move(max(x, sg.left()), max(y, sg.top()))
+        else:
+            self.move(global_pos.x() + 12, global_pos.y() + 12)
+        self.show()
+
+    def hide_preview(self) -> None:
+        self._current_name = None
+        self.hide()
 
 
 class _NoteTextEdit(QTextEdit):
@@ -96,6 +177,40 @@ class _NoteTextEdit(QTextEdit):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self.setMouseTracking(True)
+        self._preview: Optional[_ImagePreviewPopup] = None
+        self._pasted_images: set[str] = set()  # all images pasted in this session
+
+    def _image_name_at(self, pos: QPoint) -> Optional[str]:
+        """Return the image filename at viewport position, or None."""
+        cursor = self.cursorForPosition(pos)
+        fmt = cursor.charFormat()
+        if fmt.isImageFormat():
+            name = fmt.toImageFormat().name()
+            if name and _IMAGE_MARKER_RE.match(f'![image]({name})'):
+                return name
+        return None
+
+    def mouseMoveEvent(self, event: 'QMouseEvent') -> None:
+        name = self._image_name_at(event.pos())
+        if name:
+            if self._preview is None:
+                self._preview = _ImagePreviewPopup()
+            self._preview.show_for_image(name, event.globalPos())
+        elif self._preview and self._preview.isVisible():
+            self._preview.hide_preview()
+        super().mouseMoveEvent(event)
+
+    def take_pasted_images(self) -> set[str]:
+        """Return and clear the set of images pasted since last call."""
+        imgs = self._pasted_images
+        self._pasted_images = set()
+        return imgs
+
+    def leaveEvent(self, event: 'QEvent') -> None:
+        if self._preview and self._preview.isVisible():
+            self._preview.hide_preview()
+        super().leaveEvent(event)
 
     def insertFromMimeData(self, source: QMimeData) -> None:
         """Override paste to handle clipboard images."""
@@ -104,6 +219,7 @@ class _NoteTextEdit(QTextEdit):
             if isinstance(image, QImage) and not image.isNull():
                 filename = _save_note_image(image)
                 if filename:
+                    self._pasted_images.add(filename)
                     self._insert_image(filename)
                     return
         super().insertFromMimeData(source)
@@ -1393,10 +1509,28 @@ class NotesDialog(QDialog):
         )
         if reply != QMessageBox.Yes:
             return
+        # Collect image refs from both the live editor and on-disk text,
+        # in case the note hasn't been saved since images were pasted.
+        if self._current_mode() == self._MODE_CHECKLIST:
+            live_text = _serialize_checklist(self._checklist.get_items())
+        else:
+            live_text = self._editor.get_note_content()
+        path = _note_path(self._current_name)
         try:
-            path = _note_path(self._current_name)
-            if path.exists():
-                _delete_note_images(path.read_text(encoding='utf-8'))
+            disk_text = path.read_text(encoding='utf-8') if path.exists() else ''
+        except OSError:
+            disk_text = ''
+        # Union of editor, disk, and pasted-this-session to catch all cases
+        # (including images pasted then removed from editor before save)
+        pasted = self._editor.take_pasted_images()
+        all_refs = _collect_image_refs(live_text) | _collect_image_refs(disk_text) | pasted
+        other_refs = _all_note_image_refs(exclude_name=self._current_name)
+        for filename in all_refs - other_refs:
+            try:
+                (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
@@ -1423,7 +1557,8 @@ class NotesDialog(QDialog):
             try:
                 NOTES_DIR.mkdir(parents=True, exist_ok=True)
                 _note_path(self._current_name).write_text(text, encoding='utf-8')
-                _cleanup_orphaned_images(text, self._saved_text)
+                pasted = self._editor.take_pasted_images()
+                _cleanup_orphaned_images(text, self._saved_text, self._current_name, pasted)
                 self._saved_text = text
                 self._update_timestamp()
             except OSError:
