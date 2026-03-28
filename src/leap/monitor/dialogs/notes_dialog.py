@@ -1451,7 +1451,7 @@ class NotesDialog(QDialog):
         # ── Left panel: note list + buttons ──
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(0, 0, 6, 0)
         left_layout.setSpacing(4)
 
         left_layout.addWidget(QLabel('Notes'))
@@ -1489,12 +1489,14 @@ class NotesDialog(QDialog):
         btn_row.addWidget(delete_btn)
         left_layout.addLayout(btn_row)
 
+        left.setMinimumWidth(160)
         splitter.addWidget(left)
+        splitter.setCollapsible(0, False)
 
         # ── Right panel: header + stacked editor ──
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(6, 0, 0, 0)
 
         # Header row: title | mode combo | timestamp
         header_row = QHBoxLayout()
