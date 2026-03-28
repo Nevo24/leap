@@ -1420,6 +1420,8 @@ class NotesDialog(QDialog):
         root_layout.setContentsMargins(8, 8, 8, 8)
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(1)
+        splitter.setStyleSheet('QSplitter::handle { background: transparent; }')
 
         # ── Left panel: note list + buttons ──
         left = QWidget()
