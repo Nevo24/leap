@@ -95,6 +95,7 @@ class MonitorWindow(
     def __init__(self) -> None:
         """Initialize the monitor window."""
         super().__init__()
+        self._wipe_icon_cache()
         self.sessions: list[dict] = []
         self._pr_statuses: dict[str, PRStatus] = {}
         self._pr_widgets: dict[str, PulsingLabel] = {}
@@ -650,15 +651,31 @@ class MonitorWindow(
         return QIcon(pm)
 
     @staticmethod
+    def _wipe_icon_cache() -> None:
+        """Remove all cached icon PNGs so stale theme variants don't accumulate."""
+        from leap.utils.constants import ICON_CACHE_DIR, STORAGE_DIR
+        # Clean up legacy icons from .storage/ root (pre-icon_cache migration)
+        for f in STORAGE_DIR.glob('chevron_*.png'):
+            f.unlink(missing_ok=True)
+        for name in ('checkmark.png', 'radio_dot.png'):
+            (STORAGE_DIR / name).unlink(missing_ok=True)
+        # Wipe and recreate icon_cache/
+        if ICON_CACHE_DIR.is_dir():
+            for f in ICON_CACHE_DIR.iterdir():
+                if f.suffix == '.png':
+                    f.unlink(missing_ok=True)
+        ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
     def _ensure_chevron_icon(color_hex: str, up: bool = False) -> str:
         """Generate a small chevron PNG for dropdown/spinbox arrows.
 
         A separate file is generated per color+direction so theme switches work.
         """
-        from leap.utils.constants import STORAGE_DIR
+        from leap.utils.constants import ICON_CACHE_DIR
         safe_name = color_hex.lstrip('#')
         direction = 'up' if up else 'down'
-        path = STORAGE_DIR / f'chevron_{direction}_{safe_name}.png'
+        path = ICON_CACHE_DIR / f'chevron_{direction}_{safe_name}.png'
         if not path.exists():
             pm = QPixmap(12, 12)
             pm.fill(Qt.transparent)
@@ -689,10 +706,10 @@ class MonitorWindow(
         """Generate a white checkmark PNG for checkbox indicators.
 
         Returns the file path as a string.  The icon is cached in
-        ``.storage/`` so it's only generated once per install.
+        ``.storage/icon_cache/`` and regenerated each launch.
         """
-        from leap.utils.constants import STORAGE_DIR
-        path = STORAGE_DIR / 'checkmark.png'
+        from leap.utils.constants import ICON_CACHE_DIR
+        path = ICON_CACHE_DIR / 'checkmark.png'
         if not path.exists():
             pm = QPixmap(18, 18)
             pm.fill(Qt.transparent)
@@ -718,8 +735,8 @@ class MonitorWindow(
     @staticmethod
     def _ensure_radio_icon() -> str:
         """Generate a white dot PNG for radio button indicators."""
-        from leap.utils.constants import STORAGE_DIR
-        path = STORAGE_DIR / 'radio_dot.png'
+        from leap.utils.constants import ICON_CACHE_DIR
+        path = ICON_CACHE_DIR / 'radio_dot.png'
         if not path.exists():
             pm = QPixmap(18, 18)
             pm.fill(Qt.transparent)

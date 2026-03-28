@@ -69,6 +69,9 @@ NOTES_DIR: Final[Path] = STORAGE_DIR / "notes"
 # Note images directory (persistent — NOT cleaned on server startup like queue_images)
 NOTE_IMAGES_DIR: Final[Path] = STORAGE_DIR / "note_images"
 
+# Icon cache directory (ephemeral — wiped on each monitor launch)
+ICON_CACHE_DIR: Final[Path] = STORAGE_DIR / "icon_cache"
+
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
@@ -84,6 +87,7 @@ IDLE_SIGNAL_DEBOUNCE: Final[float] = 0.3  # Debounce running→idle signal to le
 ESCAPE_CORRECTION_WINDOW: Final[float] = 3.0  # needs_input→interrupted correction
 RESUME_GRACE_PERIOD: Final[float] = 2.0  # Wait before detecting resume from waiting state
 OUTPUT_GAP_RESET: Final[float] = 2.0  # Output gap that resets idle accumulator
+SUSTAINED_OUTPUT_DURATION: Final[float] = 1.0  # Output must span this long to trigger idle→running
 AUTO_RESUME_GRACE: Final[float] = 3.0  # Grace period before allowing idle→running without user input
 RESIZE_SUPPRESS_WINDOW: Final[float] = 2.0  # Suppress idle→running after terminal resize
 WAITING_STATE_TIMEOUT: Final[float] = 30.0  # Max time in waiting state without output before idle
@@ -136,6 +140,7 @@ def ensure_storage_dirs() -> None:
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
     NOTE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     SLACK_DIR.mkdir(parents=True, exist_ok=True)
+    ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def atomic_json_write(path: Path, data: Any, **json_kwargs: Any) -> None:

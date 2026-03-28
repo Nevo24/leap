@@ -194,7 +194,8 @@ ensure-storage:
 		"$(REPO_PATH)/.storage/queue_images" \
 		"$(REPO_PATH)/.storage/notes" \
 		"$(REPO_PATH)/.storage/note_images" \
-		"$(REPO_PATH)/.storage/slack"
+		"$(REPO_PATH)/.storage/slack" \
+		"$(REPO_PATH)/.storage/icon_cache"
 
 .PHONY: write-install-metadata
 write-install-metadata: ensure-storage
