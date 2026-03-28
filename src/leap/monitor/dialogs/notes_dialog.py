@@ -1489,7 +1489,7 @@ class NotesDialog(QDialog):
         btn_row.addWidget(delete_btn)
         left_layout.addLayout(btn_row)
 
-        left.setMinimumWidth(160)
+        left.setMinimumWidth(230)
         splitter.addWidget(left)
         splitter.setCollapsible(0, False)
 
