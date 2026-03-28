@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -17,7 +18,7 @@ from typing import Optional
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
+    QMessageBox, QPushButton, QScrollArea, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
@@ -418,6 +419,25 @@ def _serialize_checklist(items: list[dict]) -> str:
 #  Checklist widgets (Google Keep style)
 # ══════════════════════════════════════════════════════════════════════
 
+
+def _text_is_rtl(text: str) -> Optional[bool]:
+    """Return True if the first letter in *text* is RTL, False if LTR, None if no letter."""
+    for ch in text:
+        bidi = unicodedata.bidirectional(ch)
+        if bidi in ('R', 'AL', 'AN'):
+            return True
+        if bidi == 'L':
+            return False
+    return None
+
+
+def _apply_rtl_direction(widget: 'QWidget', text: str) -> None:
+    """Set layout direction on a QLineEdit based on RTL detection of text."""
+    rtl = _text_is_rtl(text)
+    want = Qt.RightToLeft if rtl is True else Qt.LeftToRight
+    if widget.layoutDirection() != want:
+        widget.setLayoutDirection(want)
+
 class _ItemLineEdit(QLineEdit):
     """QLineEdit that signals Enter and Backspace-when-empty.
 
@@ -438,6 +458,12 @@ class _ItemLineEdit(QLineEdit):
         self._pasted_images: set[str] = set()
         self._register_image_fn: Optional[object] = None  # callback: filename → placeholder
         self._resolve_placeholder_fn: Optional[object] = None  # callback: placeholder → filename
+        self.textChanged.connect(self._update_text_direction)
+        self._update_text_direction(self.text())
+
+    def _update_text_direction(self, text: str) -> None:
+        """Set layout direction based on RTL/LTR content detection."""
+        _apply_rtl_direction(self, text)
 
     def _is_truncated(self) -> bool:
         if self.width() <= 0:
@@ -589,7 +615,7 @@ class _ChecklistItemWidget(QFrame):
         super().__init__(parent)
         self._index = index
         self._checked = checked
-        self._popup: Optional[QPlainTextEdit] = None
+        self._popup: Optional[QTextEdit] = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 2, 4, 2)
@@ -702,17 +728,18 @@ class _ChecklistItemWidget(QFrame):
         row_layout = self.layout()
         edit_idx = row_layout.indexOf(self._edit)
 
-        wrap = QPlainTextEdit()
+        wrap = QTextEdit()
         wrap.setFrameShape(QFrame.NoFrame)
         wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap.setTabChangesFocus(True)
+        wrap.setAcceptRichText(False)
         wrap.document().setDocumentMargin(2)
         wrap.setFont(self._edit.font())
         t = current_theme()
         color = t.text_muted if self._checked else t.text_primary
         wrap.setStyleSheet(
-            f'QPlainTextEdit {{ color: {color}; background: transparent;'
+            f'QTextEdit {{ color: {color}; background: transparent;'
             f' border: 1px solid {t.text_secondary}; }}'
         )
         wrap.setPlainText(self._edit.text())
@@ -724,10 +751,8 @@ class _ChecklistItemWidget(QFrame):
         def resize_wrap() -> None:
             if self._popup is not wrap:
                 return
-            line_h = wrap.fontMetrics().lineSpacing()
-            line_count = max(1, int(wrap.document().size().height()))
-            # Extra line of padding so the last line isn't clipped
-            wrap.setFixedHeight(max(self._edit.height(), (line_count + 1) * line_h))
+            doc_h = int(wrap.document().size().height()) + wrap.document().documentMargin() * 2
+            wrap.setFixedHeight(max(self._edit.height(), int(doc_h) + 4))
 
         def dismiss(save: bool) -> None:
             import sip
@@ -782,20 +807,20 @@ class _ChecklistItemWidget(QFrame):
                             from PyQt5.QtCore import QTimer
                             QTimer.singleShot(0, resize_wrap)
                             return
-            QPlainTextEdit.keyPressEvent(wrap, event)
+            QTextEdit.keyPressEvent(wrap, event)
             self.text_edited.emit(self._index, wrap.toPlainText().replace('\n', ' '))
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, resize_wrap)
 
         def on_focus_out(event: 'QFocusEvent') -> None:
             try:
-                QPlainTextEdit.focusOutEvent(wrap, event)
+                QTextEdit.focusOutEvent(wrap, event)
             except RuntimeError:
                 return
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: dismiss(True))
 
-        _setup_plaintext_image_hover(wrap, self._edit._resolve_placeholder_fn)
+        _setup_textedit_image_hover(wrap, self._edit._resolve_placeholder_fn)
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -807,11 +832,11 @@ class _ChecklistItemWidget(QFrame):
         wrap.setTextCursor(cursor)
 
 
-def _setup_plaintext_image_hover(
-    wrap: QPlainTextEdit,
+def _setup_textedit_image_hover(
+    wrap: QTextEdit,
     resolve_placeholder_fn: Optional[object] = None,
 ) -> None:
-    """Add image hover preview to a QPlainTextEdit via monkey-patching."""
+    """Add image hover preview to a QTextEdit via monkey-patching."""
     wrap.setMouseTracking(True)
     wrap.viewport().setMouseTracking(True)
     _preview_ref: list[Optional[_ImagePreviewPopup]] = [None]
@@ -843,12 +868,12 @@ def _setup_plaintext_image_hover(
             _preview_ref[0].show_for_image(name, event.globalPos())
         elif _preview_ref[0] and _preview_ref[0].isVisible():
             _preview_ref[0].hide_preview()
-        QPlainTextEdit.mouseMoveEvent(wrap, event)
+        QTextEdit.mouseMoveEvent(wrap, event)
 
     def on_leave(event: 'QEvent') -> None:
         if _preview_ref[0] and _preview_ref[0].isVisible():
             _preview_ref[0].hide_preview()
-        QPlainTextEdit.leaveEvent(wrap, event)
+        QTextEdit.leaveEvent(wrap, event)
 
     wrap.mouseMoveEvent = on_mouse_move
     wrap.leaveEvent = on_leave
@@ -1017,7 +1042,7 @@ class _ChecklistWidget(QWidget):
         self._add_field.enter_pressed.connect(self._on_add_item)
         self._add_field.expand_requested.connect(self._expand_add_field)
         self._layout.addWidget(self._add_field)
-        self._add_popup: Optional[QPlainTextEdit] = None
+        self._add_popup: Optional[QTextEdit] = None
 
         # Completed section
         if completed:
@@ -1289,16 +1314,17 @@ class _ChecklistWidget(QWidget):
         row_layout = self._layout
         edit_idx = row_layout.indexOf(self._add_field)
 
-        wrap = QPlainTextEdit()
+        wrap = QTextEdit()
         wrap.setFrameShape(QFrame.NoFrame)
         wrap.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap.setTabChangesFocus(True)
+        wrap.setAcceptRichText(False)
         wrap.document().setDocumentMargin(2)
         wrap.setFont(self._add_field.font())
         t = current_theme()
         wrap.setStyleSheet(
-            f'QPlainTextEdit {{ color: {t.text_primary}; background: transparent;'
+            f'QTextEdit {{ color: {t.text_primary}; background: transparent;'
             f' border: 1px solid {t.text_secondary}; padding: 4px; }}'
         )
         wrap.setPlainText(self._add_field.text())
@@ -1311,9 +1337,8 @@ class _ChecklistWidget(QWidget):
         def resize_wrap() -> None:
             if self._add_popup is not wrap:
                 return
-            line_h = wrap.fontMetrics().lineSpacing()
-            line_count = max(1, int(wrap.document().size().height()))
-            wrap.setFixedHeight(max(self._add_field.height(), (line_count + 1) * line_h))
+            doc_h = int(wrap.document().size().height()) + wrap.document().documentMargin() * 2
+            wrap.setFixedHeight(max(self._add_field.height(), int(doc_h) + 4))
 
         def on_key(event: 'QKeyEvent') -> None:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -1344,19 +1369,19 @@ class _ChecklistWidget(QWidget):
                             from PyQt5.QtCore import QTimer
                             QTimer.singleShot(0, resize_wrap)
                             return
-            QPlainTextEdit.keyPressEvent(wrap, event)
+            QTextEdit.keyPressEvent(wrap, event)
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, resize_wrap)
 
         def on_focus_out(event: 'QFocusEvent') -> None:
             try:
-                QPlainTextEdit.focusOutEvent(wrap, event)
+                QTextEdit.focusOutEvent(wrap, event)
             except RuntimeError:
                 return
             from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: self._dismiss_add_popup(save=True))
 
-        _setup_plaintext_image_hover(wrap, self._resolve_placeholder)
+        _setup_textedit_image_hover(wrap, self._resolve_placeholder)
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
