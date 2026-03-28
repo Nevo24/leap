@@ -1,7 +1,7 @@
 """Image-aware QTextEdit and Send Message dialog for Leap Monitor.
 
 Provides a QTextEdit subclass that detects clipboard images on paste,
-saves them to ``.storage/images/``, and inserts ``[Image #N]``
+saves them to ``.storage/queue_images/``, and inserts ``[Image #N]``
 placeholders (matching the CLI client behaviour). Placeholders are
 resolved to ``@/path/to/image`` when the text is retrieved for sending.
 """
@@ -17,24 +17,31 @@ from PyQt5.QtCore import QMimeData, Qt
 from PyQt5.QtGui import QImage
 
 from leap.monitor.themes import current_theme
-from leap.utils.constants import IMAGES_DIR
+from leap.utils.constants import QUEUE_IMAGES_DIR
+
+from pathlib import Path
 
 
-def _save_qimage(image: QImage) -> Optional[str]:
-    """Save a QImage to ``.storage/images/``.
+def _save_qimage(image: QImage, target_dir: Optional[Path] = None) -> Optional[str]:
+    """Save a QImage to a storage directory.
 
     Uses an MD5 hash of the image bytes as the filename so that
     saving the same image twice produces the same file (natural dedup).
 
+    Args:
+        image: The QImage to save.
+        target_dir: Directory to save into. Defaults to ``.storage/queue_images/``.
+
     Returns:
         Absolute path to the saved file, or None on failure.
     """
+    save_dir = target_dir or QUEUE_IMAGES_DIR
     try:
-        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        save_dir.mkdir(parents=True, exist_ok=True)
         # Serialize to PNG bytes in memory to compute hash
         buf = image.bits().asstring(image.sizeInBytes())
         content_hash = hashlib.md5(buf).hexdigest()[:12]
-        path = str(IMAGES_DIR / f'{content_hash}.png')
+        path = str(save_dir / f'{content_hash}.png')
         if os.path.isfile(path):
             return path  # Already saved — dedup
         if image.save(path, 'PNG'):
@@ -76,8 +83,9 @@ class ImageTextEdit(QTextEdit):
     references before sending.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, image_dir: Optional[Path] = None) -> None:
         super().__init__(parent)
+        self._image_dir: Optional[Path] = image_dir
         self._image_counter: int = 0
         self._image_placeholders: dict[str, str] = {}
         self._submit_callback: Optional[object] = None
@@ -104,7 +112,7 @@ class ImageTextEdit(QTextEdit):
         if source.hasImage():
             image = source.imageData()
             if isinstance(image, QImage) and not image.isNull():
-                path = _save_qimage(image)
+                path = _save_qimage(image, self._image_dir)
                 if path:
                     # Deduplicate: if identical image already pasted, reuse placeholder
                     existing = self._find_duplicate(path)

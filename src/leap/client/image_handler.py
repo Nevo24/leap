@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from typing import Optional
 
-from leap.utils.constants import IMAGE_EXTENSIONS, IMAGES_DIR
+from leap.utils.constants import IMAGE_EXTENSIONS, QUEUE_IMAGES_DIR
 
 
 def check_clipboard_has_image() -> bool:
@@ -34,7 +34,7 @@ def check_clipboard_has_image() -> bool:
 
 def save_clipboard_image() -> Optional[str]:
     """
-    Save clipboard image to .storage/images/ (macOS only).
+    Save clipboard image to .storage/queue_images/ (macOS only).
 
     Uses an MD5 hash of the file content as the filename so that
     saving the same image twice produces the same file (natural dedup).
@@ -43,10 +43,10 @@ def save_clipboard_image() -> Optional[str]:
         Path to the saved image file, or None on failure.
     """
     try:
-        IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        QUEUE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
         # Save to a temp file first, then hash and rename
-        fd, tmp_path = tempfile.mkstemp(suffix='.png', dir=str(IMAGES_DIR))
+        fd, tmp_path = tempfile.mkstemp(suffix='.png', dir=str(QUEUE_IMAGES_DIR))
         os.close(fd)
 
         script = f'''
@@ -67,7 +67,7 @@ def save_clipboard_image() -> Optional[str]:
         # Hash content and rename to dedup
         with open(tmp_path, 'rb') as f:
             content_hash = hashlib.md5(f.read()).hexdigest()[:12]
-        final_path = str(IMAGES_DIR / f'{content_hash}.png')
+        final_path = str(QUEUE_IMAGES_DIR / f'{content_hash}.png')
         if os.path.isfile(final_path):
             os.unlink(tmp_path)  # Already exists — dedup
             return final_path

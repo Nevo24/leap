@@ -6,7 +6,10 @@ Left panel shows a note list; right panel is the editor. Notes auto-save on
 switch, close, and Cmd+S.
 """
 
+import hashlib
 import json
+import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -15,18 +18,173 @@ from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QMimeData, QPoint, Qt, pyqtSignal
-from PyQt5.QtGui import QCursor, QDrag, QPixmap
+from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
+from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
-from leap.utils.constants import NOTES_DIR
+from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR
 
 
 MAX_NOTE_NAME_LEN = 80
 _NOTES_META_FILE: Path = NOTES_DIR / '.notes_meta.json'
+_IMAGE_MARKER_RE = re.compile(r'!\[image\]\(([a-f0-9]+\.png)\)')
+_NOTE_IMAGE_MAX_WIDTH = 400
+
+
+# ── Note image helpers ──────────────────────────────────────────────
+
+def _save_note_image(image: QImage) -> Optional[str]:
+    """Save a QImage to .storage/note_images/ with MD5 dedup.
+
+    Returns:
+        Filename (e.g. 'abc123.png') on success, None on failure.
+    """
+    try:
+        NOTE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        buf = image.bits().asstring(image.sizeInBytes())
+        content_hash = hashlib.md5(buf).hexdigest()[:12]
+        filename = f'{content_hash}.png'
+        path = NOTE_IMAGES_DIR / filename
+        if path.is_file():
+            return filename
+        if image.save(str(path), 'PNG'):
+            return filename
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    except (OSError, Exception):
+        return None
+
+
+def _collect_image_refs(text: str) -> set[str]:
+    """Return set of image filenames referenced in note text."""
+    return set(_IMAGE_MARKER_RE.findall(text))
+
+
+def _cleanup_orphaned_images(current_text: str, previous_text: str) -> None:
+    """Delete images from note_images/ that were in previous but not in current."""
+    old_refs = _collect_image_refs(previous_text)
+    new_refs = _collect_image_refs(current_text)
+    for filename in old_refs - new_refs:
+        try:
+            (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _delete_note_images(text: str) -> None:
+    """Delete all images referenced by a note's text."""
+    for filename in _collect_image_refs(text):
+        try:
+            (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+class _NoteTextEdit(QTextEdit):
+    """QTextEdit with image paste support for notes.
+
+    Pastes clipboard images into .storage/note_images/, inserts them
+    inline in the document, and serializes to/from a text format using
+    ``![image](filename.png)`` markers.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+
+    def insertFromMimeData(self, source: QMimeData) -> None:
+        """Override paste to handle clipboard images."""
+        if source.hasImage():
+            image = source.imageData()
+            if isinstance(image, QImage) and not image.isNull():
+                filename = _save_note_image(image)
+                if filename:
+                    self._insert_image(filename)
+                    return
+        super().insertFromMimeData(source)
+
+    def _insert_image(self, filename: str) -> None:
+        """Insert an image into the document at the cursor."""
+        path = str(NOTE_IMAGES_DIR / filename)
+        # Register the image resource with the document
+        img = QImage(path)
+        if img.isNull():
+            return
+        if img.width() > _NOTE_IMAGE_MAX_WIDTH:
+            img = img.scaledToWidth(_NOTE_IMAGE_MAX_WIDTH, Qt.SmoothTransformation)
+        self.document().addResource(
+            self.document().ImageResource, QUrl(filename), img,
+        )
+        cursor = self.textCursor()
+        fmt = QTextImageFormat()
+        fmt.setName(filename)
+        fmt.setWidth(img.width())
+        fmt.setHeight(img.height())
+        cursor.insertImage(fmt)
+        cursor.insertText('\n')
+        self.setTextCursor(cursor)
+
+    def set_note_content(self, text: str) -> None:
+        """Load note text, rendering ![image](file.png) markers as inline images."""
+        self.clear()
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+
+        parts = _IMAGE_MARKER_RE.split(text)
+        # parts alternates: [text, filename, text, filename, ...]
+        for i, part in enumerate(parts):
+            if i % 2 == 0:
+                # Text segment
+                if part:
+                    cursor.insertText(part)
+            else:
+                # Image filename
+                path = str(NOTE_IMAGES_DIR / part)
+                img = QImage(path)
+                if not img.isNull():
+                    if img.width() > _NOTE_IMAGE_MAX_WIDTH:
+                        img = img.scaledToWidth(_NOTE_IMAGE_MAX_WIDTH, Qt.SmoothTransformation)
+                    self.document().addResource(
+                        self.document().ImageResource, QUrl(part), img,
+                    )
+                    fmt = QTextImageFormat()
+                    fmt.setName(part)
+                    fmt.setWidth(img.width())
+                    fmt.setHeight(img.height())
+                    cursor.insertImage(fmt)
+                else:
+                    # Image file missing — keep marker as text
+                    cursor.insertText(f'![image]({part})')
+        self.setTextCursor(cursor)
+
+    def get_note_content(self) -> str:
+        """Serialize the document back to text with ![image](file.png) markers."""
+        doc = self.document()
+        result: list[str] = []
+        block = doc.begin()
+        while block.isValid():
+            if block != doc.begin():
+                result.append('\n')
+            it = block.begin()
+            while not it.atEnd():
+                fragment = it.fragment()
+                if fragment.isValid():
+                    fmt = fragment.charFormat()
+                    if fmt.isImageFormat():
+                        img_fmt = fmt.toImageFormat()
+                        name = img_fmt.name()
+                        if name:
+                            result.append(f'![image]({name})')
+                    else:
+                        result.append(fragment.text())
+                it += 1
+            block = block.next()
+        return ''.join(result)
 
 
 # ── Storage helpers ──────────────────────────────────────────────────
@@ -982,8 +1140,8 @@ class NotesDialog(QDialog):
         # Stacked widget: page 0 = text, page 1 = checklist
         self._stack = QStackedWidget()
 
-        self._editor = QPlainTextEdit()
-        self._editor.setPlaceholderText('Select or create a note...')
+        self._editor = _NoteTextEdit()
+        self._editor.setPlaceholderText('Select or create a note... (paste images with Cmd+V)')
         self._editor.setEnabled(False)
         self._editor.setTabChangesFocus(False)
         self._stack.addWidget(self._editor)
@@ -1075,7 +1233,7 @@ class NotesDialog(QDialog):
         if current is None:
             self._current_name = None
             self._saved_text = ''
-            self._editor.setPlainText('')
+            self._editor.clear()
             self._editor.setEnabled(False)
             self._mode_combo.setEnabled(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
@@ -1099,7 +1257,7 @@ class NotesDialog(QDialog):
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
         else:
             self._mode_combo.setCurrentIndex(self._MODE_TEXT)
-            self._editor.setPlainText(text)
+            self._editor.set_note_content(text)
             self._editor.setEnabled(True)
             self._stack.setCurrentIndex(self._MODE_TEXT)
         self._switching_mode = False
@@ -1116,7 +1274,7 @@ class NotesDialog(QDialog):
 
         if index == self._MODE_CHECKLIST:
             # Text → Checklist: each non-empty line becomes an unchecked item
-            text = self._editor.toPlainText()
+            text = self._editor.get_note_content()
             items = _parse_checklist(text) if text.strip() else []
             self._checklist.set_items(items)
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
@@ -1128,7 +1286,7 @@ class NotesDialog(QDialog):
             items = self._checklist.get_items()
             lines = [item['text'] for item in items if item['text']]
             text = '\n'.join(lines)
-            self._editor.setPlainText(text)
+            self._editor.set_note_content(text)
             self._editor.setEnabled(True)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             _set_note_mode(self._current_name, 'text')
@@ -1236,7 +1394,10 @@ class NotesDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
         try:
-            _note_path(self._current_name).unlink(missing_ok=True)
+            path = _note_path(self._current_name)
+            if path.exists():
+                _delete_note_images(path.read_text(encoding='utf-8'))
+            path.unlink(missing_ok=True)
         except OSError:
             pass
         _remove_note_meta(self._current_name)
@@ -1257,11 +1418,12 @@ class NotesDialog(QDialog):
         if self._current_mode() == self._MODE_CHECKLIST:
             text = _serialize_checklist(self._checklist.get_items())
         else:
-            text = self._editor.toPlainText()
+            text = self._editor.get_note_content()
         if text != self._saved_text:
             try:
                 NOTES_DIR.mkdir(parents=True, exist_ok=True)
                 _note_path(self._current_name).write_text(text, encoding='utf-8')
+                _cleanup_orphaned_images(text, self._saved_text)
                 self._saved_text = text
                 self._update_timestamp()
             except OSError:

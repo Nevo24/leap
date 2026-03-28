@@ -21,7 +21,7 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, IMAGES_DIR, STORAGE_DIR,
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, QUEUE_IMAGES_DIR, STORAGE_DIR,
     POLL_INTERVAL, TITLE_RESET_INTERVAL,
     atomic_json_write, ensure_storage_dirs, load_settings, save_settings,
 )
@@ -434,14 +434,14 @@ class LeapServer:
             self.pty.sendline(message)
 
     def _has_image_ref(self, message: str) -> bool:
-        """Check if the message contains any @path refs to .storage/images/.
+        """Check if the message contains any @path refs to .storage/queue_images/.
 
         Catches image references that aren't at the start of the message
         (which ``is_image_message`` would miss). Checked for all providers
         so that image messages always use the fixed-sleep send protocol.
         """
         prefix = self._provider.image_prefix
-        images_dir = str(IMAGES_DIR)
+        images_dir = str(QUEUE_IMAGES_DIR)
         for token in message.split():
             if not token.startswith(prefix):
                 continue
@@ -455,19 +455,19 @@ class LeapServer:
 
     @staticmethod
     def _cleanup_old_images() -> None:
-        """Delete images in .storage/images/ not referenced anywhere.
+        """Delete images in .storage/queue_images/ not referenced anywhere.
 
         Called once on server startup. Scans queue files (``id|message``
         format) and the presets JSON for image paths, then removes any
         image file not found in either.
         """
-        if not IMAGES_DIR.is_dir():
+        if not QUEUE_IMAGES_DIR.is_dir():
             return
 
-        images_dir_str = str(IMAGES_DIR)
+        images_dir_str = str(QUEUE_IMAGES_DIR)
 
         def _collect_refs(text: str) -> None:
-            """Find all @<IMAGES_DIR>/... references in *text*."""
+            """Find all @<QUEUE_IMAGES_DIR>/... references in *text*."""
             for token in text.split():
                 # Token may be bare @path or embedded after a | separator
                 at_idx = token.find('@')
@@ -503,7 +503,7 @@ class LeapServer:
                 pass
 
         # Delete unreferenced images
-        for entry in IMAGES_DIR.iterdir():
+        for entry in QUEUE_IMAGES_DIR.iterdir():
             try:
                 if entry.is_file() and str(entry) not in referenced:
                     entry.unlink()

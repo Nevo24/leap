@@ -56,7 +56,7 @@ STORAGE_DIR: Final[Path] = _find_project_root() / ".storage"
 QUEUE_DIR: Final[Path] = STORAGE_DIR / "queues"
 SOCKET_DIR: Final[Path] = STORAGE_DIR / "sockets"
 HISTORY_DIR: Final[Path] = STORAGE_DIR / "history"
-IMAGES_DIR: Final[Path] = STORAGE_DIR / "images"
+QUEUE_IMAGES_DIR: Final[Path] = STORAGE_DIR / "queue_images"
 SLACK_DIR: Final[Path] = STORAGE_DIR / "slack"
 SLACK_BOT_LOCK: Final[Path] = SLACK_DIR / "slack-bot.lock"
 
@@ -65,6 +65,9 @@ SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
 # Notes directory (free-form user notes, one .txt per note)
 NOTES_DIR: Final[Path] = STORAGE_DIR / "notes"
+
+# Note images directory (persistent — NOT cleaned on server startup like queue_images)
+NOTE_IMAGES_DIR: Final[Path] = STORAGE_DIR / "note_images"
 
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
@@ -129,8 +132,9 @@ def ensure_storage_dirs() -> None:
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     SOCKET_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    QUEUE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    NOTE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     SLACK_DIR.mkdir(parents=True, exist_ok=True)
 
 

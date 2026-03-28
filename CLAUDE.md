@@ -194,7 +194,8 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | PR context preset selection | `.storage/leap_selected_preset` |
 | Message bundle preset selection | `.storage/leap_selected_direct_preset` |
 | Preset definitions | `.storage/leap_presets.json` |
-| Pasted images | `.storage/images/<hash>.png` (MD5-deduped, cleaned on server startup) |
+| Queue images | `.storage/queue_images/<hash>.png` (MD5-deduped, cleaned on server startup) |
+| Note images | `.storage/note_images/<hash>.png` (MD5-deduped, persistent) |
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Slack config | `.storage/slack/config.json` |
