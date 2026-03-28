@@ -49,8 +49,8 @@ class ClaudeProvider(CLIProvider):
         # messages, code, conversation) containing "Interrupted" near a
         # middle dot (common TUI decoration) falsely matches.
         #
-        # Interrupt detection for Claude relies on the time-gated path
-        # (requires Escape/Ctrl+C within INTERRUPT_DETECT_WINDOW).
+        # Interrupt detection for Claude relies on the _interrupt_pending
+        # flag (requires Escape/Ctrl+C before the Stop hook fires).
         # Self-interrupts (tool timeouts) are covered by the Notification
         # hook writing needs_input for the interrupt dialog.
         return None

@@ -89,23 +89,14 @@ class CLIProvider(ABC):
         return SIGNAL_STATES
 
     @property
-    def output_triggers_running(self) -> bool:
-        """Whether PTY output accumulation triggers idle→running.
+    def cursor_hidden_while_idle(self) -> bool:
+        """Whether the CLI keeps the terminal cursor hidden during idle.
 
-        For streaming TUIs (Ink), output after user input reliably
-        indicates the CLI is processing.  For full-screen TUIs
-        (Ratatui), screen redraws are indistinguishable from processing
-        output, so this should return False.
-        """
-        return True
-
-    @property
-    def enter_triggers_running(self) -> bool:
-        """Whether pressing Enter in idle state transitions to running.
-
-        For full-screen TUIs (Ratatui) where output-based detection is
-        disabled, Enter in the server terminal means the user submitted
-        a message.  Returns False by default (Claude uses hooks instead).
+        Full-screen TUIs (Ratatui) hide the cursor permanently and
+        manage their own cursor rendering.  When True, the auto-resume
+        cursor visibility check is disabled (cursor hidden doesn't
+        indicate processing).  Defaults to False (Ink TUIs show cursor
+        when idle).
         """
         return False
 
@@ -113,7 +104,7 @@ class CLIProvider(ABC):
     def silence_timeout(self) -> Optional[float]:
         """Override the default silence timeout (seconds) for this CLI.
 
-        Return None to use the global OUTPUT_SILENCE_TIMEOUT constant.
+        Return None to use the global SAFETY_SILENCE_TIMEOUT constant.
         Full-screen TUIs (Ratatui) that output constantly during processing
         can use a shorter timeout since any output gap indicates idle.
         """

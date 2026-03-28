@@ -78,22 +78,9 @@ STATE_LOG_DIR: Final[Path] = STORAGE_DIR / "state_logs"
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
-OUTPUT_SILENCE_TIMEOUT: Final[float] = 15.0  # Fallback: assume idle after N seconds of PTY silence
-
-# State tracker timing constants
-INTERRUPT_DETECT_WINDOW: Final[float] = 10.0  # Input→interrupted detection window
-STATE_PROTECTION_WINDOW: Final[float] = 5.0  # Protect waiting states from premature idle signal
-IDLE_OUTPUT_THRESHOLD: Final[int] = 200  # Bytes accumulated to trigger idle→running
-INPUT_COOLDOWN: Final[float] = 1.0  # Ignore output after user input (slash cmd TUI redraws finish within ~0.5s)
-ESCAPE_RACE_WINDOW: Final[float] = 2.0  # Running→idle signal suppression after user input
-IDLE_SIGNAL_DEBOUNCE: Final[float] = 0.3  # Debounce running→idle signal to let PTY detect interrupts
-ESCAPE_CORRECTION_WINDOW: Final[float] = 3.0  # needs_input→interrupted correction
-RESUME_GRACE_PERIOD: Final[float] = 2.0  # Wait before detecting resume from waiting state
-OUTPUT_GAP_RESET: Final[float] = 2.0  # Output gap that resets idle accumulator
-SUSTAINED_OUTPUT_DURATION: Final[float] = 1.0  # Output must span this long to trigger idle→running
-AUTO_RESUME_GRACE: Final[float] = 3.0  # Grace period before allowing idle→running without user input
-RESIZE_SUPPRESS_WINDOW: Final[float] = 2.0  # Suppress idle→running after terminal resize
-WAITING_STATE_TIMEOUT: Final[float] = 30.0  # Max time in waiting state without output before idle
+# State tracker safety fallback timeouts (not used for normal state detection)
+SAFETY_SILENCE_TIMEOUT: Final[float] = 60.0  # Fallback: assume idle after 60s of PTY silence
+SAFETY_WAITING_TIMEOUT: Final[float] = 60.0  # Fallback: exit stuck waiting state after 60s
 
 # Queue limits
 MAX_RECENTLY_SENT: Final[int] = 20  # Maximum messages to track in recently_sent

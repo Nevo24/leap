@@ -185,6 +185,10 @@ class LeapServer:
         # and swallow all subsequent input until Enter → queue.
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
+        # True when a single "^" was typed mid-text, waiting to see
+        # if the next byte is also "^" (double-caret → capture mode).
+        self._pending_caret: bool = False
+        self._capture_pending_backspace: bool = False
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -776,7 +780,7 @@ class LeapServer:
         """Handle terminal resize signal."""
         try:
             cols, rows = shutil.get_terminal_size(fallback=(80, 24))
-            self.state.on_resize()
+            self.state.on_resize(rows, cols)
             self.pty.resize(rows, cols)
         except Exception:
             pass
@@ -794,7 +798,7 @@ class LeapServer:
                 # Clear the capture line
                 os.write(sys.stdout.fileno(), b'\r\x1b[K')
             else:
-                payload = f"\r\x1b[K\x1b[33m[Q] {text}\x1b[0m".encode()
+                payload = f"\r\x1b[K\x1b[33m[Leap Q] {text}\x1b[0m".encode()
                 os.write(sys.stdout.fileno(), payload)
         except OSError:
             pass
@@ -817,11 +821,20 @@ class LeapServer:
         Returns:
             Input bytes to forward to the CLI (swallowed in capture mode).
         """
+        # Wrap the entire filter in try/except — any unhandled exception
+        # here propagates to pexpect's interact loop and kills the PTY.
+        # On crash, pass through raw data so the CLI at least receives it.
+        try:
+            return self._input_filter_impl(data)
+        except Exception:
+            return data
+
+    def _input_filter_impl(self, data: bytes) -> bytes:
+        """Implementation of _input_filter (separated for crash protection)."""
         # Note: on_input() is called AFTER the byte loop (see end of
         # method) with only the bytes that reach the CLI.  This prevents
-        # capture-mode keystrokes from corrupting state tracker timing
-        # (e.g. false idle→running on Enter for Ratatui CLIs, or false
-        # resume from waiting states due to _last_input_time updates).
+        # capture-mode keystrokes from affecting state tracker flags
+        # (e.g. false idle→running on Enter, or false _user_responded).
 
         current_state = self.state.current_state
         in_prompt = current_state in PROMPT_STATES
@@ -837,20 +850,34 @@ class LeapServer:
         out = bytearray()
         i = 0
 
-        # Check if the very first byte is "^" for queue capture mode
-        # BEFORE escape handling and the in_prompt bypass, so neither
-        # a stale _partial_escape nor in_prompt can swallow the caret.
+        # Check if the very first byte is "^" and _pending_caret is set
+        # from the previous chunk → double-caret capture trigger.
         if (not self._queue_capture_mode
                 and i < len(data)
                 and data[i] == 0x5e
-                and (not self._terminal_input_buf
-                     or not self._user_has_typed)):
+                and self._pending_caret):
+            # Second "^" arrived in a new chunk.  The CLI already has
+            # "text^" in its input (first "^" was sent as literal).
+            # Clear the CLI's input with backspaces, then enter capture.
             self._partial_escape = None
+            if (self._terminal_input_buf
+                    and self._terminal_input_buf[-1] == 0x5e):
+                self._terminal_input_buf.pop()
+            self._queue_capture_buf = bytearray(
+                self._terminal_input_buf)
+            # Erase "text^" from CLI via pty.send (bypasses input filter).
+            # Output is suppressed in capture mode so no display gibberish.
+            typed = self._queue_capture_buf.decode(
+                'utf-8', errors='replace')
+            erase = '\x7f' * (len(typed) + 1)  # +1 for the "^"
             self._terminal_input_buf.clear()
             self._queue_capture_mode = True
-            self._queue_capture_buf.clear()
-            self._capture_display("")
-            i += 1  # consume the "^"
+            self._pending_caret = False
+            self.pty.send(erase)
+            # Space triggers CLI re-render → output filter draws [Leap Q].
+            out.append(0x20)
+            self._capture_pending_backspace = True
+            i += 1
 
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape == 'csi':
@@ -901,14 +928,23 @@ class LeapServer:
         while i < len(data):
             b = data[i]
 
-            # --- Escape sequences: always pass through ---
+            # --- Escape sequences ---
             if b == 0x1b:
                 esc_start = i
+                is_standalone_esc = False
                 i += 1
                 if i >= len(data):
                     # ESC at end of chunk — mark partial, pass through
-                    self._partial_escape = 'esc'
-                    out.append(b)
+                    is_standalone_esc = True
+                    if not self._queue_capture_mode:
+                        self._partial_escape = 'esc'
+                        out.append(b)
+                    else:
+                        # In capture mode: Escape cancels capture
+                        self._capture_display()
+                        self._queue_capture_buf.clear()
+                        self._queue_capture_mode = False
+                        self._terminal_input_buf.clear()
                     continue
                 kind = data[i]
                 if kind == 0x5b:  # CSI
@@ -919,7 +955,8 @@ class LeapServer:
                         i += 1
                     else:
                         # CSI truncated at end of chunk
-                        self._partial_escape = 'csi'
+                        if not self._queue_capture_mode:
+                            self._partial_escape = 'csi'
                 elif kind in (0x5d, 0x50, 0x58, 0x5e, 0x5f):
                     i += 1
                     while i < len(data):
@@ -939,15 +976,29 @@ class LeapServer:
                     i += 1
                 else:
                     # Not a recognized escape introducer — treat \x1b as
-                    # a standalone Escape key press.  Leave i at esc_start+1
-                    # so the byte after \x1b is processed normally in the
-                    # next loop iteration (only \x1b goes to out here).
-                    pass
-                out.extend(data[esc_start:i])
+                    # a standalone Escape key press.
+                    is_standalone_esc = True
+
+                if self._queue_capture_mode:
+                    # In capture mode: swallow all escape sequences.
+                    # Standalone Escape cancels capture (like Ctrl+C).
+                    if is_standalone_esc:
+                        self._capture_display()
+                        self._queue_capture_buf.clear()
+                        self._queue_capture_mode = False
+                        self._terminal_input_buf.clear()
+                    # CSI/OSC/SS3 sequences are silently dropped.
+                else:
+                    out.extend(data[esc_start:i])
+                    # Standalone Escape clears the CLI's input line
+                    # (Ink TUI behavior).  Sync our buffer so "^"
+                    # capture mode becomes available again.
+                    if is_standalone_esc:
+                        self._terminal_input_buf.clear()
                 continue
 
             # --- Queue-capture mode: swallow input, queue on Enter ---
-            # The terminal title bar shows "[Q] <text>" as live feedback
+            # The terminal title bar shows "[Leap Q] <text>" as live feedback
             # since we can't echo into the TUI content area.
             # Must be checked before in_prompt so capture works in any state.
             if self._queue_capture_mode:
@@ -989,17 +1040,46 @@ class LeapServer:
                 i += 1
                 continue
 
-            # "^" at start of line → enter queue capture mode.
-            # Checked before in_prompt so it works in any CLI state.
-            if (b == 0x5e
-                    and (not self._terminal_input_buf
-                         or not self._user_has_typed)):
-                self._terminal_input_buf.clear()
-                self._queue_capture_mode = True
-                self._queue_capture_buf.clear()
-                self._capture_display("")
-                i += 1
-                continue
+            # "^^" (double caret) → queue capture mode.
+            # First "^" is held as literal.  If the next byte is also
+            # "^", capture triggers.  Otherwise the first "^" stays
+            # as a literal character.
+            if b == 0x5e:
+                if self._pending_caret:
+                    # Second "^" → capture (same chunk).
+                    # Remove the first "^" from buffer and out.
+                    if (self._terminal_input_buf
+                            and self._terminal_input_buf[-1] == 0x5e):
+                        self._terminal_input_buf.pop()
+                    if out and out[-1] == 0x5e:
+                        out.pop()
+                    self._queue_capture_buf = bytearray(
+                        self._terminal_input_buf)
+                    # Erase text from CLI: the first "^" was removed
+                    # from out, but the text before it was already sent
+                    # in previous chunks.  Send backspaces via pty.send.
+                    typed = self._queue_capture_buf.decode(
+                        'utf-8', errors='replace')
+                    if typed:
+                        self.pty.send('\x7f' * len(typed))
+                    self._terminal_input_buf.clear()
+                    self._queue_capture_mode = True
+                    self._pending_caret = False
+                    # Space triggers re-render → output filter draws [Leap Q].
+                    out.append(0x20)
+                    self._capture_pending_backspace = True
+                    i += 1
+                    continue
+                else:
+                    # First "^" — hold it, wait for second.
+                    self._pending_caret = True
+                    # Fall through to normal handling (adds to buffer
+                    # and out as literal "^").
+
+            # If we were waiting for a second "^" but got something
+            # else, the pending caret was a literal — clear the flag.
+            elif self._pending_caret:
+                self._pending_caret = False
 
             if in_prompt:
                 out.append(b)
@@ -1041,8 +1121,8 @@ class LeapServer:
 
         # Track input for state detection using only the bytes that
         # actually reach the CLI.  Capture-mode keystrokes are excluded
-        # so they don't affect _last_input_time, _last_escape_time, or
-        # trigger enter_triggers_running.
+        # so they don't affect interrupt detection or trigger
+        # idle→running on Enter.
         if out:
             self.state.on_input(bytes(out))
 
@@ -1052,6 +1132,9 @@ class LeapServer:
         """
         Filter PTY output to inject notifications and strip title escapes.
 
+        Wrapped in try/except — any crash here kills pexpect's interact
+        loop and terminates the PTY.
+
         Args:
             data: Raw output bytes.
 
@@ -1059,16 +1142,36 @@ class LeapServer:
             Filtered output bytes with title sequences removed and
             notifications injected.
         """
+        try:
+            return self._output_filter_impl(data)
+        except Exception:
+            return data
+
+    def _output_filter_impl(self, data: bytes) -> bytes:
+        """Implementation of _output_filter (separated for crash protection)."""
         # Strip OSC title-change sequences so the CLI cannot override
         # the "lps <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
 
-        # Delegate state detection to the state tracker
+        # Delegate state detection to the state tracker.
         self.state.on_output(data)
 
         # Signal PTY handler that output was received (used by
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
+
+        # In capture mode, suppress CLI output from reaching the
+        # terminal — the TUI would overwrite our [Leap Q] display.
+        # State detection still runs (on_output called above).
+        if self._queue_capture_mode:
+            # Send deferred backspace to clean up the space we sent.
+            if self._capture_pending_backspace:
+                self._capture_pending_backspace = False
+                self.pty.send('\x7f')
+            self._capture_display(
+                self._queue_capture_buf.decode(
+                    'utf-8', errors='replace'))
+            return b''  # suppress CLI output
 
         return data
 
@@ -1083,7 +1186,7 @@ class LeapServer:
         print("  \u2705 Native scrolling in IntelliJ")
         print("  \u2705 Full terminal width")
         print("  \u2705 No tmux needed!")
-        print("  \u2705 Type ^msg to queue from here")
+        print("  \u2705 Type ^^ to queue from here")
         print("")
         print("  Ctrl+C to exit")
         print("=" * 80)

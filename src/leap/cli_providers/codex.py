@@ -84,24 +84,15 @@ class CodexProvider(CLIProvider):
         return SIGNAL_STATES
 
     @property
-    def output_triggers_running(self) -> bool:
-        # Ratatui redraws the full screen on every keystroke, producing
-        # hundreds of bytes of stripped output (box-drawing, spinners,
-        # status bar).  This is indistinguishable from actual CLI
-        # processing output, so disable output-based idle→running.
-        return False
-
-    @property
-    def enter_triggers_running(self) -> bool:
-        # Since output_triggers_running is False, detect submit via
-        # Enter key in the server terminal.  This is the primary way
-        # to detect that Codex started processing a user message
-        # typed directly in the server terminal.
-        return True
-
-    @property
     def transcript_sessions_dir(self) -> Optional[Path]:
         return CODEX_CONFIG_DIR / 'sessions'
+
+    @property
+    def cursor_hidden_while_idle(self) -> bool:
+        # Ratatui hides the terminal cursor permanently and renders
+        # its own cursor.  Cursor-hidden detection for auto-resume
+        # would false-trigger on every idle redraw.
+        return True
 
     @property
     def silence_timeout(self) -> Optional[float]:

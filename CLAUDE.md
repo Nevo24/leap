@@ -203,7 +203,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 
 ## Server Queue Shortcut
 
-Type `^msg` in the server terminal to queue a message without opening a client. The `^` prefix activates capture mode — characters are hidden from the CLI and shown in a `[Q]` prompt on the input line. Press Enter to queue, Ctrl+C to cancel.
+Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activates capture mode — characters are hidden from the CLI and shown in a `[Leap Q]` prompt on the input line. Works at any point: type `^^msg` to start fresh, or type `hello` then `^^` to convert already-typed text into a queued message. Press Enter to queue, Escape or Ctrl+C to cancel.
 
 ## Client Commands
 

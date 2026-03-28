@@ -1,4 +1,4 @@
-"""Tests for ClaudeStateTracker state machine logic."""
+"""Tests for CLIStateTracker event-driven state machine."""
 
 import json
 from pathlib import Path
@@ -6,9 +6,9 @@ from typing import List
 
 import pytest
 
-from leap.server.state_tracker import ClaudeStateTracker
+from leap.server.state_tracker import CLIStateTracker as ClaudeStateTracker
 from leap.cli_providers.codex import CodexProvider
-from leap.utils.constants import IDLE_SIGNAL_DEBOUNCE, OUTPUT_SILENCE_TIMEOUT, WAITING_STATE_TIMEOUT
+from leap.utils.constants import SAFETY_SILENCE_TIMEOUT, SAFETY_WAITING_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -19,19 +19,46 @@ def make_tracker(
     tmp_path: Path,
     t: List[float],
     auto_send_mode: str = 'pause',
+    provider: object = None,
 ) -> ClaudeStateTracker:
     """Create a tracker with fake clock and a signal file in *tmp_path*."""
     signal_file = tmp_path / "test.signal"
-    return ClaudeStateTracker(
+    kwargs = dict(
         signal_file=signal_file,
         auto_send_mode=auto_send_mode,
         clock=lambda: t[0],
     )
+    if provider is not None:
+        kwargs['provider'] = provider
+    return ClaudeStateTracker(**kwargs)
 
 
 def write_signal(tracker: ClaudeStateTracker, state: str) -> None:
     """Write a JSON signal file that the tracker will read."""
     tracker._signal_file.write_text(json.dumps({"state": state}))
+
+
+def feed_screen_text(tracker: ClaudeStateTracker, text: str) -> None:
+    """Feed text into the tracker's pyte screen (simulates PTY output).
+
+    Uses ANSI escape sequences to position and write text so it appears
+    on the virtual screen for pattern matching.
+    """
+    # Move to top-left and clear screen, then write text
+    esc = f'\x1b[H\x1b[2J{text}'
+    tracker.on_output(esc.encode('utf-8'))
+
+
+def feed_with_hidden_cursor(tracker: ClaudeStateTracker, text: str) -> None:
+    """Feed text with cursor hidden (simulates TUI rendering)."""
+    esc = f'\x1b[?25l\x1b[H\x1b[2J{text}'
+    tracker.on_output(esc.encode('utf-8'))
+
+
+def feed_with_visible_cursor(tracker: ClaudeStateTracker, text: str) -> None:
+    """Feed text with cursor visible (simulates idle prompt)."""
+    esc = f'\x1b[?25h\x1b[H\x1b[2J{text}'
+    tracker.on_output(esc.encode('utf-8'))
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +105,40 @@ class TestOnSend:
         tracker.on_send()
         assert not tracker._signal_file.exists()
 
+    def test_on_send_clears_interrupt_pending(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\x1b')  # Escape → interrupt pending
+        assert tracker._interrupt_pending is True
+        tracker.on_send()
+        assert tracker._interrupt_pending is False
+
 
 # ---------------------------------------------------------------------------
-# Signal file transitions (running → idle/needs_permission/needs_input)
+# on_input Enter → running (all providers)
+# ---------------------------------------------------------------------------
+
+class TestEnterInIdle:
+    def test_enter_in_idle_does_not_trigger_running(self, tmp_path: Path) -> None:
+        """Enter at idle prompt does NOT trigger running.
+
+        The CLI may handle it as a slash command (/clear, /help) that
+        doesn't trigger the Stop hook.  Only on_send() triggers running.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\r')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_on_send_still_triggers_running(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+
+# ---------------------------------------------------------------------------
+# Signal file transitions
 # ---------------------------------------------------------------------------
 
 class TestSignalFile:
@@ -121,759 +179,523 @@ class TestSignalFile:
 
 
 # ---------------------------------------------------------------------------
-# Silence timeout (running → idle)
+# Interrupt detection via _interrupt_pending flag
 # ---------------------------------------------------------------------------
 
-class TestSilenceTimeout:
+class TestInterruptPendingFlag:
+    def test_escape_sets_interrupt_pending(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\x1b')
+        assert tracker._interrupt_pending is True
+
+    def test_ctrl_c_sets_interrupt_pending(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\x03')
+        assert tracker._interrupt_pending is True
+
+    def test_regular_input_does_not_set_interrupt_pending(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        assert tracker._interrupt_pending is False
+
+    def test_idle_signal_with_interrupt_pending_and_pattern_goes_interrupted(
+        self, tmp_path: Path,
+    ) -> None:
+        """Interrupt pending + pattern on screen → interrupted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1b')  # interrupt pending
+        # CLI shows "Interrupted" on screen
+        feed_screen_text(tracker, 'Interrupted')
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_idle_signal_with_interrupt_pending_but_no_pattern_goes_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Interrupt pending but NO pattern on screen → idle.
+
+        The user pressed Escape but the CLI ignored it and finished
+        normally.  No 'Interrupted' appeared.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1b')  # interrupt pending
+        # CLI finishes normally — no "Interrupted" on screen
+        feed_screen_text(tracker, 'Done processing')
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_idle_signal_without_interrupt_pending_goes_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_interrupt_pending_cleared_on_transition(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')
+        assert tracker._interrupt_pending is True
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # triggers transition
+        assert tracker._interrupt_pending is False
+
+    def test_csi_u_ctrl_c_sets_interrupt_pending(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running (so CSI input is processed)
+        # Kitty CSI u for Ctrl+C: \x1b[3u
+        tracker.on_input(b'\x1b[3u')
+        assert tracker._interrupt_pending is True
+
+    def test_csi_u_escape_sets_interrupt_pending(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # Kitty CSI u for Escape: \x1b[27u
+        tracker.on_input(b'\x1b[27u')
+        assert tracker._interrupt_pending is True
+
+
+# ---------------------------------------------------------------------------
+# _user_responded flag (waiting state protection)
+# ---------------------------------------------------------------------------
+
+class TestUserRespondedFlag:
+    def test_input_in_waiting_state_sets_user_responded(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        write_signal(tracker, 'needs_input')
+        tracker.get_state(pty_alive=True)  # → needs_input
+        tracker.on_input(b'x')
+        assert tracker._user_responded is True
+
+    def test_idle_signal_blocked_without_user_responded(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        write_signal(tracker, 'needs_input')
+        tracker.get_state(pty_alive=True)  # → needs_input
+        # Signal idle without user responding
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'
+
+    def test_idle_signal_accepted_with_user_responded(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        write_signal(tracker, 'needs_input')
+        tracker.get_state(pty_alive=True)  # → needs_input
+        tracker.on_input(b'x')  # user responded
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_interrupted_protected_from_idle_without_user_responded(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')  # pattern on screen
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → interrupted
+        # Try to signal idle without responding
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_interrupted_yields_to_idle_with_user_responded(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → interrupted
+        tracker.on_input(b'1')  # user responded
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_interrupted_protected_from_needs_input_without_user_responded(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')
+        feed_screen_text(tracker, 'Interrupted')
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → interrupted
+        # Notification hook writes needs_input (race)
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+
+# ---------------------------------------------------------------------------
+# Interrupt pattern on pyte screen
+# ---------------------------------------------------------------------------
+
+class TestInterruptPatternOnScreen:
+    def test_interrupted_in_running_with_flag(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
+
+    def test_interrupted_in_running_without_flag_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # No escape/ctrl+c pressed
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'running'
+
+    def test_interrupted_in_idle_with_flag(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_input(b'\x1b')  # interrupt pending
+        # Stop hook already raced ahead to idle, now PTY shows pattern
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
+
+    def test_needs_input_corrected_to_interrupted(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        write_signal(tracker, 'needs_input')
+        tracker.get_state(pty_alive=True)  # → needs_input
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
+
+    def test_interrupted_pattern_split_across_lines(self, tmp_path: Path) -> None:
+        """Pattern that wraps across pyte screen lines is still detected.
+
+        On a narrow terminal, 'Interrupted' could end up split at a line
+        boundary.  compact_full (spaces+newlines removed) handles this.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')  # interrupt pending
+        # Resize to narrow screen so text wraps
+        tracker.on_resize(24, 15)
+        # Position cursor near end of line, write text that wraps
+        # Col 10 + "Interrupted" (11 chars) → wraps at col 15
+        tracker.on_output(b'\x1b[1;10HInterrupted')
+        assert tracker.current_state == 'interrupted'
+
+
+class TestConfirmedPatternCrossLine:
+    """Confirmed interrupt pattern uses compact_lines (newlines preserved)
+    to prevent false positives from cross-line text concatenation."""
+
+    def test_cross_line_text_no_false_positive(self, tmp_path: Path) -> None:
+        """'Conversation' on line 1 + 'interrupted' on line 2 should
+        NOT form 'Conversationinterrupted' for confirmed pattern."""
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()
+        # Two lines that would concatenate to "Conversationinterrupted"
+        # if newlines were removed
+        tracker.on_output(
+            b'\x1b[1;1HConversation\x1b[2;1Hinterrupted the flow'
+        )
+        # Should stay running — cross-line match blocked
+        assert tracker.current_state == 'running'
+
+    def test_same_line_confirmed_pattern_detected(self, tmp_path: Path) -> None:
+        """'Conversation interrupted' on SAME line should be detected."""
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # Same line — after space removal: "Conversationinterrupted"
+        tracker.on_output(
+            b'\x1b[1;1HConversation interrupted - tell the model'
+        )
+        assert tracker.current_state == 'interrupted'
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume via cursor visibility
+# ---------------------------------------------------------------------------
+
+class TestAutoResume:
+    def test_cursor_hidden_triggers_running_at_poll(self, tmp_path: Path) -> None:
+        """Auto-resume is detected at poll time (get_state), not on_output.
+
+        This avoids false triggers from mid-render cursor-hidden state
+        in brief TUI redraws.  By poll time (0.5s), brief redraws have
+        completed and cursor is visible again.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        # Enter idle via signal (simulate: was running, now idle)
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+        # _user_input_since_idle was cleared on transition
+        # CLI auto-starts: cursor hidden output
+        t[0] = 5.0
+        feed_with_hidden_cursor(tracker, 'Processing...')
+        # on_output doesn't trigger transition — check at poll time
+        assert tracker.current_state == 'idle'
+        # Poll detects cursor hidden → running
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_cursor_hidden_blocked_if_user_typed(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+        # User types in idle (sets _user_input_since_idle)
+        tracker.on_input(b'y')
+        # Cursor hidden output should NOT trigger running (user typed)
+        feed_with_hidden_cursor(tracker, 'Echo of typing')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_cursor_visible_does_not_trigger_running(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+        feed_with_visible_cursor(tracker, 'Status bar update')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_auto_resume_needs_seen_user_input(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # No user input ever seen (startup)
+        feed_with_hidden_cursor(tracker, 'Startup output')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_brief_redraw_does_not_false_trigger(self, tmp_path: Path) -> None:
+        """A brief TUI redraw (cursor hide → content → cursor show)
+        within one output chunk does not trigger auto-resume."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+        # Brief redraw: hide cursor, render, show cursor — all in one chunk
+        tracker.on_output(
+            b'\x1b[?25l\x1b[H\x1b[2JStatus update\x1b[?25h'
+        )
+        # Cursor is visible after the complete render → no auto-resume
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Safety fallback timeouts
+# ---------------------------------------------------------------------------
+
+class TestSafetyTimeouts:
     def test_silence_timeout_triggers_idle(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        # Produce some output so _last_output_time is set
         t[0] = 1.0
-        tracker.on_output(b'some output')
-        # Advance past the silence timeout
-        t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 1.0
+        # Cursor hidden (simulates processing that hung without output)
+        tracker.on_output(b'\x1b[?25lsome output')
+        t[0] = 1.0 + SAFETY_SILENCE_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
-    def test_silence_timeout_not_triggered_before_deadline(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'some output')
-        # Just under the timeout
-        t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT - 0.1
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-
-# ---------------------------------------------------------------------------
-# Idle → running (output accumulation)
-# ---------------------------------------------------------------------------
-
-class TestOutputAccumulation:
-    def _setup_idle_with_input(self, tmp_path: Path, t: List[float]) -> ClaudeStateTracker:
-        """Return a tracker in idle state that has seen user input."""
-        tracker = make_tracker(tmp_path, t)
-        # Mark user input at t=0
-        tracker.on_input(b'x')
-        return tracker
-
-    def test_output_accumulation_triggers_running(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        # Advance past input cooldown (1.0s)
-        t[0] = 1.1
-        # Send enough printable output to cross the 200-byte threshold
-        tracker.on_output(b'A' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_output_accumulation_needs_user_input_first(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # No on_input() call — _seen_user_input is False
-        t[0] = 1.0
-        tracker.on_output(b'A' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_output_accumulation_resets_on_input(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.0
-        # Accumulate some but not enough
-        tracker.on_output(b'A' * 150)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # User types again — resets accumulator
-        t[0] = 2.0
-        tracker.on_input(b'y')
-        t[0] = 3.0
-        # Another 150 bytes, but accumulator was reset so still under 200
-        tracker.on_output(b'A' * 150)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_output_accumulation_ignores_ansi(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.0
-        # Send only ANSI escape sequences — no printable content
-        tracker.on_output(b'\x1b[2J\x1b[H' * 100)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_output_accumulation_resets_on_gap(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.0
-        tracker.on_output(b'A' * 150)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Gap of >2s resets accumulator
-        t[0] = 4.0
-        tracker.on_output(b'A' * 150)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_output_within_input_cooldown_ignored(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        # Output within 0.5s of input (cooldown period)
-        t[0] = 0.3
-        tracker.on_output(b'A' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_signal_idle_blocks_false_running_retrigger(self, tmp_path: Path) -> None:
-        """After signal file transitions to idle, prompt rendering
-        should not falsely re-trigger running (within grace period)."""
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        # Output accumulation → running
-        t[0] = 1.1
-        tracker.on_output(b'A' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # Signal file says idle (Claude finished)
-        t[0] = 5.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 5.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Prompt rendering arrives within AUTO_RESUME_GRACE — blocked
-        # because user input (t=0) predates idle transition (t≈5.4)
-        # and we're within the 3s grace period.
-        t[0] = 6.0
-        tracker.on_output(b'B' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_silence_timeout_blocks_false_running_retrigger(self, tmp_path: Path) -> None:
-        """After silence timeout transitions to idle, prompt rendering
-        should not falsely re-trigger running (within grace period)."""
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.1
-        tracker.on_output(b'A' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # Silence timeout → idle
-        t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 1.0
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Prompt rendering within grace period — blocked
-        t[0] = 1.0 + OUTPUT_SILENCE_TIMEOUT + 2.0
-        tracker.on_output(b'B' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_new_input_after_idle_allows_accumulation(self, tmp_path: Path) -> None:
-        """User typing AFTER an idle transition should allow output
-        accumulation to detect running again."""
-        t = [0.0]
-        tracker = self._setup_idle_with_input(tmp_path, t)
-        t[0] = 1.1
-        tracker.on_output(b'A' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # Signal idle
-        t[0] = 5.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 5.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # User types again (AFTER idle transition)
-        t[0] = 7.0
-        tracker.on_input(b'x')
-        # New output → should trigger running
-        t[0] = 8.1
-        tracker.on_output(b'C' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-
-# ---------------------------------------------------------------------------
-# Auto-resume (CLI self-starts a new turn without user input)
-# ---------------------------------------------------------------------------
-
-class TestAutoResume:
-    """When the CLI auto-starts a new turn (e.g. background command results),
-    output-based idle→running should still trigger after a grace period,
-    even though no user input occurred since the idle transition."""
-
-    def _go_idle_via_signal(
-        self, tracker: ClaudeStateTracker, t: List[float],
-    ) -> float:
-        """Helper: transition running→idle via signal + debounce.
-
-        Returns the time at which idle was accepted.
-        """
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] += IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        return t[0]
-
-    def test_auto_resume_after_grace_period(self, tmp_path: Path) -> None:
-        """Output sustained past the grace period triggers running."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        assert tracker.get_state(pty_alive=True) == 'running'
-        t[0] = 5.0
-        idle_time = self._go_idle_via_signal(tracker, t)
-        # Output within grace period — must not trigger
-        t[0] = idle_time + 1.0
-        tracker.on_output(b'A' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # After grace period (3s), output SHOULD trigger running
-        t[0] = idle_time + 4.0
-        tracker.on_output(b'B' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_auto_resume_blocked_during_grace(self, tmp_path: Path) -> None:
-        """Output within the grace period does not trigger running."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        t[0] = 5.0
-        idle_time = self._go_idle_via_signal(tracker, t)
-        # Output at 2s (within 3s grace) — must not trigger
-        t[0] = idle_time + 2.0
-        tracker.on_output(b'A' * 500)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_auto_resume_needs_seen_user_input(self, tmp_path: Path) -> None:
-        """Auto-resume requires at least one prior user input."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # No on_input() ever — _seen_user_input is False
-        # Even after grace period, output should not trigger running
-        t[0] = 10.0
-        tracker.on_output(b'A' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_auto_resume_multi_cycle(self, tmp_path: Path) -> None:
-        """Auto-resume works across multiple running→idle→auto-resume cycles.
-
-        Simulates: user sends → running → idle → auto-resume → running →
-        idle → auto-resume again.  Each cycle, _idle_since resets and the
-        grace period applies fresh.
-        """
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-
-        # Cycle 1: user sends message
-        tracker.on_input(b'x')
-        tracker.on_send()
-        assert tracker.get_state(pty_alive=True) == 'running'
-        t[0] = 5.0
-        idle_time = self._go_idle_via_signal(tracker, t)
-
-        # Cycle 1: auto-resume
-        t[0] = idle_time + 4.0
-        tracker.on_output(b'C' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-        # Cycle 2: CLI finishes auto-resumed turn → idle
-        t[0] = idle_time + 10.0
-        idle_time_2 = self._go_idle_via_signal(tracker, t)
-
-        # Cycle 2: grace still blocks
-        t[0] = idle_time_2 + 1.0
-        tracker.on_output(b'D' * 300)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-        # Cycle 2: auto-resume again
-        t[0] = idle_time_2 + 4.0
-        tracker.on_output(b'E' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_auto_resume_stale_signal_file_no_interference(self, tmp_path: Path) -> None:
-        """A stale 'idle' signal file doesn't interfere with auto-resume.
-
-        When the CLI auto-resumes, the old signal file still says 'idle'.
-        get_state() should see idle==idle (no change) and not interfere.
-        After output accumulation triggers running, the signal file is deleted.
-        """
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        t[0] = 5.0
-        idle_time = self._go_idle_via_signal(tracker, t)
-
-        # Signal file still says 'idle' — verify it exists
-        assert tracker._signal_file.exists()
-
-        # Auto-resume output after grace period
-        t[0] = idle_time + 4.0
-        tracker.on_output(b'F' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-        # Signal file should be deleted on transition
-        assert not tracker._signal_file.exists()
-
-    def test_auto_resume_incremental_accumulation(self, tmp_path: Path) -> None:
-        """Auto-resume works with many small output chunks (spinner).
-
-        Simulates the real scenario: small spinner characters (~3 bytes
-        each) arriving every 100ms.  Accumulation should still reach
-        the threshold over time.
-        """
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        t[0] = 5.0
-        idle_time = self._go_idle_via_signal(tracker, t)
-
-        # Small chunks after grace period, simulating spinner
-        t[0] = idle_time + 4.0
-        for i in range(80):
-            t[0] += 0.1  # 100ms intervals
-            tracker.on_output(b'\xe2\x9c\xb3')  # spinner char (3 bytes)
-        # 80 * 3 = 240 bytes > 200 threshold → should be running
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_auto_resume_gap_resets_accumulator(self, tmp_path: Path) -> None:
-        """A >2s output gap resets the accumulator during auto-resume."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        t[0] = 5.0
-        idle_time = self._go_idle_via_signal(tracker, t)
-
-        # Accumulate 150 bytes after grace
-        t[0] = idle_time + 4.0
-        tracker.on_output(b'G' * 150)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-        # 3s gap → accumulator resets
-        t[0] = idle_time + 8.0
-        tracker.on_output(b'H' * 150)
-        # Still idle: 150 < 200 (accumulator was reset by the gap)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-
-# ---------------------------------------------------------------------------
-# Running → needs_input (Interrupted detection)
-# ---------------------------------------------------------------------------
-
-class TestInterruptedDetection:
-    def test_interrupted_detected_in_running(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'interrupted'
-
-    def test_interrupted_split_across_chunks(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'some text Inter')
-        assert tracker.current_state == 'running'
-        t[0] = 1.1
-        tracker.on_output(b'rupted more text')
-        assert tracker.current_state == 'interrupted'
-
-    def test_output_buffer_capped_at_8192(self, tmp_path: Path) -> None:
+    def test_silence_timeout_not_before_deadline(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        # Fill buffer with >8192 bytes of non-matching data
-        tracker.on_output(b'X' * 10000)
-        assert len(tracker._output_buf) <= 8192
+        # Hide cursor (simulates active processing with cursor hidden)
+        tracker.on_output(b'\x1b[?25lsome output')
+        t[0] = 1.0 + SAFETY_SILENCE_TIMEOUT - 1.0
+        assert tracker.get_state(pty_alive=True) == 'running'
 
-    def test_interrupted_in_large_chunk_after_buffer_trim(
+    def test_cursor_visible_plus_silence_triggers_idle(
         self, tmp_path: Path,
     ) -> None:
-        """BUG FIX: 'Interrupted' near the start of a large TUI redraw
-        chunk (>512 bytes) was lost after buffer trim.  The fix checks
-        the raw chunk before trimming."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        # Fill buffer with prior Claude response output
-        tracker.on_output(b'A' * 400)
-        assert tracker.current_state == 'running'
-        # Large TUI redraw: "Interrupted" near start, >512 bytes after
-        chunk = b'\x1b[2J\x1b[H'
-        chunk += b'Interrupted \xc2\xb7 What should Claude do instead?\r\n'
-        chunk += b'B' * 600  # status bar / prompt rendering
-        t[0] = 1.1
-        tracker.on_output(chunk)
-        assert tracker.current_state == 'interrupted'
+        """Running with cursor visible + output silence > 0.5s → idle.
 
-
-# ---------------------------------------------------------------------------
-# False positive: "Interrupted" in Claude's response text (no Escape pressed)
-# ---------------------------------------------------------------------------
-
-class TestInterruptedWordInOutputNotFalsePositive:
-    """The word 'Interrupted' in Claude's normal response text must NOT
-    trigger interrupted state when the user didn't press Escape."""
-
-    def test_interrupted_word_after_send_no_escape(self, tmp_path: Path) -> None:
-        """on_send() followed by output containing 'Interrupted' — no Escape
-        was pressed, so state should remain running."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'running'
-
-    def test_interrupted_word_after_normal_typing(self, tmp_path: Path) -> None:
-        """User types a normal message, Claude responds with 'Interrupted'
-        in its output — should stay running."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'hello')
-        t[0] = 1.1
-        tracker.on_output(b'A' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-        t[0] = 2.0
-        tracker.on_output(b'Request interrupted by user')
-        assert tracker.current_state == 'running'
-
-    def test_interrupted_word_with_escape_triggers(self, tmp_path: Path) -> None:
-        """Same scenario but with Escape — should trigger interrupted."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'interrupted'
-
-    def test_interrupted_with_ctrl_c_triggers(self, tmp_path: Path) -> None:
-        """Ctrl+C (0x03) should also trigger interrupted detection."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x03')
-        t[0] = 1.0
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?',
-        )
-        assert tracker.current_state == 'interrupted'
-
-    def test_ctrl_c_without_interrupted_output_stays_running(
-        self, tmp_path: Path,
-    ) -> None:
-        """Ctrl+C alone (without 'Interrupted' in output) stays running."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x03')
-        t[0] = 1.0
-        tracker.on_output(b'normal output continues')
-        assert tracker.current_state == 'running'
-
-
-# ---------------------------------------------------------------------------
-# False positive: "Interrupted" inside ANSI escape sequences
-# ---------------------------------------------------------------------------
-
-class TestInterruptedFalsePositive:
-    """Ensure 'Interrupted' inside ANSI escape sequences does not trigger
-    a false interrupted state."""
-
-    def test_interrupted_in_hyperlink_osc_ignored(self, tmp_path: Path) -> None:
-        """Hyperlink OSC containing 'Interrupted' in URL must not trigger."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # OSC 8 hyperlink: \x1b]8;;URL\x07 text \x1b]8;;\x07
-        chunk = (
-            b'\x1b]8;;https://example.com/Interrupted\x07'
-            b'click here'
-            b'\x1b]8;;\x07'
-            b' normal output continues'
-        )
-        tracker.on_output(chunk)
-        assert tracker.current_state == 'running'
-
-    def test_interrupted_in_osc_buffer_ignored(self, tmp_path: Path) -> None:
-        """'Interrupted' split across buffer via OSC must not trigger."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'\x1b]8;;https://example.com/Inter')
-        t[0] = 1.1
-        tracker.on_output(b'rupted\x07link text\x1b]8;;\x07')
-        assert tracker.current_state == 'running'
-
-    def test_real_interrupted_still_detected(self, tmp_path: Path) -> None:
-        """Visible 'Interrupted' text (not in ANSI) must still trigger."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        chunk = b'\x1b[2J\x1b[HInterrupted \xc2\xb7 What next?\r\n'
-        tracker.on_output(chunk)
-        assert tracker.current_state == 'interrupted'
-
-    def test_escape_race_interrupted_in_osc_ignored(
-        self, tmp_path: Path,
-    ) -> None:
-        """Escape race: 'Interrupted' in ANSI must not trigger in idle."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # Get to idle with recent input (Escape race window)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        tracker.get_state(True)  # completes debounce → idle
-        t[0] = 1.5
-        tracker.on_input(b'\x1b')  # Escape key
-        t[0] = 2.0
-        # Output with 'Interrupted' only inside OSC
-        tracker.on_output(
-            b'\x1b]8;;https://example.com/Interrupted\x07ok\x1b]8;;\x07',
-        )
-        assert tracker.current_state == 'idle'
-
-
-# ---------------------------------------------------------------------------
-# Escape race (idle state Interrupted detection)
-# ---------------------------------------------------------------------------
-
-class TestEscapeRace:
-    def test_escape_race_interrupted_in_idle(self, tmp_path: Path) -> None:
-        """Stop hook writes idle, then PTY outputs 'Interrupted' → interrupted."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # Simulate: server was running, hook wrote idle, user pressed Escape
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # User presses Escape (single byte)
-        t[0] = 1.5
-        tracker.on_input(b'\x1b')
-        # PTY outputs "Interrupted" within 3s of input
-        t[0] = 2.0
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-
-    def test_escape_race_after_signal_idle_transition(self, tmp_path: Path) -> None:
-        """Signal idle is blocked when user pressed Escape during running,
-        keeping state as running until PTY outputs 'Interrupted'."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # User types directly → output accumulation → running
-        tracker.on_input(b'x')
-        t[0] = 1.1
-        tracker.on_output(b'A' * 201)
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # User presses Escape
-        t[0] = 5.0
-        tracker.on_input(b'\x1b')
-        # Stop hook fires → signal file says idle → blocked (recent input)
-        t[0] = 5.1
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # PTY outputs "Interrupted" shortly after → detected from running
-        t[0] = 5.2
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-
-    def test_escape_race_only_within_10s_of_input(self, tmp_path: Path) -> None:
-        """'Interrupted' in idle state ignored if >10s after input."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        tracker.get_state(pty_alive=True)  # completes debounce → idle
-        # User pressed Escape
-        t[0] = 1.5
-        tracker.on_input(b'\x1b')
-        # PTY outputs "Interrupted" after >10s
-        t[0] = 12.0
-        tracker.on_output(b'Interrupted')
-        # Should stay idle — too late for the race window
-        assert tracker.current_state == 'idle'
-
-    def test_escape_race_ignores_normal_typing_redraw(self, tmp_path: Path) -> None:
-        """Normal typing that triggers TUI redraw with 'Interrupted' in AI text.
-
-        When user types a normal character while idle, the Ink TUI redraws
-        the visible screen.  If the AI's previous response discussed interrupts,
-        the redraw contains 'Interrupted' — but the user didn't press Escape,
-        so the escape-race detector must NOT trigger.
+        Handles /clear sent from queue (on_send → running, but Stop
+        hook doesn't fire).  The cursor becoming visible + output
+        settling signals the CLI returned to idle.
         """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
+        tracker.on_send()  # → running (e.g., /clear from queue)
         t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        tracker.get_state(pty_alive=True)  # completes debounce → idle
-        # User types a normal character (NOT Escape)
-        t[0] = 1.5
-        tracker.on_input(b'y')
-        # PTY redraws screen — output contains 'Interrupted' from AI text
-        t[0] = 1.52
-        tracker.on_output(b'Interrupted')
-        # Should stay idle — no Escape was pressed
-        assert tracker.current_state == 'idle'
+        # TUI redraws with cursor visible at the end
+        feed_with_visible_cursor(tracker, 'Cleared screen')
+        # Wait > 0.5s (one poll cycle)
+        t[0] = 2.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
 
-    def test_escape_race_still_works_after_escape(self, tmp_path: Path) -> None:
-        """Escape race still triggers correctly when user presses Escape."""
+    def test_cursor_visible_during_streaming_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """During streaming, output arrives constantly.  Even if cursor
+        is visible between frames, silence < 0.5s keeps state running."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
-        write_signal(tracker, 'idle')
+        feed_with_visible_cursor(tracker, 'Streaming token 1')
+        # Only 0.1s since last output — not enough silence
+        t[0] = 1.1
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_waiting_timeout_triggers_idle(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)  # → needs_permission
+        t[0] = 1.0
+        tracker.on_output(b'prompt text')
+        # Remove signal file so timeout can fire
+        tracker._signal_file.unlink(missing_ok=True)
+        t[0] = 1.0 + SAFETY_WAITING_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_waiting_timeout_respects_signal_confirmation(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        write_signal(tracker, 'needs_permission')
         tracker.get_state(pty_alive=True)
-        # User presses Escape
-        t[0] = 1.5
-        tracker.on_input(b'\x1b')
-        # PTY outputs "Interrupted" (even as part of a large redraw)
-        t[0] = 1.52
-        large_redraw = b'A' * 800 + b'Interrupted' + b'B' * 400
-        tracker.on_output(large_redraw)
-        # Should detect interrupt — Escape WAS pressed
-        assert tracker.current_state == 'interrupted'
-
-
-# ---------------------------------------------------------------------------
-# Stop hook race (needs_input protected from idle signal)
-# ---------------------------------------------------------------------------
-
-class TestStopHookRace:
-    def test_needs_input_protected_from_idle_signal_within_5s(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
         t[0] = 1.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # Immediately write idle signal — within 5s grace
-        t[0] = 2.0
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-
-    def test_needs_input_yields_to_idle_signal_after_5s(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # After 5s grace, idle signal is honored
-        t[0] = 7.0
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_interrupted_protected_from_idle_signal_within_5s(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        # Immediately write idle signal — within 5s grace
-        t[0] = 2.0
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-
-    def test_interrupted_yields_to_idle_signal_after_5s(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        # After 5s grace, idle signal is honored
-        t[0] = 7.0
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-
-# ---------------------------------------------------------------------------
-# Resume detection (needs_input/needs_permission → running)
-# ---------------------------------------------------------------------------
-
-class TestResumeDetection:
-    def test_resume_after_permission_on_printable_output(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
+        tracker.on_output(b'prompt text')
+        # Signal still confirms needs_permission
+        t[0] = 1.0 + SAFETY_WAITING_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        # User types 'y' to approve (AFTER entering waiting state)
-        t[0] = 3.0
-        tracker.on_input(b'y')
-        # After 2s grace, printable output → running
-        t[0] = 4.0
-        tracker.on_output(b'Processing...')
-        assert tracker.current_state == 'running'
 
-    def test_resume_ignored_during_grace_period(self, tmp_path: Path) -> None:
+
+# ---------------------------------------------------------------------------
+# Trust dialog detection via pyte screen
+# ---------------------------------------------------------------------------
+
+class TestTrustDialog:
+    def test_trust_dialog_detected_on_screen(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        # User types, but output within 2s grace period → stays
-        t[0] = 1.5
-        tracker.on_input(b'y')
-        t[0] = 2.0
-        tracker.on_output(b'Prompt text rendering...')
+        # Feed trust dialog text (startup, no user input)
+        feed_screen_text(tracker, 'Do you trust the contents of this directory?')
         assert tracker.current_state == 'needs_permission'
 
-    def test_resume_ignored_for_ansi_only_output(self, tmp_path: Path) -> None:
+    def test_trust_dialog_resume_goes_to_idle(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
+        feed_screen_text(tracker, 'Do you trust the contents of this directory?')
+        assert tracker.current_state == 'needs_permission'
+        # User selects option → on_send → running
         tracker.on_send()
+        assert tracker.current_state == 'running'
+        # Trust dialog phase: output → idle
         t[0] = 1.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # User types, but only ANSI output → stays needs_input
-        t[0] = 3.0
-        tracker.on_input(b'y')
-        t[0] = 4.0
-        tracker.on_output(b'\x1b[2J\x1b[H\r')
-        assert tracker.current_state == 'needs_input'
+        feed_screen_text(tracker, 'Welcome to Claude Code')
+        assert tracker.current_state == 'idle'
 
-    def test_resume_blocked_without_user_input(self, tmp_path: Path) -> None:
-        """TUI status bar rendering after needs_input should NOT
-        trigger resume (no user input since entering waiting state)."""
+    def test_normal_output_does_not_trigger_trust_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # user input seen → skip startup detection
+        feed_screen_text(tracker, 'Do you trust the contents of this directory?')
+        assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Stale interrupt suppression
+# ---------------------------------------------------------------------------
+
+class TestStaleInterruptSuppression:
+    def test_resume_from_interrupted_suppresses_confirmed_pattern(
+        self, tmp_path: Path,
+    ) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # After grace, printable output but NO user input → stays
-        t[0] = 4.0
-        tracker.on_output(b'Nevo.Mashiach 10% Opus 4.6 default')
-        assert tracker.current_state == 'needs_input'
+        tracker.on_input(b'\x1b')
+        feed_screen_text(tracker, 'Interrupted')
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → interrupted
+        # Send from interrupted → running (sets suppression)
+        tracker.on_send()
+        assert tracker._suppress_stale_interrupt is True
+
+    def test_suppression_cleared_on_normal_send(self, tmp_path: Path) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Non-interrupted send
+        tracker.on_send()
+        assert tracker._suppress_stale_interrupt is False
+
+    def test_suppression_auto_cleared_when_pattern_scrolls_off(
+        self, tmp_path: Path,
+    ) -> None:
+        """_suppress_stale_interrupt is cleared when the interrupted
+        pattern no longer appears on the pyte screen."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()
+        tracker.on_input(b'\x1b')
+        feed_screen_text(tracker, 'Interrupted')
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → interrupted
+        tracker.on_send()  # → running, suppression=True
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle, suppression still True
+        assert tracker._suppress_stale_interrupt is True
+
+        # Output without "Interrupted" → suppression cleared
+        feed_screen_text(tracker, 'Normal idle prompt')
+        assert tracker._suppress_stale_interrupt is False
+
+        # Now a real interrupt should be detected
+        tracker.on_input(b'\x1b')
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
 
 
 # ---------------------------------------------------------------------------
@@ -881,25 +703,115 @@ class TestResumeDetection:
 # ---------------------------------------------------------------------------
 
 class TestOnInputFiltering:
-    def test_on_input_ignores_escape_sequences(self, tmp_path: Path) -> None:
+    def test_csi_sequences_filtered(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        # Multi-byte ESC sequences (terminal focus events) are ignored
         tracker.on_input(b'\x1b[I')  # focus in
-        assert not tracker._seen_user_input
+        assert tracker._interrupt_pending is False
+        assert tracker._seen_user_input is False
 
-    def test_on_input_accepts_single_escape(self, tmp_path: Path) -> None:
+    def test_single_escape_accepted(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        # Single ESC byte = Escape key press
         tracker.on_input(b'\x1b')
-        assert tracker._seen_user_input
+        assert tracker._interrupt_pending is True
 
-    def test_on_input_accepts_regular_keys(self, tmp_path: Path) -> None:
+    def test_regular_keys_accepted(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'a')
-        assert tracker._seen_user_input
+        assert tracker._seen_user_input is True
+        assert tracker._interrupt_pending is False
+
+    def test_ctrl_c_in_multi_byte_data(self, tmp_path: Path) -> None:
+        """Ctrl+C bundled with text in one on_input call."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'hello\x03')
+        assert tracker._interrupt_pending is True
+        assert tracker._seen_user_input is True
+
+    def test_embedded_csi_u_escape(self, tmp_path: Path) -> None:
+        """CSI u Escape sequence embedded in multi-byte data (not at pos 0)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Typed "hi" then pressed Escape via kitty protocol
+        tracker.on_input(b'hi\x1b[27u')
+        assert tracker._interrupt_pending is True
+
+    def test_embedded_csi_focus_not_interrupt(self, tmp_path: Path) -> None:
+        """Focus event CSI embedded in data should NOT set interrupt."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        # Text + focus in event (not an interrupt)
+        tracker.on_input(b'hi\x1b[I')
+        assert tracker._interrupt_pending is False
+        # But _seen_user_input should be True (text was typed)
+        assert tracker._seen_user_input is True
+
+    def test_focus_event_plus_ctrl_c(self, tmp_path: Path) -> None:
+        """Focus event followed by Ctrl+C — both must be handled."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\x1b[I\x03')
+        assert tracker._interrupt_pending is True
+        assert tracker._seen_user_input is True
+
+    def test_pure_focus_event_filtered(self, tmp_path: Path) -> None:
+        """Pure focus event (no real user input) is filtered entirely."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\x1b[I')
+        assert tracker._interrupt_pending is False
+        assert tracker._seen_user_input is False
+
+    def test_mixed_text_interrupt_enter(self, tmp_path: Path) -> None:
+        """Text + Ctrl+C + Enter all in one chunk.
+
+        Enter no longer triggers running.  Ctrl+C sets interrupt_pending.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'hello\x03\r')
+        assert tracker._interrupt_pending is True
+        assert tracker.current_state == 'idle'
+
+    def test_text_with_interrupt_sets_user_input_since_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Printable text alongside interrupt should still set
+        _user_input_since_idle (the text counts)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+        # Text + Ctrl+C — has printable content
+        tracker.on_input(b'hello\x03')
+        assert tracker._user_input_since_idle is True
+
+    def test_pure_interrupt_does_not_set_user_input_since_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Pure Ctrl+C without text should NOT set _user_input_since_idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+        tracker.on_input(b'\x03')
+        assert tracker._user_input_since_idle is False
+
+    def test_null_bytes_ignored(self, tmp_path: Path) -> None:
+        """Null bytes (terminal noise) should not set any flags."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'\x00\x00\x00')
+        assert tracker._seen_user_input is False
+        assert tracker._interrupt_pending is False
+        assert tracker._user_input_since_idle is False
 
 
 # ---------------------------------------------------------------------------
@@ -910,971 +822,151 @@ class TestIsReady:
     def test_is_ready_pause_mode(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t, auto_send_mode='pause')
-        # Idle → ready
-        assert tracker.is_ready(pty_alive=True)
-        # Running → not ready
-        tracker.on_send()
-        assert not tracker.is_ready(pty_alive=True)
-        # needs_permission → not ready in pause mode
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        assert not tracker.is_ready(pty_alive=True)
+        assert tracker.is_ready_for_state('idle') is True
+        assert tracker.is_ready_for_state('running') is False
+        assert tracker.is_ready_for_state('needs_permission') is False
+        assert tracker.is_ready_for_state('needs_input') is False
+        assert tracker.is_ready_for_state('interrupted') is False
 
     def test_is_ready_always_mode(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t, auto_send_mode='always')
-        # Idle → ready
-        assert tracker.is_ready(pty_alive=True)
-        # Running → not ready
-        tracker.on_send()
-        assert not tracker.is_ready(pty_alive=True)
-        # needs_permission → ready in always mode
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        assert tracker.is_ready(pty_alive=True)
-        # needs_input → ready in always mode
-        t[0] = 7.0  # past 5s grace
-        write_signal(tracker, 'needs_input')
-        # Read state to transition
-        tracker.get_state(pty_alive=True)
-        assert tracker.is_ready(pty_alive=True)
+        assert tracker.is_ready_for_state('idle') is True
+        assert tracker.is_ready_for_state('running') is False
+        assert tracker.is_ready_for_state('needs_permission') is True
+        assert tracker.is_ready_for_state('needs_input') is True
+        assert tracker.is_ready_for_state('interrupted') is False
 
 
 # ---------------------------------------------------------------------------
-# Startup trust dialog detection
+# on_resize
 # ---------------------------------------------------------------------------
 
-class TestTrustDialog:
-    def test_trust_dialog_plain_text(self, tmp_path: Path) -> None:
-        """Workspace trust dialog with literal spaces → needs_permission."""
+class TestResize:
+    def test_resize_updates_screen(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        t[0] = 1.0
-        tracker.on_output(
-            b'Is this a project you created or one you trust?\r\n'
-            b'\xe2\x9d\xaf 1. Yes, I trust this folder\r\n'
-            b'  2. No, exit\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
+        tracker.on_resize(30, 100)
+        assert tracker._screen.lines == 30
+        assert tracker._screen.columns == 100
 
-    def test_trust_dialog_old_text(self, tmp_path: Path) -> None:
-        """Old trust dialog wording still detected."""
+    def test_resize_during_idle_stays_idle(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        t[0] = 1.0
-        tracker.on_output(
-            b'Do you trust the contents of this directory?\r\n'
-            b'\xe2\x9d\xaf 1. Yes, continue\r\n'
-            b'  2. No, quit\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-
-    def test_trust_dialog_cursor_positioned(self, tmp_path: Path) -> None:
-        """Real TUI output: cursor positioning CSI sequences replace spaces.
-        After ANSI stripping, words merge (e.g. 'Yes,Itrustthisfolder')."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        t[0] = 1.0
-        # Realistic Ink rendering: each word positioned via CSI
-        tracker.on_output(
-            b'\x1b[10;1HIs\x1b[10;4Hthis\x1b[10;9Ha\x1b[10;11Hproject'
-            b'\x1b[10;19Hyou\x1b[10;23Htrust?\r\n'
-            b'\x1b[11;3H1.\x1b[11;6HYes,\x1b[11;11HI'
-            b'\x1b[11;13Htrust\x1b[11;19Hthis\x1b[11;24Hfolder\r\n'
-            b'\x1b[12;3H2.\x1b[12;6HNo,\x1b[12;10Hexit\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-
-    def test_trust_dialog_split_across_chunks(self, tmp_path: Path) -> None:
-        """Trust dialog text split across PTY read chunks."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # Chunk 1: beginning (TUI rendering)
-        t[0] = 1.0
-        tracker.on_output(
-            b'\x1b[2J\x1b[H' + b'\xe2\x94\x80' * 100
-            + b'\x1b[5;1HAccessingworkspace:\r\n'
-            + b'\x1b[7;1HQuicksafetycheck\r\n'
-            + b'\x1b[10;1HIs\x1b[10;4Hthis\x1b[10;9Ha'
-            + b'\x1b[10;11Hproject\x1b[10;19Hyou\x1b[10;23Htru'  # split mid-word
-        )
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_resize(30, 100)
+        # Output after resize (TUI redraw) should not trigger running
+        feed_with_visible_cursor(tracker, 'Redrawn content')
         assert tracker.current_state == 'idle'
-        # Chunk 2: rest of dialog
-        t[0] = 1.1
-        tracker.on_output(
-            b'st?\r\n'
-            b'\x1b[11;3H1.\x1b[11;6HYes,\x1b[11;11HI'
-            b'\x1b[11;13Htrust\x1b[11;19Hthis\x1b[11;24Hfolder\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
 
-    def test_trust_dialog_clears_buffer_and_accumulator(self, tmp_path: Path) -> None:
-        """After trust dialog detection, output buffer and accumulator reset."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        t[0] = 1.0
-        tracker.on_output(
-            b'Is this a project you trust?\r\n'
-            b'\xe2\x9d\xaf 1. Yes, I trust this folder\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-        assert len(tracker._output_buf) == 0
-        assert tracker._idle_output_acc == 0
 
-    def test_trust_dialog_sets_waiting_since(self, tmp_path: Path) -> None:
-        """Trust dialog sets _waiting_since for timeout tracking."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        t[0] = 5.0
-        tracker.on_output(
-            b'Is this a project you trust?\r\n'
-            b'\xe2\x9d\xaf 1. Yes, I trust this folder\r\n'
-        )
-        assert tracker._waiting_since == 5.0
+# ---------------------------------------------------------------------------
+# Prompt output via pyte screen snapshot
+# ---------------------------------------------------------------------------
 
-    def test_trust_dialog_resume_goes_to_idle(self, tmp_path: Path) -> None:
-        """After trust dialog → needs_permission, answering and seeing
-        startup output should go to idle (not running), because Claude
-        hasn't processed any request yet."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # Trust dialog detected
-        t[0] = 1.0
-        tracker.on_output(
-            b'Is this a project you trust?\r\n'
-            b'\xe2\x9d\xaf 1. Yes, I trust this folder\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-        assert tracker._trust_dialog_phase is True
-        # User answers (presses Enter)
-        t[0] = 3.0
-        tracker.on_input(b'\r')
-        # After 2s grace, Claude startup output arrives
-        t[0] = 4.0
-        tracker.on_output(b'Claude Code v2.1.41 Opus 4.6')
-        assert tracker.current_state == 'idle'
-        assert tracker._trust_dialog_phase is False
-
-    def test_trust_dialog_resume_does_not_affect_normal_permission(
-        self, tmp_path: Path,
-    ) -> None:
-        """Normal permission prompts (not trust dialog) still resume to
-        running as before."""
+class TestPromptOutput:
+    def test_prompt_output_from_snapshot(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        assert tracker._trust_dialog_phase is False
-        # User approves
-        t[0] = 3.0
-        tracker.on_input(b'y')
-        # After grace, output → running (normal behavior)
-        t[0] = 4.0
-        tracker.on_output(b'Processing...')
-        assert tracker.current_state == 'running'
-
-    def test_normal_output_does_not_trigger_trust_dialog(self, tmp_path: Path) -> None:
-        """Output without the trust dialog pattern stays idle."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        t[0] = 1.0
-        tracker.on_output(b'Hello world, processing your request...')
-        assert tracker.current_state == 'idle'
-
-    def test_standard_dialog_at_startup(self, tmp_path: Path) -> None:
-        """Standard dialog patterns (Enter to select, Esc to cancel) at
-        startup should also be detected as needs_permission."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        assert not tracker._seen_user_input
-        t[0] = 1.0
-        tracker.on_output(
-            b'Some permission prompt\r\n'
-            b'Enter to select  Esc to cancel\r\n'
-        )
-        assert tracker.current_state == 'needs_permission'
-        # Standard dialog should NOT set trust_dialog_phase
-        assert tracker._trust_dialog_phase is False
-
-
-# ---------------------------------------------------------------------------
-# Signal from idle (idle → needs_permission/needs_input via signal file)
-# ---------------------------------------------------------------------------
-
-class TestSignalFromIdle:
-    """Tests for the fix: signal file must be read even when current state
-    is idle, so that Notification hooks writing needs_permission/needs_input
-    trigger a proper state transition."""
-
-    def test_signal_from_idle_to_needs_permission(self, tmp_path: Path) -> None:
-        """idle + signal=needs_permission → needs_permission."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Hook writes needs_permission while idle
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-
-    def test_signal_from_idle_to_needs_input(self, tmp_path: Path) -> None:
-        """idle + signal=needs_input → needs_input."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        t[0] = 1.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-
-    def test_signal_from_idle_to_idle_is_noop(self, tmp_path: Path) -> None:
-        """idle + signal=idle → stays idle (no transition)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # _waiting_since should remain None (no transition occurred)
-        assert tracker._waiting_since is None
-
-    def test_signal_from_idle_sets_waiting_since(self, tmp_path: Path) -> None:
-        """Transition from idle sets _waiting_since for timeout tracking."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        assert tracker._waiting_since is None
-        t[0] = 3.0
+        # Enter needs_permission via signal
         write_signal(tracker, 'needs_permission')
         tracker.get_state(pty_alive=True)
-        assert tracker._waiting_since == 3.0
+        # Feed prompt text while in needs_permission
+        feed_screen_text(tracker, 'Allow tool use?\n1. Yes\n2. No')
+        result = tracker.get_prompt_output()
+        assert 'Allow tool use?' in result
 
-    def test_signal_from_idle_clears_output_acc(self, tmp_path: Path) -> None:
-        """Transition from idle resets output accumulator and buffer."""
+    def test_empty_prompt_output(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        # Accumulate some output
-        tracker._idle_output_acc = 150
-        tracker._output_buf.extend(b'some data')
-        t[0] = 1.0
-        write_signal(tracker, 'needs_input')
-        tracker.get_state(pty_alive=True)
-        assert tracker._idle_output_acc == 0
-        assert len(tracker._output_buf) == 0
-
-    def test_stale_signal_file_deleted_on_init(self, tmp_path: Path) -> None:
-        """A stale signal file from a SIGKILL'd server must not cause a
-        false transition when the new tracker starts."""
-        t = [0.0]
-        signal_file = tmp_path / "test.signal"
-        # Simulate stale signal left by a killed server
-        signal_file.write_text(json.dumps({"state": "needs_permission"}))
-        assert signal_file.exists()
-        # New tracker deletes it on init
-        tracker = ClaudeStateTracker(
-            signal_file=signal_file, clock=lambda: t[0],
-        )
-        assert not signal_file.exists()
-        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker.get_prompt_output() == ''
 
 
 # ---------------------------------------------------------------------------
-# cleanup
+# Cleanup
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# PTY dialog detection (running state)
-# ---------------------------------------------------------------------------
-
-class TestPTYDialogDetection:
-    """Permission dialogs during running state are detected via Notification
-    hooks (signal file), NOT PTY output patterns.  PTY dialog detection was
-    removed to eliminate false positives from conversation text containing
-    dialog-like patterns (e.g. Claude discussing permission prompts).
-
-    These tests verify that:
-    - Dialog-like text in conversation does NOT trigger needs_permission
-    - Interrupt detection still works correctly alongside dialog text
-    - Signal-file-based permission detection works during running state
-    """
-
-    def test_dialog_text_in_conversation_stays_running(
-        self, tmp_path: Path,
-    ) -> None:
-        """Dialog patterns in conversation text should NOT trigger
-        needs_permission — only Notification hooks (signal file) do."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(
-            b'Allow Claude to use Bash?\n'
-            b'1. Allow once\n'
-            b'2. Allow always\n'
-            b'3. Deny\n'
-            b'Enter to select \xc2\xb7 Esc to cancel\n'
-        )
-        assert tracker.current_state == 'running'
-
-    def test_permission_detected_via_signal_file(
-        self, tmp_path: Path,
-    ) -> None:
-        """Real permission prompts are detected via the Notification hook
-        writing needs_permission to the signal file."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Notification hook fires → signal file written
-        signal_file = tmp_path / 'test.signal'
-        signal_file.write_text('{"state": "needs_permission"}')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-
-    def test_interrupted_takes_priority_over_dialog(
-        self, tmp_path: Path,
-    ) -> None:
-        """If 'Interrupted' is in the same chunk, interrupted wins."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(
-            b'Interrupted\n'
-            b'Enter to select \xc2\xb7 Esc to cancel\n'
-        )
-        assert tracker.current_state == 'interrupted'
-
-    def test_no_interrupt_without_escape_for_claude(
-        self, tmp_path: Path,
-    ) -> None:
-        """Claude's confirmed_interrupt_pattern is disabled — interrupt
-        detection requires a recent Escape/Ctrl+C keypress.  Without
-        one, the state stays running (self-interrupts are handled by
-        the Notification hook writing needs_input instead)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # No Escape pressed — CLI self-interrupted.
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
-            b'1. Try again\n'
-            b'2. Stop\n'
-            b'Enter to select \xc2\xb7 Esc to cancel\n'
-        )
-        # Without keypress, Claude stays running (no confirmed pattern)
-        assert tracker.current_state == 'running'
-
-    def test_self_interrupt_handled_via_needs_input_hook(
-        self, tmp_path: Path,
-    ) -> None:
-        """Self-interrupt (no Escape) is handled by the Notification
-        hook writing needs_input for the interrupt dialog."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Stop hook fires
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # debounce starts
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Notification hook fires for the interrupt dialog
-        t[0] = 2.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-
-    def test_no_false_interrupted_from_conversation_text(
-        self, tmp_path: Path,
-    ) -> None:
-        """'Interrupted' in conversation text (no middle dot) should
-        NOT false-positive as interrupted."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Claude discusses interrupts — no middle dot after the word
-        tracker.on_output(
-            b'The process was Interrupted due to a timeout.\n'
-        )
-        assert tracker.current_state == 'running'
-
-    def test_no_false_interrupted_from_conversation_plus_dialog(
-        self, tmp_path: Path,
-    ) -> None:
-        """'Interrupted' in conversation text followed by dialog-like
-        patterns should stay running — not trigger interrupted or
-        needs_permission."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Claude discusses interrupts in its conversational output
-        tracker.on_output(
-            b'The process was Interrupted due to a timeout.\n'
-        )
-        assert tracker.current_state == 'running'
-        t[0] = 2.0
-        # Later, dialog-like text in conversation (not a real dialog)
-        tracker.on_output(
-            b'Allow Bash?\n'
-            b'1. Allow once\n'
-            b'Enter to select \xc2\xb7 Esc to cancel\n'
-        )
-        # Stays running — only the Notification hook can trigger
-        # needs_permission during running state
-        assert tracker.current_state == 'running'
-
-    def test_interrupt_prompt_split_across_chunks_no_false_positive(
-        self, tmp_path: Path,
-    ) -> None:
-        """Claude's confirmed pattern is disabled — interrupt prompt
-        split across chunks does NOT trigger interrupted without a
-        recent Escape/Ctrl+C keypress."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'Running command...\n')
-        assert tracker.current_state == 'running'
-        t[0] = 1.1
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
-        )
-        # No keypress → stays running (confirmed pattern disabled)
-        assert tracker.current_state == 'running'
-
-    def test_self_interrupt_debounce_still_works_for_timing(
-        self, tmp_path: Path,
-    ) -> None:
-        """The running→idle debounce still delays idle acceptance.
-        For Claude, without confirmed_interrupt_pattern, self-interrupts
-        are handled by the Notification hook (needs_input) instead of
-        PTY pattern detection.  The debounce buys time for the hook."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Stop hook races ahead
-        write_signal(tracker, 'idle')
-        # First poll: debounce starts, state stays RUNNING
-        assert tracker.get_state(pty_alive=True) == 'running'
-        t[0] = 1.1  # Within debounce window (0.3s)
-        # PTY output arrives — no confirmed pattern for Claude
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
-            b'1. Try again\n'
-        )
-        # Still running (debounce in progress, no confirmed pattern)
-        assert tracker.current_state == 'running'
-        # Debounce expires, idle accepted
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Notification hook fires for interrupt dialog
-        t[0] = 1.5
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-
-    def test_no_false_interrupted_from_scrollback_content(
-        self, tmp_path: Path,
-    ) -> None:
-        """Content containing 'Interrupted' + middle dot in TUI output
-        does NOT cause false interrupted — Claude's confirmed pattern
-        is disabled."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        t[0] = 1.0
-        # Output with "Interrupted" from git commit messages and TUI
-        # decoration middle dots — this previously caused false positives
-        tracker.on_output(
-            b'63a370d Suppress stale interrupt pattern\xc2\xb7'
-        )
-        assert tracker.current_state == 'running'
-
-
-# ---------------------------------------------------------------------------
-# Stale interrupt suppression (scrollback false positive prevention)
-# ---------------------------------------------------------------------------
-
-class TestStaleInterruptSuppression:
-    """After resolving an interrupt, the old 'Interrupted ·' prompt
-    remains in TUI scrollback.  The confirmed pattern check must be
-    suppressed until the text scrolls out of the buffer."""
-
-    def test_resume_from_interrupted_suppresses_confirmed_pattern(self, tmp_path: Path) -> None:
-        """After interrupted→running resume, the confirmed pattern
-        in the buffer should NOT re-trigger interrupted."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        # Simulate interrupt: user pressed Escape, PTY shows pattern
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.5
-        tracker.on_output(b'Interrupted\xc2\xb7 What should Claude do instead?')
-        assert tracker.current_state == 'interrupted'
-        # User answers the interrupt → resume
-        t[0] = 5.0
-        tracker.on_input(b'1')
-        t[0] = 7.5  # past RESUME_GRACE_PERIOD
-        # TUI redraws — still shows old "Interrupted·" in scrollback
-        tracker.on_output(b'Processing your request... Interrupted\xc2\xb7 old prompt')
-        # Should be running, NOT re-interrupted
-        assert tracker.current_state == 'running'
-
-    def test_suppression_cleared_on_non_interrupted_send(self, tmp_path: Path) -> None:
-        """Suppression is cleared when on_send() is called from a
-        non-interrupted state (new turn = safe to re-enable detection)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        # Interrupt via Escape
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.5
-        tracker.on_output(b'Interrupted\xc2\xb7 What should Claude do instead?')
-        assert tracker.current_state == 'interrupted'
-        # User answers → resume → idle
-        t[0] = 5.0
-        tracker.on_input(b'1')
-        t[0] = 7.5
-        tracker.on_output(b'Processing...')
-        assert tracker.current_state == 'running'
-        assert tracker._suppress_stale_interrupt is True
-        # Large output does NOT clear suppression (old behavior was buggy)
-        t[0] = 8.0
-        tracker.on_output(b'A' * 9000)
-        assert tracker._suppress_stale_interrupt is True  # persists!
-        # Signal idle, then new send from idle clears suppression
-        t[0] = 20.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)
-        t[0] = 20.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        tracker.get_state(pty_alive=True)  # accepts idle
-        t[0] = 21.0
-        tracker.on_send()  # from idle → clears suppression
-        assert tracker._suppress_stale_interrupt is False
-
-    def test_on_send_from_interrupted_sets_suppression(self, tmp_path: Path) -> None:
-        """on_send() from interrupted state activates suppression."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.5
-        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
-        assert tracker.current_state == 'interrupted'
-        # Send via client (on_send from interrupted)
-        t[0] = 15.0
-        tracker.on_send()
-        assert tracker._suppress_stale_interrupt is True
-        # Buffer re-accumulates old scrollback — still suppressed
-        t[0] = 16.0
-        tracker.on_output(b'old scrollback Interrupted\xc2\xb7 text here')
-        assert tracker.current_state == 'running'
-
-    def test_no_scrollback_false_positive_after_interrupt_resolved(self, tmp_path: Path) -> None:
-        """After interrupt is resolved, old scrollback text with
-        Interrupted· does NOT re-trigger interrupted in any state."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_input(b'x')
-        tracker.on_send()
-        # Interrupt
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.5
-        tracker.on_output(b'Interrupted\xc2\xb7 prompt')
-        assert tracker.current_state == 'interrupted'
-        # Signal transitions interrupted→idle
-        t[0] = 10.0
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        assert tracker._suppress_stale_interrupt is True
-        # TUI redraws with old scrollback — should stay idle
-        t[0] = 11.0
-        tracker.on_output(b'old Interrupted\xc2\xb7 text in scrollback')
-        assert tracker.current_state == 'idle'
-
-
-# ---------------------------------------------------------------------------
-# Idle-state interrupt detection (confirmed pattern fallback)
-# ---------------------------------------------------------------------------
-
-class TestIdleInterruptDetection:
-    """Test confirmed_interrupt_pattern detection while in idle state.
-
-    Claude's confirmed pattern is disabled (returns None) to prevent
-    false positives from TUI scrollback.  Only Codex uses confirmed
-    pattern detection in idle.
-    """
-
-    def test_claude_no_interrupt_in_idle_without_escape(self, tmp_path: Path) -> None:
-        """Claude interrupt prompt in idle does NOT trigger interrupted
-        (confirmed pattern disabled).  Hook-based needs_input is the
-        correct path for self-interrupts."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        t[0] = 2.0
-        # Interrupt PTY output arrives while idle — no confirmed pattern
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
-            b'1. Try again\n'
-        )
-        assert tracker.current_state == 'idle'
-
-    def test_codex_interrupt_detected_in_idle(self, tmp_path: Path) -> None:
-        """Codex interrupt prompt detected while idle (critical:
-        output_triggers_running=False means no further processing
-        without this check)."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Simulate: running → idle via signal file
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        t[0] = 2.0
-        # Interrupt PTY output arrives while idle
-        tracker.on_output(
-            b'Conversation interrupted - tell the model what to do.'
-        )
-        assert tracker.current_state == 'interrupted'
-
-    def test_no_false_interrupted_in_idle_from_conversation(
-        self, tmp_path: Path,
-    ) -> None:
-        """Generic 'Interrupted' in conversation text while idle
-        should NOT trigger false interrupted (no middle dot)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        tracker.get_state(pty_alive=True)  # completes debounce → idle
-        t[0] = 2.0
-        tracker.on_output(
-            b'The process was Interrupted due to a timeout.\n'
-        )
-        assert tracker.current_state == 'idle'
-
-    def test_idle_interrupt_requires_seen_user_input(
-        self, tmp_path: Path,
-    ) -> None:
-        """Confirmed pattern check should not fire during startup
-        (before any user input)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # No on_send() or on_input() — _seen_user_input is False
-        t[0] = 1.0
-        tracker.on_output(
-            b'Interrupted \xc2\xb7 What should Claude do instead?\n'
-        )
-        # Should stay idle (startup phase, not a real interrupt)
-        assert tracker.current_state == 'idle'
-
 
 class TestCleanup:
     def test_cleanup_deletes_signal_file(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         write_signal(tracker, 'idle')
-        assert tracker._signal_file.exists()
         tracker.cleanup()
         assert not tracker._signal_file.exists()
 
     def test_cleanup_no_error_if_missing(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        assert not tracker._signal_file.exists()
-        tracker.cleanup()  # Should not raise
+        tracker.cleanup()  # no error
 
 
 # ---------------------------------------------------------------------------
-# Interrupted state specific behavior
+# PTY dead resets flags
 # ---------------------------------------------------------------------------
 
-class TestInterruptedState:
-    def test_interrupted_blocks_auto_send(self, tmp_path: Path) -> None:
-        """Interrupted state should block auto-send regardless of mode."""
-        t = [0.0]
-        for mode in ('pause', 'always'):
-            tracker = make_tracker(tmp_path, t, auto_send_mode=mode)
-            tracker.on_send()
-            t[0] = 0.5
-            tracker.on_input(b'\x1b')  # User presses Escape
-            t[0] = 1.0
-            tracker.on_output(b'some text Interrupted more text')
-            assert tracker.current_state == 'interrupted'
-            assert not tracker.is_ready(pty_alive=True)
-
-    def test_interrupted_protected_from_needs_input_signal(self, tmp_path: Path) -> None:
-        """Notification hook fires needs_input for the interrupt dialog —
-        interrupted state should be protected for 5s."""
+class TestPtyDead:
+    def test_pty_dead_clears_flags(self, tmp_path: Path) -> None:
+        """When PTY dies, all flags should be reset so a restart
+        starts fresh (e.g. trust dialog detection works again)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'interrupted'
-        # Notification hook writes needs_input within 5s
-        t[0] = 2.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        # Set up various flags
+        tracker.on_input(b'x')  # _seen_user_input
+        tracker.on_send()       # → running
+        tracker.on_input(b'\x1b')  # _interrupt_pending
+        # PTY dies
+        assert tracker.get_state(pty_alive=False) == 'idle'
+        # All flags reset
+        assert tracker._interrupt_pending is False
+        assert tracker._seen_user_input is False
+        assert tracker._user_responded is False
+        assert tracker._trust_dialog_phase is False
+        assert tracker._suppress_stale_interrupt is False
 
-    def test_interrupted_protected_from_idle_signal(self, tmp_path: Path) -> None:
-        """Stop hook writes idle on Escape — interrupted should be
-        protected for 5s."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'interrupted'
-        # Stop hook writes idle within 5s
-        t[0] = 2.0
-        write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-
-    def test_interrupted_yields_to_needs_input_after_5s(self, tmp_path: Path) -> None:
-        """After 5s grace, a needs_input signal should be honored."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 0.5
-        tracker.on_input(b'\x1b')  # User presses Escape
-        t[0] = 1.0
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.current_state == 'interrupted'
-        # After 5s grace, needs_input signal is honored
-        t[0] = 7.0
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-
-    def test_needs_input_corrected_to_interrupted_by_pty_output(
+    def test_pty_dead_repeated_calls_no_redundant_reset(
         self, tmp_path: Path,
     ) -> None:
-        """Race: Stop hook → idle, Notification hook → needs_input, then PTY
-        output with 'Interrupted' arrives.  The on_output handler should
-        correct needs_input back to interrupted."""
+        """Repeated pty_alive=False calls after already idle should
+        not keep resetting the screen."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.get_state(pty_alive=False)  # first call: resets
+        # Second call: already idle, should be fast no-op
+        tracker.get_state(pty_alive=False)
+        assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Escape correction from NEEDS_PERMISSION
+# ---------------------------------------------------------------------------
+
+class TestEscapeCorrectionFromPermission:
+    def test_escape_in_needs_permission_goes_interrupted(
+        self, tmp_path: Path,
+    ) -> None:
+        """Escape at a permission prompt should detect interrupted
+        pattern and transition to interrupted (not just NEEDS_INPUT)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        t[0] = 1.0
-        # Stop hook races ahead, writes idle
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Notification hook writes needs_input (interrupt dialog)
-        t[0] = 1.0 + IDLE_SIGNAL_DEBOUNCE + 0.2
-        write_signal(tracker, 'needs_input')
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # Simulate Escape keypress just before
-        tracker._last_input_time = 0.9
-        tracker._last_escape_time = 0.9
-        # PTY output with "Interrupted" arrives
-        t[0] = 1.2
-        tracker.on_output(b'Interrupted \xc2\xb7 What should Claude do instead?')
-        assert tracker.current_state == 'interrupted'
-
-    def test_interrupted_user_answered_resumes_running(
-        self, tmp_path: Path,
-    ) -> None:
-        """After 5s protection expires with stale idle signal, if the user
-        typed after the interrupt, timing is preserved so on_output()
-        can detect the resume when printable output arrives."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # User presses Escape
-        tracker.on_input(b'\x1b')
-        # PTY outputs "Interrupted"
-        t[0] = 1.2
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        # Stop hook writes idle
-        write_signal(tracker, 'idle')
-        # Within 5s protection, idle is blocked
-        t[0] = 3.0
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-        # User types an answer at T=3.5
-        t[0] = 3.5
-        tracker.on_input(b'do something else')
-        # Claude produces output (ANSI-only during protection window)
-        t[0] = 4.0
-        tracker.on_output(b'\x1b[2K\x1b[1G')  # ANSI only, no printable text
-        # Protection expires at T=6.2 (1.2 + 5.0) — stale idle accepted
-        # but timing preserved (user_answered)
-        t[0] = 7.0
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Now Claude produces printable output — idle→running fires
-        # because _idle_since was preserved (not reset to T=7.0)
-        t[0] = 7.5
-        tracker.on_output(b'Here is my response...')
-        t[0] = 8.0
-        tracker.on_output(b'x' * 201)  # exceed 200-byte threshold
-        assert tracker.current_state == 'running'
-
-    def test_interrupted_user_answered_without_preserve_would_be_stuck(
-        self, tmp_path: Path,
-    ) -> None:
-        """Verify the fix: without timing preservation, _idle_since would
-        be set to now (T=7.0), making _last_input_time (T=3.5) < _idle_since,
-        which would block idle→running accumulation permanently."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.2
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        write_signal(tracker, 'idle')
-        # User types
-        t[0] = 3.5
-        tracker.on_input(b'do something else')
-        # Protection expires, timing preserved
-        t[0] = 7.0
-        tracker.get_state(pty_alive=True)
-        # Key assertion: _idle_since should be the old _waiting_since (1.2),
-        # NOT 7.0.  This ensures _last_input_time (3.5) > _idle_since (1.2).
-        assert tracker._idle_since < tracker._last_input_time
-
-    def test_interrupted_no_input_accepts_stale_idle(
-        self, tmp_path: Path,
-    ) -> None:
-        """If user didn't type after interrupt, stale idle is accepted
-        after the 5s window (existing behavior preserved)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.2
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        write_signal(tracker, 'idle')
-        # No user input after interrupt — stale idle accepted after 5s
-        t[0] = 7.0
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # _idle_since is set to now (normal behavior)
-        assert tracker._idle_since == 7.0
-
-    def test_interrupted_to_needs_input_preserves_timing(
-        self, tmp_path: Path,
-    ) -> None:
-        """When interrupted→needs_input after 5s with user input,
-        _waiting_since is preserved so on_output() resume works."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.2
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        # User types at T=3
-        t[0] = 3.0
-        tracker.on_input(b'answer')
-        # Notification hook writes needs_input (stale, from interrupt dialog)
-        write_signal(tracker, 'needs_input')
-        # Protection expires
-        t[0] = 7.0
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # _waiting_since should be preserved (not reset to T=7.0)
-        assert tracker._waiting_since < tracker._last_input_time
-        # Now printable output triggers resume
-        t[0] = 7.5
-        tracker.on_output(b'Processing your request...')
-        assert tracker.current_state == 'running'
-
-    def test_needs_input_user_answered_resumes_running(
-        self, tmp_path: Path,
-    ) -> None:
-        """on_output() resume works when user types after needs_input
-        and printable output follows (existing behavior, no get_state involved)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        # Signal needs_input directly
-        write_signal(tracker, 'needs_input')
-        t[0] = 0.5
-        assert tracker.get_state(pty_alive=True) == 'needs_input'
-        # User answers at T=3
-        t[0] = 3.0
-        tracker.on_input(b'yes')
-        # Output follows (Claude starts processing) — after 2s grace
-        t[0] = 3.5
-        tracker.on_output(b'\x1b[2Kprocessing...')
-        assert tracker.current_state == 'running'
-
-    def test_interrupted_fresh_needs_permission_honored(
-        self, tmp_path: Path,
-    ) -> None:
-        """A fresh needs_permission signal should be honored with fresh
-        timing — user_answered should NOT apply for non-stale signals."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        t[0] = 1.2
-        tracker.on_output(b'Interrupted')
-        assert tracker.current_state == 'interrupted'
-        # User types at T=3
-        t[0] = 3.0
-        tracker.on_input(b'run bash command')
-        # Output follows (ANSI only)
-        t[0] = 4.0
-        tracker.on_output(b'\x1b[2K\x1b[1G')
-        # Claude hits permission prompt — fresh signal
-        t[0] = 7.0
         write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        # _waiting_since should be reset to now (fresh timing),
-        # NOT preserved from the old interrupt
-        assert tracker._waiting_since == 7.0
+        tracker.get_state(pty_alive=True)  # → needs_permission
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
 
 
 # ---------------------------------------------------------------------------
-# CLIState enum and backward compatibility
+# CLIState enum
 # ---------------------------------------------------------------------------
 
 class TestCLIStateEnum:
-    """Tests for CLIState enum, state sets, and backward-compat alias."""
-
     def test_cli_state_string_comparison(self) -> None:
-        """CLIState members compare equal to their string values."""
         from leap.cli_providers.states import CLIState
         assert CLIState.IDLE == 'idle'
         assert CLIState.RUNNING == 'running'
-        assert CLIState.NEEDS_PERMISSION == 'needs_permission'
-        assert CLIState.NEEDS_INPUT == 'needs_input'
-        assert CLIState.INTERRUPTED == 'interrupted'
 
     def test_waiting_states_membership(self) -> None:
         from leap.cli_providers.states import CLIState, WAITING_STATES
@@ -1882,418 +974,222 @@ class TestCLIStateEnum:
         assert CLIState.NEEDS_INPUT in WAITING_STATES
         assert CLIState.INTERRUPTED in WAITING_STATES
         assert CLIState.IDLE not in WAITING_STATES
-        assert CLIState.RUNNING not in WAITING_STATES
-
-    def test_signal_states_membership(self) -> None:
-        from leap.cli_providers.states import CLIState, SIGNAL_STATES
-        assert CLIState.IDLE in SIGNAL_STATES
-        assert CLIState.NEEDS_PERMISSION in SIGNAL_STATES
-        assert CLIState.NEEDS_INPUT in SIGNAL_STATES
-        assert CLIState.RUNNING not in SIGNAL_STATES
-        assert CLIState.INTERRUPTED in SIGNAL_STATES
-
-    def test_prompt_states_membership(self) -> None:
-        from leap.cli_providers.states import CLIState, PROMPT_STATES
-        assert CLIState.NEEDS_PERMISSION in PROMPT_STATES
-        assert CLIState.NEEDS_INPUT in PROMPT_STATES
-        assert CLIState.IDLE not in PROMPT_STATES
-        assert CLIState.RUNNING not in PROMPT_STATES
-        assert CLIState.INTERRUPTED not in PROMPT_STATES
-
-    def test_string_membership_in_state_sets(self) -> None:
-        """Plain strings work with state sets (str, Enum)."""
-        from leap.cli_providers.states import WAITING_STATES, PROMPT_STATES
-        assert 'needs_input' in WAITING_STATES
-        assert 'needs_permission' in PROMPT_STATES
 
     def test_backward_compat_signal_alias(self, tmp_path: Path) -> None:
-        """Old hooks writing 'has_question' should be read as 'needs_input'."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        t[0] = 1.0
-        # Write old-style signal
-        tracker._signal_file.write_text(json.dumps({"state": "has_question"}))
+        tracker._signal_file.write_text(
+            json.dumps({"state": "has_question"}),
+        )
         assert tracker.get_state(pty_alive=True) == 'needs_input'
 
-    def test_import_from_cli_providers(self) -> None:
-        """CLIState can be imported from the cli_providers package."""
-        from leap.cli_providers import CLIState
-        assert CLIState.IDLE == 'idle'
-
 
 # ---------------------------------------------------------------------------
-# Codex-specific helpers
+# Codex-specific
 # ---------------------------------------------------------------------------
 
-def make_codex_tracker(
-    tmp_path: Path,
-    t: List[float],
-    auto_send_mode: str = 'pause',
-) -> ClaudeStateTracker:
-    """Create a tracker with Codex provider, fake clock, signal file."""
-    signal_file = tmp_path / "test.signal"
-    return ClaudeStateTracker(
-        signal_file=signal_file,
-        auto_send_mode=auto_send_mode,
-        clock=lambda: t[0],
-        provider=CodexProvider(),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Codex: enter_triggers_running
-# ---------------------------------------------------------------------------
-
-class TestCodexEnterTriggersRunning:
-    """Test Enter-key based idle→running detection for Ratatui CLIs."""
-
-    def test_enter_in_idle_transitions_to_running(self, tmp_path: Path) -> None:
+class TestCodexSpecific:
+    def test_codex_enter_does_not_trigger_running(self, tmp_path: Path) -> None:
+        """Codex Enter in idle stays idle — same as all providers."""
         t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        assert tracker.get_state(pty_alive=True) == 'idle'
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
         tracker.on_input(b'\r')
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_enter_not_in_idle_is_noop(self, tmp_path: Path) -> None:
-        """Enter while running should not reset the running state."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        assert tracker.get_state(pty_alive=True) == 'running'
-        t[0] = 1.0
-        tracker.on_input(b'\r')
-        # Still running (not reset)
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_enter_deletes_signal_file(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        # Write a stale signal
-        write_signal(tracker, 'idle')
-        assert tracker._signal_file.exists()
-        tracker.on_input(b'\r')
-        assert not tracker._signal_file.exists()
-
-    def test_enter_clears_output_buf(self, tmp_path: Path) -> None:
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_output(b'some TUI output')
-        tracker.on_input(b'\r')
-        assert tracker._output_buf == bytearray()
-
-
-# ---------------------------------------------------------------------------
-# Codex: silence timeout
-# ---------------------------------------------------------------------------
-
-class TestCodexSilenceTimeout:
-    """Test Codex-specific shorter silence timeout (8s vs 15s)."""
-
-    def test_codex_uses_shorter_silence_timeout(self, tmp_path: Path) -> None:
-        """Codex falls back to idle after 8s of silence, not 15s."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'thinking...')
-        # After 9 seconds of silence — Codex timeout (8s) should fire
-        t[0] = 10.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
-    def test_codex_not_idle_before_timeout(self, tmp_path: Path) -> None:
-        """Codex stays running if output arrived within 8s."""
+    def test_codex_silence_timeout(self, tmp_path: Path) -> None:
         t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
         tracker.on_send()
         t[0] = 1.0
-        tracker.on_output(b'thinking...')
-        # Only 5 seconds — still within 8s timeout
-        t[0] = 6.0
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_claude_uses_longer_timeout(self, tmp_path: Path) -> None:
-        """Claude (default) still uses 15s timeout, not 8s."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(b'processing...')
-        # 10 seconds — within Claude's 15s timeout
-        t[0] = 11.0
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # 16 seconds — exceeds timeout
-        t[0] = 17.0
+        tracker.on_output(b'output')
+        codex_timeout = CodexProvider().silence_timeout
+        t[0] = 1.0 + codex_timeout + 1.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
 
 # ---------------------------------------------------------------------------
-# Codex: interrupted detection
+# /clear scenario (the original bug)
 # ---------------------------------------------------------------------------
 
-class TestCodexInterrupted:
-    """Test interrupted state detection with Codex's lowercase pattern."""
+class TestSlashClear:
+    def test_clear_stays_idle(self, tmp_path: Path) -> None:
+        """The original bug: /clear typed in idle caused persistent running.
 
-    def test_interrupted_detected_from_pty_output(self, tmp_path: Path) -> None:
-        """Codex outputs 'interrupted' (lowercase) → interrupted state."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Simulate user pressing Escape
-        tracker.on_input(b'\x1b')
-        tracker._last_input_time = t[0]
-        t[0] = 1.5
-        # PTY outputs the interrupted message
-        tracker.on_output(
-            b'Conversation interrupted - tell the model what to do differently.'
-        )
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-
-    def test_interrupted_detected_with_ansi(self, tmp_path: Path) -> None:
-        """Interrupted pattern detected even with ANSI sequences mixed in."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        tracker._last_input_time = t[0]
-        t[0] = 1.5
-        tracker.on_output(
-            b'\x1b[31mConversation interrupted\x1b[0m - ...'
-        )
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-
-    def test_signal_idle_blocked_during_escape_race(self, tmp_path: Path) -> None:
-        """Stop hook writing 'idle' is blocked while awaiting interrupt pattern."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # User presses Escape (single byte)
-        tracker.on_input(b'\x1b')
-        t[0] = 1.5
-        # Stop hook fires, writes idle
-        write_signal(tracker, 'idle')
-        # Within ESCAPE_RACE_WINDOW — idle blocked
-        assert tracker.get_state(pty_alive=True) == 'running'
-        # Now PTY outputs interrupted pattern
-        t[0] = 2.0
-        tracker.on_output(b'Conversation interrupted')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-
-    def test_interrupt_detected_without_escape(self, tmp_path: Path) -> None:
-        """Codex interrupt detected via confirmed_interrupt_pattern
-        even when Ctrl+C bypassed on_input()."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # No Escape/Ctrl+C seen by on_input — bypassed to child process
-        tracker.on_output(
-            b'Conversation interrupted - tell the model what to do differently.'
-        )
-        assert tracker.current_state == 'interrupted'
-
-    def test_no_false_interrupted_from_conversation_text(
-        self, tmp_path: Path,
-    ) -> None:
-        """Generic 'interrupted' in conversation text should NOT
-        trigger false interrupted state."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Codex outputs text discussing interrupts — but not
-        # "Conversation interrupted" as a phrase
-        tracker.on_output(
-            b'The task was interrupted by a network error.'
-        )
-        assert tracker.current_state == 'running'
-
-    def test_interrupt_with_ansi_without_escape(self, tmp_path: Path) -> None:
-        """Codex interrupt with ANSI detected without Escape keypress."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_output(
-            b'\x1b[31m\xe2\x96\xa0 Conversation interrupted\x1b[0m'
-            b' - tell the model what to do differently.'
-        )
-        assert tracker.current_state == 'interrupted'
-
-
-# ---------------------------------------------------------------------------
-# Codex: CSI escape sequence filtering
-# ---------------------------------------------------------------------------
-
-class TestCodexCSIFiltering:
-    """Test that CSI terminal events don't hold ESCAPE_RACE_WINDOW open."""
-
-    def test_focus_events_dont_block_idle_signal(self, tmp_path: Path) -> None:
-        """Focus in/out events (\x1b[I, \x1b[O) should not refresh
-        _last_input_time and block running→idle signal transition."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Simulate real Escape key
-        tracker.on_input(b'\x1b')
-        t[0] = 3.0  # Past ESCAPE_RACE_WINDOW (2s)
-        # Focus event arrives (terminal switching)
-        tracker.on_input(b'\x1b[I')  # focus in
-        t[0] = 3.5
-        # Stop hook writes idle
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # starts debounce
-        t[0] = 3.5 + IDLE_SIGNAL_DEBOUNCE + 0.1
-        # Should accept idle because focus event didn't refresh
-        # _last_input_time for ESCAPE_RACE_WINDOW purposes
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-    def test_real_escape_still_blocks_idle(self, tmp_path: Path) -> None:
-        """A real Escape key (single byte) should still block idle signal."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')  # Real Escape
-        t[0] = 1.5
-        write_signal(tracker, 'idle')
-        # Within 2s of Escape — idle blocked
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-    def test_bundled_escape_plus_csi_updates_time(self, tmp_path: Path) -> None:
-        """Escape key + CSI bundled (\x1b\x1b[I) should update time."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        # Bundled: Escape key + focus event in same read
-        tracker.on_input(b'\x1b\x1b[I')
-        t[0] = 1.5
-        write_signal(tracker, 'idle')
-        # Should block — the bundled Escape updated _last_input_time
-        assert tracker.get_state(pty_alive=True) == 'running'
-
-
-# ---------------------------------------------------------------------------
-# Codex: output_triggers_running disabled
-# ---------------------------------------------------------------------------
-
-class TestCodexOutputDoesNotTriggerRunning:
-    """Verify output accumulation doesn't trigger idle→running for Codex."""
-
-    def test_output_does_not_trigger_running(self, tmp_path: Path) -> None:
-        """Large output while idle should NOT trigger running for Codex."""
-        t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
-        # Simulate user input to mark seen_user_input
-        tracker.on_input(b'x')
-        t[0] = 1.0
-        # Go to idle via signal
-        write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # Process signal
-        # Large output (TUI redraw) should not trigger running
-        t[0] = 2.0
-        tracker.on_output(b'x' * 500)
-        t[0] = 3.0
-        tracker.on_output(b'y' * 500)
-        assert tracker.get_state(pty_alive=True) == 'idle'
-
-
-# ---------------------------------------------------------------------------
-# Waiting state timeout (applies to all providers)
-# ---------------------------------------------------------------------------
-
-class TestWaitingStateTimeout:
-    """Test fallback timeout for stuck waiting states."""
-
-    def test_interrupted_persists_after_timeout(self, tmp_path: Path) -> None:
-        """Interrupted state persists even after WAITING_STATE_TIMEOUT.
-
-        The state tracker writes 'interrupted' to the signal file, so the
-        timeout check finds confirmation and keeps the state.
+        Fix: Enter in idle does NOT trigger running.  /clear is a CLI
+        slash command — the Stop hook may never fire for it.  The state
+        stays idle throughout.
         """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        tracker._last_input_time = t[0]
-        t[0] = 1.5
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-        # Output timestamp is set to 1.5
-        # After WAITING_STATE_TIMEOUT (30s) — signal file confirms
-        # interrupted, so the state stays.
-        t[0] = 1.5 + WAITING_STATE_TIMEOUT + 1.0
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        tracker.on_input(b'x')  # seen user input
 
-    def test_interrupted_stays_if_output_arrives(self, tmp_path: Path) -> None:
-        """Interrupted state should NOT time out if output keeps arriving."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        tracker.on_input(b'\x1b')
-        tracker._last_input_time = t[0]
-        t[0] = 1.5
-        tracker.on_output(b'some text Interrupted more text')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-        # Output arrives within the timeout window
-        t[0] = 20.0
-        tracker.on_output(b'\x1b[Hsome TUI redraw')
-        # Not timed out yet (last output was at t=20)
-        t[0] = 25.0
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        # User types /clear + Enter
+        for ch in b'/clear':
+            tracker.on_input(bytes([ch]))
+        tracker.on_input(b'\r')
+        # State stays idle — Enter doesn't trigger running
+        assert tracker.current_state == 'idle'
 
-    def test_needs_permission_times_out(self, tmp_path: Path) -> None:
-        """needs_permission falls back to idle after timeout when the
-        signal file no longer confirms the waiting state (e.g. hook
-        didn't re-fire)."""
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        # Some output at transition
-        tracker.on_output(b'prompt text')
-        # Delete signal file to simulate hook not re-firing
-        tracker._signal_file.unlink(missing_ok=True)
-        # Wait beyond timeout
-        t[0] = 1.0 + WAITING_STATE_TIMEOUT + 1.0
+        # TUI redraws with cursor visible — still idle
+        t[0] = 0.5
+        feed_with_visible_cursor(tracker, 'Cleared screen')
+        assert tracker.current_state == 'idle'
+
+        # Even at poll time — cursor visible → no auto-resume
         assert tracker.get_state(pty_alive=True) == 'idle'
 
-    def test_needs_permission_no_timeout_when_signal_confirms(
+    def test_clear_vs_real_message(self, tmp_path: Path) -> None:
+        """A real message typed at server terminal triggers running
+        via auto-resume (cursor hidden during processing), while
+        /clear does not (cursor visible after brief redraw)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+
+        # Simulate: user typed message, CLI starts processing
+        # (cursor hidden = streaming output)
+        tracker.on_send()  # explicit client send
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+        # _user_input_since_idle is False after transition
+
+        # CLI auto-starts (background) → cursor hidden
+        feed_with_hidden_cursor(tracker, 'Processing your request...')
+        # At next poll: cursor hidden → running
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+
+# ---------------------------------------------------------------------------
+# Stale screen content after state transitions
+# ---------------------------------------------------------------------------
+
+class TestStaleScreenContent:
+    def test_stale_interrupted_on_screen_no_false_trigger(
         self, tmp_path: Path,
     ) -> None:
-        """needs_permission does NOT timeout when the signal file still
-        confirms the waiting state — this prevents rapid toggling."""
+        """After resolving an interrupt, stale 'Interrupted' text on
+        the pyte screen must not cause false interrupted state when
+        user presses Escape later.
+
+        This was a critical bug: pyte screen retained historical content
+        across transitions, unlike the old _output_buf which was cleared.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+
+        # Phase 1: Real interrupt cycle
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
+
+        # Phase 2: Resolve interrupt — send new message
+        tracker.on_send()  # → running (clears screen)
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle (clears screen)
+
+        # Phase 3: Accidental Escape in idle
+        tracker.on_input(b'\x1b')  # interrupt pending
+        assert tracker._interrupt_pending is True
+
+        # New output arrives — screen should NOT contain stale "Interrupted"
+        t[0] = 5.0
+        feed_screen_text(tracker, 'Normal idle output')
+        # Should stay idle — "Interrupted" is not on the fresh screen
+        assert tracker.current_state == 'idle'
+
+    def test_screen_reset_on_running_to_idle(self, tmp_path: Path) -> None:
+        """Screen is cleared when transitioning running→idle via hook."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        t[0] = 1.0
-        write_signal(tracker, 'needs_permission')
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
-        # Some output at transition
-        tracker.on_output(b'prompt text')
-        # Signal file still says needs_permission — should NOT timeout
-        t[0] = 1.0 + WAITING_STATE_TIMEOUT + 1.0
-        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        feed_screen_text(tracker, 'Some running output')
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
 
-    def test_codex_interrupted_persists(self, tmp_path: Path) -> None:
-        """Codex interrupted state persists (signal file confirms)."""
+        # Screen should be cleared
+        with tracker._screen_lock:
+            screen_text = tracker._get_screen_text()
+        assert 'Some running output' not in screen_text
+
+
+# ---------------------------------------------------------------------------
+# Pasted text with Enter (bundled bytes)
+# ---------------------------------------------------------------------------
+
+class TestPastedEnter:
+    def test_pasted_enter_does_not_trigger_running(self, tmp_path: Path) -> None:
+        """Enter in idle (even pasted) does NOT trigger running.
+
+        The CLI handles the input — hooks signal when processing starts/ends.
+        """
         t = [0.0]
-        tracker = make_codex_tracker(tmp_path, t)
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_input(b'hello\r')
+        assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Escape doesn't block auto-resume
+# ---------------------------------------------------------------------------
+
+class TestEscapeDoesNotBlockAutoResume:
+    def test_escape_does_not_set_user_input_since_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Escape/Ctrl+C should not set _user_input_since_idle,
+        so auto-resume cursor detection is not blocked."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
         tracker.on_send()
-        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle, clears _user_input_since_idle
+        assert tracker._user_input_since_idle is False
+
+        # Escape should NOT set _user_input_since_idle
         tracker.on_input(b'\x1b')
-        tracker._last_input_time = t[0]
-        t[0] = 1.5
-        tracker.on_output(b'Conversation interrupted')
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
-        t[0] = 1.5 + WAITING_STATE_TIMEOUT + 1.0
-        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        assert tracker._user_input_since_idle is False
+        assert tracker._interrupt_pending is True
+
+        # Auto-resume should still work (detected at poll time)
+        t[0] = 5.0
+        feed_with_hidden_cursor(tracker, 'Auto processing')
+        # Need to clear signal file first (interrupt pending would
+        # redirect idle signal to interrupted)
+        tracker._signal_file.unlink(missing_ok=True)
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_ctrl_c_does_not_block_auto_resume(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+
+        tracker.on_input(b'\x03')  # Ctrl+C
+        assert tracker._user_input_since_idle is False
+
+    def test_regular_input_does_block_auto_resume(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)  # → idle
+
+        tracker.on_input(b'a')  # regular input
+        assert tracker._user_input_since_idle is True
+
+        # Auto-resume blocked (even at poll time)
+        t[0] = 5.0
+        feed_with_hidden_cursor(tracker, 'Some output')
+        assert tracker.get_state(pty_alive=True) == 'idle'

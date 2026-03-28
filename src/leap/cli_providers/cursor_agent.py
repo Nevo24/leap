@@ -92,16 +92,6 @@ class CursorAgentProvider(CLIProvider):
         return SIGNAL_STATES
 
     @property
-    def output_triggers_running(self) -> bool:
-        # Ink TUI (like Claude Code) — output after user input reliably
-        # indicates processing.
-        return True
-
-    @property
-    def enter_triggers_running(self) -> bool:
-        return False
-
-    @property
     def silence_timeout(self) -> Optional[float]:
         # Use default (15s).  Ink TUI has variable output cadence.
         return None

@@ -1,17 +1,18 @@
 """
 CLI state tracking for Leap server.
 
-Encapsulates the state machine that detects the CLI's current state
+Event-driven state machine that detects the CLI's current state
 (idle, running, needs_permission, needs_input, interrupted) using
-hook-based signal files with a PTY silence fallback.
+hook-based signal files, explicit input events, boolean flags, and
+pyte terminal emulation.
 
-Supports multiple CLI backends (Claude, Codex, Cursor Agent, Gemini CLI, etc.) via the
-CLIProvider abstraction.
+No timing-based cooldowns or debounce windows — state transitions
+are triggered by discrete events (hooks, user input, cursor visibility).
+Safety fallback timeouts (60s) exist only for crash recovery.
 """
 
 import json
 import logging
-import re
 import threading
 import time
 from pathlib import Path
@@ -23,20 +24,10 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
-    AUTO_RESUME_GRACE,
-    ESCAPE_CORRECTION_WINDOW,
-    IDLE_OUTPUT_THRESHOLD,
-    IDLE_SIGNAL_DEBOUNCE,
-    INPUT_COOLDOWN,
-    INTERRUPT_DETECT_WINDOW,
-    OUTPUT_GAP_RESET,
-    OUTPUT_SILENCE_TIMEOUT,
-    RESIZE_SUPPRESS_WINDOW,
-    RESUME_GRACE_PERIOD,
-    STATE_PROTECTION_WINDOW,
+    SAFETY_SILENCE_TIMEOUT,
+    SAFETY_WAITING_TIMEOUT,
     STATE_LOG_DIR,
     STORAGE_DIR,
-    WAITING_STATE_TIMEOUT,
 )
 
 _log = logging.getLogger('leap.state')
@@ -73,45 +64,23 @@ def _setup_debug_log(signal_file: Path) -> None:
 
 
 class CLIStateTracker:
-    """Tracks CLI state via hook-written signal files.
+    """Tracks CLI state via hook-written signal files and explicit events.
 
-    The CLI hooks write a JSON signal file on state transitions
-    (Stop, ToolInput, SubAgentInput).  This class reads that file to
-    determine the current state, with a silence-timeout fallback for
-    cases where hooks don't fire (e.g. user interrupts with Ctrl+C).
+    State transitions are driven by:
+    - Hook signal files (Stop, Notification) — primary mechanism
+    - Explicit user events (on_send, on_input Enter) — idle→running
+    - Boolean flags (_interrupt_pending, _user_responded) — replace timing
+    - pyte cursor visibility — auto-resume detection
+    - pyte rendered screen — pattern matching (interrupts, dialogs)
 
     Thread safety: ``_state`` and ``_waiting_since`` are protected by
-    ``_lock``.  ``_output_buf`` and ``_last_prompt_buf`` are protected
-    by ``_buf_lock`` for compound read+clear operations.
-    ``_last_output_time`` is lock-free (single writer from the output
-    filter; stale reads are acceptable for the silence timeout
-    heuristic).
+    ``_lock``.  ``_screen`` and ``_prompt_snapshot`` are protected by
+    ``_screen_lock``.  Boolean flags are lock-free (GIL-atomic).
     """
 
-    # Matches ANSI escape sequences (CSI, OSC, charset, keypad, cursor
-    # save/restore) and carriage returns — used to filter TUI refresh
-    # noise from real printable output.
-    _ANSI_RE: re.Pattern[bytes] = re.compile(
-        rb'\x1b\[[0-9;?]*[A-Za-z]'
-        rb'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
-        rb'|\x1b[()][0-9A-Za-z]'
-        rb'|\x1b[=>]'
-        rb'|\r'
-    )
-
-    # Box-drawing and TUI decoration characters (UTF-8 encoded).
-    # These survive ANSI stripping but are not real content — they're
-    # borders, separators, and block elements from TUI rendering.
-    # Used to avoid false idle→running from terminal resize redraws.
-    _BOX_DRAWING_RE: re.Pattern[bytes] = re.compile(
-        # Box Drawing: U+2500–U+257F (UTF-8: \xe2\x94\x80–\xe2\x95\xbf)
-        rb'[\xe2][\x94\x95][\x80-\xbf]'
-        # Block Elements: U+2580–U+259F (UTF-8: \xe2\x96\x80–\xe2\x96\x9f)
-        rb'|[\xe2][\x96][\x80-\x9f]'
-        # Braille Patterns: U+2800–U+28FF (UTF-8: \xe2\xa0\x80–\xe2\xa3\xbf)
-        # Used by some TUIs for spinners/progress.
-        rb'|[\xe2][\xa0-\xa3][\x80-\xbf]'
-    )
+    # Screen dimensions for the virtual terminal.
+    _SCREEN_COLS = 200
+    _SCREEN_ROWS = 50
 
     def __init__(
         self,
@@ -127,65 +96,40 @@ class CLIStateTracker:
 
         self._state: str = CLIState.IDLE
         self._lock = threading.Lock()
-        self._buf_lock = threading.Lock()
+        self._screen_lock = threading.Lock()
         self._waiting_since: Optional[float] = None
         self._last_output_time: float = 0.0
-        # Track user input to distinguish typing echo from CLI output.
-        self._last_input_time: float = self._clock()
-        # Track when the user last attempted an interrupt — Escape (0x1b),
-        # Ctrl+C (0x03), or multi-byte escape sequences while running.
-        # Used by the interrupted-pattern detector in on_output() to avoid
-        # false positives from normal typing that triggers TUI redraws
-        # containing "Interrupted" in the AI's conversational text.
-        self._last_escape_time: float = -INTERRUPT_DETECT_WINDOW
-        # True after the first real user keystroke (prevents the startup
-        # banner from falsely triggering idle → running).
-        self._seen_user_input: bool = False
-        # Timestamp of the last transition to idle (signal file or silence
-        # timeout).  Output accumulation only triggers idle → running if
-        # user input occurred *after* this time, preventing false re-triggers
-        # from post-idle prompt/TUI rendering.
-        self._idle_since: float = 0.0
-        # Accumulated printable output bytes while idle (reset on input
-        # and state transitions).  Used to detect idle → running.
-        self._idle_output_acc: int = 0
-        # Buffer recent PTY output so patterns can be detected even
-        # when split across chunk boundaries by the TUI renderer.
-        self._output_buf: bytearray = bytearray()
-        # True while the trust dialog is showing.  When the user answers
-        # and the CLI starts up, resume detection goes to 'idle' instead
-        # of 'running' because there's no pending request to process.
-        self._trust_dialog_phase: bool = False
-        # Snapshot of _output_buf captured just before clearing on
-        # needs_permission / needs_input transitions.  Used by Slack
-        # integration to show the actual prompt text + numbered options.
-        self._last_prompt_buf: bytes = b''
-        # Timestamp when on_send() set state to running.  Used to detect
-        # user input *during* the running state (i.e. interrupt attempts).
         self._running_since: float = 0.0
-        # Debounce timer for running→idle signal transitions.  When the
-        # Stop hook writes "idle", we delay accepting it so on_output()
-        # has time to detect the "Interrupted ·" pattern while still in
-        # the RUNNING state.  This single mechanism handles all interrupt
-        # types (user Escape, Ctrl+C, self-interrupt, split chunks)
-        # without needing per-case timing guards.
-        self._idle_debounce_at: float = 0.0
-        # Suppress the confirmed_interrupt_pattern check after leaving
-        # the interrupted state.  The Ink TUI keeps the old "Interrupted ·"
-        # prompt visible in scrollback; every TUI redraw re-renders it
-        # into _output_buf, causing an infinite interrupted→running→
-        # interrupted cycle.  Cleared when the pattern disappears from
-        # the buffer (old text scrolled out of view).
-        self._suppress_stale_interrupt: bool = False
-        # Timestamp of the last terminal resize.  TUI redraws after a
-        # resize produce large amounts of text content that would
-        # otherwise false-trigger idle→running.
-        self._last_resize_time: float = -RESIZE_SUPPRESS_WINDOW
 
-        # Delete any stale signal file from a previous server (e.g. after
-        # SIGKILL).  Since get_state() now reads the signal file even while
-        # idle, a leftover needs_permission/needs_input would cause a false
-        # transition on the first poll.
+        # -- Boolean flags (replace all timing windows) --
+        # True after user pressed Escape/Ctrl+C — next "idle" signal
+        # is reinterpreted as INTERRUPTED.
+        self._interrupt_pending: bool = False
+        # True after user typed while in a WAITING state — gates
+        # waiting→idle and waiting→running transitions.
+        self._user_responded: bool = False
+        # True after the first real user keystroke (prevents startup
+        # banner from falsely triggering idle→running).
+        self._seen_user_input: bool = False
+        # True after user typed since entering idle (gates auto-resume
+        # cursor detection — don't auto-resume if user just typed).
+        self._user_input_since_idle: bool = False
+
+        # -- Trust dialog phase --
+        self._trust_dialog_phase: bool = False
+
+        # -- Stale interrupt suppression --
+        self._suppress_stale_interrupt: bool = False
+
+        # -- pyte virtual terminal --
+        self._screen: pyte.Screen = pyte.Screen(
+            self._SCREEN_COLS, self._SCREEN_ROWS,
+        )
+        self._stream: pyte.Stream = pyte.Stream(self._screen)
+        # Snapshot of screen lines when entering a prompt state.
+        self._prompt_snapshot: list[str] = []
+
+        # Delete stale signal file from previous server.
         try:
             self._signal_file.unlink(missing_ok=True)
         except OSError:
@@ -198,15 +142,7 @@ class CLIStateTracker:
         )
 
     def _write_interrupted_signal(self) -> None:
-        """Write 'interrupted' state to the signal file.
-
-        The hook script never writes 'interrupted' (only idle /
-        needs_permission / needs_input), so the WAITING_STATE_TIMEOUT
-        fallback would find no confirmation and reset to idle.  By
-        writing the signal file ourselves, the timeout check
-        (signal_state == current) finds the confirmation and keeps the
-        interrupted state.
-        """
+        """Write 'interrupted' state to the signal file."""
         try:
             self._signal_file.write_text(
                 json.dumps({'state': CLIState.INTERRUPTED}),
@@ -214,168 +150,694 @@ class CLIStateTracker:
         except OSError:
             pass
 
-    # -- Public API ----------------------------------------------------------
+    # -- Screen helpers -------------------------------------------------------
+
+    def _reset_screen(self) -> None:
+        """Reset the pyte screen and stream to clear stale content.
+
+        Called on state transitions so pattern matching only sees output
+        produced AFTER the transition — not historical scrollback.
+        Also recreates the Stream to clear any corrupted parser state
+        (e.g., stuck mid-escape-sequence after a feed failure).
+        pyte.Screen.reset() preserves current dimensions.
+        Must be called with _screen_lock held.
+        """
+        self._screen.reset()
+        self._stream = pyte.Stream(self._screen)
+
+    def _get_screen_text(self) -> str:
+        """Return the rendered screen content as a single string.
+
+        Lines are joined with newlines for readability. Pattern matching
+        should use the compact form (spaces removed) via
+        ``screen_text.replace(' ', '').replace('\\n', '')`` to handle
+        patterns that wrap across screen lines.
+        Must be called with _screen_lock held.
+        """
+        return '\n'.join(
+            line.rstrip() for line in self._screen.display
+        )
+
+    # -- Public API -----------------------------------------------------------
 
     @property
     def provider(self) -> CLIProvider:
         """The CLI provider used for pattern matching."""
         return self._provider
 
-    def get_state(self, pty_alive: bool) -> str:
-        """Poll the signal file and return the CLI's current state.
+    def on_input(self, data: bytes) -> None:
+        """Called when the user types in the server terminal.
 
-        Args:
-            pty_alive: Whether the PTY child process is still running.
+        Handles:
+        - Escape/Ctrl+C → sets _interrupt_pending
+        - Enter in IDLE → transitions to RUNNING
+        - Any input in WAITING_STATES → sets _user_responded
+        - CSI u protocol (kitty keyboard) for Ctrl+C/Escape
 
-        Returns:
-            One of: 'idle', 'running', 'needs_permission',
-            'needs_input', 'interrupted'.
+        The input filter may bundle multiple keypresses into one call
+        (paste, fast typing).  This method scans the entire data for
+        interrupt signals, Enter, and printable content.
         """
+        is_interrupt = False
+        has_enter = False
+        has_real_input = False  # printable chars, Enter, or Ctrl+C
+        has_non_interrupt_input = False  # printable or Enter (not just Esc/Ctrl+C)
+
+        # Scan the data byte-by-byte for interrupt signals and content.
+        i = 0
+        while i < len(data):
+            b = data[i]
+
+            if b == 0x03:  # Ctrl+C
+                is_interrupt = True
+                has_real_input = True
+                i += 1
+
+            elif b == 0x0d:  # Enter (CR)
+                has_enter = True
+                has_real_input = True
+                has_non_interrupt_input = True
+                i += 1
+
+            elif b == 0x1b:  # Escape byte
+                if i + 1 >= len(data):
+                    # Standalone Escape at end of data
+                    is_interrupt = True
+                    has_real_input = True
+                    i += 1
+                elif data[i + 1] == 0x5b:
+                    # CSI sequence: \x1b[ params final
+                    end = i + 2
+                    while end < len(data) and 0x20 <= data[end] <= 0x3f:
+                        end += 1  # skip parameter bytes
+                    if end < len(data):
+                        end += 1  # include final byte
+                    seq = data[i:end]
+                    if self._is_csi_u_interrupt(seq):
+                        is_interrupt = True
+                        has_real_input = True
+                    # Non-interrupt CSI (focus, mouse, cursor report)
+                    # is silently skipped — not real user input.
+                    i = end
+                elif data[i + 1] in (0x5d, 0x50, 0x58, 0x5e, 0x5f):
+                    # OSC/DCS/SOS/PM/APC — skip to ST terminator
+                    end = i + 2
+                    while end < len(data):
+                        if data[end] == 0x07:
+                            end += 1
+                            break
+                        if (data[end] == 0x1b and end + 1 < len(data)
+                                and data[end + 1] == 0x5c):
+                            end += 2
+                            break
+                        end += 1
+                    i = end
+                elif data[i + 1] == 0x4f:
+                    # SS3 (e.g. \x1bOP for F1) — skip 3 bytes
+                    i += 3 if i + 2 < len(data) else len(data)
+                elif 0x40 <= data[i + 1] <= 0x5f:
+                    # Two-byte escape (e.g. ESC M) — skip
+                    i += 2
+                else:
+                    # Not a recognized sequence introducer — standalone
+                    # Escape keypress.
+                    is_interrupt = True
+                    has_real_input = True
+                    i += 1
+
+            elif 0x20 <= b < 0x7f or b >= 0x80:
+                # Printable ASCII or high byte (UTF-8 continuation)
+                has_real_input = True
+                has_non_interrupt_input = True
+                i += 1
+
+            elif b == 0x00:
+                # Null byte — terminal noise, not real input.
+                i += 1
+
+            else:
+                # Other control bytes (backspace, tab, etc.)
+                has_real_input = True
+                has_non_interrupt_input = True
+                i += 1
+
+        # Pure terminal events (focus, mouse) with no real user input
+        # — skip entirely to avoid false flag updates.
+        if not has_real_input:
+            _log.debug(
+                'ON_INPUT filtered terminal event len=%d data=%r',
+                len(data), data[:20],
+            )
+            return
+
+        if is_interrupt:
+            self._interrupt_pending = True
+            _log.debug('ON_INPUT _interrupt_pending=True')
+
+        _log.debug(
+            'ON_INPUT state=%s data=%r len=%d interrupt=%s enter=%s',
+            self._state, data[:20], len(data), is_interrupt, has_enter,
+        )
+
+        self._seen_user_input = True
+        # Don't set _user_input_since_idle for interrupt-only input —
+        # Escape and Ctrl+C alone don't cause TUI redraws, so they
+        # shouldn't block auto-resume detection.  But if the user typed
+        # printable text alongside the interrupt, that counts.
+        if has_non_interrupt_input:
+            self._user_input_since_idle = True
+
+        # Any input in WAITING_STATES → user responded.
+        # This includes Escape (dismiss prompt) and regular keys (answer).
+        if self._state in WAITING_STATES:
+            self._user_responded = True
+            _log.debug('ON_INPUT _user_responded=True')
+
+        # Note: Enter in idle does NOT trigger running.  The CLI may
+        # handle the Enter internally (e.g. /clear, /help, empty enter)
+        # without processing a real message.  Only on_send() (explicit
+        # client message or auto-send) triggers running.  For server-
+        # terminal messages, idle→running is detected via auto-resume
+        # (cursor hidden) or the hook signal after the CLI finishes.
+
+    def on_send(self) -> None:
+        """Called when a message is sent to the CLI.
+
+        Sets state to RUNNING and clears all flags.
+        """
+        if self._state == CLIState.INTERRUPTED:
+            self._suppress_stale_interrupt = True
+        else:
+            self._suppress_stale_interrupt = False
+        _log.debug('ON_SEND → running')
+        self._seen_user_input = True
+        self._running_since = self._clock()
+        self._interrupt_pending = False
+        self._user_responded = False
+        self._user_input_since_idle = False
+        # Acquire _screen_lock first to maintain consistent lock
+        # ordering with on_output (screen_lock → lock).
+        with self._screen_lock:
+            self._reset_screen()
+            self._prompt_snapshot = []
+            with self._lock:
+                self._state = CLIState.RUNNING
+                self._waiting_since = None
+
+        try:
+            self._signal_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def on_resize(self, rows: int, cols: int) -> None:
+        """Called when the terminal is resized.
+
+        Updates the pyte screen dimensions. No timing suppression needed —
+        TUI redraws are absorbed naturally by the virtual terminal.
+        """
+        if rows < 1 or cols < 1:
+            return
+        with self._screen_lock:
+            self._screen.resize(rows, cols)
+        _log.debug('ON_RESIZE %dx%d', cols, rows)
+
+    def on_output(self, data: bytes) -> None:
+        """Called when PTY output is received.
+
+        Feeds data through pyte and dispatches to state-specific handlers.
+
+        Exceptions are caught and logged — an uncaught exception here
+        would propagate to pexpect's interact loop and kill the PTY.
+        """
+        now = self._clock()
+        self._last_output_time = now
+
+        # Feed through pyte virtual terminal
+        with self._screen_lock:
+            text = data.decode('utf-8', errors='replace')
+            try:
+                self._stream.feed(text)
+            except (IndexError, ValueError, AssertionError):
+                # Feed failed — screen may be in a corrupted state.
+                self._reset_screen()
+                _log.debug('ON_OUTPUT pyte feed failed, screen reset')
+                return
+
+            try:
+                if self._state == CLIState.IDLE:
+                    self._handle_idle_output(now)
+                elif self._state == CLIState.RUNNING:
+                    self._handle_running_output(now)
+                elif self._state in WAITING_STATES:
+                    self._handle_waiting_output(now)
+            except Exception:
+                # Never let handler exceptions kill the PTY.
+                _log.debug(
+                    'ON_OUTPUT handler exception, resetting screen',
+                    exc_info=True,
+                )
+                self._reset_screen()
+
+    # -- on_output sub-handlers -----------------------------------------------
+
+    def _handle_idle_output(self, now: float) -> None:
+        """Handle output while idle.
+
+        Checks for: startup dialogs, interrupt patterns, auto-resume.
+        Must be called with _screen_lock held.
+        """
+        screen_text = self._get_screen_text()
+        compact = screen_text.replace(' ', '').replace('\n', '')
+        compact_lines = screen_text.replace(' ', '')
+
+        # Clear stale interrupt suppression once the pattern is no longer
+        # on screen (old text scrolled out of the TUI's visible area).
+        if self._suppress_stale_interrupt:
+            interrupted_pattern = self._provider.interrupted_pattern
+            pattern_str = interrupted_pattern.decode('utf-8', errors='replace')
+            if pattern_str not in compact:
+                self._suppress_stale_interrupt = False
+                _log.debug(
+                    'ON_OUTPUT idle: cleared _suppress_stale_interrupt '
+                    '(pattern no longer on screen)',
+                )
+
+        # -- Startup dialog detection --
+        if not self._seen_user_input:
+            trust_patterns = self._provider.trust_dialog_patterns
+            dialog_patterns = self._provider.dialog_patterns
+
+            _log.debug(
+                'ON_OUTPUT idle (startup) compact_tail=%r',
+                compact[-120:],
+            )
+
+            is_trust = any(
+                p.decode('utf-8', errors='replace') in compact
+                for p in trust_patterns
+            )
+            is_dialog = (
+                bool(dialog_patterns)
+                and all(
+                    p.decode('utf-8', errors='replace') in compact
+                    for p in dialog_patterns
+                )
+            )
+
+            if is_trust or is_dialog:
+                _log.debug(
+                    'ON_OUTPUT idle→needs_permission '
+                    '(startup dialog: trust=%s dialog=%s)',
+                    is_trust, is_dialog,
+                )
+                self._prompt_snapshot = list(self._screen.display)
+                self._reset_screen()
+                if is_trust:
+                    self._trust_dialog_phase = True
+                self._interrupt_pending = False
+                with self._lock:
+                    self._state = CLIState.NEEDS_PERMISSION
+                    self._waiting_since = self._clock()
+                return
+
+        # -- Interrupt detection (Escape race) --
+        # Gated by _suppress_stale_interrupt: after resolving an interrupt,
+        # the TUI re-renders its visible area including old "Interrupted"
+        # text in scrollback.  Without suppression, an accidental Escape
+        # would false-trigger interrupted from that stale text.
+        if self._interrupt_pending and not self._suppress_stale_interrupt:
+            interrupted_pattern = self._provider.interrupted_pattern
+            pattern_str = interrupted_pattern.decode('utf-8', errors='replace')
+            if pattern_str in compact:
+                _log.debug(
+                    'ON_OUTPUT idle→interrupted (interrupt_pending + pattern)',
+                )
+                self._interrupt_pending = False
+                self._prompt_snapshot = []
+                self._reset_screen()
+                with self._lock:
+                    self._state = CLIState.INTERRUPTED
+                    self._waiting_since = self._clock()
+                self._write_interrupted_signal()
+                return
+
+        # -- Confirmed interrupt pattern (no flag needed) --
+        # Uses compact_lines (newlines preserved) to prevent cross-line
+        # false positives.
+        confirmed = self._provider.confirmed_interrupt_pattern
+        if confirmed and self._seen_user_input:
+            if not self._suppress_stale_interrupt:
+                confirmed_str = confirmed.decode('utf-8', errors='replace')
+                if confirmed_str in compact_lines:
+                    _log.debug(
+                        'ON_OUTPUT idle→interrupted (confirmed pattern)',
+                    )
+                    self._interrupt_pending = False
+                    self._prompt_snapshot = []
+                    self._reset_screen()
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
+                    return
+
+        if not self._seen_user_input:
+            return
+
+        # -- Auto-resume via cursor visibility --
+        # Don't check cursor here (on_output) — a mid-render chunk may
+        # have cursor hidden but the show-cursor sequence arrives in
+        # the next chunk.  Instead, set a flag for get_state() to check
+        # at poll time (0.5s later).  Brief TUI redraws will have
+        # restored cursor visibility by then.
+        # (Auto-resume check is in get_state(), not here.)
+
+    def _handle_running_output(self, now: float) -> None:
+        """Handle output while running.
+
+        Checks for: interrupt patterns, trust dialog startup.
+        Must be called with _screen_lock held.
+        """
+        screen_text = self._get_screen_text()
+        # compact_full: spaces+newlines removed (for wrap-across-lines
+        # pattern matching with _interrupt_pending flag)
+        compact_full = screen_text.replace(' ', '').replace('\n', '')
+        # compact_lines: spaces removed but newlines preserved (for
+        # confirmed_interrupt_pattern — prevents false positives from
+        # cross-line text concatenation like "Conversation\ninterrupted")
+        compact_lines = screen_text.replace(' ', '')
+        interrupted_pattern = self._provider.interrupted_pattern
+        pattern_str = interrupted_pattern.decode('utf-8', errors='replace')
+        has_interrupted = pattern_str in compact_full
+
+        # Clear stale interrupt suppression once pattern scrolls off.
+        if self._suppress_stale_interrupt and not has_interrupted:
+            self._suppress_stale_interrupt = False
+
+        stripped_preview = screen_text.strip()
+        if stripped_preview:
+            _log.debug(
+                'ON_OUTPUT running has_Interrupted=%s',
+                has_interrupted,
+            )
+
+        # -- Interrupt with pending flag --
+        if has_interrupted and self._interrupt_pending:
+            _log.debug('ON_OUTPUT running→interrupted (interrupt_pending)')
+            self._interrupt_pending = False
+            self._prompt_snapshot = []
+            self._reset_screen()
+            with self._lock:
+                self._state = CLIState.INTERRUPTED
+                self._waiting_since = self._clock()
+            self._write_interrupted_signal()
+            return
+
+        # -- Trust dialog phase: startup output → idle --
+        if self._trust_dialog_phase:
+            if stripped_preview:
+                _log.debug(
+                    'ON_OUTPUT running→idle (trust dialog startup)',
+                )
+                self._trust_dialog_phase = False
+                self._seen_user_input = False
+                self._interrupt_pending = False
+                self._suppress_stale_interrupt = False
+                self._prompt_snapshot = []
+                self._reset_screen()
+                with self._lock:
+                    self._state = CLIState.IDLE
+                    self._waiting_since = None
+                self._user_input_since_idle = False
+                return
+
+        # -- Confirmed interrupt pattern (no flag needed) --
+        # Uses compact_lines (newlines preserved) to avoid false positives
+        # from cross-line text concatenation.  E.g., "Conversation" on
+        # line 1 + "interrupted" on line 2 would form
+        # "Conversationinterrupted" in compact_full but not compact_lines.
+        confirmed = self._provider.confirmed_interrupt_pattern
+        if has_interrupted and confirmed:
+            if not self._suppress_stale_interrupt:
+                confirmed_str = confirmed.decode('utf-8', errors='replace')
+                if confirmed_str in compact_lines:
+                    _log.debug(
+                        'ON_OUTPUT running→interrupted (confirmed pattern)',
+                    )
+                    self._interrupt_pending = False
+                    self._prompt_snapshot = []
+                    self._reset_screen()
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
+                    return
+
+    def _handle_waiting_output(self, now: float) -> None:
+        """Handle output while in a waiting state.
+
+        Checks for: interrupt correction, trust dialog recovery.
+        Must be called with _screen_lock held.
+        """
+        screen_text = self._get_screen_text()
+        compact = screen_text.replace(' ', '').replace('\n', '')
+        interrupted_pattern = self._provider.interrupted_pattern
+        pattern_str = interrupted_pattern.decode('utf-8', errors='replace')
+
+        # -- Escape correction: waiting → interrupted --
+        # Applies to NEEDS_INPUT and NEEDS_PERMISSION — the user may
+        # press Escape to cancel/dismiss any prompt.
+        if (
+            self._state in (CLIState.NEEDS_INPUT, CLIState.NEEDS_PERMISSION)
+            and self._interrupt_pending
+            and pattern_str in compact
+        ):
+            _log.debug(
+                'ON_OUTPUT %s→interrupted (interrupt_pending)',
+                self._state,
+            )
+            self._interrupt_pending = False
+            self._prompt_snapshot = []
+            self._reset_screen()
+            with self._lock:
+                self._state = CLIState.INTERRUPTED
+                self._waiting_since = now
+            self._write_interrupted_signal()
+            return
+
+        # -- Trust dialog recovery --
+        if (
+            self._trust_dialog_phase
+            and self._waiting_since is not None
+            and self._seen_user_input
+        ):
+            stripped = screen_text.strip()
+            if stripped:
+                _log.debug(
+                    'ON_OUTPUT %s→idle (trust dialog startup)',
+                    self._state,
+                )
+                self._trust_dialog_phase = False
+                self._seen_user_input = False
+                self._interrupt_pending = False
+                self._suppress_stale_interrupt = False
+                self._reset_screen()
+                with self._lock:
+                    self._state = CLIState.IDLE
+                    self._waiting_since = None
+                self._user_input_since_idle = False
+                self._prompt_snapshot = []
+                return
+
+        # -- Accumulate prompt snapshot --
+        self._prompt_snapshot = list(self._screen.display)
+
+    # -- State polling --------------------------------------------------------
+
+    def get_state(self, pty_alive: bool) -> str:
+        """Poll the signal file and return the CLI's current state."""
         if not pty_alive:
+            was_idle = self._state == CLIState.IDLE
             with self._lock:
                 self._state = CLIState.IDLE
                 self._waiting_since = None
+            # Only reset flags/screen on the transition to dead,
+            # not on every poll cycle while dead.
+            if not was_idle:
+                self._interrupt_pending = False
+                self._user_responded = False
+                self._user_input_since_idle = False
+                self._seen_user_input = False
+                self._trust_dialog_phase = False
+                self._suppress_stale_interrupt = False
+                with self._screen_lock:
+                    self._reset_screen()
+                    self._prompt_snapshot = []
             return CLIState.IDLE
 
         with self._lock:
             current = self._state
 
-        # Check signal file for hook-written state transitions.
-        # Always read regardless of current state — a Notification hook
-        # can write needs_permission/needs_input while idle.
+        # -- Read signal file --
         new_state = self._read_signal_state()
         if new_state and new_state != current:
-            # "interrupted" in the signal file is written by the state
-            # tracker itself (not by hooks) purely so the
-            # WAITING_STATE_TIMEOUT check can find confirmation.
-            # It should never trigger a *new* transition — interrupted
-            # is always detected from PTY output patterns.
+            # Ignore self-written "interrupted" signals.
             if new_state == CLIState.INTERRUPTED:
                 _log.debug(
                     'GET_STATE signal=interrupted but current=%s — '
-                    'ignoring stale signal (deleting)',
+                    'ignoring (deleting)',
                     current,
                 )
                 try:
                     self._signal_file.unlink(missing_ok=True)
                 except OSError:
                     pass
-            # Debounce running→idle: the Stop hook fires before the
-            # PTY finishes rendering "Interrupted ·".  Instead of
-            # per-case guards for each interrupt type, delay ALL
-            # running→idle signal transitions so on_output() has time
-            # to detect interrupt patterns while still in RUNNING.
-            if (
-                new_state == CLIState.IDLE
-                and current == CLIState.RUNNING
-            ):
-                if self._idle_debounce_at == 0:
-                    self._idle_debounce_at = self._clock()
-                if (self._clock() - self._idle_debounce_at) < IDLE_SIGNAL_DEBOUNCE:
-                    _log.debug(
-                        'GET_STATE signal=idle, debouncing running→idle '
-                        '(%.0fms elapsed)',
-                        (self._clock() - self._idle_debounce_at) * 1000,
-                    )
-                else:
-                    # Debounce expired — accept the transition below.
-                    self._idle_debounce_at = 0
-            if (
-                new_state == CLIState.IDLE
-                and current == CLIState.RUNNING
-                and self._idle_debounce_at != 0
-            ):
-                pass  # debounce in progress
-            elif (
-                new_state == CLIState.IDLE
-                and current in (CLIState.NEEDS_INPUT, CLIState.INTERRUPTED)
-                and self._waiting_since is not None
-                and (self._clock() - self._waiting_since) < STATE_PROTECTION_WINDOW
-            ):
-                _log.debug(
-                    'GET_STATE signal=idle but protecting %s '
-                    '(%.1fs since wait)',
-                    current, self._clock() - self._waiting_since,
-                )
-            # Notification hook fires for the interrupt dialog,
-            # writing needs_input — protect interrupted from this.
-            elif (
-                new_state == CLIState.NEEDS_INPUT
-                and current == CLIState.INTERRUPTED
-                and self._waiting_since is not None
-                and (self._clock() - self._waiting_since) < STATE_PROTECTION_WINDOW
-            ):
-                _log.debug(
-                    'GET_STATE signal=needs_input but protecting '
-                    'interrupted (%.1fs since wait)',
-                    self._clock() - self._waiting_since,
-                )
-            else:
-                # Check if user answered the prompt (typed after entering
-                # the waiting state).
-                user_answered = (
-                    current in (CLIState.INTERRUPTED, CLIState.NEEDS_INPUT)
-                    and new_state in (CLIState.IDLE, CLIState.NEEDS_INPUT)
-                    and self._waiting_since is not None
-                    and self._last_input_time > self._waiting_since
-                )
-                old_waiting_since = self._waiting_since
 
-                if current == CLIState.INTERRUPTED:
-                    self._suppress_stale_interrupt = True
-                _log.debug(
-                    'GET_STATE signal transition %s→%s%s',
-                    current, new_state,
-                    ' (user_answered, preserving timing)' if user_answered else '',
-                )
-                with self._lock:
-                    self._state = new_state
-                    if new_state in PROMPT_STATES:
-                        if user_answered:
-                            pass  # preserve existing _waiting_since
-                        else:
-                            self._waiting_since = self._clock()
+            # -- running → idle (check interrupt flag + screen) --
+            elif (
+                new_state == CLIState.IDLE
+                and current == CLIState.RUNNING
+            ):
+                # Only convert to INTERRUPTED if the interrupt pattern
+                # is actually visible on the pyte screen.  The user may
+                # have pressed Escape but the CLI ignored it (busy) and
+                # finished normally — in that case, "Interrupted" never
+                # appeared and we should accept the idle transition.
+                has_pattern = False
+                if self._interrupt_pending:
+                    interrupted_pattern = self._provider.interrupted_pattern
+                    pattern_str = interrupted_pattern.decode(
+                        'utf-8', errors='replace',
+                    )
+                    with self._screen_lock:
+                        screen_text = self._get_screen_text()
+                        compact = screen_text.replace(
+                            ' ', '',
+                        ).replace('\n', '')
+                    has_pattern = pattern_str in compact
+
+                if self._interrupt_pending and has_pattern:
+                    _log.debug(
+                        'GET_STATE signal=idle + interrupt_pending '
+                        '+ pattern on screen → interrupted',
+                    )
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                    return CLIState.INTERRUPTED
+                else:
+                    if self._interrupt_pending:
+                        _log.debug(
+                            'GET_STATE signal=idle + interrupt_pending '
+                            'but NO pattern on screen → idle '
+                            '(CLI ignored the Escape)',
+                        )
                     else:
+                        _log.debug('GET_STATE signal transition running→idle')
+                    self._interrupt_pending = False
+                    with self._lock:
+                        self._state = CLIState.IDLE
                         self._waiting_since = None
-                self._idle_output_acc = 0
-                with self._buf_lock:
-                    if new_state in PROMPT_STATES:
-                        self._last_prompt_buf = bytes(self._output_buf)
-                    else:
-                        self._last_prompt_buf = b''
-                    self._output_buf.clear()
-                if new_state == CLIState.IDLE:
-                    if user_answered and old_waiting_since is not None:
-                        self._idle_since = old_waiting_since
-                    else:
-                        self._idle_since = self._clock()
+                    self._user_input_since_idle = False
                     if self._trust_dialog_phase:
                         self._seen_user_input = False
                     self._trust_dialog_phase = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                        self._prompt_snapshot = []
+                    return CLIState.IDLE
+
+            # -- waiting → idle (requires _user_responded) --
+            elif (
+                new_state == CLIState.IDLE
+                and current in WAITING_STATES
+            ):
+                if self._user_responded:
+                    _log.debug(
+                        'GET_STATE signal transition %s→idle '
+                        '(user_responded)',
+                        current,
+                    )
+                    if current == CLIState.INTERRUPTED:
+                        self._suppress_stale_interrupt = True
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = CLIState.IDLE
+                        self._waiting_since = None
+                    self._user_input_since_idle = False
+                    self._trust_dialog_phase = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                        self._prompt_snapshot = []
+                    return CLIState.IDLE
+                else:
+                    _log.debug(
+                        'GET_STATE signal=idle but %s without '
+                        'user_responded — ignoring',
+                        current,
+                    )
+
+            # -- interrupted: protect from needs_input (Notification hook race) --
+            elif (
+                new_state == CLIState.NEEDS_INPUT
+                and current == CLIState.INTERRUPTED
+                and not self._user_responded
+            ):
+                _log.debug(
+                    'GET_STATE signal=needs_input but protecting '
+                    'interrupted (no user_responded)',
+                )
+
+            # -- All other signal transitions --
+            else:
+                if current == CLIState.INTERRUPTED:
+                    self._suppress_stale_interrupt = True
+                _log.debug(
+                    'GET_STATE signal transition %s→%s',
+                    current, new_state,
+                )
+                self._interrupt_pending = False
+                with self._lock:
+                    self._state = new_state
+                    if new_state in PROMPT_STATES:
+                        self._waiting_since = self._clock()
+                    else:
+                        self._waiting_since = None
+                self._user_responded = False
+                # Clear trust dialog phase on any signal transition —
+                # if a real permission prompt fires after the trust
+                # dialog, we must not treat its output as startup.
+                if self._trust_dialog_phase:
+                    if new_state == CLIState.IDLE:
+                        self._seen_user_input = False
+                    self._trust_dialog_phase = False
+                with self._screen_lock:
+                    if new_state in PROMPT_STATES:
+                        self._prompt_snapshot = list(self._screen.display)
+                    else:
+                        self._prompt_snapshot = []
+                    self._reset_screen()
+                if new_state == CLIState.IDLE:
+                    self._user_input_since_idle = False
                 return new_state
 
-        # Fast path: transcript-based idle detection.
-        # For CLIs with accessible transcripts (e.g. Codex), check for
-        # task_complete events instead of waiting for the silence timeout.
-        # This detects idle in ~0.5s instead of 8s.
-        # Note: with concurrent Codex sessions, this may read the wrong
-        # session's transcript.  The silence timeout is the safe fallback.
+        # -- Transcript-based idle detection (Codex) --
         if current == CLIState.RUNNING and self._provider.transcript_sessions_dir:
-            # Pass _running_since so only task_complete entries AFTER we
-            # entered RUNNING are accepted.  This prevents false idle from
-            # stale completions when the transcript is updated incrementally
-            # (user message written before the new task_complete).
             msg = self._provider.read_transcript_completion(
                 since=self._running_since,
             )
             if msg is not None:
                 _log.debug(
-                    'GET_STATE transcript task_complete → idle '
-                    '(msg=%r)',
+                    'GET_STATE transcript task_complete → idle (msg=%r)',
                     msg[:60] if msg else '',
                 )
-                # Write the response to the signal file so
-                # output_capture can read it without the fallback.
                 try:
                     signal_data = {'state': CLIState.IDLE}
                     if msg:
@@ -385,56 +847,113 @@ class CLIStateTracker:
                     )
                 except OSError:
                     pass
+                self._interrupt_pending = False
                 with self._lock:
                     self._state = CLIState.IDLE
                     self._waiting_since = None
-                self._idle_output_acc = 0
-                self._idle_since = self._clock()
+                self._user_input_since_idle = False
+                with self._screen_lock:
+                    self._reset_screen()
                 return CLIState.IDLE
 
-        # Fallback: PTY silence timeout (handles interruptions,
-        # missing hooks, or any case where the hook doesn't fire)
+        # -- Auto-resume via cursor visibility (poll-based) --
+        # Checked at poll time (every 0.5s) rather than on_output to
+        # avoid false triggers from mid-render cursor-hidden state.
+        # By poll time, brief TUI redraws have completed and cursor
+        # is visible again.  Only true auto-resumes (sustained
+        # processing) keep cursor hidden across a poll boundary.
+        # Disabled for full-screen TUIs (Ratatui) that keep cursor
+        # hidden permanently — they use silence_timeout + transcript
+        # detection instead.
+        if (
+            current == CLIState.IDLE
+            and self._seen_user_input
+            and not self._user_input_since_idle
+            and not self._provider.cursor_hidden_while_idle
+        ):
+            should_resume = False
+            with self._screen_lock:
+                if self._screen.cursor.hidden:
+                    should_resume = True
+                    self._reset_screen()
+            if should_resume:
+                _log.debug(
+                    'GET_STATE idle→running (cursor hidden at poll, '
+                    'auto-resume)',
+                )
+                self._running_since = self._clock()
+                self._interrupt_pending = False
+                with self._lock:
+                    self._state = CLIState.RUNNING
+                    self._waiting_since = None
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return CLIState.RUNNING
+
+        # -- Running → idle via cursor visibility + output silence --
+        # For Ink TUIs: cursor visible + no output for >1 poll cycle
+        # (>0.5s) = CLI returned to idle prompt.  Handles cases where
+        # the Stop hook doesn't fire (e.g. /clear, /help).
+        # During active streaming, output arrives every frame (<100ms),
+        # so the silence check prevents false idle.  Disabled for
+        # Ratatui TUIs that keep cursor hidden permanently.
+        if (
+            current == CLIState.RUNNING
+            and not self._provider.cursor_hidden_while_idle
+            and self._last_output_time > 0
+            and (self._clock() - self._last_output_time) > 0.5
+        ):
+            with self._screen_lock:
+                cursor_visible = not self._screen.cursor.hidden
+            if cursor_visible:
+                _log.debug(
+                    'GET_STATE running→idle (cursor visible + '
+                    'output silent %.1fs)',
+                    self._clock() - self._last_output_time,
+                )
+                self._interrupt_pending = False
+                with self._lock:
+                    self._state = CLIState.IDLE
+                    self._waiting_since = None
+                self._user_input_since_idle = False
+                with self._screen_lock:
+                    self._reset_screen()
+                    self._prompt_snapshot = []
+                return CLIState.IDLE
+
+        # -- Safety fallback: silence timeout --
         silence_timeout = (
             self._provider.silence_timeout
             if self._provider.silence_timeout is not None
-            else OUTPUT_SILENCE_TIMEOUT
+            else SAFETY_SILENCE_TIMEOUT
         )
         if current == CLIState.RUNNING and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
             if silence > silence_timeout:
                 _log.debug(
-                    'GET_STATE silence timeout %.1fs → idle', silence,
+                    'GET_STATE safety timeout %.1fs → idle', silence,
                 )
+                self._interrupt_pending = False
                 with self._lock:
                     self._state = CLIState.IDLE
                     self._waiting_since = None
-                self._idle_output_acc = 0
-                self._idle_since = self._clock()
-                with self._buf_lock:
-                    self._output_buf.clear()
+                self._user_input_since_idle = False
+                with self._screen_lock:
+                    self._reset_screen()
+                    self._prompt_snapshot = []
                 return CLIState.IDLE
 
-        # Fallback: waiting states (interrupted, needs_permission,
-        # needs_input) can get stuck if the hook doesn't fire again
-        # and no output arrives to trigger resume detection.
-        # After WAITING_STATE_TIMEOUT with no PTY output, fall back
-        # to idle — but only if the signal file doesn't still confirm
-        # the current waiting state.  Without this check, the timeout
-        # fires every poll cycle after 30s of silence (since
-        # _last_output_time is never reset), the signal file
-        # immediately reasserts the waiting state on the next poll,
-        # and the state rapidly toggles between idle and waiting.
+        # -- Safety fallback: stuck waiting state --
         if current in WAITING_STATES and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
-            if silence > WAITING_STATE_TIMEOUT:
-                # Trust the signal file over the silence heuristic:
-                # if the hook wrote the current state, the CLI really
-                # is waiting — don't override it.
+            if silence > SAFETY_WAITING_TIMEOUT:
                 signal_state = self._read_signal_state()
                 if signal_state == current:
                     _log.debug(
                         'GET_STATE waiting timeout %s %.1fs but '
-                        'signal file confirms — keeping',
+                        'signal confirms — keeping',
                         current, silence,
                     )
                 else:
@@ -442,48 +961,29 @@ class CLIStateTracker:
                         'GET_STATE waiting timeout %s %.1fs → idle',
                         current, silence,
                     )
+                    self._interrupt_pending = False
+                    self._user_responded = False
                     with self._lock:
                         self._state = CLIState.IDLE
                         self._waiting_since = None
-                    self._idle_output_acc = 0
-                    self._idle_since = self._clock()
-                    with self._buf_lock:
-                        self._output_buf.clear()
-                        self._last_prompt_buf = b''
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                        self._prompt_snapshot = []
                     return CLIState.IDLE
 
         return current
 
     def is_ready(self, pty_alive: bool) -> bool:
-        """Check if the auto-sender should send the next message.
-
-        Args:
-            pty_alive: Whether the PTY child process is still running.
-
-        Returns:
-            True if the auto-sender should send the next queued message.
-        """
+        """Check if the auto-sender should send the next message."""
         return self.is_ready_for_state(self.get_state(pty_alive))
 
     def is_ready_for_state(self, state: str) -> bool:
-        """Check readiness given an already-computed state.
-
-        In 'pause' mode: only send when CLI is idle.
-        In 'always' mode: send whenever CLI is not running.
-        Interrupted always blocks regardless of mode.
-
-        Args:
-            state: The current CLI state (from a prior
-                ``get_state()`` call).
-
-        Returns:
-            True if the auto-sender should send the next queued message.
-        """
+        """Check readiness given an already-computed state."""
         if state == CLIState.INTERRUPTED:
             return False
         if self._auto_send_mode == AutoSendMode.ALWAYS:
             return state != CLIState.RUNNING
-        # 'pause' mode (default): only send when idle
         return state == CLIState.IDLE
 
     @staticmethod
@@ -537,534 +1037,18 @@ class CLIStateTracker:
             return (modifiers - 1) & 0x04 != 0  # Ctrl bit set
         return False
 
-    def on_input(self, data: bytes) -> None:
-        """Called when the user types in the server terminal.
-
-        Tracks input timing so output-based idle → running detection
-        can distinguish user keystroke echo from CLI processing output.
-        Ignores multi-byte escape sequences (terminal focus events,
-        cursor position reports) that are not real user input.
-
-        However, when the CLI is running, multi-byte escape sequences
-        starting with ``\\x1b`` still update ``_last_input_time`` because
-        ``os.read()`` may bundle a real Escape keypress with a subsequent
-        terminal event (focus report, cursor position) into one chunk.
-        Without this, the interrupt-detection time window never opens.
-
-        For Ratatui-based CLIs (enter_triggers_running=True), pressing
-        Enter while idle transitions directly to running, since
-        output-based detection is unreliable for full-screen TUIs.
-
-        Args:
-            data: Raw input bytes from the keyboard.
-        """
-        if len(data) > 1 and data[0] == 0x1b:
-            if self._state == CLIState.RUNNING:
-                # Only update _last_input_time for potential Escape
-                # keypresses, not terminal-generated CSI sequences
-                # (focus in/out, cursor position reports, mouse events).
-                # CSI sequences start with \x1b[ and are never real
-                # Escape key presses.  A bundled Escape + CSI event
-                # starts with \x1b\x1b[ (double escape), which this
-                # check correctly lets through.
-                if len(data) >= 2 and data[1] == 0x5b:  # \x1b[
-                    # CSI u (kitty keyboard protocol) encodes Ctrl+C
-                    # and Escape as escape sequences.  Detect them so
-                    # interrupt detection still works.
-                    if self._is_csi_u_interrupt(data):
-                        self._last_input_time = self._clock()
-                        self._last_escape_time = self._last_input_time
-                        _log.debug(
-                            'ON_INPUT CSI u interrupt seq len=%d '
-                            '(updating _last_escape_time)',
-                            len(data),
-                        )
-                    else:
-                        _log.debug(
-                            'ON_INPUT filtered CSI seq len=%d data=%r '
-                            'in running (not updating _last_input_time)',
-                            len(data), data,
-                        )
-                else:
-                    _log.debug(
-                        'ON_INPUT filtered escape seq len=%d '
-                        '(updating _last_input_time for interrupt detection)',
-                        len(data),
-                    )
-                    self._last_input_time = self._clock()
-                    self._last_escape_time = self._last_input_time
-            else:
-                # Not running — still check CSI u for Ctrl+C/Escape
-                # so _last_escape_time is set for idle-state interrupt
-                # detection (the Stop hook can race ahead).
-                if (len(data) >= 2 and data[1] == 0x5b
-                        and self._is_csi_u_interrupt(data)):
-                    self._last_input_time = self._clock()
-                    self._last_escape_time = self._last_input_time
-                    _log.debug(
-                        'ON_INPUT CSI u interrupt seq len=%d in %s '
-                        '(updating _last_escape_time)',
-                        len(data), self._state,
-                    )
-                else:
-                    _log.debug(
-                        'ON_INPUT filtered escape seq len=%d',
-                        len(data),
-                    )
-            return
-        _log.debug(
-            'ON_INPUT state=%s data=%r len=%d',
-            self._state, data[:20], len(data),
-        )
-        self._seen_user_input = True
-        self._last_input_time = self._clock()
-        # Track interrupt attempts for the interrupted-pattern detector.
-        # Escape (0x1b) and Ctrl+C (0x03) both interrupt the CLI and
-        # produce the "Interrupted" PTY output that on_output() looks for.
-        if data in (b'\x1b', b'\x03'):
-            self._last_escape_time = self._last_input_time
-        self._idle_output_acc = 0
-
-        # For Ratatui-based CLIs: Enter while idle → running.
-        # Output-based detection is disabled because full-screen TUI
-        # redraws are indistinguishable from real processing output.
-        if (
-            data == b'\r'
-            and self._state == CLIState.IDLE
-            and self._provider.enter_triggers_running
-        ):
-            _log.debug('ON_INPUT Enter in idle → running (Ratatui)')
-            self._running_since = self._clock()
-            self._idle_debounce_at = 0
-            with self._lock:
-                self._state = CLIState.RUNNING
-                self._waiting_since = None
-            with self._buf_lock:
-                self._output_buf.clear()
-                self._last_prompt_buf = b''
-            try:
-                self._signal_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    def on_send(self) -> None:
-        """Called when a message is sent to the CLI.
-
-        Sets state to 'running' and deletes the stale signal file.
-        """
-        if self._state == CLIState.INTERRUPTED:
-            self._suppress_stale_interrupt = True
-        else:
-            self._suppress_stale_interrupt = False
-        _log.debug('ON_SEND → running')
-        self._seen_user_input = True
-        self._running_since = self._clock()
-        self._idle_debounce_at = 0
-        # Reset escape timestamp so stale "Interrupted" TUI scrollback
-        # doesn't snap running→interrupted via the INTERRUPT_DETECT_WINDOW
-        # check in _handle_running_output.
-        self._last_escape_time = -INTERRUPT_DETECT_WINDOW
-        with self._lock:
-            self._state = CLIState.RUNNING
-            self._waiting_since = None
-        with self._buf_lock:
-            self._output_buf.clear()
-            self._last_prompt_buf = b''
-        self._idle_output_acc = 0
-
-        try:
-            self._signal_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    def on_resize(self) -> None:
-        """Called when the terminal is resized.
-
-        Resets the idle output accumulator and records the resize time
-        so the TUI redraw burst doesn't false-trigger idle→running.
-        """
-        self._last_resize_time = self._clock()
-        self._idle_output_acc = 0
-        _log.debug('ON_RESIZE suppressing idle→running for %.1fs', RESIZE_SUPPRESS_WINDOW)
-
-    def on_output(self, data: bytes) -> None:
-        """Called when PTY output is received.
-
-        Updates the last-output timestamp and dispatches to a
-        state-specific handler for transition detection.
-
-        Args:
-            data: Raw output bytes from the PTY.
-        """
-        now = self._clock()
-        prev_output_time = self._last_output_time
-        self._last_output_time = now
-
-        if self._state == CLIState.IDLE:
-            self._handle_idle_output(data, now, prev_output_time)
-        elif self._state == CLIState.RUNNING:
-            self._handle_running_output(data, now)
-        elif self._state in WAITING_STATES:
-            self._handle_waiting_output(data, now)
-
-    # -- on_output sub-handlers -----------------------------------------------
-
-    def _handle_idle_output(
-        self, data: bytes, now: float, prev_output_time: float,
-    ) -> None:
-        """Handle output while idle: startup dialogs, escape race, idle→running."""
-        interrupted_pattern = self._provider.interrupted_pattern
-        trust_patterns = self._provider.trust_dialog_patterns
-        dialog_patterns = self._provider.dialog_patterns
-
-        self._output_buf.extend(data)
-        if len(self._output_buf) > 16384:
-            self._output_buf = self._output_buf[-16384:]
-
-        # Detect startup prompts from PTY output.
-        if not self._seen_user_input:
-            compact = self._ANSI_RE.sub(
-                b'', bytes(self._output_buf),
-            ).replace(b' ', b'')
-            _log.debug(
-                'ON_OUTPUT idle (startup) len=%d buf_len=%d '
-                'compact=%r',
-                len(data), len(self._output_buf),
-                compact[-120:],
-            )
-            is_trust = any(p in compact for p in trust_patterns)
-            is_dialog = (
-                bool(dialog_patterns)
-                and all(p in compact for p in dialog_patterns)
-            )
-            if is_trust or is_dialog:
-                _log.debug(
-                    'ON_OUTPUT idle→needs_permission '
-                    '(startup dialog: trust=%s dialog=%s)',
-                    is_trust, is_dialog,
-                )
-                self._last_prompt_buf = bytes(self._output_buf)
-                self._output_buf.clear()
-                self._idle_output_acc = 0
-                if is_trust:
-                    self._trust_dialog_phase = True
-                with self._lock:
-                    self._state = CLIState.NEEDS_PERMISSION
-                    self._waiting_since = self._clock()
-                return
-
-        # Detect interruption — the Stop hook may race ahead
-        # and write "idle" before PTY output with the interrupted
-        # pattern arrives.
-        # Use _last_escape_time (not _last_input_time) so that normal
-        # typing (which triggers TUI redraws of the visible screen)
-        # doesn't false-positive on "Interrupted" in the AI's text.
-        if now - self._last_escape_time < INTERRUPT_DETECT_WINDOW:
-            stripped_chunk = self._ANSI_RE.sub(b'', data)
-            has_interrupted = interrupted_pattern in stripped_chunk
-            if has_interrupted or interrupted_pattern in self._ANSI_RE.sub(
-                b'', bytes(self._output_buf),
-            ):
-                _log.debug(
-                    'ON_OUTPUT idle→interrupted (Escape race detected)',
-                )
-                self._output_buf.clear()
-                self._idle_output_acc = 0
-                with self._lock:
-                    self._state = CLIState.INTERRUPTED
-                    self._waiting_since = self._clock()
-                self._write_interrupted_signal()
-                return
-
-        # Confirmed interrupt pattern fallback — catches interrupts
-        # that reached idle (e.g. Stop hook raced ahead of PTY output,
-        # Ctrl+C bypassed on_input, or silence timeout expired).
-        # Check the accumulated buffer so split-chunk patterns (where
-        # "Interrupted" and "·" arrive in separate TUI render frames)
-        # are detected.  The buffer is cleared on every state transition
-        # (signal and timeout paths), so it only contains output since
-        # entering idle.
-        confirmed = self._provider.confirmed_interrupt_pattern
-        if confirmed and self._seen_user_input:
-            if self._suppress_stale_interrupt:
-                pass  # skip confirmed check — stale scrollback
-            else:
-                compact_buf = self._ANSI_RE.sub(
-                    b'', bytes(self._output_buf),
-                ).replace(b' ', b'')
-                if confirmed in compact_buf:
-                    _log.debug(
-                        'ON_OUTPUT idle→interrupted '
-                        '(confirmed interrupt pattern in buffer)',
-                    )
-                    self._output_buf.clear()
-                    self._idle_output_acc = 0
-                    with self._lock:
-                        self._state = CLIState.INTERRUPTED
-                        self._waiting_since = self._clock()
-                    self._write_interrupted_signal()
-                    return
-
-        if not self._seen_user_input:
-            return
-        # For Ratatui-based CLIs, skip output-based idle→running.
-        # Full-screen TUI redraws produce hundreds of bytes after ANSI
-        # stripping (box-drawing, spinners, status bar) that are
-        # indistinguishable from real processing output.
-        if not self._provider.output_triggers_running:
-            return
-        auto_resume = self._last_input_time < self._idle_since
-        if auto_resume:
-            # No user input since entering idle.  Output might be
-            # post-idle TUI rendering (prompt redraw, status bar) or
-            # the CLI auto-starting a new turn (e.g. background
-            # command results).  Allow idle→running after a grace
-            # period so TUI rendering settles before we start
-            # accumulating.
-            if now - self._idle_since < AUTO_RESUME_GRACE:
-                return
-        # Suppress output accumulation during a terminal resize — the
-        # TUI redraw burst contains real text (conversation history)
-        # that would otherwise false-trigger idle→running.
-        if now - self._last_resize_time < RESIZE_SUPPRESS_WINDOW:
-            return
-        stripped = self._ANSI_RE.sub(b'', data).strip()
-        if stripped:
-            if now - prev_output_time > OUTPUT_GAP_RESET:
-                self._idle_output_acc = 0
-            if now - self._last_input_time > INPUT_COOLDOWN:
-                # Strip TUI decoration (box-drawing, block elements)
-                # before counting — a terminal resize causes a full
-                # TUI redraw whose borders survive ANSI stripping and
-                # would otherwise false-trigger idle→running.
-                content = self._BOX_DRAWING_RE.sub(b'', stripped).strip()
-                self._idle_output_acc += len(content)
-                if self._idle_output_acc > IDLE_OUTPUT_THRESHOLD:
-                    _log.debug(
-                        'ON_OUTPUT idle→running (accumulated %d bytes%s)',
-                        self._idle_output_acc,
-                        ', auto-resume' if auto_resume else '',
-                    )
-                    self._idle_output_acc = 0
-                    self._output_buf.clear()
-                    self._running_since = self._clock()
-                    self._idle_debounce_at = 0
-                    with self._lock:
-                        self._state = CLIState.RUNNING
-                        self._waiting_since = None
-                    try:
-                        self._signal_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-
-    def _handle_running_output(self, data: bytes, now: float) -> None:
-        """Handle output while running: interruption, trust dialog."""
-        interrupted_pattern = self._provider.interrupted_pattern
-
-        stripped_data = self._ANSI_RE.sub(b'', data)
-        has_interrupted = interrupted_pattern in stripped_data
-        self._output_buf.extend(data)
-        if len(self._output_buf) > 8192:
-            self._output_buf = self._output_buf[-8192:]
-        if not has_interrupted:
-            has_interrupted = interrupted_pattern in self._ANSI_RE.sub(
-                b'', bytes(self._output_buf),
-            )
-        stripped_preview = stripped_data.strip()
-        if stripped_preview:
-            _log.debug(
-                'ON_OUTPUT running chunk len=%d buf_len=%d '
-                'has_Interrupted=%s stripped=%r',
-                len(data), len(self._output_buf),
-                has_interrupted, stripped_preview[:80],
-            )
-        if has_interrupted and (now - self._last_escape_time) < INTERRUPT_DETECT_WINDOW:
-            _log.debug('ON_OUTPUT running→interrupted')
-            self._output_buf.clear()
-            with self._lock:
-                self._state = CLIState.INTERRUPTED
-                self._waiting_since = self._clock()
-            self._write_interrupted_signal()
-        else:
-            # Trust dialog phase: after user answered via select_option,
-            # on_send() sets state to running.  Startup output means
-            # the CLI is booting — go straight to idle.
-            if self._trust_dialog_phase:
-                stripped = self._ANSI_RE.sub(b'', data).strip()
-                if stripped:
-                    _log.debug(
-                        'ON_OUTPUT running→idle '
-                        '(trust dialog startup)',
-                    )
-                    self._trust_dialog_phase = False
-                    self._seen_user_input = False
-                    self._output_buf.clear()
-                    with self._lock:
-                        self._state = CLIState.IDLE
-                        self._waiting_since = None
-                    self._idle_since = self._clock()
-                    self._idle_output_acc = 0
-                    self._last_prompt_buf = b''
-                    return
-
-            # Interrupt detection without Escape keypress: the Ctrl+C or
-            # self-interrupt may have bypassed on_input().  Use the
-            # provider's confirmed_interrupt_pattern — a specific pattern
-            # that only appears in the real interrupt prompt, not in
-            # conversational text.
-            confirmed = self._provider.confirmed_interrupt_pattern
-            if has_interrupted and confirmed:
-                if self._suppress_stale_interrupt:
-                    _log.debug(
-                        'ON_OUTPUT running: suppressing stale '
-                        'confirmed interrupt pattern',
-                    )
-                else:
-                    compact = self._ANSI_RE.sub(
-                        b'', bytes(self._output_buf),
-                    ).replace(b' ', b'')
-                    if confirmed in compact:
-                        _log.debug(
-                            'ON_OUTPUT running→interrupted '
-                            '(confirmed interrupt pattern in buffer)',
-                        )
-                        self._output_buf.clear()
-                        with self._lock:
-                            self._state = CLIState.INTERRUPTED
-                            self._waiting_since = self._clock()
-                        self._write_interrupted_signal()
-                        return
-
-    def _handle_waiting_output(self, data: bytes, now: float) -> None:
-        """Handle output while in a waiting state: correction, prompt accumulation, resume."""
-        interrupted_pattern = self._provider.interrupted_pattern
-
-        # Override to interrupted if we see the interrupted pattern
-        # in fresh output shortly after user pressed Escape.
-        # Use _last_escape_time to avoid false positives from normal
-        # typing that triggers TUI redraws with "Interrupted" in AI text.
-        if (
-            self._state == CLIState.NEEDS_INPUT
-            and interrupted_pattern in self._ANSI_RE.sub(b'', data)
-            and (now - self._last_escape_time) < ESCAPE_CORRECTION_WINDOW
-        ):
-            _log.debug(
-                'ON_OUTPUT needs_input→interrupted '
-                '(pattern in output, Escape race)',
-            )
-            with self._lock:
-                self._state = CLIState.INTERRUPTED
-                self._waiting_since = now
-            self._output_buf.clear()
-            self._last_prompt_buf = b''
-            self._write_interrupted_signal()
-            return
-        self._output_buf.clear()
-        # Continue accumulating prompt output for Slack rendering.
-        self._last_prompt_buf += data
-        if len(self._last_prompt_buf) > 16384:
-            self._last_prompt_buf = self._last_prompt_buf[-16384:]
-        ws = self._waiting_since
-
-        # Trust dialog recovery: if we entered needs_permission from a
-        # startup trust dialog and the user has typed (Enter to dismiss),
-        # any non-empty output means the dialog was dismissed and the
-        # idle prompt is rendering.  Skip the grace period — the user
-        # may dismiss the dialog so fast that all post-dismiss output
-        # arrives within RESUME_GRACE_PERIOD, after which Claude is
-        # idle and produces no more output to trigger recovery.
-        if (
-            self._trust_dialog_phase
-            and ws is not None
-            and self._seen_user_input
-        ):
-            stripped = self._ANSI_RE.sub(b'', data).strip()
-            if stripped:
-                _log.debug(
-                    'ON_OUTPUT %s→idle (trust dialog startup)',
-                    self._state,
-                )
-                self._trust_dialog_phase = False
-                # Reset _seen_user_input — the Enter was for the trust
-                # dialog, not a prompt submission.  Without this,
-                # _handle_idle_output() would treat post-trust-dialog
-                # startup output as idle→running.
-                self._seen_user_input = False
-                with self._lock:
-                    self._state = CLIState.IDLE
-                    self._waiting_since = None
-                self._idle_since = self._clock()
-                self._idle_output_acc = 0
-                self._last_prompt_buf = b''
-                return
-
-        if (
-            ws is not None
-            and (self._clock() - ws) > RESUME_GRACE_PERIOD
-            and self._last_input_time > ws
-        ):
-            stripped = self._ANSI_RE.sub(b'', data).strip()
-            if stripped:
-                if self._state == CLIState.INTERRUPTED:
-                    self._suppress_stale_interrupt = True
-                    self._last_escape_time = -INTERRUPT_DETECT_WINDOW
-                _log.debug(
-                    'ON_OUTPUT %s→running (resume, stripped=%r)',
-                    self._state, stripped[:60],
-                )
-                self._running_since = self._clock()
-                self._idle_debounce_at = 0
-                with self._lock:
-                    self._state = CLIState.RUNNING
-                    self._waiting_since = None
-                self._last_prompt_buf = b''
-                try:
-                    self._signal_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-    # -- Prompt output -------------------------------------------------------
-
     def get_prompt_output(self) -> str:
         """Return PTY output from the last permission/input prompt.
 
-        Processes the raw PTY bytes through a minimal virtual terminal
-        to properly handle TUI cursor-positioning layout.
+        Reads from the pyte screen snapshot taken when entering the
+        prompt state.
         """
-        with self._buf_lock:
-            buf = self._last_prompt_buf
-        if not buf:
+        with self._screen_lock:
+            snapshot = self._prompt_snapshot
+        if not snapshot:
             return ''
-        return self._render_screen(buf)
-
-    @staticmethod
-    def _render_screen(raw: bytes, rows: int = 50, cols: int = 200) -> str:
-        """Render cursor-positioned PTY output into readable text.
-
-        Uses the ``pyte`` terminal emulator library to process raw PTY
-        bytes (ANSI/CSI escape sequences, cursor positioning, erases,
-        etc.) into a virtual screen, then extracts readable lines.
-
-        Args:
-            raw: Raw PTY output bytes (may contain ANSI/CSI sequences).
-            rows: Virtual screen height.
-            cols: Virtual screen width.
-
-        Returns:
-            Cleaned multi-line text with proper spacing.
-        """
-        screen = pyte.Screen(cols, rows)
-        stream = pyte.Stream(screen)
-        text = raw.decode('utf-8', errors='replace')
-        try:
-            stream.feed(text)
-            display = screen.display
-        except (IndexError, ValueError, AssertionError):
-            return ''
-
-        # Box-drawing characters used by TUI borders.
         _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')
-        lines = [line.rstrip() for line in display]
+        lines = [line.rstrip() for line in snapshot]
         while lines and (
             not lines[0].strip()
             or all(c in _box_chars | {' '} for c in lines[0])
@@ -1078,12 +1062,7 @@ class CLIStateTracker:
         return '\n'.join(lines)
 
     def _read_signal_state(self) -> Optional[str]:
-        """Read the state from the signal file.
-
-        Returns:
-            A valid signal state string, or None if the file is missing,
-            unreadable, or contains an unknown state.
-        """
+        """Read the state from the signal file."""
         try:
             if not self._signal_file.exists():
                 return None
@@ -1114,5 +1093,5 @@ class CLIStateTracker:
             pass
 
 
-# Backwards-compatible alias for existing code that imports the old name.
+# Backwards-compatible alias.
 ClaudeStateTracker = CLIStateTracker

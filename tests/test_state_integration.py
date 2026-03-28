@@ -142,22 +142,19 @@ class TestPTYOutputAccumulation:
     """Output accumulation with real PTY output (ANSI codes, line
     endings, terminal rendering)."""
 
-    def test_real_pty_output_triggers_running(self, pty: PTYFixture) -> None:
-        """Bash output (with real ANSI/prompt noise) triggers running
-        after user input + cooldown."""
-        # Simulate user typing (sets _seen_user_input + _last_input_time)
+    def test_real_pty_output_does_not_trigger_running(self, pty: PTYFixture) -> None:
+        """In the event-driven model, PTY output alone does NOT trigger
+        running — only on_send() or Enter in idle does."""
+        # Simulate user typing (sets _seen_user_input)
         pty.send_input(b'x')
         time.sleep(0.1)
-        pty.send_input(b'\n')
-
-        # Wait past the 1.0s input cooldown
-        time.sleep(1.1)
 
         # Generate substantial output through bash
         pty.send_line('printf "%0.sA" $(seq 1 300)')
         pty.drain_to_tracker(timeout=1.0)
 
-        assert pty.get_state() == 'running'
+        # Output alone should NOT trigger running
+        assert pty.get_state() == 'idle'
 
     def test_no_false_running_without_user_input(self, pty: PTYFixture) -> None:
         """PTY output alone (no user input) should not trigger running."""
@@ -304,11 +301,14 @@ class TestPTYInterrupted:
         assert pty.tracker.current_state == 'interrupted'
 
     def test_interrupted_with_surrounding_ansi(self, pty: PTYFixture) -> None:
-        """'Interrupted' detected even with ANSI codes around it."""
+        """'Interrupted' detected even with ANSI codes around it,
+        provided _interrupt_pending is set (via Escape input)."""
         pty.tracker.on_send()
+        assert pty.get_state() == 'running'
 
-        # User presses Escape to interrupt
-        pty.send_input(b'\x1b')
+        # User presses Escape to interrupt (sets _interrupt_pending)
+        pty.tracker.on_input(b'\x1b')
+        assert pty.tracker._interrupt_pending
 
         # Output with ANSI codes around "Interrupted" (like Claude TUI does)
         pty.send_line(r'printf "\033[31mInterrupted\033[0m\n"')
@@ -344,25 +344,23 @@ class TestPTYResumeDetection:
         # Should stay interrupted — no user input since entering wait
         assert pty.tracker.current_state == 'interrupted'
 
-    def test_resume_after_user_types(self, pty: PTYFixture) -> None:
-        """After interrupted, user typing then output → running."""
+    def test_resume_after_user_responds_and_signal(self, pty: PTYFixture) -> None:
+        """After interrupted, user typing sets _user_responded, then
+        a signal file idle transition returns to idle (event-driven,
+        no grace period needed)."""
         pty.tracker.on_send()
         pty.send_input(b'\x1b')
         pty.send_line('echo Interrupted')
         pty.drain_to_tracker(timeout=1.0)
         assert pty.tracker.current_state == 'interrupted'
 
-        # Wait past grace period
-        time.sleep(2.5)
-
-        # User types (answers the question)
+        # User types (answers the question) — sets _user_responded
         pty.tracker.on_input(b'y')
+        assert pty.tracker._user_responded
 
-        # Claude produces output
-        pty.send_line('printf "%0.sX" $(seq 1 100)')
-        pty.drain_to_tracker(timeout=1.0)
-
-        assert pty.tracker.current_state == 'running'
+        # Signal file says idle (hook fires after user responded)
+        pty.write_signal('idle')
+        assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
 
 class TestPTYFalseRunningRetrigger:
@@ -370,14 +368,10 @@ class TestPTYFalseRunningRetrigger:
     not falsely re-trigger 'running'."""
 
     def test_output_after_signal_idle_stays_idle(self, pty: PTYFixture) -> None:
-        """Output accumulation → running → signal idle → more output
-        should NOT re-trigger running (input predates idle)."""
-        # User types → output accumulation → running
-        pty.send_input(b'x')
-        pty.send_input(b'\n')
-        time.sleep(1.1)
-        pty.send_line('printf "%0.sA" $(seq 1 300)')
-        pty.drain_to_tracker(timeout=1.0)
+        """on_send → running → signal idle → more output should NOT
+        re-trigger running (no new on_send/Enter)."""
+        # on_send → running
+        pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
         # Signal idle (Claude finished)
@@ -389,28 +383,17 @@ class TestPTYFalseRunningRetrigger:
         pty.drain_to_tracker(timeout=1.0)
         assert pty.get_state() == 'idle'
 
-    def test_new_input_after_idle_allows_running(self, pty: PTYFixture) -> None:
-        """After idle, fresh user input should allow running detection."""
+    def test_new_send_after_idle_allows_running(self, pty: PTYFixture) -> None:
+        """After idle, a fresh on_send() transitions back to running."""
         # running → idle cycle
-        pty.send_input(b'x')
-        pty.send_input(b'\n')
-        time.sleep(1.1)
-        pty.send_line('printf "%0.sA" $(seq 1 300)')
-        pty.drain_to_tracker(timeout=1.0)
+        pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
-        # User types again (AFTER idle)
-        time.sleep(0.1)
-        pty.send_input(b'y')
-        pty.send_input(b'\n')
-        time.sleep(1.1)
-
-        # New output after fresh input → should trigger running
-        pty.send_line('printf "%0.sC" $(seq 1 300)')
-        pty.drain_to_tracker(timeout=1.0)
+        # New on_send → running again
+        pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
 
@@ -436,22 +419,18 @@ class TestPTYEscapeRace:
 
         assert pty.tracker.current_state == 'interrupted'
 
-    def test_escape_after_false_idle(self, pty: PTYFixture) -> None:
-        """The user's reported scenario: type → running → idle signal →
-        press Escape → should get interrupted if Interrupted appears."""
-        # User types → running (via accumulation)
-        pty.send_input(b'h')
-        pty.send_input(b'\n')
-        time.sleep(1.1)
-        pty.send_line('printf "%0.sA" $(seq 1 300)')
-        pty.drain_to_tracker(timeout=1.0)
+    def test_escape_after_idle(self, pty: PTYFixture) -> None:
+        """on_send → running → idle signal → press Escape →
+        should get interrupted if 'Interrupted' appears in output."""
+        # on_send → running
+        pty.tracker.on_send()
         assert pty.get_state() == 'running'
 
         # Signal idle
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
-        # User presses Escape
+        # User presses Escape (sets _interrupt_pending)
         pty.tracker.on_input(b'\x1b')
 
         # PTY outputs "Interrupted"
