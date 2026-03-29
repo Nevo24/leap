@@ -853,19 +853,15 @@ class LeapServer:
             text = text[:self._capture_cursor_pos] + text[self._capture_cursor_pos + 1:]
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
-    def _capture_flush(self) -> None:
+    def _capture_flush(self, cancel: bool = False) -> None:
         """Flush CLI output that was buffered during capture mode.
 
-        While in capture mode, ``_output_filter`` buffers CLI output so
-        the display stays frozen.  When capture ends (Enter/Esc/Ctrl+C),
-        this method replays the buffered output so nothing is lost.
-        Also cleans up stale CLI input (the first "^" from ^^) unless
-        the message is being queued (Enter path keeps it for Ctrl+C
-        cleanup at send time).
+        Args:
+            cancel: True if exiting via Escape/Ctrl+C (erase stale ^).
+                    False if exiting via Enter (keep stale flag for
+                    _send_to_cli to clear with Ctrl+C).
         """
-        if self._capture_stale_cli_input and not self._queue_capture_mode:
-            # Capture exited without queuing (Escape/Ctrl+C/backspace).
-            # Erase the stale "^" from CLI input.
+        if cancel and self._capture_stale_cli_input:
             self.pty.send('\x7f')
             self._capture_stale_cli_input = False
         if self._capture_output_buf:
@@ -1005,7 +1001,7 @@ class LeapServer:
                         self._capture_display()
                         self._queue_capture_buf.clear()
                         self._queue_capture_mode = False
-                        self._capture_flush()
+                        self._capture_flush(cancel=True)
                         self._terminal_input_buf.clear()
                     continue
                 kind = data[i]
@@ -1071,7 +1067,7 @@ class LeapServer:
                         self._queue_capture_buf.clear()
                         self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                         self._queue_capture_mode = False
-                        self._capture_flush()
+                        self._capture_flush(cancel=True)
                         self._terminal_input_buf.clear()
                     elif self._is_csi_u_cancel(seq):
                         # CSI u Ctrl+C (e.g. \x1b[3u) — cancel capture
@@ -1079,7 +1075,7 @@ class LeapServer:
                         self._queue_capture_buf.clear()
                         self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                         self._queue_capture_mode = False
-                        self._capture_flush()
+                        self._capture_flush(cancel=True)
                         self._terminal_input_buf.clear()
                     elif seq == b'\x1b[D':  # Left arrow
                         if self._capture_cursor_pos > 0:
@@ -1146,7 +1142,7 @@ class LeapServer:
                     self._queue_capture_buf.clear()
                     self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                     self._queue_capture_mode = False
-                    self._capture_flush()
+                    self._capture_flush(cancel=True)
                     self._terminal_input_buf.clear()
                 elif 0x20 <= b < 0x7f:
                     # ASCII printable
