@@ -115,18 +115,6 @@ def _cleanup_orphaned_images(
             pass
 
 
-def _delete_note_images(text: str, note_name: str) -> None:
-    """Delete images referenced by a note, unless still used by another note."""
-    candidates = _collect_image_refs(text)
-    if not candidates:
-        return
-    other_refs = _all_note_image_refs(exclude_name=note_name)
-    for filename in candidates - other_refs:
-        try:
-            (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
-        except OSError:
-            pass
-
 
 _NOTE_IMAGE_PREVIEW_MAX = 600
 
@@ -483,6 +471,44 @@ def _rename_in_order(folder: str, old_leaf: str, new_leaf: str) -> None:
     if old_leaf in lst:
         lst[lst.index(old_leaf)] = new_leaf
         order[folder] = lst
+        _save_order(order)
+
+
+def _remove_from_order(folder: str, leaf: str) -> None:
+    """Remove *leaf* from *folder*'s stored order list."""
+    order = _load_order()
+    lst = order.get(folder, [])
+    if leaf in lst:
+        lst.remove(leaf)
+        if lst:
+            order[folder] = lst
+        else:
+            order.pop(folder, None)
+        _save_order(order)
+
+
+def _rename_order_keys(old_prefix: str, new_prefix: str) -> None:
+    """Rename a folder's and its sub-folders' keys in the _order dict."""
+    order = _load_order()
+    changed = False
+    if old_prefix in order:
+        order[new_prefix] = order.pop(old_prefix)
+        changed = True
+    pfx = old_prefix + '/'
+    for old_k in [k for k in order if k.startswith(pfx)]:
+        order[new_prefix + old_k[len(old_prefix):]] = order.pop(old_k)
+        changed = True
+    if changed:
+        _save_order(order)
+
+
+def _delete_order_keys(prefix: str) -> None:
+    """Delete a folder's and its sub-folders' keys from the _order dict."""
+    order = _load_order()
+    keys = [k for k in order if k == prefix or k.startswith(prefix + '/')]
+    if keys:
+        for k in keys:
+            del order[k]
         _save_order(order)
 
 
@@ -1561,9 +1587,13 @@ class _NotesTreeWidget(QTreeWidget):
         elif indicator == QAbstractItemView.BelowItem and target_item is not None:
             parent_ti = target_item.parent() or self.invisibleRootItem()
             idx = parent_ti.indexOfChild(target_item)
-            if idx + 1 < parent_ti.childCount():
-                before_path = (
-                    parent_ti.child(idx + 1).data(0, self._ROLE_PATH) or '')
+            # Find next sibling, skipping the dragged item itself
+            for j in range(idx + 1, parent_ti.childCount()):
+                sibling = parent_ti.child(j)
+                if sibling is not source:
+                    before_path = (
+                        sibling.data(0, self._ROLE_PATH) or '')
+                    break
 
         # Accept without calling super — prevents Qt from rearranging items
         event.setDropAction(Qt.IgnoreAction)
@@ -2042,64 +2072,71 @@ class NotesDialog(QDialog):
 
         menu.exec_(self._tree.viewport().mapToGlobal(pos))
 
-    def _move_note(self, note_name: str, target_folder: str) -> None:
-        """Move a note to a different folder."""
+    def _move_note(self, note_name: str, target_folder: str) -> bool:
+        """Move a note to a different folder. Returns True on success."""
         leaf = note_name.rsplit('/', 1)[-1] if '/' in note_name else note_name
         new_name = f'{target_folder}/{leaf}' if target_folder else leaf
 
         if new_name == note_name:
-            return
+            return False
         if _note_path(new_name).exists():
             QMessageBox.warning(
                 self, 'Already Exists',
                 f"A note named '{leaf}' already exists in that location.")
-            return
+            return False
 
         self._save_current()
+        src_folder = note_name.rsplit('/', 1)[0] if '/' in note_name else ''
         try:
             dest = _note_path(new_name)
             dest.parent.mkdir(parents=True, exist_ok=True)
             _note_path(note_name).rename(dest)
         except OSError:
             QMessageBox.warning(self, 'Error', 'Could not move the note.')
-            return
+            return False
         _rename_note_meta(note_name, new_name)
+        _remove_from_order(src_folder, leaf)
         if self._current_name == note_name:
             self._current_name = new_name
         self._refresh_tree(select_name=new_name)
         self._on_item_changed(self._tree.currentItem(), None)
+        return True
 
-    def _move_folder(self, folder_path: str, target_folder: str) -> None:
-        """Move a folder into another folder (or root)."""
+    def _move_folder(self, folder_path: str, target_folder: str) -> bool:
+        """Move a folder into another folder (or root). Returns True on success."""
         leaf = folder_path.rsplit('/', 1)[-1] if '/' in folder_path else folder_path
         new_path = f'{target_folder}/{leaf}' if target_folder else leaf
 
         if new_path == folder_path:
-            return
+            return False
         # Prevent moving a folder into itself or its own descendant
         if new_path.startswith(folder_path + '/'):
-            return
+            return False
         dest = NOTES_DIR / new_path
         if dest.exists():
             QMessageBox.warning(
                 self, 'Already Exists',
                 f"A folder named '{leaf}' already exists in that location.")
-            return
+            return False
 
         self._save_current()
+        src_parent = folder_path.rsplit('/', 1)[0] if '/' in folder_path else ''
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             (NOTES_DIR / folder_path).rename(dest)
         except OSError:
             QMessageBox.warning(self, 'Error', 'Could not move the folder.')
-            return
+            return False
         _rename_folder_meta(folder_path, new_path)
+        _remove_from_order(src_parent, leaf)
+        _rename_order_keys(folder_path, new_path)
         # Update current_name if it was under the moved folder
         if (self._current_name
                 and self._current_name.startswith(folder_path + '/')):
             self._current_name = (
                 new_path + self._current_name[len(folder_path):])
         self._refresh_tree(select_name=new_path, select_type='folder')
+        return True
 
     def _on_tree_drop(self, src_path: str, src_type: str,
                       target_folder: str, before_path: str) -> None:
@@ -2112,14 +2149,23 @@ class NotesDialog(QDialog):
                 src_path, src_type, target_folder, before_path)
         else:
             # Move to a different folder
+            ok = False
             if src_type == 'note':
-                self._move_note(src_path, target_folder)
+                ok = self._move_note(src_path, target_folder)
             elif src_type == 'folder':
-                self._move_folder(src_path, target_folder)
-            # Place at drop position in the target folder's order
-            moved_leaf = (src_path.rsplit('/', 1)[-1]
-                          if '/' in src_path else src_path)
-            self._insert_at_position(target_folder, moved_leaf, before_path)
+                ok = self._move_folder(src_path, target_folder)
+            if ok:
+                # Place at drop position in the target folder's order,
+                # then re-refresh so the visual matches the stored order.
+                moved_leaf = (src_path.rsplit('/', 1)[-1]
+                              if '/' in src_path else src_path)
+                self._insert_at_position(
+                    target_folder, moved_leaf, before_path)
+                new_full = (f'{target_folder}/{moved_leaf}'
+                            if target_folder else moved_leaf)
+                sel_type = 'folder' if src_type == 'folder' else 'note'
+                self._refresh_tree(
+                    select_name=new_full, select_type=sel_type)
         # macOS deactivates the window during native drag — reactivate so
         # focus and cursors work immediately after the drop.
         QApplication.setActiveWindow(self)
@@ -2340,11 +2386,7 @@ class NotesDialog(QDialog):
                 return
             _rename_folder_meta(old_path, new_full)
             _rename_in_order(parent_folder, old_display, new_name)
-            # Rename the folder's own order key if it has one
-            all_order = _load_order()
-            if old_path in all_order:
-                all_order[new_full] = all_order.pop(old_path)
-                _save_order(all_order)
+            _rename_order_keys(old_path, new_full)
             # Update current_name if it was under the renamed folder
             if (self._current_name
                     and self._current_name.startswith(old_path + '/')):
@@ -2451,6 +2493,38 @@ class NotesDialog(QDialog):
         for fp in sorted(folder_paths, reverse=True):
             _delete_folder_meta(fp)
             shutil.rmtree(NOTES_DIR / fp, ignore_errors=True)
+
+        # Clean up _order entries for all deleted items
+        all_order = _load_order()
+        order_changed = False
+        for name in all_notes:
+            parent = name.rsplit('/', 1)[0] if '/' in name else ''
+            leaf = name.rsplit('/', 1)[-1] if '/' in name else name
+            lst = all_order.get(parent, [])
+            if leaf in lst:
+                lst.remove(leaf)
+                if lst:
+                    all_order[parent] = lst
+                else:
+                    all_order.pop(parent, None)
+                order_changed = True
+        for fp in folder_paths:
+            parent = fp.rsplit('/', 1)[0] if '/' in fp else ''
+            leaf = fp.rsplit('/', 1)[-1] if '/' in fp else fp
+            lst = all_order.get(parent, [])
+            if leaf in lst:
+                lst.remove(leaf)
+                if lst:
+                    all_order[parent] = lst
+                else:
+                    all_order.pop(parent, None)
+                order_changed = True
+            for k in [k for k in all_order
+                      if k == fp or k.startswith(fp + '/')]:
+                del all_order[k]
+                order_changed = True
+        if order_changed:
+            _save_order(all_order)
 
         self._current_name = None
         self._saved_text = ''
