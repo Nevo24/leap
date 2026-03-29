@@ -186,10 +186,10 @@ class LeapServer:
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
         self._capture_output_buf: bytearray = bytearray()  # buffered CLI output
+        self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
-        self._capture_pending_backspace: bool = False
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -442,6 +442,14 @@ class LeapServer:
         Args:
             message: Message to send.
         """
+        # If ^^ capture left stale text in the CLI's input, clear it
+        # with Ctrl+C before sending.  At idle prompt, Ctrl+C just
+        # clears the input line without side effects.
+        if self._capture_stale_cli_input:
+            self._capture_stale_cli_input = False
+            self.pty.send('\x03')  # Ctrl+C clears input
+            time.sleep(0.2)  # let CLI process the Ctrl+C
+
         self.state.on_send()
 
         if self._provider.is_image_message(message) or self._has_image_ref(message):
@@ -853,12 +861,6 @@ class LeapServer:
         current_state = self.state.current_state
         in_prompt = current_state in PROMPT_STATES
 
-        # Discard stale keystrokes when exiting "running" state.
-        # Bytes typed while the CLI was busy (e.g. accidental keystrokes
-        # or keyboard-layout artefacts) should not prefix the next message.
-        if (self._prev_filter_state == CLIState.RUNNING
-                and current_state != CLIState.RUNNING):
-            self._terminal_input_buf.clear()
         self._prev_filter_state = current_state
 
         out = bytearray()
@@ -870,28 +872,23 @@ class LeapServer:
                 and i < len(data)
                 and data[i] == 0x5e
                 and self._pending_caret):
-            # Second "^" arrived in a new chunk.  The CLI already has
-            # "text^" in its input (first "^" was sent as literal).
-            # Clear the CLI's input with backspaces, then enter capture.
+            # Second "^" arrived in a new chunk.  Enter capture mode.
+            # Don't erase CLI input now — it causes display corruption.
+            # The stale input is cleaned up at send time via Ctrl+C.
             self._partial_escape = None
             if (self._terminal_input_buf
                     and self._terminal_input_buf[-1] == 0x5e):
                 self._terminal_input_buf.pop()
             self._queue_capture_buf = bytearray(
                 self._terminal_input_buf)
-            # Erase "text^" from CLI via pty.send (bypasses input filter).
-            # Output is suppressed in capture mode so no display gibberish.
-            typed = self._queue_capture_buf.decode(
-                'utf-8', errors='replace')
-            erase = '\x7f' * (len(typed) + 1)  # +1 for the "^"
             self._terminal_input_buf.clear()
             self._queue_capture_mode = True
             self._capture_output_buf.clear()
+            self._capture_stale_cli_input = True
             self._pending_caret = False
-            self.pty.send(erase)
-            # Space triggers CLI re-render → output filter draws [Leap Q].
-            out.append(0x20)
-            self._capture_pending_backspace = True
+            self._capture_display(
+                self._queue_capture_buf.decode(
+                    'utf-8', errors='replace'))
             i += 1
 
         # If a previous call ended mid-escape, skip continuation bytes.
@@ -1007,11 +1004,6 @@ class LeapServer:
                     # CSI/OSC/SS3 sequences are silently dropped.
                 else:
                     out.extend(data[esc_start:i])
-                    # Standalone Escape clears the CLI's input line
-                    # (Ink TUI behavior).  Sync our buffer so "^"
-                    # capture mode becomes available again.
-                    if is_standalone_esc:
-                        self._terminal_input_buf.clear()
                 continue
 
             # --- Queue-capture mode: swallow input, queue on Enter ---
@@ -1075,20 +1067,14 @@ class LeapServer:
                         out.pop()
                     self._queue_capture_buf = bytearray(
                         self._terminal_input_buf)
-                    # Erase text from CLI: the first "^" was removed
-                    # from out, but the text before it was already sent
-                    # in previous chunks.  Send backspaces via pty.send.
-                    typed = self._queue_capture_buf.decode(
-                        'utf-8', errors='replace')
-                    if typed:
-                        self.pty.send('\x7f' * len(typed))
                     self._terminal_input_buf.clear()
                     self._queue_capture_mode = True
                     self._capture_output_buf.clear()
+                    self._capture_stale_cli_input = True
                     self._pending_caret = False
-                    # Space triggers re-render → output filter draws [Leap Q].
-                    out.append(0x20)
-                    self._capture_pending_backspace = True
+                    self._capture_display(
+                        self._queue_capture_buf.decode(
+                            'utf-8', errors='replace'))
                     i += 1
                     continue
                 else:
@@ -1185,10 +1171,6 @@ class LeapServer:
         # The buffered output is flushed when capture ends (Enter/Esc/Ctrl+C)
         # so the user doesn't miss anything that happened while typing.
         if self._queue_capture_mode:
-            # Send deferred backspace to clean up the space we sent.
-            if self._capture_pending_backspace:
-                self._capture_pending_backspace = False
-                self.pty.send('\x7f')
             self._capture_output_buf.extend(data)
             self._capture_display(
                 self._queue_capture_buf.decode(
