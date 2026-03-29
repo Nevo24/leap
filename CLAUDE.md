@@ -95,7 +95,8 @@ src/
     │   │   ├── scm_template_dialog.py # Preset editor dialog (PR context + message bundles)
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
-    │   │   └── queue_edit_dialog.py   # Queue message editor dialog
+    │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
+    │   │   └── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -161,6 +162,7 @@ assets/
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
+| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder |
 | `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
 | `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste (replaces QInputDialog) |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |

@@ -1,25 +1,26 @@
 """Free-form notes dialog for Leap Monitor.
 
-Supports multiple notes stored as individual .txt files under .storage/notes/.
+Supports multiple notes organized in folders under .storage/notes/.
 Each note can be either plain text or a Google Keep-style checklist.
-Left panel shows a note list; right panel is the editor. Notes auto-save on
-switch, close, and Cmd+S.
+Left panel shows a searchable folder tree; right panel is the editor.
+Notes auto-save on switch, close, and Cmd+S.
 """
 
 import hashlib
 import json
 import os
 import re
+import shutil
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFrame, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMessageBox, QPushButton, QScrollArea, QSplitter,
-    QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+    QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu,
+    QMessageBox, QPushButton, QScrollArea, QSplitter, QStackedWidget,
+    QStyle, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
@@ -72,12 +73,15 @@ def _all_note_image_refs(exclude_name: Optional[str] = None) -> set[str]:
     """Scan all notes on disk and return the union of referenced image filenames.
 
     Args:
-        exclude_name: Note name to skip (e.g. the note being saved/deleted).
+        exclude_name: Note name (relative path without .txt) to skip.
     """
     refs: set[str] = set()
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    for p in NOTES_DIR.glob('*.txt'):
-        if exclude_name and p.stem == exclude_name:
+    for p in NOTES_DIR.rglob('*.txt'):
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(NOTES_DIR).with_suffix(''))
+        if exclude_name and rel == exclude_name:
             continue
         try:
             refs |= _collect_image_refs(p.read_text(encoding='utf-8'))
@@ -326,12 +330,12 @@ def _migrate_old_notes_file() -> None:
 
 
 def _list_notes() -> list[str]:
-    """Return note names sorted by most recently edited first."""
+    """Return note names (relative paths without .txt) sorted by mtime desc."""
     _migrate_old_notes_file()
     NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    files = [p for p in NOTES_DIR.glob('*.txt') if p.is_file()]
+    files = [p for p in NOTES_DIR.rglob('*.txt') if p.is_file()]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return [p.stem for p in files]
+    return [str(p.relative_to(NOTES_DIR).with_suffix('')) for p in files]
 
 
 def _format_mtime(path: Path) -> str:
@@ -413,6 +417,73 @@ def _serialize_checklist(items: list[dict]) -> str:
         mark = 'x' if item['checked'] else ' '
         lines.append(f'- [{mark}] {item["text"]}')
     return '\n'.join(lines)
+
+
+# ── Folder helpers ──────────────────────────────────────────────────
+
+def _list_folders() -> list[str]:
+    """Return all folder paths relative to NOTES_DIR, sorted alphabetically."""
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    folders: list[str] = []
+    for p in sorted(NOTES_DIR.rglob('*')):
+        if p.is_dir():
+            folders.append(str(p.relative_to(NOTES_DIR)))
+    return folders
+
+
+def _rename_folder_meta(old_prefix: str, new_prefix: str) -> None:
+    """Update metadata keys when a folder is renamed."""
+    meta = _load_notes_meta()
+    updated: dict = {}
+    for key, value in meta.items():
+        if key.startswith(old_prefix + '/') or key == old_prefix:
+            new_key = new_prefix + key[len(old_prefix):]
+            updated[new_key] = value
+        else:
+            updated[key] = value
+    if updated != meta:
+        _save_notes_meta(updated)
+
+
+def _delete_folder_meta(prefix: str) -> None:
+    """Remove metadata entries for all notes under a folder."""
+    meta = _load_notes_meta()
+    keys = [k for k in meta if k.startswith(prefix + '/') or k == prefix]
+    if keys:
+        for k in keys:
+            del meta[k]
+        _save_notes_meta(meta)
+
+
+# ── Item ordering ───────────────────────────────────────────────────
+
+def _load_order() -> dict[str, list[str]]:
+    """Load per-folder child ordering from metadata.
+
+    Returns dict mapping folder paths ('' for root) to ordered lists
+    of child leaf names (notes and subfolders mixed).
+    """
+    return _load_notes_meta().get('_order', {})
+
+
+def _save_order(order: dict[str, list[str]]) -> None:
+    """Persist per-folder child ordering."""
+    meta = _load_notes_meta()
+    if order:
+        meta['_order'] = order
+    else:
+        meta.pop('_order', None)
+    _save_notes_meta(meta)
+
+
+def _rename_in_order(folder: str, old_leaf: str, new_leaf: str) -> None:
+    """Rename an item in its parent folder's stored ordering."""
+    order = _load_order()
+    lst = order.get(folder, [])
+    if old_leaf in lst:
+        lst[lst.index(old_leaf)] = new_leaf
+        order[folder] = lst
+        _save_order(order)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1420,19 +1491,102 @@ class _ChecklistWidget(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Drag-and-drop tree widget
+# ══════════════════════════════════════════════════════════════════════
+
+
+class _NotesTreeWidget(QTreeWidget):
+    """QTreeWidget that uses Qt's native InternalMove for the drop indicator
+    line, but intercepts ``dropEvent`` so the *dialog* can do the real
+    filesystem move and rebuild the tree.
+    """
+
+    # (source_path, source_type, target_folder, before_path)
+    # target_folder '' = root.  before_path '' = append at end.
+    item_dropped = pyqtSignal(str, str, str, str)
+
+    _ROLE_PATH = Qt.UserRole
+    _ROLE_TYPE = Qt.UserRole + 1
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+
+    def dropEvent(self, event: 'QDropEvent') -> None:
+        """Intercept drop — compute target folder, emit signal, skip Qt rearrange."""
+        dragged = self.selectedItems()
+        if not dragged:
+            event.ignore()
+            return
+        source = dragged[0]
+        src_path = source.data(0, self._ROLE_PATH) or ''
+        src_type = source.data(0, self._ROLE_TYPE) or ''
+        if not src_path:
+            event.ignore()
+            return
+
+        target_item = self.itemAt(event.pos())
+        indicator = self.dropIndicatorPosition()
+
+        if target_item is None:
+            target_folder = ''
+        elif (indicator == QAbstractItemView.OnItem
+              and target_item.data(0, self._ROLE_TYPE) == 'folder'):
+            # Dropped directly onto a folder → move inside it
+            target_folder = target_item.data(0, self._ROLE_PATH) or ''
+        else:
+            # Above/below an item → use the containing folder
+            item_path = target_item.data(0, self._ROLE_PATH) or ''
+            if (target_item.data(0, self._ROLE_TYPE) == 'folder'
+                    and target_item.parent() is not None):
+                # Between folders inside a parent → that parent folder
+                parent_path = target_item.parent().data(
+                    0, self._ROLE_PATH) or ''
+                target_folder = parent_path
+            elif target_item.data(0, self._ROLE_TYPE) == 'folder':
+                # Between top-level folders → root
+                target_folder = ''
+            else:
+                # Between notes → same folder as the note
+                target_folder = (
+                    item_path.rsplit('/', 1)[0] if '/' in item_path else '')
+
+        # Compute insertion position for ordering
+        before_path = ''
+        if indicator == QAbstractItemView.AboveItem and target_item is not None:
+            before_path = target_item.data(0, self._ROLE_PATH) or ''
+        elif indicator == QAbstractItemView.BelowItem and target_item is not None:
+            parent_ti = target_item.parent() or self.invisibleRootItem()
+            idx = parent_ti.indexOfChild(target_item)
+            if idx + 1 < parent_ti.childCount():
+                before_path = (
+                    parent_ti.child(idx + 1).data(0, self._ROLE_PATH) or '')
+
+        # Accept without calling super — prevents Qt from rearranging items
+        event.setDropAction(Qt.IgnoreAction)
+        event.accept()
+        self.item_dropped.emit(src_path, src_type, target_folder, before_path)
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Main dialog
 # ══════════════════════════════════════════════════════════════════════
 
 class NotesDialog(QDialog):
-    """Multi-note dialog with a list panel and a text/checklist editor."""
+    """Multi-note dialog with folder hierarchy, search, and text/checklist editor."""
 
     _MODE_TEXT = 0
     _MODE_CHECKLIST = 1
+    _ROLE_PATH = Qt.UserRole         # relative path (note name or folder path)
+    _ROLE_TYPE = Qt.UserRole + 1     # 'note' or 'folder'
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Notes')
-        self.resize(680, 450)
+        self.resize(990, 660)
         saved = load_dialog_geometry('notes_dialog')
         if saved:
             self.resize(saved[0], saved[1])
@@ -1448,7 +1602,7 @@ class NotesDialog(QDialog):
         splitter.setHandleWidth(1)
         splitter.setStyleSheet('QSplitter::handle { background: transparent; }')
 
-        # ── Left panel: note list + buttons ──
+        # ── Left panel: search + tree + buttons ──
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 6, 0)
@@ -1456,40 +1610,71 @@ class NotesDialog(QDialog):
 
         left_layout.addWidget(QLabel('Notes'))
 
-        self._list = QListWidget()
-        self._list.setSelectionMode(QListWidget.ExtendedSelection)
+        # Search bar
+        self._search = QLineEdit()
+        self._search.setPlaceholderText('Search notes...')
+        self._search.setClearButtonEnabled(True)
+        self._search.textChanged.connect(self._on_search)
+        self._search.installEventFilter(self)
+        left_layout.addWidget(self._search)
+
+        # Tree widget (custom subclass handles drag-and-drop indicator + moves)
+        self._tree = _NotesTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self._tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._show_context_menu)
         t = current_theme()
-        self._list.setStyleSheet(
-            f'QListWidget::item:selected {{'
+        sel_color = t.accent_blue
+        self._tree.setStyleSheet(
+            f'QTreeWidget {{'
+            f'  selection-background-color: transparent;'
+            f'  selection-color: {t.text_primary};'
+            f'  outline: 0;'
+            f'}}'
+            f'QTreeWidget::item:selected,'
+            f'QTreeWidget::item:selected:active,'
+            f'QTreeWidget::item:selected:!active {{'
             f'  background: transparent;'
-            f'  border: 2px solid {t.accent_blue};'
+            f'  color: {t.text_primary};'
+            f'  border: 2px solid {sel_color};'
             f'  border-radius: {t.border_radius}px;'
             f'}}'
+            f'QTreeWidget::branch:selected {{'
+            f'  background: transparent;'
+            f'}}'
         )
-        self._list.currentItemChanged.connect(self._on_item_changed)
-        left_layout.addWidget(self._list, 1)
+        self._tree.currentItemChanged.connect(self._on_item_changed)
+        self._tree.item_dropped.connect(self._on_tree_drop)
+        left_layout.addWidget(self._tree, 1)
 
+        # Button row
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        new_btn = QPushButton('+')
-        new_btn.setFixedWidth(44)
-        new_btn.setToolTip('New note')
+
+        new_btn = QPushButton('+ Note')
+        new_btn.setToolTip('New note (Cmd+N)')
         new_btn.clicked.connect(self._on_new)
 
+        folder_btn = QPushButton('+ Folder')
+        folder_btn.setToolTip('New folder (Cmd+Shift+N)')
+        folder_btn.clicked.connect(self._on_new_folder)
+
         rename_btn = QPushButton('Rename')
-        rename_btn.setToolTip('Rename selected note')
+        rename_btn.setToolTip('Rename selected')
         rename_btn.clicked.connect(self._on_rename)
 
         delete_btn = QPushButton('Delete')
-        delete_btn.setToolTip('Delete selected note')
+        delete_btn.setToolTip('Delete selected')
         delete_btn.clicked.connect(self._on_delete)
 
         btn_row.addWidget(new_btn)
+        btn_row.addWidget(folder_btn)
         btn_row.addWidget(rename_btn)
         btn_row.addWidget(delete_btn)
         left_layout.addLayout(btn_row)
 
-        left.setMinimumWidth(230)
+        left.setMinimumWidth(340)
         splitter.addWidget(left)
         splitter.setCollapsible(0, False)
 
@@ -1498,11 +1683,11 @@ class NotesDialog(QDialog):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(6, 0, 0, 0)
 
-        # Header row: title | mode combo | timestamp
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QLabel('')
-        self._title_label.setStyleSheet(f'font-weight: bold; font-size: {current_theme().font_size_large}px;')
+        self._title_label.setStyleSheet(
+            f'font-weight: bold; font-size: {current_theme().font_size_large}px;')
         header_row.addWidget(self._title_label)
 
         self._mode_combo = QComboBox()
@@ -1515,11 +1700,11 @@ class NotesDialog(QDialog):
         header_row.addStretch()
         right_layout.addLayout(header_row)
 
-        # Stacked widget: page 0 = text, page 1 = checklist
         self._stack = QStackedWidget()
 
         self._editor = _NoteTextEdit()
-        self._editor.setPlaceholderText('Select or create a note... (paste images with Cmd+V)')
+        self._editor.setPlaceholderText(
+            'Select or create a note... (paste images with Cmd+V)')
         self._editor.setEnabled(False)
         self._editor.setTabChangesFocus(False)
         self._stack.addWidget(self._editor)
@@ -1530,7 +1715,7 @@ class NotesDialog(QDialog):
 
         right_layout.addWidget(self._stack, 1)
 
-        right.setMinimumWidth(230)
+        right.setMinimumWidth(375)
         splitter.addWidget(right)
         splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 1)
@@ -1538,12 +1723,14 @@ class NotesDialog(QDialog):
 
         root_layout.addWidget(splitter, 1)
 
-        # Bottom bar with hint + Close button
+        # Bottom bar
         bottom_row = QHBoxLayout()
-        hint = QLabel('Cmd+N: New note  |  Cmd+click: Multi-select  |  Delete/⌫: Delete selected')
+        hint = QLabel(
+            'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
+            '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
-            f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;'
-        )
+            f'color: {current_theme().text_muted};'
+            f' font-size: {current_theme().font_size_small}px;')
         bottom_row.addWidget(hint)
         bottom_row.addStretch()
         close_btn = QPushButton('Close')
@@ -1551,69 +1738,191 @@ class NotesDialog(QDialog):
         bottom_row.addWidget(close_btn)
         root_layout.addLayout(bottom_row)
 
-        # Populate list and auto-select first note
-        self._refresh_list()
-        if self._list.count() > 0:
-            self._list.setCurrentRow(0)
+        # Populate and auto-select first note
+        self._refresh_tree()
+        first = self._find_first_note(self._tree.invisibleRootItem())
+        if first:
+            self._tree.setCurrentItem(first)
 
-    # ── List management ──────────────────────────────────────────────
+    # ── Tree helpers ────────────────────────────────────────────────
 
-    def _refresh_list(self, select_name: Optional[str] = None) -> None:
-        """Reload the list widget from disk."""
-        self._list.blockSignals(True)
-        self._list.clear()
-        for name in _list_notes():
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, name)
-            ts = _format_mtime(_note_path(name))
-            widget = QWidget()
-            layout = QVBoxLayout(widget)
-            layout.setContentsMargins(4, 4, 4, 4)
-            layout.setSpacing(1)
-            name_label = QLabel(name)
-            name_label.setStyleSheet(f'font-weight: bold; font-size: {current_theme().font_size_base}px;')
-            layout.addWidget(name_label)
-            if ts:
-                ts_label = QLabel(ts)
-                ts_label.setStyleSheet(f'color: {current_theme().text_secondary}; font-size: {current_theme().font_size_small}px;')
-                layout.addWidget(ts_label)
-            item.setSizeHint(widget.sizeHint())
-            self._list.addItem(item)
-            self._list.setItemWidget(item, widget)
-        if select_name:
-            for i in range(self._list.count()):
-                if self._list.item(i).data(Qt.UserRole) == select_name:
-                    self._list.setCurrentRow(i)
-                    break
-        self._list.blockSignals(False)
+    def _find_first_note(
+        self, parent: QTreeWidgetItem,
+    ) -> Optional[QTreeWidgetItem]:
+        """Return the first note item in depth-first order."""
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            if child.data(0, self._ROLE_TYPE) == 'note':
+                return child
+            found = self._find_first_note(child)
+            if found:
+                return found
+        return None
 
-    def _update_timestamp(self) -> None:
-        """Update the timestamp in the list for the current note."""
-        if not self._current_name:
-            return
-        for i in range(self._list.count()):
-            item = self._list.item(i)
-            if item.data(Qt.UserRole) == self._current_name:
-                widget = self._list.itemWidget(item)
-                if widget:
-                    labels = widget.findChildren(QLabel)
-                    ts = _format_mtime(_note_path(self._current_name))
-                    if len(labels) >= 2 and ts:
-                        labels[1].setText(ts)
-                    elif len(labels) == 1 and ts:
-                        ts_label = QLabel(ts)
-                        ts_label.setStyleSheet(f'color: {current_theme().text_secondary}; font-size: {current_theme().font_size_small}px;')
-                        widget.layout().addWidget(ts_label)
-                    item.setSizeHint(widget.sizeHint())
-                break
+    def _find_tree_item(
+        self, path: str, item_type: str,
+        parent: Optional[QTreeWidgetItem] = None,
+    ) -> Optional[QTreeWidgetItem]:
+        """Find a tree item by its path and type."""
+        if parent is None:
+            parent = self._tree.invisibleRootItem()
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            if (child.data(0, self._ROLE_PATH) == path
+                    and child.data(0, self._ROLE_TYPE) == item_type):
+                return child
+            found = self._find_tree_item(path, item_type, child)
+            if found:
+                return found
+        return None
+
+    def _current_folder(self) -> str:
+        """Return the folder path for the currently selected item ('' for root)."""
+        item = self._tree.currentItem()
+        if item is None:
+            return ''
+        if item.data(0, self._ROLE_TYPE) == 'folder':
+            return item.data(0, self._ROLE_PATH)
+        name = item.data(0, self._ROLE_PATH) or ''
+        if '/' in name:
+            return name.rsplit('/', 1)[0]
+        return ''
 
     def _current_mode(self) -> int:
         return self._stack.currentIndex()
 
-    # ── Note selection ───────────────────────────────────────────────
+    # ── Tree management ─────────────────────────────────────────────
+
+    def _refresh_tree(self, select_name: Optional[str] = None,
+                      select_type: str = 'note') -> None:
+        """Rebuild the tree from disk, respecting stored child ordering."""
+        self._tree.blockSignals(True)
+        self._tree.clear()
+
+        folder_icon = self.style().standardIcon(QStyle.SP_DirIcon)
+        all_order = _load_order()
+
+        # Collect children per parent folder:
+        #   parent_path -> [(type, full_path, leaf_name), ...]
+        # Folders appear in alphabetical order, notes in mtime order.
+        children: dict[str, list[tuple[str, str, str]]] = {}
+
+        for folder_path in _list_folders():
+            parent = folder_path.rsplit('/', 1)[0] if '/' in folder_path else ''
+            leaf = folder_path.rsplit('/', 1)[-1] if '/' in folder_path else folder_path
+            children.setdefault(parent, []).append(('folder', folder_path, leaf))
+
+        for name in _list_notes():
+            parent = name.rsplit('/', 1)[0] if '/' in name else ''
+            leaf = name.rsplit('/', 1)[-1] if '/' in name else name
+            children.setdefault(parent, []).append(('note', name, leaf))
+
+        # Sort each parent's children by stored order (stable sort:
+        # items in stored order come first in that order; unstored items
+        # keep their default position — folders alpha, then notes mtime).
+        for parent_path, items in children.items():
+            stored = all_order.get(parent_path, [])
+            if stored:
+                order_map = {n: i for i, n in enumerate(stored)}
+                max_idx = len(stored)
+                items.sort(key=lambda x: order_map.get(x[2], max_idx))
+
+        # Build tree recursively
+        def _build(parent_item: QTreeWidgetItem, parent_path: str) -> None:
+            for typ, full_path, leaf in children.get(parent_path, []):
+                ti = QTreeWidgetItem(parent_item)
+                ti.setText(0, leaf)
+                ti.setData(0, self._ROLE_PATH, full_path)
+                ti.setData(0, self._ROLE_TYPE, typ)
+                if typ == 'folder':
+                    ti.setIcon(0, folder_icon)
+                    ti.setExpanded(True)
+                    _build(ti, full_path)
+                else:
+                    ti.setFlags(
+                        (ti.flags() | Qt.ItemIsDragEnabled)
+                        & ~Qt.ItemIsDropEnabled)
+                    ts = _format_mtime(_note_path(full_path))
+                    if ts:
+                        ti.setToolTip(0, f'{full_path}\n{ts}')
+
+        _build(self._tree.invisibleRootItem(), '')
+
+        # Restore search filter if active
+        search_text = self._search.text().strip().lower()
+        if search_text:
+            self._filter_tree(self._tree.invisibleRootItem(), search_text)
+
+        # Select requested item
+        if select_name:
+            target = self._find_tree_item(select_name, select_type)
+            if target:
+                self._tree.setCurrentItem(target)
+
+        self._tree.blockSignals(False)
+
+    def _update_timestamp(self) -> None:
+        """Update the tooltip for the current note in the tree."""
+        if not self._current_name:
+            return
+        item = self._find_tree_item(self._current_name, 'note')
+        if item:
+            ts = _format_mtime(_note_path(self._current_name))
+            if ts:
+                item.setToolTip(0, f'{self._current_name}\n{ts}')
+
+    # ── Search ──────────────────────────────────────────────────────
+
+    def _on_search(self, text: str) -> None:
+        """Filter tree items based on search text (matches name and content)."""
+        query = text.strip().lower()
+        if not query:
+            self._show_all_items(self._tree.invisibleRootItem())
+        else:
+            self._filter_tree(self._tree.invisibleRootItem(), query)
+
+    def _filter_tree(self, parent: QTreeWidgetItem, query: str) -> bool:
+        """Hide non-matching items. Returns True if any child is visible."""
+        any_visible = False
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            if child.data(0, self._ROLE_TYPE) == 'folder':
+                children_visible = self._filter_tree(child, query)
+                child.setHidden(not children_visible)
+                if children_visible:
+                    child.setExpanded(True)
+                    any_visible = True
+            else:
+                # Match against note name and file content
+                name = (child.data(0, self._ROLE_PATH) or '').lower()
+                match = query in name
+                if not match:
+                    path = _note_path(child.data(0, self._ROLE_PATH) or '')
+                    try:
+                        if path.exists():
+                            match = query in path.read_text(
+                                encoding='utf-8').lower()
+                    except OSError:
+                        pass
+                child.setHidden(not match)
+                if match:
+                    any_visible = True
+        return any_visible
+
+    def _show_all_items(self, parent: QTreeWidgetItem) -> None:
+        """Unhide all items in the tree."""
+        for i in range(parent.childCount()):
+            child = parent.child(i)
+            child.setHidden(False)
+            if child.data(0, self._ROLE_TYPE) == 'folder':
+                child.setExpanded(True)
+                self._show_all_items(child)
+
+    # ── Note selection ──────────────────────────────────────────────
 
     def _on_item_changed(
-        self, current: Optional[QListWidgetItem], previous: Optional[QListWidgetItem],
+        self, current: Optional[QTreeWidgetItem],
+        previous: Optional[QTreeWidgetItem],
     ) -> None:
         """Save the previous note, then load the newly selected one."""
         self._save_current()
@@ -1627,7 +1936,18 @@ class NotesDialog(QDialog):
             self._title_label.setText('')
             return
 
-        name = current.data(Qt.UserRole)
+        if current.data(0, self._ROLE_TYPE) == 'folder':
+            # Folder selected — clear editor, show folder name
+            self._current_name = None
+            self._saved_text = ''
+            self._editor.clear()
+            self._editor.setEnabled(False)
+            self._mode_combo.setEnabled(False)
+            self._stack.setCurrentIndex(self._MODE_TEXT)
+            self._title_label.setText(current.text(0))
+            return
+
+        name = current.data(0, self._ROLE_PATH)
         self._current_name = name
         path = _note_path(name)
         try:
@@ -1650,30 +1970,26 @@ class NotesDialog(QDialog):
         self._switching_mode = False
 
         self._mode_combo.setEnabled(True)
-        self._title_label.setText(name)
+        display = name.rsplit('/', 1)[-1] if '/' in name else name
+        self._title_label.setText(display)
         self._update_timestamp()
 
-    # ── Mode switching ───────────────────────────────────────────────
+    # ── Mode switching ──────────────────────────────────────────────
 
     def _on_mode_changed(self, index: int) -> None:
         if self._switching_mode or not self._current_name:
             return
 
         if index == self._MODE_CHECKLIST:
-            # Text → Checklist: each non-empty line becomes an unchecked item
             text = self._editor.get_note_content()
-            # Transfer pasted images from text editor to checklist before switching
             self._checklist._pasted_images |= self._editor.take_pasted_images()
             items = _parse_checklist(text) if text.strip() else []
             self._checklist.set_items(items)
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
             _set_note_mode(self._current_name, 'checklist')
-            # Save immediately so the format on disk matches
             self._save_current()
         else:
-            # Checklist → Text: convert items to plain text lines
             items = self._checklist.get_items()
-            # Transfer pasted images from checklist to text editor before switching
             self._editor._pasted_images |= self._checklist.take_pasted_images()
             lines = [item['text'] for item in items if item['text']]
             text = '\n'.join(lines)
@@ -1684,19 +2000,198 @@ class NotesDialog(QDialog):
             self._save_current()
 
     def _on_checklist_changed(self) -> None:
-        """Mark that checklist content changed (for auto-save comparison)."""
-        # No-op signal receiver; _save_current reads live widget state.
+        """No-op signal receiver; _save_current reads live widget state."""
         pass
 
-    # ── CRUD ─────────────────────────────────────────────────────────
+    # ── Context menu ────────────────────────────────────────────────
+
+    def _show_context_menu(self, pos: QPoint) -> None:
+        """Show right-click context menu on the tree."""
+        item = self._tree.itemAt(pos)
+        menu = QMenu(self)
+
+        menu.addAction('New Note', self._on_new)
+        menu.addAction('New Folder', self._on_new_folder)
+
+        if item:
+            menu.addSeparator()
+            item_type = item.data(0, self._ROLE_TYPE)
+
+            if item_type == 'note':
+                menu.addAction('Rename', self._on_rename)
+                # "Move to" submenu
+                note_name = item.data(0, self._ROLE_PATH) or ''
+                current_note_folder = (
+                    note_name.rsplit('/', 1)[0] if '/' in note_name else '')
+                move_menu = menu.addMenu('Move to...')
+                if current_note_folder:
+                    move_menu.addAction(
+                        'Root',
+                        lambda: self._move_note(note_name, ''))
+                for folder in _list_folders():
+                    if folder != current_note_folder:
+                        move_menu.addAction(
+                            folder,
+                            lambda f=folder: self._move_note(note_name, f))
+                if move_menu.isEmpty():
+                    move_menu.setEnabled(False)
+            else:
+                menu.addAction('Rename Folder', self._on_rename)
+
+            menu.addAction('Delete', self._on_delete)
+
+        menu.exec_(self._tree.viewport().mapToGlobal(pos))
+
+    def _move_note(self, note_name: str, target_folder: str) -> None:
+        """Move a note to a different folder."""
+        leaf = note_name.rsplit('/', 1)[-1] if '/' in note_name else note_name
+        new_name = f'{target_folder}/{leaf}' if target_folder else leaf
+
+        if new_name == note_name:
+            return
+        if _note_path(new_name).exists():
+            QMessageBox.warning(
+                self, 'Already Exists',
+                f"A note named '{leaf}' already exists in that location.")
+            return
+
+        self._save_current()
+        try:
+            dest = _note_path(new_name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _note_path(note_name).rename(dest)
+        except OSError:
+            QMessageBox.warning(self, 'Error', 'Could not move the note.')
+            return
+        _rename_note_meta(note_name, new_name)
+        if self._current_name == note_name:
+            self._current_name = new_name
+        self._refresh_tree(select_name=new_name)
+        self._on_item_changed(self._tree.currentItem(), None)
+
+    def _move_folder(self, folder_path: str, target_folder: str) -> None:
+        """Move a folder into another folder (or root)."""
+        leaf = folder_path.rsplit('/', 1)[-1] if '/' in folder_path else folder_path
+        new_path = f'{target_folder}/{leaf}' if target_folder else leaf
+
+        if new_path == folder_path:
+            return
+        # Prevent moving a folder into itself or its own descendant
+        if new_path.startswith(folder_path + '/'):
+            return
+        dest = NOTES_DIR / new_path
+        if dest.exists():
+            QMessageBox.warning(
+                self, 'Already Exists',
+                f"A folder named '{leaf}' already exists in that location.")
+            return
+
+        self._save_current()
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            (NOTES_DIR / folder_path).rename(dest)
+        except OSError:
+            QMessageBox.warning(self, 'Error', 'Could not move the folder.')
+            return
+        _rename_folder_meta(folder_path, new_path)
+        # Update current_name if it was under the moved folder
+        if (self._current_name
+                and self._current_name.startswith(folder_path + '/')):
+            self._current_name = (
+                new_path + self._current_name[len(folder_path):])
+        self._refresh_tree(select_name=new_path, select_type='folder')
+
+    def _on_tree_drop(self, src_path: str, src_type: str,
+                      target_folder: str, before_path: str) -> None:
+        """Handle a drag-and-drop in the tree."""
+        src_folder = src_path.rsplit('/', 1)[0] if '/' in src_path else ''
+
+        if src_folder == target_folder:
+            # Reorder within the same folder
+            self._reorder_in_folder(
+                src_path, src_type, target_folder, before_path)
+        else:
+            # Move to a different folder
+            if src_type == 'note':
+                self._move_note(src_path, target_folder)
+            elif src_type == 'folder':
+                self._move_folder(src_path, target_folder)
+            # Place at drop position in the target folder's order
+            moved_leaf = (src_path.rsplit('/', 1)[-1]
+                          if '/' in src_path else src_path)
+            self._insert_at_position(target_folder, moved_leaf, before_path)
+        # macOS deactivates the window during native drag — reactivate so
+        # focus and cursors work immediately after the drop.
+        QApplication.setActiveWindow(self)
+
+    def _effective_order(self, folder: str) -> list[str]:
+        """Return the effective leaf-name order for *folder*'s children."""
+        stored = _load_order().get(folder, [])
+        # Collect actual children on disk
+        items: list[tuple[str, str, str]] = []
+        for f in _list_folders():
+            p = f.rsplit('/', 1)[0] if '/' in f else ''
+            if p == folder:
+                items.append(('folder', f, f.rsplit('/', 1)[-1] if '/' in f else f))
+        for n in _list_notes():
+            p = n.rsplit('/', 1)[0] if '/' in n else ''
+            if p == folder:
+                items.append(('note', n, n.rsplit('/', 1)[-1] if '/' in n else n))
+        if stored:
+            order_map = {n: i for i, n in enumerate(stored)}
+            max_idx = len(stored)
+            items.sort(key=lambda x: order_map.get(x[2], max_idx))
+        return [x[2] for x in items]
+
+    def _reorder_in_folder(self, src_path: str, src_type: str,
+                           folder: str, before_path: str) -> None:
+        """Reorder an item within its current folder."""
+        src_leaf = (src_path.rsplit('/', 1)[-1]
+                    if '/' in src_path else src_path)
+        before_leaf = (before_path.rsplit('/', 1)[-1]
+                       if before_path else '')
+
+        order = self._effective_order(folder)
+        if src_leaf not in order:
+            return
+        order.remove(src_leaf)
+        if before_leaf and before_leaf in order:
+            order.insert(order.index(before_leaf), src_leaf)
+        else:
+            order.append(src_leaf)
+
+        all_order = _load_order()
+        all_order[folder] = order
+        _save_order(all_order)
+
+        select_type = 'folder' if src_type == 'folder' else 'note'
+        self._refresh_tree(select_name=src_path, select_type=select_type)
+
+    def _insert_at_position(self, folder: str, leaf: str,
+                            before_path: str) -> None:
+        """Insert *leaf* into *folder*'s stored order at the drop position."""
+        before_leaf = (before_path.rsplit('/', 1)[-1]
+                       if before_path else '')
+        order = self._effective_order(folder)
+        if leaf in order:
+            order.remove(leaf)
+        if before_leaf and before_leaf in order:
+            order.insert(order.index(before_leaf), leaf)
+        else:
+            order.append(leaf)
+        all_order = _load_order()
+        all_order[folder] = order
+        _save_order(all_order)
+
+    # ── CRUD ────────────────────────────────────────────────────────
 
     def _on_new(self) -> None:
-        """Create a new note."""
+        """Create a new note in the selected folder."""
+        folder = self._current_folder()
         prev = ''
         while True:
             name, ok = QInputDialog.getText(
-                self, 'New Note', 'Note name:', text=prev,
-            )
+                self, 'New Note', 'Note name:', text=prev)
             if not ok or not name.strip():
                 return
             name = name.strip()
@@ -1704,123 +2199,240 @@ class NotesDialog(QDialog):
             if len(name) > MAX_NOTE_NAME_LEN:
                 QMessageBox.warning(
                     self, 'Name Too Long',
-                    f'Note name must be {MAX_NOTE_NAME_LEN} characters or fewer.',
-                )
+                    f'Note name must be {MAX_NOTE_NAME_LEN} characters or fewer.')
                 continue
             if '/' in name or '\\' in name:
                 QMessageBox.warning(
-                    self, 'Invalid Name', 'Note name cannot contain slashes.',
-                )
+                    self, 'Invalid Name',
+                    'Note name cannot contain slashes.')
                 continue
-            if _note_path(name).exists():
+            full_name = f'{folder}/{name}' if folder else name
+            if _note_path(full_name).exists():
                 QMessageBox.warning(
                     self, 'Already Exists',
-                    f"A note named '{name}' already exists.",
-                )
+                    f"A note named '{name}' already exists in this location.")
                 continue
             break
 
         self._save_current()
-        _note_path(name).write_text('', encoding='utf-8')
-        self._refresh_list(select_name=name)
-        self._on_item_changed(self._list.currentItem(), None)
+        path = _note_path(full_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('', encoding='utf-8')
+        self._refresh_tree(select_name=full_name)
+        self._on_item_changed(self._tree.currentItem(), None)
         if self._current_mode() == self._MODE_TEXT:
             self._editor.setFocus()
 
-    def _on_rename(self) -> None:
-        """Rename the selected note."""
-        if not self._current_name:
-            return
-        old_name = self._current_name
-        prev = old_name
+    def _on_new_folder(self) -> None:
+        """Create a new folder inside the selected folder."""
+        parent_folder = self._current_folder()
+        prev = ''
         while True:
+            name, ok = QInputDialog.getText(
+                self, 'New Folder', 'Folder name:', text=prev)
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+            prev = name
+            if len(name) > MAX_NOTE_NAME_LEN:
+                QMessageBox.warning(
+                    self, 'Name Too Long',
+                    f'Folder name must be {MAX_NOTE_NAME_LEN} characters or fewer.')
+                continue
+            if '/' in name or '\\' in name:
+                QMessageBox.warning(
+                    self, 'Invalid Name',
+                    'Folder name cannot contain slashes.')
+                continue
+            full_path = f'{parent_folder}/{name}' if parent_folder else name
+            if (NOTES_DIR / full_path).exists():
+                QMessageBox.warning(
+                    self, 'Already Exists',
+                    f"A folder named '{name}' already exists here.")
+                continue
+            break
+
+        try:
+            (NOTES_DIR / full_path).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            QMessageBox.warning(self, 'Error', 'Could not create folder.')
+            return
+        self._refresh_tree(select_name=full_path, select_type='folder')
+
+    def _on_rename(self) -> None:
+        """Rename the selected note or folder."""
+        item = self._tree.currentItem()
+        if not item:
+            return
+        item_type = item.data(0, self._ROLE_TYPE)
+        old_path = item.data(0, self._ROLE_PATH)
+        old_display = item.text(0)
+
+        prev = old_display
+        while True:
+            label = 'New name:' if item_type == 'note' else 'New folder name:'
+            title = 'Rename Note' if item_type == 'note' else 'Rename Folder'
             new_name, ok = QInputDialog.getText(
-                self, 'Rename Note', 'New name:', text=prev,
-            )
+                self, title, label, text=prev)
             if not ok or not new_name.strip():
                 return
             new_name = new_name.strip()
             prev = new_name
-            if new_name == old_name:
+            if new_name == old_display:
                 return
             if len(new_name) > MAX_NOTE_NAME_LEN:
                 QMessageBox.warning(
                     self, 'Name Too Long',
-                    f'Note name must be {MAX_NOTE_NAME_LEN} characters or fewer.',
-                )
+                    f'Name must be {MAX_NOTE_NAME_LEN} characters or fewer.')
                 continue
             if '/' in new_name or '\\' in new_name:
                 QMessageBox.warning(
-                    self, 'Invalid Name', 'Note name cannot contain slashes.',
-                )
+                    self, 'Invalid Name', 'Name cannot contain slashes.')
                 continue
-            if _note_path(new_name).exists():
-                QMessageBox.warning(
-                    self, 'Already Exists',
-                    f"A note named '{new_name}' already exists.",
-                )
-                continue
+
+            # Compute new full path
+            if '/' in old_path:
+                parent = old_path.rsplit('/', 1)[0]
+                new_full = f'{parent}/{new_name}'
+            else:
+                new_full = new_name
+
+            if item_type == 'note':
+                if _note_path(new_full).exists():
+                    QMessageBox.warning(
+                        self, 'Already Exists',
+                        f"A note named '{new_name}' already exists.")
+                    continue
+            else:
+                if (NOTES_DIR / new_full).exists():
+                    QMessageBox.warning(
+                        self, 'Already Exists',
+                        f"A folder named '{new_name}' already exists.")
+                    continue
             break
 
-        self._save_current()
-        try:
-            _note_path(old_name).rename(_note_path(new_name))
-        except OSError:
-            QMessageBox.warning(self, 'Error', 'Could not rename the note file.')
-            return
-        _rename_note_meta(old_name, new_name)
-        self._current_name = new_name
-        self._refresh_list(select_name=new_name)
-        self._on_item_changed(self._list.currentItem(), None)
+        # Determine parent folder for order update
+        parent_folder = old_path.rsplit('/', 1)[0] if '/' in old_path else ''
+
+        if item_type == 'note':
+            self._save_current()
+            try:
+                _note_path(old_path).rename(_note_path(new_full))
+            except OSError:
+                QMessageBox.warning(
+                    self, 'Error', 'Could not rename the note.')
+                return
+            _rename_note_meta(old_path, new_full)
+            _rename_in_order(parent_folder, old_display, new_name)
+            if self._current_name == old_path:
+                self._current_name = new_full
+            self._refresh_tree(select_name=new_full)
+            self._on_item_changed(self._tree.currentItem(), None)
+        else:
+            # Rename folder directory
+            old_dir = NOTES_DIR / old_path
+            new_dir = NOTES_DIR / new_full
+            try:
+                old_dir.rename(new_dir)
+            except OSError:
+                QMessageBox.warning(
+                    self, 'Error', 'Could not rename the folder.')
+                return
+            _rename_folder_meta(old_path, new_full)
+            _rename_in_order(parent_folder, old_display, new_name)
+            # Rename the folder's own order key if it has one
+            all_order = _load_order()
+            if old_path in all_order:
+                all_order[new_full] = all_order.pop(old_path)
+                _save_order(all_order)
+            # Update current_name if it was under the renamed folder
+            if (self._current_name
+                    and self._current_name.startswith(old_path + '/')):
+                self._current_name = (
+                    new_full + self._current_name[len(old_path):])
+            self._refresh_tree(select_name=new_full, select_type='folder')
 
     def _on_delete(self) -> None:
-        """Delete the selected note(s)."""
-        selected = self._list.selectedItems()
+        """Delete the selected note(s) or folder(s)."""
+        selected = self._tree.selectedItems()
         if not selected:
             return
-        names = [item.data(Qt.UserRole) for item in selected if item.data(Qt.UserRole)]
-        if not names:
+
+        note_names: list[str] = []
+        folder_paths: list[str] = []
+        for sel_item in selected:
+            path = sel_item.data(0, self._ROLE_PATH)
+            if not path:
+                continue
+            if sel_item.data(0, self._ROLE_TYPE) == 'folder':
+                folder_paths.append(path)
+            else:
+                note_names.append(path)
+
+        if not note_names and not folder_paths:
             return
-        if len(names) == 1:
-            msg = f"Delete note '{names[0]}'?"
-        else:
-            msg = f"Delete {len(names)} notes?"
+
+        # Build confirmation message
+        parts: list[str] = []
+        if note_names:
+            if len(note_names) == 1:
+                leaf = note_names[0].rsplit('/', 1)[-1]
+                parts.append(f"note '{leaf}'")
+            else:
+                parts.append(f'{len(note_names)} notes')
+        if folder_paths:
+            if len(folder_paths) == 1:
+                parts.append(
+                    f"folder '{folder_paths[0]}' and all its contents")
+            else:
+                parts.append(
+                    f'{len(folder_paths)} folders and all their contents')
+
         reply = QMessageBox.question(
-            self, 'Delete Note', msg,
-            QMessageBox.Yes | QMessageBox.No,
-        )
+            self, 'Delete', f'Delete {" and ".join(parts)}?',
+            QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
 
-        # For the currently displayed note, also collect live editor/pasted images
-        pasted: set[str] = set()
-        if self._current_name and self._current_name in names:
+        # Collect all note names to delete (including those inside folders)
+        all_notes: set[str] = set(note_names)
+        for fp in folder_paths:
+            prefix = fp + '/'
+            for n in _list_notes():
+                if n.startswith(prefix):
+                    all_notes.add(n)
+
+        # Collect image refs from notes being deleted
+        all_refs: set[str] = set()
+        if self._current_name and self._current_name in all_notes:
             if self._current_mode() == self._MODE_CHECKLIST:
                 live_text = _serialize_checklist(self._checklist.get_items())
             else:
                 live_text = self._editor.get_note_content()
-            pasted = self._editor.take_pasted_images() | self._checklist.take_pasted_images()
-            pasted |= _collect_image_refs(live_text)
+            all_refs |= (self._editor.take_pasted_images()
+                         | self._checklist.take_pasted_images())
+            all_refs |= _collect_image_refs(live_text)
 
-        # Collect all image refs from the notes being deleted
-        all_refs: set[str] = set(pasted)
-        for name in names:
+        for name in all_notes:
             path = _note_path(name)
             try:
                 if path.exists():
-                    all_refs |= _collect_image_refs(path.read_text(encoding='utf-8'))
+                    all_refs |= _collect_image_refs(
+                        path.read_text(encoding='utf-8'))
             except OSError:
                 pass
 
-        # Only delete images not referenced by any note that is NOT being deleted
+        # Find images still referenced by surviving notes
         surviving_refs: set[str] = set()
-        NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        for p in NOTES_DIR.glob('*.txt'):
-            if p.stem not in names:
+        for n in _list_notes():
+            if n not in all_notes:
                 try:
-                    surviving_refs |= _collect_image_refs(p.read_text(encoding='utf-8'))
+                    surviving_refs |= _collect_image_refs(
+                        _note_path(n).read_text(encoding='utf-8'))
                 except OSError:
                     pass
+
+        # Delete orphaned images
         for filename in all_refs - surviving_refs:
             try:
                 (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
@@ -1828,22 +2440,28 @@ class NotesDialog(QDialog):
                 pass
 
         # Delete note files and metadata
-        for name in names:
+        for name in all_notes:
             try:
                 _note_path(name).unlink(missing_ok=True)
             except OSError:
                 pass
             _remove_note_meta(name)
 
+        # Delete folders
+        for fp in sorted(folder_paths, reverse=True):
+            _delete_folder_meta(fp)
+            shutil.rmtree(NOTES_DIR / fp, ignore_errors=True)
+
         self._current_name = None
         self._saved_text = ''
-        self._refresh_list()
-        if self._list.count() > 0:
-            self._list.setCurrentRow(0)
+        self._refresh_tree()
+        first = self._find_first_note(self._tree.invisibleRootItem())
+        if first:
+            self._tree.setCurrentItem(first)
         else:
             self._on_item_changed(None, None)
 
-    # ── Persistence ──────────────────────────────────────────────────
+    # ── Persistence ─────────────────────────────────────────────────
 
     def _save_current(self) -> None:
         """Write the current note to disk if changed."""
@@ -1855,10 +2473,13 @@ class NotesDialog(QDialog):
             text = self._editor.get_note_content()
         if text != self._saved_text:
             try:
-                NOTES_DIR.mkdir(parents=True, exist_ok=True)
-                _note_path(self._current_name).write_text(text, encoding='utf-8')
-                pasted = self._editor.take_pasted_images() | self._checklist.take_pasted_images()
-                _cleanup_orphaned_images(text, self._saved_text, self._current_name, pasted)
+                path = _note_path(self._current_name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding='utf-8')
+                pasted = (self._editor.take_pasted_images()
+                          | self._checklist.take_pasted_images())
+                _cleanup_orphaned_images(
+                    text, self._saved_text, self._current_name, pasted)
                 self._saved_text = text
                 self._update_timestamp()
             except OSError:
@@ -1876,18 +2497,42 @@ class NotesDialog(QDialog):
         save_dialog_geometry('notes_dialog', self.width(), self.height())
         super().closeEvent(event)
 
+    def eventFilter(self, obj: 'QObject', event: 'QEvent') -> bool:  # type: ignore[override]
+        """Re-activate window when the search bar receives focus.
+
+        macOS can leave the window inactive after a native drag session,
+        which causes the QLineEdit cursor to not blink/show.
+        """
+        from PyQt5.QtCore import QEvent as _QE
+        if obj is self._search and event.type() == _QE.FocusIn:
+            if not self.isActiveWindow():
+                QApplication.setActiveWindow(self)
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
-        """Handle Cmd+S (save), Cmd+N (new note), Delete/Backspace (delete note)."""
-        if event.modifiers() & Qt.ControlModifier:
+        """Handle keyboard shortcuts."""
+        # Prevent Enter/Return from closing the dialog (QDialog default)
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            event.accept()
+            return
+        mods = event.modifiers()
+        if mods & Qt.ControlModifier:
             if event.key() == Qt.Key_S:
                 self._save_current()
                 return
             if event.key() == Qt.Key_N:
-                self._on_new()
+                if mods & Qt.ShiftModifier:
+                    self._on_new_folder()
+                else:
+                    self._on_new()
                 return
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not event.modifiers():
-            # Only delete when the note list has focus (not while editing)
-            if self._list.hasFocus() and self._list.currentItem():
+            if event.key() == Qt.Key_F:
+                QApplication.setActiveWindow(self)
+                self._search.setFocus()
+                self._search.selectAll()
+                return
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not mods:
+            if self._tree.hasFocus() and self._tree.currentItem():
                 self._on_delete()
                 return
         super().keyPressEvent(event)
