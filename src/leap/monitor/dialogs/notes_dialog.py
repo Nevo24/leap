@@ -1768,11 +1768,16 @@ class NotesDialog(QDialog):
         bottom_row.addWidget(close_btn)
         root_layout.addLayout(bottom_row)
 
-        # Populate and auto-select first note
+        # Populate and select the last-open note (or first note as fallback)
         self._refresh_tree()
-        first = self._find_first_note(self._tree.invisibleRootItem())
-        if first:
-            self._tree.setCurrentItem(first)
+        last_note = _load_notes_meta().get('_last_note', '')
+        target = None
+        if last_note:
+            target = self._find_tree_item(last_note, 'note')
+        if target is None:
+            target = self._find_first_note(self._tree.invisibleRootItem())
+        if target:
+            self._tree.setCurrentItem(target)
 
     # ── Tree helpers ────────────────────────────────────────────────
 
@@ -2541,10 +2546,15 @@ class NotesDialog(QDialog):
         """Write the current note to disk if changed."""
         if not self._current_name:
             return
-        if self._current_mode() == self._MODE_CHECKLIST:
-            text = _serialize_checklist(self._checklist.get_items())
-        else:
-            text = self._editor.get_note_content()
+        # Guard against reading from destroyed widgets during dialog teardown.
+        # If a C++ widget was already deleted, bail out — do NOT write.
+        try:
+            if self._current_mode() == self._MODE_CHECKLIST:
+                text = _serialize_checklist(self._checklist.get_items())
+            else:
+                text = self._editor.get_note_content()
+        except RuntimeError:
+            return
         if text != self._saved_text:
             try:
                 path = _note_path(self._current_name)
@@ -2556,18 +2566,48 @@ class NotesDialog(QDialog):
                     text, self._saved_text, self._current_name, pasted)
                 self._saved_text = text
                 self._update_timestamp()
-            except OSError:
+            except (OSError, RuntimeError):
                 pass
 
     def done(self, result: int) -> None:
         """Auto-save and persist geometry on Escape / reject."""
+        try:
+            self._tree.currentItemChanged.disconnect(self._on_item_changed)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self._mode_combo.currentIndexChanged.disconnect(self._on_mode_changed)
+        except (TypeError, RuntimeError):
+            pass
         self._save_current()
+        if self._current_name:
+            meta = _load_notes_meta()
+            meta['_last_note'] = self._current_name
+            _save_notes_meta(meta)
         save_dialog_geometry('notes_dialog', self.width(), self.height())
         super().done(result)
 
     def closeEvent(self, event: 'QCloseEvent') -> None:  # type: ignore[override]
         """Auto-save and persist geometry on X-button close."""
+        # Disconnect widget signals BEFORE saving — prevents handlers
+        # from firing during widget destruction (QTreeWidget.clear() in
+        # the destructor emits currentItemChanged, QComboBox destruction
+        # may emit currentIndexChanged), which would call _save_current()
+        # on half-destroyed widgets and corrupt note files.
+        try:
+            self._tree.currentItemChanged.disconnect(self._on_item_changed)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self._mode_combo.currentIndexChanged.disconnect(self._on_mode_changed)
+        except (TypeError, RuntimeError):
+            pass
         self._save_current()
+        # Persist last-open note for next session
+        if self._current_name:
+            meta = _load_notes_meta()
+            meta['_last_note'] = self._current_name
+            _save_notes_meta(meta)
         save_dialog_geometry('notes_dialog', self.width(), self.height())
         super().closeEvent(event)
 

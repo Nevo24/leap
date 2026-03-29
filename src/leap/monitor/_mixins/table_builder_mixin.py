@@ -1573,6 +1573,8 @@ class TableBuilderMixin(_Base):
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
             new_status_seconds=self._prefs.get('new_status_seconds', 60),
             current_global_shortcut=self._prefs.get('global_shortcut', ''),
+            current_notes_shortcut_focused=self._prefs.get('notes_shortcut_focused', ''),
+            current_notes_shortcut_global=self._prefs.get('notes_shortcut_global', ''),
             current_theme_name=self._prefs.get('theme', 'Nord'),
             on_theme_change=self._apply_theme,
             parent=self,
@@ -1587,6 +1589,12 @@ class TableBuilderMixin(_Base):
             old_shortcut = self._prefs.get('global_shortcut', '')
             new_shortcut = dialog.selected_global_shortcut()
             self._prefs['global_shortcut'] = new_shortcut
+            old_notes_f = self._prefs.get('notes_shortcut_focused', '')
+            old_notes_g = self._prefs.get('notes_shortcut_global', '')
+            new_notes_f = dialog.selected_notes_shortcut_focused()
+            new_notes_g = dialog.selected_notes_shortcut_global()
+            self._prefs['notes_shortcut_focused'] = new_notes_f
+            self._prefs['notes_shortcut_global'] = new_notes_g
             self._prefs['theme'] = dialog.selected_theme()
             self._save_prefs()
             # Save auto-send mode to server settings (read by new servers)
@@ -1595,13 +1603,23 @@ class TableBuilderMixin(_Base):
             self._apply_tooltips_setting()
             if new_shortcut != old_shortcut:
                 self._register_global_shortcut()
+            if new_notes_f != old_notes_f or new_notes_g != old_notes_g:
+                self._register_notes_shortcut()
             self._show_status('Settings saved')
 
     def _open_notes(self) -> None:
-        """Open the notes dialog."""
+        """Toggle the notes dialog — open if closed, close if open."""
+        existing = getattr(self, '_notes_dialog', None)
+        if existing is not None:
+            existing.close()
+            return
         from leap.monitor.dialogs.notes_dialog import NotesDialog
         dialog = NotesDialog(parent=self)
-        dialog.exec_()
+        self._notes_dialog = dialog
+        try:
+            dialog.exec_()
+        finally:
+            self._notes_dialog = None
 
     def _show_queue_context_menu(
         self, label: QLabel, pos: 'QPoint', tag: str,

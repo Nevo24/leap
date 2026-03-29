@@ -141,6 +141,8 @@ class MonitorWindow(
         self._slack_bot_was_running: bool = self._is_slack_bot_running()
         self._global_event_monitor: Optional[object] = None
         self._local_event_monitor: Optional[object] = None
+        self._notes_focused_monitor: Optional[object] = None
+        self._notes_global_monitor: Optional[object] = None
 
         # Row drag-and-drop state
         self._drag_source_row: int = -1
@@ -187,6 +189,7 @@ class MonitorWindow(
 
         # Register global focus shortcut (if configured)
         self._register_global_shortcut()
+        self._register_notes_shortcut()
 
         # Set up modern notification API (UNUserNotificationCenter) for
         # banner action buttons and click handling
@@ -1867,6 +1870,131 @@ class MonitorWindow(
         self.raise_()
         self.activateWindow()
 
+    # ── Notes shortcut ──────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_shortcut_ns(shortcut_str: str) -> Optional[tuple[int, int]]:
+        """Convert a Qt shortcut string to (macOS keycode, NSEvent mod flags).
+
+        Returns ``None`` if the shortcut cannot be mapped.
+        """
+        from PyQt5.QtGui import QKeySequence
+        seq = QKeySequence(shortcut_str)
+        if seq.isEmpty():
+            return None
+
+        combined = seq[0]
+        qt_mods = int(combined) & 0xFE000000
+        qt_key = int(combined) & 0x01FFFFFF
+
+        ns_flags = 0
+        if qt_mods & 0x04000000:  # Qt.ControlModifier → Cmd
+            ns_flags |= 1 << 20
+        if qt_mods & 0x10000000:  # Qt.MetaModifier → Ctrl
+            ns_flags |= 1 << 18
+        if qt_mods & 0x08000000:  # Qt.AltModifier → Option
+            ns_flags |= 1 << 19
+        if qt_mods & 0x02000000:  # Qt.ShiftModifier
+            ns_flags |= 1 << 17
+
+        _CHAR_TO_KEYCODE: dict[str, int] = {
+            'a': 0x00, 's': 0x01, 'd': 0x02, 'f': 0x03, 'h': 0x04,
+            'g': 0x05, 'z': 0x06, 'x': 0x07, 'c': 0x08, 'v': 0x09,
+            'b': 0x0B, 'q': 0x0C, 'w': 0x0D, 'e': 0x0E, 'r': 0x0F,
+            'y': 0x10, 't': 0x11, '1': 0x12, '2': 0x13, '3': 0x14,
+            '4': 0x15, '6': 0x16, '5': 0x17, '=': 0x18, '9': 0x19,
+            '7': 0x1A, '-': 0x1B, '8': 0x1C, '0': 0x1D, ']': 0x1E,
+            'o': 0x1F, 'u': 0x20, '[': 0x21, 'i': 0x22, 'p': 0x23,
+            'l': 0x25, 'j': 0x26, "'": 0x27, 'k': 0x28, ';': 0x29,
+            '\\': 0x2A, ',': 0x2B, '/': 0x2C, 'n': 0x2D, 'm': 0x2E,
+            '.': 0x2F, ' ': 0x31, '`': 0x32,
+        }
+        char = chr(qt_key).lower() if 0x20 <= qt_key <= 0x7E else None
+        if char is None or char not in _CHAR_TO_KEYCODE:
+            return None
+        return _CHAR_TO_KEYCODE[char], ns_flags
+
+    def _register_notes_shortcut(self) -> None:
+        """Register NSEvent monitors for the notes shortcuts from prefs."""
+        self._unregister_notes_shortcut()
+
+        try:
+            from AppKit import NSEvent, NSKeyDownMask
+        except ImportError:
+            return
+
+        _MOD_MASK = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+
+        # Focused shortcut (local monitor only)
+        focused_str = self._prefs.get('notes_shortcut_focused', '')
+        if focused_str:
+            parsed = self._parse_shortcut_ns(focused_str)
+            if parsed:
+                kc, flags = parsed
+
+                def _focused_handler(event: object) -> object:
+                    try:
+                        if (event.keyCode() == kc
+                                and event.modifierFlags() & _MOD_MASK == flags):
+                            QTimer.singleShot(0, self._on_notes_shortcut_focused)
+                    except Exception:
+                        pass
+                    return event
+
+                self._notes_focused_monitor = (
+                    NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                        NSKeyDownMask, _focused_handler))
+
+        # Global shortcut (global monitor only)
+        global_str = self._prefs.get('notes_shortcut_global', '')
+        if global_str:
+            parsed = self._parse_shortcut_ns(global_str)
+            if parsed:
+                kc, flags = parsed
+
+                def _global_handler(event: object) -> object:
+                    try:
+                        if (event.keyCode() == kc
+                                and event.modifierFlags() & _MOD_MASK == flags):
+                            QTimer.singleShot(0, self._on_notes_shortcut_global)
+                    except Exception:
+                        pass
+                    return event
+
+                self._notes_global_monitor = (
+                    NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                        NSKeyDownMask, _global_handler))
+
+    def _unregister_notes_shortcut(self) -> None:
+        """Remove any active notes NSEvent monitors."""
+        try:
+            from AppKit import NSEvent
+        except ImportError:
+            return
+        if self._notes_focused_monitor is not None:
+            NSEvent.removeMonitor_(self._notes_focused_monitor)
+            self._notes_focused_monitor = None
+        if self._notes_global_monitor is not None:
+            NSEvent.removeMonitor_(self._notes_global_monitor)
+            self._notes_global_monitor = None
+
+    def _on_notes_shortcut_focused(self) -> None:
+        """Open notes when the Leap window is focused."""
+        self._open_notes()
+
+    def _on_notes_shortcut_global(self) -> None:
+        """Bring Leap to front and open notes."""
+        try:
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self._open_notes()
+
     def _confirm_close(self) -> None:
         """Ask for confirmation before closing the monitor."""
         reply = QMessageBox.question(
@@ -1892,6 +2020,7 @@ class MonitorWindow(
         self._scm_poll_timer.stop()
         self._hover_timer.stop()
         self._unregister_global_shortcut()
+        self._unregister_notes_shortcut()
         self._clear_dock_badge()
 
         # Save window geometry and column widths

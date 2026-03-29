@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from PyQt5.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 from PyQt5.QtGui import QKeySequence
 
@@ -146,6 +146,8 @@ class SettingsDialog(QDialog):
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
         current_global_shortcut: str = '',
+        current_notes_shortcut_focused: str = '',
+        current_notes_shortcut_global: str = '',
         current_theme_name: str = 'Nord',
         on_theme_change: Optional[Callable[[str], None]] = None,
         parent: Optional[object] = None,
@@ -167,8 +169,11 @@ class SettingsDialog(QDialog):
         grid = QGridLayout()
 
         # Theme selector
-        grid.addWidget(QLabel('Theme:'), 0, 0)
+        theme_label = QLabel('Theme:')
+        theme_label.setToolTip('Visual color scheme for the monitor window')
+        grid.addWidget(theme_label, 0, 0)
         self._theme_combo = QComboBox()
+        self._theme_combo.setToolTip(theme_label.toolTip())
         self._theme_combo.addItems(list(THEMES.keys()))
         if current_theme_name in THEMES:
             self._theme_combo.setCurrentText(current_theme_name)
@@ -176,8 +181,12 @@ class SettingsDialog(QDialog):
         grid.addWidget(self._theme_combo, 0, 1)
 
         # Default terminal
-        grid.addWidget(QLabel('Default terminal:'), 1, 0)
+        terminal_label = QLabel('Default terminal:')
+        terminal_label.setToolTip(
+            'Terminal app used when opening a new session from the monitor')
+        grid.addWidget(terminal_label, 1, 0)
         self._terminal_combo = QComboBox()
+        self._terminal_combo.setToolTip(terminal_label.toolTip())
         self._installed_terminals = _detect_installed_terminals()
         self._terminal_combo.addItems(self._installed_terminals)
         if current_terminal and current_terminal in self._installed_terminals:
@@ -198,8 +207,12 @@ class SettingsDialog(QDialog):
             lambda text: self._warp_hint.setVisible(text == 'Warp'))
 
         # Repositories directory
-        grid.addWidget(QLabel('Clone to dir:'), 3, 0)
+        repos_label = QLabel('Clone to dir:')
+        repos_label.setToolTip(
+            'Directory where PR repos are cloned when adding sessions from Git URLs')
+        grid.addWidget(repos_label, 3, 0)
         self._repos_dir_edit = QLineEdit()
+        self._repos_dir_edit.setToolTip(repos_label.toolTip())
         self._repos_dir_edit.setPlaceholderText(DEFAULT_REPOS_DIR)
         if current_repos_dir:
             self._repos_dir_edit.setText(current_repos_dir)
@@ -213,8 +226,20 @@ class SettingsDialog(QDialog):
         grid.addWidget(cleanup_btn, 3, 3)
 
         # Default auto-send mode
-        grid.addWidget(QLabel('Default auto-send:'), 4, 0)
+        auto_send_label = QLabel('Default auto-send:')
+        auto_send_label.setToolTip(
+            'Default auto-send mode for new sessions.\n'
+            '\n'
+            'Pause on input:\n'
+            '  Sends queued messages only when the CLI is idle.\n'
+            '  Waits during running, permission, and question states.\n'
+            '\n'
+            'Always send:\n'
+            '  Sends queued messages whenever the CLI is not actively running.\n'
+            '  Interrupts permission and question prompts to send.')
+        grid.addWidget(auto_send_label, 4, 0)
         self._auto_send_combo = QComboBox()
+        self._auto_send_combo.setToolTip(auto_send_label.toolTip())
         self._auto_send_combo.addItems(['Pause on input', 'Always send'])
         if current_auto_send_mode == AutoSendMode.ALWAYS:
             self._auto_send_combo.setCurrentIndex(1)
@@ -240,7 +265,9 @@ class SettingsDialog(QDialog):
 
         # Show tooltips
         self._tooltips_check = QCheckBox('Show hover explanations')
+        self._original_tooltips = show_tooltips
         self._tooltips_check.setChecked(show_tooltips)
+        self._tooltips_check.toggled.connect(self._apply_tooltips)
         grid.addWidget(self._tooltips_check, 6, 0, 1, 2)
 
         # New change indicator duration
@@ -284,15 +311,47 @@ class SettingsDialog(QDialog):
         clear_shortcut_btn.clicked.connect(self._shortcut_edit.clear)
         grid.addWidget(clear_shortcut_btn, 9, 2)
 
+        # Notes shortcut (when Leap is focused)
+        notes_focused_label = QLabel('Notes shortcut (focused):')
+        notes_focused_label.setToolTip(
+            'Keyboard shortcut to open/close Notes when the Leap window is active')
+        grid.addWidget(notes_focused_label, 10, 0)
+        self._notes_focused_edit = _ShortcutEdit()
+        self._notes_focused_edit.setToolTip(notes_focused_label.toolTip())
+        if current_notes_shortcut_focused:
+            self._notes_focused_edit.setKeySequence(
+                QKeySequence(current_notes_shortcut_focused))
+        grid.addWidget(self._notes_focused_edit, 10, 1)
+        clear_notes_focused = QPushButton('Clear')
+        clear_notes_focused.clicked.connect(self._notes_focused_edit.clear)
+        grid.addWidget(clear_notes_focused, 10, 2)
+
+        # Notes shortcut (global — any app)
+        notes_global_label = QLabel('Notes shortcut (global):')
+        notes_global_label.setToolTip(
+            'System-wide shortcut to open/close Notes from any app '
+            '(brings Leap to the foreground)')
+        grid.addWidget(notes_global_label, 11, 0)
+        self._notes_global_edit = _ShortcutEdit()
+        self._notes_global_edit.setToolTip(notes_global_label.toolTip())
+        if current_notes_shortcut_global:
+            self._notes_global_edit.setKeySequence(
+                QKeySequence(current_notes_shortcut_global))
+        grid.addWidget(self._notes_global_edit, 11, 1)
+        clear_notes_global = QPushButton('Clear')
+        clear_notes_global.clicked.connect(self._notes_global_edit.clear)
+        grid.addWidget(clear_notes_global, 11, 2)
+
         # Accessibility permission hint (always visible)
         shortcut_hint = QLabel(
             'Global shortcuts require Accessibility permission.\n'
             'Grant in: System Settings > Privacy & Security > Accessibility\n'
-            '> enable "Leap Monitor" (or "Python" if running from source)'
-        )
-        shortcut_hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
+            '> enable "Leap Monitor" (or "Python" if running from source)')
+        shortcut_hint.setStyleSheet(
+            f'color: {current_theme().text_muted};'
+            f' font-size: {current_theme().font_size_small}px;')
         shortcut_hint.setWordWrap(True)
-        grid.addWidget(shortcut_hint, 10, 0, 1, 4)
+        grid.addWidget(shortcut_hint, 12, 0, 1, 4)
 
         layout.addLayout(grid)
         layout.addStretch()
@@ -301,6 +360,27 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        # Collect widgets that have tooltips for the toggle
+        self._tooltip_widgets: list[tuple[QWidget, str]] = []
+        for w in self.findChildren(QWidget):
+            tip = w.toolTip()
+            if tip and w is not self._tooltips_check:
+                self._tooltip_widgets.append((w, tip))
+        self._apply_tooltips(show_tooltips)
+
+    def _apply_tooltips(self, enabled: bool) -> None:
+        """Show or hide tooltips on all settings widgets.
+
+        Also updates the app-level tooltip flag so the TooltipApp event
+        filter doesn't suppress ToolTip events while the dialog is open.
+        """
+        for widget, tip in self._tooltip_widgets:
+            widget.setToolTip(tip if enabled else '')
+        # Update the app-level flag for immediate effect
+        app = QApplication.instance()
+        if hasattr(app, 'tooltips_enabled'):
+            app.tooltips_enabled = enabled
 
     def _browse_repos_dir(self) -> None:
         """Open a directory picker for repositories dir."""
@@ -519,10 +599,14 @@ class SettingsDialog(QDialog):
             self._on_theme_change(theme_name)
 
     def done(self, result: int) -> None:
-        """Save dialog size on close. Revert theme on cancel."""
-        if result != QDialog.Accepted and self._on_theme_change:
-            # Revert to original theme
-            self._on_theme_change(self._original_theme)
+        """Save dialog size on close. Revert theme and tooltips on cancel."""
+        if result != QDialog.Accepted:
+            if self._on_theme_change:
+                self._on_theme_change(self._original_theme)
+            # Revert app-level tooltip flag to saved state
+            app = QApplication.instance()
+            if hasattr(app, 'tooltips_enabled'):
+                app.tooltips_enabled = self._original_tooltips
         save_dialog_geometry('settings', self.width(), self.height())
         super().done(result)
 
@@ -533,6 +617,16 @@ class SettingsDialog(QDialog):
     def selected_global_shortcut(self) -> str:
         """Return the global focus shortcut as a portable string (e.g. 'Ctrl+Shift+M')."""
         seq = self._shortcut_edit.keySequence()
+        return seq.toString() if not seq.isEmpty() else ''
+
+    def selected_notes_shortcut_focused(self) -> str:
+        """Return the notes shortcut (when focused) as a portable string."""
+        seq = self._notes_focused_edit.keySequence()
+        return seq.toString() if not seq.isEmpty() else ''
+
+    def selected_notes_shortcut_global(self) -> str:
+        """Return the notes shortcut (global) as a portable string."""
+        seq = self._notes_global_edit.keySequence()
         return seq.toString() if not seq.isEmpty() else ''
 
 
