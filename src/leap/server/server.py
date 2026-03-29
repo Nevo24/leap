@@ -187,8 +187,6 @@ class LeapServer:
         self._queue_capture_buf: bytearray = bytearray()
         self._capture_output_buf: bytearray = bytearray()  # buffered CLI output
         self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
-        self._capture_clear_on_next_output: bool = False  # clear [Leap Q] on next render
-        self._capture_retype_text: str = ''  # text to retype after clear
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_utf8_buf: bytearray = bytearray()  # incomplete UTF-8 bytes
         # True when a single "^" was typed mid-text, waiting to see
@@ -832,6 +830,12 @@ class LeapServer:
         self._queue_capture_buf = bytearray(text.encode('utf-8'))
         self._capture_cursor_pos += 1
 
+    @staticmethod
+    def _is_csi_u_cancel(seq: bytes) -> bool:
+        """Check if a CSI sequence is Ctrl+C in kitty/xterm encoding."""
+        from leap.server.state_tracker import CLIStateTracker
+        return CLIStateTracker._is_csi_u_interrupt(seq)
+
     def _capture_backspace(self) -> bool:
         """Delete character before cursor. Returns False if at start."""
         if self._capture_cursor_pos <= 0:
@@ -1032,6 +1036,10 @@ class LeapServer:
                 elif 0x40 <= kind <= 0x5f:
                     # Valid two-byte escape (e.g. ESC M = reverse index).
                     i += 1
+                elif kind in (0x62, 0x66):
+                    # ESC-b / ESC-f (Meta word left/right).
+                    # Consume the byte so it's included in seq.
+                    i += 1
                 else:
                     # Not a recognized escape introducer — treat \x1b as
                     # a standalone Escape key press.
@@ -1041,7 +1049,32 @@ class LeapServer:
                     # In capture mode: handle editing keys, cancel on
                     # Escape, drop everything else.
                     seq = data[esc_start:i]
-                    if is_standalone_esc:
+                    if seq in (b'\x1bb', b'\x1bf'):
+                        # ESC-b / ESC-f (Option+arrows as Meta prefix).
+                        # Handle as word movement, not standalone Escape.
+                        text = self._capture_text()
+                        p = self._capture_cursor_pos
+                        if seq == b'\x1bb':  # word left
+                            while p > 0 and text[p - 1] == ' ':
+                                p -= 1
+                            while p > 0 and text[p - 1] != ' ':
+                                p -= 1
+                        else:  # word right
+                            while p < len(text) and text[p] != ' ':
+                                p += 1
+                            while p < len(text) and text[p] == ' ':
+                                p += 1
+                        self._capture_cursor_pos = p
+                        self._capture_display(text)
+                    elif is_standalone_esc:
+                        self._capture_display()
+                        self._queue_capture_buf.clear()
+                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
+                        self._queue_capture_mode = False
+                        self._capture_flush()
+                        self._terminal_input_buf.clear()
+                    elif self._is_csi_u_cancel(seq):
+                        # CSI u Ctrl+C (e.g. \x1b[3u) — cancel capture
                         self._capture_display()
                         self._queue_capture_buf.clear()
                         self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
@@ -1056,6 +1089,24 @@ class LeapServer:
                         if self._capture_cursor_pos < len(self._capture_text()):
                             self._capture_cursor_pos += 1
                         self._capture_display(self._capture_text())
+                    elif seq in (b'\x1b[1;3D', b'\x1bb'):  # Opt+Left (word left)
+                        text = self._capture_text()
+                        p = self._capture_cursor_pos
+                        while p > 0 and text[p - 1] == ' ':
+                            p -= 1
+                        while p > 0 and text[p - 1] != ' ':
+                            p -= 1
+                        self._capture_cursor_pos = p
+                        self._capture_display(text)
+                    elif seq in (b'\x1b[1;3C', b'\x1bf'):  # Opt+Right (word right)
+                        text = self._capture_text()
+                        p = self._capture_cursor_pos
+                        while p < len(text) and text[p] != ' ':
+                            p += 1
+                        while p < len(text) and text[p] == ' ':
+                            p += 1
+                        self._capture_cursor_pos = p
+                        self._capture_display(text)
                     elif seq in (b'\x1b[H', b'\x1b[1~'):  # Home
                         self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                         self._capture_display(self._capture_text())
@@ -1086,30 +1137,6 @@ class LeapServer:
                     self._queue_capture_mode = False
                     self._capture_flush()
                     self._terminal_input_buf.clear()
-                elif b == 0x5e:  # "^" — check for ^^ toggle
-                    if self._pending_caret:
-                        # Second ^^ in capture → exit, return text
-                        # to CLI as normal (unqueued) input.
-                        # Remove the first ^ we inserted.
-                        self._capture_backspace()
-                        text = self._capture_text()
-                        self._terminal_input_buf = bytearray(
-                            text.encode('utf-8'))
-                        self._queue_capture_buf.clear()
-                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                        self._pending_caret = False
-                        self._queue_capture_mode = False
-                        # Keep stale flag so flush erases the ^
-                        self._capture_clear_on_next_output = True
-                        self._capture_retype_text = text
-                        self._capture_flush()
-                        # Poke CLI to trigger output filter clear+retype.
-                        self.pty.send('\x1b[C\x1b[D')
-                    else:
-                        # First ^ — insert as literal, wait for second.
-                        self._pending_caret = True
-                        self._capture_insert('^')
-                        self._capture_display(self._capture_text())
                 elif b == 0x7f:  # Backspace
                     if self._capture_backspace():
                         self._capture_display(self._capture_text())
@@ -1274,19 +1301,6 @@ class LeapServer:
                 self._queue_capture_buf.decode(
                     'utf-8', errors='replace'))
             return b''  # suppress CLI output (buffered for later)
-
-        # After exiting capture (^^ toggle), clear the [Leap Q] line
-        # right before the CLI's first re-render arrives.  This ensures
-        # the line is clean when the CLI draws its content.
-        if self._capture_clear_on_next_output:
-            self._capture_clear_on_next_output = False
-            try:
-                os.write(sys.stdout.fileno(), b'\x1b[2K')
-            except OSError:
-                pass
-            if self._capture_retype_text:
-                self.pty.send(self._capture_retype_text)
-                self._capture_retype_text = ''
 
         return data
 
