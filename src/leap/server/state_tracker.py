@@ -897,11 +897,6 @@ class CLIStateTracker:
         ):
             with self._screen_lock:
                 cursor_hidden = self._screen.cursor.hidden
-            _log.debug(
-                'GET_STATE auto-resume check: '
-                '_user_input_since_idle=%s cursor_hidden=%s',
-                self._user_input_since_idle, cursor_hidden,
-            )
             should_resume = False
             if not self._user_input_since_idle and cursor_hidden:
                 should_resume = True
