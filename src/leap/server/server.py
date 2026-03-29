@@ -817,7 +817,15 @@ class LeapServer:
         While in capture mode, ``_output_filter`` buffers CLI output so
         the display stays frozen.  When capture ends (Enter/Esc/Ctrl+C),
         this method replays the buffered output so nothing is lost.
+        Also cleans up stale CLI input (the first "^" from ^^) unless
+        the message is being queued (Enter path keeps it for Ctrl+C
+        cleanup at send time).
         """
+        if self._capture_stale_cli_input and not self._queue_capture_mode:
+            # Capture exited without queuing (Escape/Ctrl+C/backspace).
+            # Erase the stale "^" from CLI input.
+            self.pty.send('\x7f')
+            self._capture_stale_cli_input = False
         if self._capture_output_buf:
             try:
                 os.write(sys.stdout.fileno(), bytes(self._capture_output_buf))
@@ -1070,7 +1078,11 @@ class LeapServer:
                     self._terminal_input_buf.clear()
                     self._queue_capture_mode = True
                     self._capture_output_buf.clear()
-                    self._capture_stale_cli_input = True
+                    # Only flag stale input if the CLI received text from
+                    # previous chunks.  In same-chunk ^^, the first "^"
+                    # was popped from out — CLI never got it.
+                    self._capture_stale_cli_input = bool(
+                        self._queue_capture_buf)
                     self._pending_caret = False
                     self._capture_display(
                         self._queue_capture_buf.decode(
