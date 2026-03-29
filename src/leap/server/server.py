@@ -188,6 +188,7 @@ class LeapServer:
         self._capture_output_buf: bytearray = bytearray()  # buffered CLI output
         self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
         self._capture_cursor_pos: int = 0  # character cursor in capture text
+        self._capture_show_hint: bool = True  # show hint until first keystroke
         self._capture_utf8_buf: bytearray = bytearray()  # incomplete UTF-8 bytes
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
@@ -807,13 +808,15 @@ class LeapServer:
                 os.write(sys.stdout.fileno(), b'\r\x1b[K')
             else:
                 prefix = '[Leap Q] '
+                hint = (' \x1b[2m(Enter=queue \u2022 Esc=cancel'
+                        ' \u2022 CLI runs in bg)\x1b[33m'
+                        if self._capture_show_hint else '')
                 cursor_col = len(prefix) + self._capture_cursor_pos
                 payload = (
-                    f"\r\x1b[K"                  # clear line
-                    f"\x1b[33m{prefix}{text}"     # yellow text
-                    f"\x1b[0m"                    # reset
-                    f"\r\x1b[{cursor_col}C"       # position cursor
-                    f"\x1b[?25h"                  # show cursor
+                    f"\r\x1b[K"
+                    f"\x1b[33m{prefix}{text}{hint}\x1b[0m"
+                    f"\r\x1b[{cursor_col}C"
+                    f"\x1b[?25h"
                 ).encode()
                 os.write(sys.stdout.fileno(), payload)
         except OSError:
@@ -929,7 +932,7 @@ class LeapServer:
                 self._terminal_input_buf)
             self._capture_cursor_pos = len(self._capture_text())
             self._terminal_input_buf.clear()
-            self._queue_capture_mode = True
+            self._queue_capture_mode = True; self._capture_show_hint = True
             self._capture_output_buf.clear()
             self._capture_stale_cli_input = True
             self._pending_caret = False
@@ -1110,6 +1113,7 @@ class LeapServer:
                         self._capture_cursor_pos = len(self._capture_text())
                         self._capture_display(self._capture_text())
                     elif seq == b'\x1b[3~':  # Delete
+                        self._capture_show_hint = False
                         self._capture_delete()
                         self._capture_display(self._capture_text())
                     # Other CSI/OSC/SS3 sequences silently dropped.
@@ -1128,12 +1132,16 @@ class LeapServer:
                     msg = self._capture_text().strip()
                     if msg:
                         self.queue.add(msg)
+                        self._capture_flush()  # keep stale for Ctrl+C cleanup
+                    else:
+                        # Empty message — treat as cancel, erase stale ^
+                        self._capture_flush(cancel=True)
                     self._queue_capture_buf.clear()
                     self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                     self._queue_capture_mode = False
-                    self._capture_flush()
                     self._terminal_input_buf.clear()
                 elif b == 0x7f:  # Backspace
+                    self._capture_show_hint = False
                     if self._capture_backspace():
                         self._capture_display(self._capture_text())
                     # If at start, just ignore (can't backspace past start)
@@ -1148,13 +1156,14 @@ class LeapServer:
                     # ASCII printable
                     if self._pending_caret:
                         self._pending_caret = False
+                    self._capture_show_hint = False
                     self._capture_insert(chr(b))
                     self._capture_display(self._capture_text())
                 elif b >= 0x80:
-                    # Multi-byte UTF-8: accumulate bytes until a
-                    # complete character forms, then insert.
+                    # Multi-byte UTF-8
                     if self._pending_caret:
                         self._pending_caret = False
+                    self._capture_show_hint = False
                     self._capture_utf8_buf.append(b)
                     try:
                         char = self._capture_utf8_buf.decode('utf-8')
@@ -1187,7 +1196,7 @@ class LeapServer:
                         self._terminal_input_buf)
                     self._capture_cursor_pos = len(self._capture_text())
                     self._terminal_input_buf.clear()
-                    self._queue_capture_mode = True
+                    self._queue_capture_mode = True; self._capture_show_hint = True
                     self._capture_output_buf.clear()
                     # Only flag stale input if the CLI received text from
                     # previous chunks.  In same-chunk ^^, the first "^"
