@@ -807,9 +807,11 @@ class LeapServer:
             if text is None:
                 os.write(sys.stdout.fileno(), b'\r\x1b[K')
             else:
+                q_size = self.queue.size
+                q_part = f' \u2022 {q_size} queued' if q_size else ''
                 prefix = '[Leap Q] '
-                hint = (' \x1b[2m(Enter=queue \u2022 Esc=cancel'
-                        ' \u2022 CLI runs in bg)\x1b[33m'
+                hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel'
+                        f'{q_part} \u2022 CLI runs in bg)\x1b[33m'
                         if self._capture_show_hint else '')
                 cursor_col = len(prefix) + self._capture_cursor_pos
                 payload = (
