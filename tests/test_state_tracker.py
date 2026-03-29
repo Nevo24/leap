@@ -119,16 +119,12 @@ class TestOnSend:
 # ---------------------------------------------------------------------------
 
 class TestEnterInIdle:
-    def test_enter_in_idle_does_not_trigger_running(self, tmp_path: Path) -> None:
-        """Enter at idle prompt does NOT trigger running.
-
-        The CLI may handle it as a slash command (/clear, /help) that
-        doesn't trigger the Stop hook.  Only on_send() triggers running.
-        """
+    def test_enter_in_idle_triggers_running(self, tmp_path: Path) -> None:
+        """Enter at idle prompt triggers running (server-terminal typing)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'\r')
-        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker.current_state == 'running'
 
     def test_on_send_still_triggers_running(self, tmp_path: Path) -> None:
         t = [0.0]
@@ -551,11 +547,10 @@ class TestSafetyTimeouts:
     def test_cursor_visible_plus_silence_triggers_idle(
         self, tmp_path: Path,
     ) -> None:
-        """Running with cursor visible + output silence > 0.5s → idle.
+        """Running with cursor visible + output silence > 2s → idle.
 
         Handles /clear sent from queue (on_send → running, but Stop
-        hook doesn't fire).  The cursor becoming visible + output
-        settling signals the CLI returned to idle.
+        hook doesn't fire).
         """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
@@ -563,21 +558,21 @@ class TestSafetyTimeouts:
         t[0] = 1.0
         # TUI redraws with cursor visible at the end
         feed_with_visible_cursor(tracker, 'Cleared screen')
-        # Wait > 0.5s (one poll cycle)
-        t[0] = 2.0
+        # Wait > 2s
+        t[0] = 3.5
         assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_cursor_visible_during_streaming_stays_running(
         self, tmp_path: Path,
     ) -> None:
         """During streaming, output arrives constantly.  Even if cursor
-        is visible between frames, silence < 0.5s keeps state running."""
+        is visible between frames, silence < 2s keeps state running."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         t[0] = 1.0
         feed_with_visible_cursor(tracker, 'Streaming token 1')
-        # Only 0.1s since last output — not enough silence
+        # Only 0.5s since last output — not enough silence (need >2s)
         t[0] = 1.1
         assert tracker.get_state(pty_alive=True) == 'running'
 
@@ -768,13 +763,13 @@ class TestOnInputFiltering:
     def test_mixed_text_interrupt_enter(self, tmp_path: Path) -> None:
         """Text + Ctrl+C + Enter all in one chunk.
 
-        Enter no longer triggers running.  Ctrl+C sets interrupt_pending.
+        Enter triggers running and clears interrupt_pending.
         """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'hello\x03\r')
-        assert tracker._interrupt_pending is True
-        assert tracker.current_state == 'idle'
+        assert tracker._interrupt_pending is False
+        assert tracker.current_state == 'running'
 
     def test_text_with_interrupt_sets_user_input_since_idle(
         self, tmp_path: Path,
@@ -990,12 +985,12 @@ class TestCLIStateEnum:
 # ---------------------------------------------------------------------------
 
 class TestCodexSpecific:
-    def test_codex_enter_does_not_trigger_running(self, tmp_path: Path) -> None:
-        """Codex Enter in idle stays idle — same as all providers."""
+    def test_codex_enter_triggers_running(self, tmp_path: Path) -> None:
+        """Codex Enter in idle triggers running — same as all providers."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t, provider=CodexProvider())
         tracker.on_input(b'\r')
-        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker.current_state == 'running'
 
     def test_codex_silence_timeout(self, tmp_path: Path) -> None:
         t = [0.0]
@@ -1013,51 +1008,42 @@ class TestCodexSpecific:
 # ---------------------------------------------------------------------------
 
 class TestSlashClear:
-    def test_clear_stays_idle(self, tmp_path: Path) -> None:
-        """The original bug: /clear typed in idle caused persistent running.
+    def test_clear_resolves_via_cursor_silence(self, tmp_path: Path) -> None:
+        """The original bug: /clear caused persistent running (60s).
 
-        Fix: Enter in idle does NOT trigger running.  /clear is a CLI
-        slash command — the Stop hook may never fire for it.  The state
-        stays idle throughout.
+        Fix: Enter triggers running, but cursor visible + 2s silence
+        resolves to idle quickly.
         """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
 
-        # User types /clear + Enter
+        # User types /clear + Enter → running
         for ch in b'/clear':
             tracker.on_input(bytes([ch]))
         tracker.on_input(b'\r')
-        # State stays idle — Enter doesn't trigger running
-        assert tracker.current_state == 'idle'
+        assert tracker.current_state == 'running'
 
-        # TUI redraws with cursor visible — still idle
+        # TUI redraws with cursor visible
         t[0] = 0.5
         feed_with_visible_cursor(tracker, 'Cleared screen')
-        assert tracker.current_state == 'idle'
 
-        # Even at poll time — cursor visible → no auto-resume
+        # After 2s silence + cursor visible → idle
+        t[0] = 3.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_clear_vs_real_message(self, tmp_path: Path) -> None:
-        """A real message typed at server terminal triggers running
-        via auto-resume (cursor hidden during processing), while
-        /clear does not (cursor visible after brief redraw)."""
+        """Real messages resolve via Stop hook.
+        /clear resolves via cursor+silence check (~2s)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
 
-        # Simulate: user typed message, CLI starts processing
-        # (cursor hidden = streaming output)
-        tracker.on_send()  # explicit client send
+        # Real message: Enter → running → Stop hook → idle
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
         write_signal(tracker, 'idle')
-        tracker.get_state(pty_alive=True)  # → idle
-        # _user_input_since_idle is False after transition
-
-        # CLI auto-starts (background) → cursor hidden
-        feed_with_hidden_cursor(tracker, 'Processing your request...')
-        # At next poll: cursor hidden → running
-        assert tracker.get_state(pty_alive=True) == 'running'
+        assert tracker.get_state(pty_alive=True) == 'idle'
 
 
 # ---------------------------------------------------------------------------
@@ -1120,16 +1106,13 @@ class TestStaleScreenContent:
 # ---------------------------------------------------------------------------
 
 class TestPastedEnter:
-    def test_pasted_enter_does_not_trigger_running(self, tmp_path: Path) -> None:
-        """Enter in idle (even pasted) does NOT trigger running.
-
-        The CLI handles the input — hooks signal when processing starts/ends.
-        """
+    def test_pasted_enter_triggers_running(self, tmp_path: Path) -> None:
+        """Enter in idle (even pasted) triggers running."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
         tracker.on_input(b'hello\r')
-        assert tracker.current_state == 'idle'
+        assert tracker.current_state == 'running'
 
 
 # ---------------------------------------------------------------------------

@@ -174,9 +174,20 @@ class CLIStateTracker:
         patterns that wrap across screen lines.
         Must be called with _screen_lock held.
         """
-        return '\n'.join(
-            line.rstrip() for line in self._screen.display
-        )
+        # Read the screen buffer directly instead of using pyte's
+        # screen.display property, which crashes on empty chars in the
+        # buffer (wcwidth(char[0]) with char='').  Empty cells (wide
+        # char placeholders or corrupted entries) are replaced with
+        # spaces — safe for pattern matching.
+        lines: list[str] = []
+        for y in range(self._screen.lines):
+            row = self._screen.buffer[y]
+            chars: list[str] = []
+            for x in range(self._screen.columns):
+                data = row[x].data
+                chars.append(data if data else ' ')
+            lines.append(''.join(chars).rstrip())
+        return '\n'.join(lines)
 
     # -- Public API -----------------------------------------------------------
 
@@ -313,12 +324,26 @@ class CLIStateTracker:
             self._user_responded = True
             _log.debug('ON_INPUT _user_responded=True')
 
-        # Note: Enter in idle does NOT trigger running.  The CLI may
-        # handle the Enter internally (e.g. /clear, /help, empty enter)
-        # without processing a real message.  Only on_send() (explicit
-        # client message or auto-send) triggers running.  For server-
-        # terminal messages, idle→running is detected via auto-resume
-        # (cursor hidden) or the hook signal after the CLI finishes.
+        # Enter in idle → RUNNING.  This covers server-terminal typing
+        # (the only path — on_send() only fires for client/queue sends).
+        # For slash commands (/clear, /help) where the Stop hook doesn't
+        # fire, the running→idle cursor+silence check in get_state()
+        # resolves it within ~1s.
+        if has_enter and self._state == CLIState.IDLE:
+            _log.debug('ON_INPUT Enter in idle → running')
+            self._running_since = self._clock()
+            self._interrupt_pending = False
+            self._user_input_since_idle = False
+            with self._screen_lock:
+                self._reset_screen()
+                self._prompt_snapshot = []
+                with self._lock:
+                    self._state = CLIState.RUNNING
+                    self._waiting_since = None
+            try:
+                self._signal_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def on_send(self) -> None:
         """Called when a message is sent to the CLI.
@@ -868,13 +893,19 @@ class CLIStateTracker:
         if (
             current == CLIState.IDLE
             and self._seen_user_input
-            and not self._user_input_since_idle
             and not self._provider.cursor_hidden_while_idle
         ):
-            should_resume = False
             with self._screen_lock:
-                if self._screen.cursor.hidden:
-                    should_resume = True
+                cursor_hidden = self._screen.cursor.hidden
+            _log.debug(
+                'GET_STATE auto-resume check: '
+                '_user_input_since_idle=%s cursor_hidden=%s',
+                self._user_input_since_idle, cursor_hidden,
+            )
+            should_resume = False
+            if not self._user_input_since_idle and cursor_hidden:
+                should_resume = True
+                with self._screen_lock:
                     self._reset_screen()
             if should_resume:
                 _log.debug(
@@ -893,17 +924,16 @@ class CLIStateTracker:
                 return CLIState.RUNNING
 
         # -- Running → idle via cursor visibility + output silence --
-        # For Ink TUIs: cursor visible + no output for >1 poll cycle
-        # (>0.5s) = CLI returned to idle prompt.  Handles cases where
-        # the Stop hook doesn't fire (e.g. /clear, /help).
-        # During active streaming, output arrives every frame (<100ms),
-        # so the silence check prevents false idle.  Disabled for
-        # Ratatui TUIs that keep cursor hidden permanently.
+        # For Ink TUIs: cursor visible + no output for >2s = CLI
+        # returned to idle prompt.  Handles cases where the Stop hook
+        # doesn't fire (e.g. /clear, /help).  2s is long enough that
+        # brief streaming pauses don't false-trigger, but short enough
+        # that /clear resolves quickly.  Disabled for Ratatui TUIs.
         if (
             current == CLIState.RUNNING
             and not self._provider.cursor_hidden_while_idle
             and self._last_output_time > 0
-            and (self._clock() - self._last_output_time) > 0.5
+            and (self._clock() - self._last_output_time) > 2.0
         ):
             with self._screen_lock:
                 cursor_visible = not self._screen.cursor.hidden

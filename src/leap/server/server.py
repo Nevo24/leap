@@ -185,6 +185,7 @@ class LeapServer:
         # and swallow all subsequent input until Enter → queue.
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
+        self._capture_output_buf: bytearray = bytearray()  # buffered CLI output
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
@@ -789,9 +790,8 @@ class LeapServer:
         """Show queue-capture buffer on the TUI's input line.
 
         Writes ``\\r`` + erase-line + the text in a single ``os.write``
-        call.  Since we are not feeding input to the Ink TUI while in
-        capture mode, it has no reason to repaint, so the text persists
-        on screen until the next keystroke updates it.
+        call.  Used from the input filter for keystroke-by-keystroke
+        feedback.
         """
         try:
             if text is None:
@@ -802,6 +802,20 @@ class LeapServer:
                 os.write(sys.stdout.fileno(), payload)
         except OSError:
             pass
+
+    def _capture_flush(self) -> None:
+        """Flush CLI output that was buffered during capture mode.
+
+        While in capture mode, ``_output_filter`` buffers CLI output so
+        the display stays frozen.  When capture ends (Enter/Esc/Ctrl+C),
+        this method replays the buffered output so nothing is lost.
+        """
+        if self._capture_output_buf:
+            try:
+                os.write(sys.stdout.fileno(), bytes(self._capture_output_buf))
+            except OSError:
+                pass
+            self._capture_output_buf.clear()
 
     def _input_filter(self, data: bytes) -> bytes:
         """Track user keyboard input for state detection.
@@ -872,6 +886,7 @@ class LeapServer:
             erase = '\x7f' * (len(typed) + 1)  # +1 for the "^"
             self._terminal_input_buf.clear()
             self._queue_capture_mode = True
+            self._capture_output_buf.clear()
             self._pending_caret = False
             self.pty.send(erase)
             # Space triggers CLI re-render → output filter draws [Leap Q].
@@ -944,6 +959,7 @@ class LeapServer:
                         self._capture_display()
                         self._queue_capture_buf.clear()
                         self._queue_capture_mode = False
+                        self._capture_flush()
                         self._terminal_input_buf.clear()
                     continue
                 kind = data[i]
@@ -986,6 +1002,7 @@ class LeapServer:
                         self._capture_display()
                         self._queue_capture_buf.clear()
                         self._queue_capture_mode = False
+                        self._capture_flush()
                         self._terminal_input_buf.clear()
                     # CSI/OSC/SS3 sequences are silently dropped.
                 else:
@@ -1011,6 +1028,7 @@ class LeapServer:
                         self.queue.add(msg)
                     self._queue_capture_buf.clear()
                     self._queue_capture_mode = False
+                    self._capture_flush()
                     self._terminal_input_buf.clear()
                 elif b == 0x7f:  # Backspace
                     if self._queue_capture_buf:
@@ -1026,10 +1044,12 @@ class LeapServer:
                         # Backspaced past all content — exit capture
                         self._capture_display()  # clear
                         self._queue_capture_mode = False
+                        self._capture_flush()
                 elif b == 0x03:  # Ctrl+C — cancel capture
                     self._capture_display()  # clear
                     self._queue_capture_buf.clear()
                     self._queue_capture_mode = False
+                    self._capture_flush()
                     self._terminal_input_buf.clear()
                 elif 0x20 <= b < 0x7f or b >= 0x80:
                     self._queue_capture_buf.append(b)
@@ -1064,6 +1084,7 @@ class LeapServer:
                         self.pty.send('\x7f' * len(typed))
                     self._terminal_input_buf.clear()
                     self._queue_capture_mode = True
+                    self._capture_output_buf.clear()
                     self._pending_caret = False
                     # Space triggers re-render → output filter draws [Leap Q].
                     out.append(0x20)
@@ -1160,18 +1181,19 @@ class LeapServer:
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
 
-        # In capture mode, suppress CLI output from reaching the
-        # terminal — the TUI would overwrite our [Leap Q] display.
-        # State detection still runs (on_output called above).
+        # In capture mode, buffer CLI output instead of discarding it.
+        # The buffered output is flushed when capture ends (Enter/Esc/Ctrl+C)
+        # so the user doesn't miss anything that happened while typing.
         if self._queue_capture_mode:
             # Send deferred backspace to clean up the space we sent.
             if self._capture_pending_backspace:
                 self._capture_pending_backspace = False
                 self.pty.send('\x7f')
+            self._capture_output_buf.extend(data)
             self._capture_display(
                 self._queue_capture_buf.decode(
                     'utf-8', errors='replace'))
-            return b''  # suppress CLI output
+            return b''  # suppress CLI output (buffered for later)
 
         return data
 
