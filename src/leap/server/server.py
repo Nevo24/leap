@@ -189,6 +189,7 @@ class LeapServer:
         self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
+        self._capture_prev_lines: int = 0  # wrapped line count from last display
         self._capture_utf8_buf: bytearray = bytearray()  # incomplete UTF-8 bytes
         self._capture_image_counter: int = 0
         self._capture_image_map: dict[str, str] = {}  # "[Image #N]" → path
@@ -805,10 +806,20 @@ class LeapServer:
 
         Writes the text and positions the terminal cursor at the
         capture cursor position so the user sees where they're editing.
+        Handles multi-line wrapping: tracks how many terminal lines the
+        previous render occupied and clears them before redrawing.
         """
         try:
+            # Move up and clear any wrapped lines from previous render
+            clear = ''
+            if self._capture_prev_lines > 0:
+                clear = (f'\r\x1b[K'
+                         + (f'\x1b[A\r\x1b[K' * self._capture_prev_lines))
+
             if text is None:
-                os.write(sys.stdout.fileno(), b'\r\x1b[K')
+                os.write(sys.stdout.fileno(),
+                         (clear or '\r\x1b[K').encode())
+                self._capture_prev_lines = 0
             else:
                 q_size = self.queue.size
                 q_part = f' \u2022 {q_size} queued'
@@ -816,14 +827,19 @@ class LeapServer:
                 hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel \u2022 Ctrl+V=image'
                         f'{q_part} \u2022 CLI runs in bg)\x1b[33m'
                         if self._capture_show_hint else '')
+                full_line = f'{prefix}{text}{hint}'
+                visible_len = len(re.sub(r'\x1b\[[0-9;]*m', '', full_line))
+                cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+                wrapped = max(0, (visible_len - 1) // cols) if cols > 0 else 0
                 cursor_col = len(prefix) + self._capture_cursor_pos
                 payload = (
-                    f"\r\x1b[K"
+                    f"{clear}\r\x1b[K"
                     f"\x1b[33m{prefix}{text}{hint}\x1b[0m"
                     f"\r\x1b[{cursor_col}C"
                     f"\x1b[?25h"
                 ).encode()
                 os.write(sys.stdout.fileno(), payload)
+                self._capture_prev_lines = wrapped
         except OSError:
             pass
 
@@ -1028,6 +1044,7 @@ class LeapServer:
             self._capture_output_buf.clear()
             self._capture_stale_cli_input = True
             self._pending_caret = False
+            self._capture_prev_lines = 0
             self._capture_display(self._capture_text())
             i += 1
 
@@ -1313,6 +1330,7 @@ class LeapServer:
                     self._capture_stale_cli_input = bool(
                         self._queue_capture_buf)
                     self._pending_caret = False
+                    self._capture_prev_lines = 0
                     self._capture_display(self._capture_text())
                     i += 1
                     continue
