@@ -1640,6 +1640,17 @@ class LeapServer:
         # shell with this Python process.
         self._release_startup_lock()
 
+        # Sync pyte screen dimensions with the actual terminal.
+        # The pyte virtual terminal starts at a default size (200x50),
+        # but the real terminal may be larger (e.g. 362x75).  SIGWINCH
+        # only fires on subsequent resizes, not at startup — without
+        # this initial sync, content rendered beyond pyte's default
+        # rows is clamped to the last row and garbled, making
+        # permission dialog options at the bottom of the screen
+        # invisible.
+        cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+        self.state.on_resize(rows, cols)
+
         # Handle signals
         signal.signal(signal.SIGWINCH, self._handle_resize)
         signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
