@@ -927,7 +927,7 @@ class LeapServer:
             payload = (
                 '\r\x1b[K'
                 '\x1b[33m[Leap Q] \x1b[32mSaved!'
-                ' \x1b[2m(any key to continue)\x1b[0m'
+                ' \x1b[2m(\u2191\u2193 to browse \u2022 any key to continue)\x1b[0m'
             ).encode()
             os.write(sys.stdout.fileno(), payload)
         except OSError:
