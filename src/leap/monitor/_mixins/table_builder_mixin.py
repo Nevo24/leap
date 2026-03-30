@@ -873,9 +873,6 @@ class TableBuilderMixin(_Base):
                         c_layout.addWidget(fire_label)
 
                         # Left-click: dismiss fire indicator.
-                        # Right-click: open context menu for states
-                        # that have one (interrupted, running,
-                        # needs_permission, needs_input).
                         def _make_click(
                             t: str = tag,
                             w: QWidget = container,
@@ -891,27 +888,27 @@ class TableBuilderMixin(_Base):
                         container.mousePressEvent = _make_click()
 
                         # Right-click context menu for actionable states.
+                        # Set CustomContextMenu on each child widget
+                        # directly (not on the container) because
+                        # ContextMenu event propagation from child to
+                        # parent is unreliable on macOS PyQt5.
                         if cli_state in (
                             CLIState.INTERRUPTED, CLIState.RUNNING,
                             CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT,
                         ):
-                            container.setContextMenuPolicy(
-                                Qt.CustomContextMenu)
                             if cli_state == CLIState.INTERRUPTED:
-                                container.customContextMenuRequested.connect(
-                                    lambda _pos, w=container, t=tag:
-                                        self._show_status_action_menu(w, t)
-                                )
+                                _handler = self._show_status_action_menu
                             elif cli_state == CLIState.RUNNING:
-                                container.customContextMenuRequested.connect(
-                                    lambda _pos, w=container, t=tag:
-                                        self._show_running_status_menu(w, t)
-                                )
+                                _handler = self._show_running_status_menu
                             else:
-                                container.customContextMenuRequested.connect(
-                                    lambda _pos, w=container, t=tag:
-                                        self._show_permission_menu(w, t)
-                                )
+                                _handler = self._show_permission_menu
+                            for child in (spacer, status_label,
+                                          fire_label, container):
+                                child.setContextMenuPolicy(
+                                    Qt.CustomContextMenu)
+                                child.customContextMenuRequested.connect(
+                                    lambda _pos, _w=container, _t=tag,
+                                    _h=_handler: _h(_w, _t))
 
                         # Ensure a table item exists so the
                         # cell-widget tooltip path can find it.

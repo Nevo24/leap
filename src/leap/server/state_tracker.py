@@ -675,7 +675,12 @@ class CLIStateTracker:
                 return
 
         # -- Accumulate prompt snapshot --
-        self._prompt_snapshot = list(self._screen.display)
+        # During trust_dialog_phase, the snapshot was already captured
+        # at detection time (in _handle_idle_output).  Don't overwrite
+        # it — the screen was reset after capture and may contain only
+        # fragments from subsequent Ink TUI redraws.
+        if not self._trust_dialog_phase:
+            self._prompt_snapshot = list(self._screen.display)
 
     # -- State polling --------------------------------------------------------
 
@@ -975,11 +980,14 @@ class CLIStateTracker:
             silence = self._clock() - self._last_output_time
             if silence > SAFETY_WAITING_TIMEOUT:
                 signal_state = self._read_signal_state()
-                if signal_state == current:
+                if signal_state == current or self._trust_dialog_phase:
                     _log.debug(
                         'GET_STATE waiting timeout %s %.1fs but '
-                        'signal confirms — keeping',
+                        '%s — keeping',
                         current, silence,
+                        'trust dialog active'
+                        if self._trust_dialog_phase
+                        else 'signal confirms',
                     )
                 else:
                     _log.debug(
@@ -1066,10 +1074,15 @@ class CLIStateTracker:
         """Return PTY output from the last permission/input prompt.
 
         Reads from the pyte screen snapshot taken when entering the
-        prompt state.
+        prompt state.  Falls back to the live screen if the snapshot
+        is empty but the state is still a prompt state — this covers
+        the trust dialog case where the snapshot can be overwritten
+        by subsequent output after a screen reset.
         """
         with self._screen_lock:
             snapshot = self._prompt_snapshot
+            if not snapshot and self._state in WAITING_STATES:
+                snapshot = list(self._screen.display)
         if not snapshot:
             return ''
         _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')
