@@ -1008,6 +1008,7 @@ class LeapServer:
         """Delete character at cursor (forward delete)."""
         text = self._capture_text()
         if self._capture_cursor_pos < len(text):
+            self._saved_msg_index = -1  # editing resets history browsing
             text = text[:self._capture_cursor_pos] + text[self._capture_cursor_pos + 1:]
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
@@ -1420,6 +1421,10 @@ class LeapServer:
                                 text.encode('utf-8'))
                             self._capture_cursor_pos = p - 1
                         self._save_capture_message()
+                        # If save didn't fire (empty buffer), update display
+                        # to clear the removed "^" from screen.
+                        if not self._capture_show_saved_hint:
+                            self._capture_display(self._capture_text())
                     else:
                         # First "^" — insert it, wait for second
                         self._pending_caret = True
