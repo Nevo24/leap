@@ -190,6 +190,8 @@ class LeapServer:
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
         self._capture_utf8_buf: bytearray = bytearray()  # incomplete UTF-8 bytes
+        self._capture_image_counter: int = 0
+        self._capture_image_map: dict[str, str] = {}  # "[Image #N]" → path
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
@@ -450,12 +452,13 @@ class LeapServer:
         # clears the input line without side effects.
         if self._capture_stale_cli_input:
             self._capture_stale_cli_input = False
-            self.pty.send('\x03')  # Ctrl+C clears input
-            time.sleep(0.2)  # let CLI process the Ctrl+C
+            self.pty.send('\x03')
+            time.sleep(0.2)
 
         self.state.on_send()
 
-        if self._provider.is_image_message(message) or self._has_image_ref(message):
+        is_img = self._provider.is_image_message(message) or self._has_image_ref(message)
+        if is_img:
             self.pty.send_image_message(message)
         else:
             self.pty.sendline(message)
@@ -810,7 +813,7 @@ class LeapServer:
                 q_size = self.queue.size
                 q_part = f' \u2022 {q_size} queued'
                 prefix = '[Leap Q] '
-                hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel'
+                hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel \u2022 Ctrl+V=image'
                         f'{q_part} \u2022 CLI runs in bg)\x1b[33m'
                         if self._capture_show_hint else '')
                 cursor_col = len(prefix) + self._capture_cursor_pos
@@ -829,17 +832,39 @@ class LeapServer:
         return self._queue_capture_buf.decode('utf-8', errors='replace')
 
     def _capture_insert(self, ch: str) -> None:
-        """Insert a character at the cursor position."""
+        """Insert character(s) at the cursor position."""
         text = self._capture_text()
         text = text[:self._capture_cursor_pos] + ch + text[self._capture_cursor_pos:]
         self._queue_capture_buf = bytearray(text.encode('utf-8'))
-        self._capture_cursor_pos += 1
+        self._capture_cursor_pos += len(ch)
 
     @staticmethod
     def _is_csi_u_cancel(seq: bytes) -> bool:
         """Check if a CSI sequence is Ctrl+C in kitty/xterm encoding."""
         from leap.server.state_tracker import CLIStateTracker
         return CLIStateTracker._is_csi_u_interrupt(seq)
+
+    @staticmethod
+    def _is_csi_u_paste(seq: bytes) -> bool:
+        """Check if a CSI sequence is Ctrl+V in any known encoding."""
+        if len(seq) < 4:
+            return False
+        final = seq[-1]
+        params = seq[2:-1]
+        parts = params.split(b';')
+        try:
+            if final == 0x75:  # Kitty: \x1b[118;5u
+                cp = int(parts[0].split(b':')[0])
+                mod = int(parts[1].split(b':')[0]) if len(parts) > 1 else 1
+                return cp == 118 and (mod - 1) & 0x04 != 0
+            if final == 0x7e and len(parts) >= 3:  # Legacy: \x1b[27;5;118~
+                prefix = int(parts[0].split(b':')[0])
+                mod = int(parts[1].split(b':')[0])
+                keycode = int(parts[2].split(b':')[0])
+                return prefix == 27 and keycode == 118 and (mod - 1) & 0x04 != 0
+        except (ValueError, IndexError):
+            pass
+        return False
 
     def _capture_backspace(self) -> bool:
         """Delete character before cursor. Returns False if at start."""
@@ -859,22 +884,87 @@ class LeapServer:
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
     def _capture_flush(self, cancel: bool = False) -> None:
-        """Flush CLI output that was buffered during capture mode.
-
-        Args:
-            cancel: True if exiting via Escape/Ctrl+C (erase stale ^).
-                    False if exiting via Enter (keep stale flag for
-                    _send_to_cli to clear with Ctrl+C).
-        """
+        """End capture mode: discard buffered output, handle stale input."""
+        buf_size = len(self._capture_output_buf)
         if cancel and self._capture_stale_cli_input:
             self.pty.send('\x7f')
             self._capture_stale_cli_input = False
+        # Discard buffered output — flushing stale TUI escape sequences
+        # corrupts the display (especially after image paste which
+        # accumulates thousands of bytes during the osascript block).
+        # The TUI redraws naturally when it receives the next message.
         if self._capture_output_buf:
-            try:
-                os.write(sys.stdout.fileno(), bytes(self._capture_output_buf))
-            except OSError:
-                pass
             self._capture_output_buf.clear()
+
+    def _capture_paste_image(self) -> bool:
+        """Try to paste a clipboard image into the capture buffer.
+
+        Uses PyObjC (AppKit) to read the clipboard directly — no
+        subprocess, so terminal raw mode settings are not corrupted.
+        """
+        import hashlib
+        from leap.utils.constants import QUEUE_IMAGES_DIR
+        try:
+            from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
+        except ImportError:
+            return False
+        pb = NSPasteboard.generalPasteboard()
+        # Check for PNG first, then TIFF (screenshots are often TIFF)
+        png_data = pb.dataForType_(NSPasteboardTypePNG)
+        if png_data is None:
+            tiff_data = pb.dataForType_(NSPasteboardTypeTIFF)
+            if tiff_data is None:
+                return False
+            # Convert TIFF to PNG via NSBitmapImageRep
+            try:
+                from AppKit import NSBitmapImageRep
+                rep = NSBitmapImageRep.imageRepWithData_(tiff_data)
+                if rep is None:
+                    return False
+                from AppKit import NSPNGFileType
+                png_data = rep.representationUsingType_properties_(NSPNGFileType, None)
+                if png_data is None:
+                    return False
+            except Exception as e:
+                return False
+        # Save with MD5 dedup (same logic as image_handler.save_clipboard_image)
+        raw_bytes = bytes(png_data)
+        content_hash = hashlib.md5(raw_bytes).hexdigest()[:12]
+        QUEUE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+        dest = QUEUE_IMAGES_DIR / f'{content_hash}.png'
+        if not dest.is_file():
+            dest.write_bytes(raw_bytes)
+        path = str(dest)
+        if not path:
+            return False
+        # Reuse existing placeholder if same image was already pasted
+        for existing_ph, existing_path in self._capture_image_map.items():
+            if existing_path == path:
+                self._capture_insert(existing_ph)
+                return True
+        self._capture_image_counter += 1
+        placeholder = f'[Image #{self._capture_image_counter}]'
+        self._capture_image_map[placeholder] = path
+        self._capture_insert(placeholder)
+        return True
+
+    def _capture_resolve_images(self, message: str) -> str:
+        """Replace [Image #N] placeholders with @path references."""
+        image_parts: list[str] = []
+        for placeholder, path in self._capture_image_map.items():
+            if placeholder in message:
+                message = message.replace(placeholder, '')
+                image_parts.append(f'@{path}')
+        if image_parts:
+            text = message.strip()
+            result = (' '.join(image_parts) + ' ' + text).strip() if text else ' '.join(image_parts)
+            return result
+        return message
+
+    def _capture_reset_images(self) -> None:
+        """Reset image state for the next capture session."""
+        self._capture_image_counter = 0
+        self._capture_image_map.clear()
 
     def _input_filter(self, data: bytes) -> bytes:
         """Track user keyboard input for state detection.
@@ -1007,6 +1097,7 @@ class LeapServer:
                         self._queue_capture_buf.clear()
                         self._queue_capture_mode = False
                         self._capture_flush(cancel=True)
+                        self._capture_reset_images()
                         self._terminal_input_buf.clear()
                     continue
                 kind = data[i]
@@ -1073,6 +1164,7 @@ class LeapServer:
                         self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                         self._queue_capture_mode = False
                         self._capture_flush(cancel=True)
+                        self._capture_reset_images()
                         self._terminal_input_buf.clear()
                     elif self._is_csi_u_cancel(seq):
                         # CSI u Ctrl+C (e.g. \x1b[3u) — cancel capture
@@ -1081,6 +1173,7 @@ class LeapServer:
                         self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                         self._queue_capture_mode = False
                         self._capture_flush(cancel=True)
+                        self._capture_reset_images()
                         self._terminal_input_buf.clear()
                     elif seq == b'\x1b[D':  # Left arrow
                         if self._capture_cursor_pos > 0:
@@ -1118,6 +1211,10 @@ class LeapServer:
                         self._capture_show_hint = False
                         self._capture_delete()
                         self._capture_display(self._capture_text())
+                    elif self._is_csi_u_paste(seq):  # CSI u Ctrl+V
+                        self._capture_show_hint = False
+                        if self._capture_paste_image():
+                            self._capture_display(self._capture_text())
                     # Other CSI/OSC/SS3 sequences silently dropped.
                 else:
                     out.extend(data[esc_start:i])
@@ -1128,10 +1225,12 @@ class LeapServer:
             # since we can't echo into the TUI content area.
             # Must be checked before in_prompt so capture works in any state.
             if self._queue_capture_mode:
-                if b == 0x0d:  # Enter — queue the message
+                if b in (0x0d, 0x0a):  # Enter (CR or LF — LF after subprocess)
                     self._user_has_typed = True
                     self._capture_display()  # clear
                     msg = self._capture_text().strip()
+                    if self._capture_image_map:
+                        msg = self._capture_resolve_images(msg)
                     if msg:
                         self.queue.add(msg)
                         self._capture_flush()  # keep stale for Ctrl+C cleanup
@@ -1141,7 +1240,14 @@ class LeapServer:
                     self._queue_capture_buf.clear()
                     self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                     self._queue_capture_mode = False
+                    self._capture_reset_images()
                     self._terminal_input_buf.clear()
+                elif b == 0x16:  # Ctrl+V — paste clipboard image
+                    if self._pending_caret:
+                        self._pending_caret = False
+                    self._capture_show_hint = False
+                    if self._capture_paste_image():
+                        self._capture_display(self._capture_text())
                 elif b == 0x7f:  # Backspace
                     self._capture_show_hint = False
                     if self._capture_backspace():
@@ -1153,6 +1259,7 @@ class LeapServer:
                     self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                     self._queue_capture_mode = False
                     self._capture_flush(cancel=True)
+                    self._capture_reset_images()
                     self._terminal_input_buf.clear()
                 elif 0x20 <= b < 0x7f:
                     # ASCII printable
