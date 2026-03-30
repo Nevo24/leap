@@ -128,6 +128,13 @@ class CLIStateTracker:
         self._stream: pyte.Stream = pyte.Stream(self._screen)
         # Snapshot of screen lines when entering a prompt state.
         self._prompt_snapshot: list[str] = []
+        # Fallback: screen content saved when leaving RUNNING state.
+        # Used when a hook signal arrives after the cursor+silence
+        # heuristic has already transitioned to idle and cleared the
+        # pyte screen — the Notification hook can fire seconds later,
+        # by which time the screen is empty and the Ink TUI produces
+        # no new output (it's waiting for user input).
+        self._last_running_snapshot: list[str] = []
 
         # Delete stale signal file from previous server.
         try:
@@ -151,6 +158,26 @@ class CLIStateTracker:
             pass
 
     # -- Screen helpers -------------------------------------------------------
+
+    def _capture_prompt_snapshot(self) -> list[str]:
+        """Capture a prompt snapshot from the current screen, with fallback.
+
+        If the pyte screen is all blank (e.g., it was reset on a prior
+        running→idle transition before the hook signal arrived), falls
+        back to ``_last_running_snapshot`` — the screen content saved
+        when leaving RUNNING state.
+
+        Must be called with _screen_lock held.
+        """
+        snapshot = list(self._screen.display)
+        if all(not line.strip() for line in snapshot):
+            if self._last_running_snapshot:
+                _log.debug(
+                    'prompt snapshot empty, using last running snapshot',
+                )
+                snapshot = self._last_running_snapshot
+        self._last_running_snapshot = []
+        return snapshot
 
     def _reset_screen(self) -> None:
         """Reset the pyte screen and stream to clear stale content.
@@ -337,6 +364,7 @@ class CLIStateTracker:
             with self._screen_lock:
                 self._reset_screen()
                 self._prompt_snapshot = []
+                self._last_running_snapshot = []
                 with self._lock:
                     self._state = CLIState.RUNNING
                     self._waiting_since = None
@@ -365,6 +393,7 @@ class CLIStateTracker:
         with self._screen_lock:
             self._reset_screen()
             self._prompt_snapshot = []
+            self._last_running_snapshot = []
             with self._lock:
                 self._state = CLIState.RUNNING
                 self._waiting_since = None
@@ -703,6 +732,7 @@ class CLIStateTracker:
                 with self._screen_lock:
                     self._reset_screen()
                     self._prompt_snapshot = []
+                    self._last_running_snapshot = []
             return CLIState.IDLE
 
         with self._lock:
@@ -779,6 +809,9 @@ class CLIStateTracker:
                         self._seen_user_input = False
                     self._trust_dialog_phase = False
                     with self._screen_lock:
+                        self._last_running_snapshot = list(
+                            self._screen.display,
+                        )
                         self._reset_screen()
                         self._prompt_snapshot = []
                     return CLIState.IDLE
@@ -850,9 +883,10 @@ class CLIStateTracker:
                     self._trust_dialog_phase = False
                 with self._screen_lock:
                     if new_state in PROMPT_STATES:
-                        self._prompt_snapshot = list(self._screen.display)
+                        self._prompt_snapshot = self._capture_prompt_snapshot()
                     else:
                         self._prompt_snapshot = []
+                        self._last_running_snapshot = []
                     self._reset_screen()
                 if new_state == CLIState.IDLE:
                     self._user_input_since_idle = False
@@ -883,6 +917,9 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
+                    self._last_running_snapshot = list(
+                        self._screen.display,
+                    )
                     self._reset_screen()
                 return CLIState.IDLE
 
@@ -949,6 +986,9 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
+                    self._last_running_snapshot = list(
+                        self._screen.display,
+                    )
                     self._reset_screen()
                     self._prompt_snapshot = []
                 return CLIState.IDLE
@@ -971,6 +1011,9 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
+                    self._last_running_snapshot = list(
+                        self._screen.display,
+                    )
                     self._reset_screen()
                     self._prompt_snapshot = []
                 return CLIState.IDLE
