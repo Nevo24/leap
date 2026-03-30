@@ -827,11 +827,11 @@ class LeapServer:
                 self._capture_prev_lines = 0
             else:
                 q_size = self.queue.size
-                q_part = f' \u2022 {q_size} queued'
                 prefix = '[Leap Q] '
-                hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel \u2022 ^^=save'
+                hint = (f' \x1b[2m({q_size} queued \u2022 Enter=queue'
+                        f' \u2022 Esc=cancel \u2022 ^^=save'
                         f' \u2022 \u2191\u2193=history \u2022 Ctrl+V=image'
-                        f'{q_part} \u2022 CLI runs in bg)\x1b[33m'
+                        f' \u2022 CLI runs in bg)\x1b[33m'
                         if self._capture_show_hint else '')
                 full_line = f'{prefix}{text}{hint}'
                 visible_len = len(re.sub(r'\x1b\[[0-9;]*m', '', full_line))
