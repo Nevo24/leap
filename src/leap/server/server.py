@@ -1657,8 +1657,11 @@ class LeapServer:
         signal.signal(signal.SIGINT, lambda s, f: sys.exit(0))
         signal.signal(signal.SIGHUP, lambda s, f: sys.exit(0))
 
-        # Reset title (CLI may have changed it)
-        set_terminal_title(f"lps {self.tag}")
+        # Reset title (CLI may have changed it).
+        # Skip JetBrains ideScript rename — the user may have switched
+        # tabs during CLI startup, so getSelectedContent() would be wrong.
+        # The initial set_terminal_title() call already renamed the tab.
+        set_terminal_title(f"lps {self.tag}", vscode_rename=False)
 
         try:
             self.pty.interact(

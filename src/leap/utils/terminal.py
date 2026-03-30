@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from typing import Optional
 
 from leap.utils.constants import TERM_TITLE_PREFIX, TERM_TITLE_SUFFIX
 
@@ -40,6 +41,9 @@ _JETBRAINS_APP_PATTERNS: list[str] = [
     'Android Studio*.app',
 ]
 
+# Cached JetBrains CLI path (None = not yet resolved, '' = resolved but not found)
+_jetbrains_cli_path: Optional[str] = None
+
 
 def _jetbrains_env() -> dict[str, str]:
     """Build an env dict with JetBrains CLI tools on PATH."""
@@ -62,6 +66,34 @@ def _jetbrains_env() -> dict[str, str]:
     return env
 
 
+def _resolve_jetbrains_cli() -> str:
+    """Resolve and cache the JetBrains IDE CLI path.
+
+    Returns the CLI path, or '' if not in a JetBrains terminal or CLI
+    not found.  Result is cached for the lifetime of the process.
+    """
+    global _jetbrains_cli_path
+    if _jetbrains_cli_path is not None:
+        return _jetbrains_cli_path
+
+    terminal_emulator = os.environ.get('TERMINAL_EMULATOR', '')
+    if 'JetBrains' not in terminal_emulator and 'jetbrains' not in terminal_emulator.lower():
+        _jetbrains_cli_path = ''
+        return ''
+
+    from leap.utils.ide_detection import detect_ide
+    ide = detect_ide()
+
+    cli_name = _JETBRAINS_CLI_MAP.get(ide, '')
+    if not cli_name:
+        _jetbrains_cli_path = ''
+        return ''
+
+    env = _jetbrains_env()
+    _jetbrains_cli_path = shutil.which(cli_name, path=env.get('PATH')) or ''
+    return _jetbrains_cli_path
+
+
 def _escape_groovy(s: str) -> str:
     """Escape a string for embedding in a Groovy string literal."""
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
@@ -72,47 +104,37 @@ def _jetbrains_rename_tab(title: str) -> None:
 
     Runs in the background to avoid blocking startup.
     """
-    # Detect IDE from environment
-    terminal_emulator = os.environ.get('TERMINAL_EMULATOR', '')
-    if 'JetBrains' not in terminal_emulator and 'jetbrains' not in terminal_emulator.lower():
-        return
-
-    # Import here to avoid circular imports at module level
-    from leap.utils.ide_detection import detect_ide
-    ide = detect_ide()
-
-    cli_name = _JETBRAINS_CLI_MAP.get(ide)
-    if not cli_name:
-        return
-
-    env = _jetbrains_env()
-    cli_path = shutil.which(cli_name, path=env.get('PATH'))
+    cli_path = _resolve_jetbrains_cli()
     if not cli_path:
         return
 
     escaped_title = _escape_groovy(title)
 
-    # Try to scope to the project matching the current working directory
+    # Scope to the project matching the current working directory
     cwd = os.getcwd()
     escaped_cwd = _escape_groovy(cwd)
 
+    # Match the project with the longest basePath prefix to avoid
+    # /foo/project matching when /foo/project-v2 is the real project.
     groovy_script = f'''import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.project.ProjectManager
 
 IDE.application.invokeLater {{
     var allProjects = ProjectManager.getInstance().getOpenProjects()
     var targetProject = null
+    var bestLen = 0
 
-    // Try to find the project matching the current working directory
+    var cwd = "{escaped_cwd}"
     for (var i = 0; i < allProjects.length; i++) {{
         var project = allProjects[i]
         var basePath = project.getBasePath()
-        if (basePath != null && "{escaped_cwd}".startsWith(basePath)) {{
+        if (basePath != null
+                && (cwd.equals(basePath) || cwd.startsWith(basePath + "/"))
+                && basePath.length() > bestLen) {{
             targetProject = project
-            break
+            bestLen = basePath.length()
         }}
     }}
-    // Fallback to first project
     if (targetProject == null && allProjects.length > 0) {{
         targetProject = allProjects[0]
     }}
@@ -146,7 +168,7 @@ IDE.application.invokeLater {{
                 [cli_path, 'ideScript', tmp_path],
                 capture_output=True,
                 timeout=5,
-                env=env,
+                env=_jetbrains_env(),
             )
         finally:
             try:
@@ -188,12 +210,14 @@ def set_terminal_title(title: str, *, vscode_rename: bool = True) -> None:
         except OSError:
             pass
 
-        # JetBrains: rename via ideScript (handles manually-named tabs)
-        threading.Thread(
-            target=_jetbrains_rename_tab,
-            args=(title,),
-            daemon=True,
-        ).start()
+        # JetBrains: rename via ideScript (handles manually-named tabs).
+        # Quick-exit if not in JetBrains (cached check, no thread spawned).
+        if _resolve_jetbrains_cli():
+            threading.Thread(
+                target=_jetbrains_rename_tab,
+                args=(title,),
+                daemon=True,
+            ).start()
 
 
 def print_banner(session_type: str, tag: str, cli_name: str = '') -> None:
