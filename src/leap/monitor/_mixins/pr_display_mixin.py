@@ -334,6 +334,21 @@ class PRDisplayMixin(_Base):
             return
         if not events:
             return
+
+        # Log all events to the status log (regardless of banner/sound prefs).
+        # User notifications (review_requested, assigned, mentioned) are already
+        # logged in _process_user_notifications — skip them here.
+        _USER_NOTIF_TYPES = {
+            NotificationType.REVIEW_REQUESTED,
+            NotificationType.ASSIGNED,
+            NotificationType.MENTIONED,
+        }
+        for ev in events:
+            if ev.type not in _USER_NOTIF_TYPES:
+                subtitle, body = self._format_banner_text(ev)
+                tag_prefix = f"[{subtitle}] " if subtitle else ''
+                self._show_status(f"{tag_prefix}{body}", url=ev.url)
+
         if not hasattr(self, '_banner_notified'):
             self._banner_notified = set()
         notif_prefs = get_notification_prefs(self._prefs)

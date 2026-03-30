@@ -132,6 +132,7 @@ class DockBadge:
                     pr_iid=current.pr_iid,
                     pr_title=current.pr_title,
                     unresponded_count=current.unresponded_count,
+                    url=current.pr_url,
                 ))
 
         # State changed from UNRESPONDED to ALL_RESPONDED
@@ -142,6 +143,7 @@ class DockBadge:
                 tag=tag,
                 pr_iid=current.pr_iid,
                 pr_title=current.pr_title,
+                url=current.pr_url,
             ))
 
         # Approval: notify when new approvers appear, but not for self-only changes.
@@ -161,6 +163,7 @@ class DockBadge:
                     pr_iid=current.pr_iid,
                     pr_title=current.pr_title,
                     approved_by=current.approved_by,
+                    url=current.pr_url,
                 ))
 
         return events
