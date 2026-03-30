@@ -196,6 +196,11 @@ class LeapServer:
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
+        # Saved message history (^^ inside capture mode saves + clears).
+        # Browsed with arrow up/down.  Persisted to .storage/.
+        self._saved_messages: list[str] = self._load_saved_messages()
+        self._saved_msg_index: int = -1  # -1 = not browsing
+        self._capture_show_saved_hint: bool = False  # "Saved!" hint active
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -824,7 +829,8 @@ class LeapServer:
                 q_size = self.queue.size
                 q_part = f' \u2022 {q_size} queued'
                 prefix = '[Leap Q] '
-                hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel \u2022 Ctrl+V=image'
+                hint = (f' \x1b[2m(Enter=queue \u2022 Esc=cancel \u2022 ^^=save'
+                        f' \u2022 \u2191\u2193=history \u2022 Ctrl+V=image'
                         f'{q_part} \u2022 CLI runs in bg)\x1b[33m'
                         if self._capture_show_hint else '')
                 full_line = f'{prefix}{text}{hint}'
@@ -862,10 +868,102 @@ class LeapServer:
 
     def _capture_insert(self, ch: str) -> None:
         """Insert character(s) at the cursor position."""
+        self._saved_msg_index = -1  # editing resets history browsing
         text = self._capture_text()
         text = text[:self._capture_cursor_pos] + ch + text[self._capture_cursor_pos:]
         self._queue_capture_buf = bytearray(text.encode('utf-8'))
         self._capture_cursor_pos += len(ch)
+
+    # -- Saved message history ------------------------------------------------
+
+    _SAVED_MESSAGES_FILE = STORAGE_DIR / 'saved_messages.json'
+    _SAVED_MESSAGES_MAX = 100
+
+    def _load_saved_messages(self) -> list[str]:
+        """Load saved messages from disk."""
+        try:
+            if self._SAVED_MESSAGES_FILE.exists():
+                data = json.loads(self._SAVED_MESSAGES_FILE.read_text())
+                if isinstance(data, list):
+                    return data[-self._SAVED_MESSAGES_MAX:]
+        except (json.JSONDecodeError, OSError):
+            pass
+        return []
+
+    def _persist_saved_messages(self) -> None:
+        """Write saved messages to disk."""
+        try:
+            atomic_json_write(
+                self._SAVED_MESSAGES_FILE,
+                self._saved_messages[-self._SAVED_MESSAGES_MAX:],
+            )
+        except OSError:
+            pass
+
+    def _save_capture_message(self) -> None:
+        """Save current capture buffer to history, clear buffer."""
+        msg = self._capture_text().strip()
+        if not msg:
+            return
+        # Remove duplicate if already at the end
+        if self._saved_messages and self._saved_messages[-1] == msg:
+            pass
+        else:
+            self._saved_messages.append(msg)
+            if len(self._saved_messages) > self._SAVED_MESSAGES_MAX:
+                self._saved_messages = self._saved_messages[
+                    -self._SAVED_MESSAGES_MAX:]
+        self._persist_saved_messages()
+        # Clear buffer and show saved hint
+        self._queue_capture_buf.clear()
+        self._capture_cursor_pos = 0
+        self._capture_utf8_buf.clear()
+        self._saved_msg_index = -1
+        self._capture_show_hint = False
+        self._capture_display()  # clear old wrapped lines
+        self._capture_prev_lines = 0
+        # Show a "Saved!" hint on the capture line
+        try:
+            payload = (
+                '\r\x1b[K'
+                '\x1b[33m[Leap Q] \x1b[32mSaved!'
+                ' \x1b[2m(any key to continue)\x1b[0m'
+            ).encode()
+            os.write(sys.stdout.fileno(), payload)
+        except OSError:
+            pass
+        self._capture_show_saved_hint = True
+
+    def _browse_saved_history(self, direction: int) -> None:
+        """Browse saved messages. direction: -1=up (older), +1=down (newer)."""
+        if not self._saved_messages:
+            return
+        count = len(self._saved_messages)
+        if self._saved_msg_index == -1:
+            # Not browsing yet
+            if direction == -1:
+                # Start at most recent
+                self._saved_msg_index = count - 1
+            else:
+                return  # Already past end, nothing to do
+        else:
+            new_idx = self._saved_msg_index + direction
+            if new_idx < 0:
+                return  # Already at oldest
+            if new_idx >= count:
+                # Past newest → back to empty buffer
+                self._saved_msg_index = -1
+                self._queue_capture_buf.clear()
+                self._capture_cursor_pos = 0
+                self._capture_display(self._capture_text())
+                return
+            self._saved_msg_index = new_idx
+
+        # Load the message at current index
+        msg = self._saved_messages[self._saved_msg_index]
+        self._queue_capture_buf = bytearray(msg.encode('utf-8'))
+        self._capture_cursor_pos = len(msg)
+        self._capture_display(self._capture_text())
 
     @staticmethod
     def _is_csi_u_cancel(seq: bytes) -> bool:
@@ -899,6 +997,7 @@ class LeapServer:
         """Delete character before cursor. Returns False if at start."""
         if self._capture_cursor_pos <= 0:
             return False
+        self._saved_msg_index = -1  # editing resets history browsing
         text = self._capture_text()
         text = text[:self._capture_cursor_pos - 1] + text[self._capture_cursor_pos:]
         self._queue_capture_buf = bytearray(text.encode('utf-8'))
@@ -1058,6 +1157,8 @@ class LeapServer:
             self._capture_stale_cli_input = True
             self._pending_caret = False
             self._capture_prev_lines = 0
+            self._saved_msg_index = -1
+            self._capture_show_saved_hint = False
             self._capture_display(self._capture_text())
             i += 1
 
@@ -1170,6 +1271,9 @@ class LeapServer:
                 if self._queue_capture_mode:
                     # In capture mode: handle editing keys, cancel on
                     # Escape, drop everything else.
+                    if self._capture_show_saved_hint:
+                        self._capture_show_saved_hint = False
+                        self._capture_display(self._capture_text())
                     seq = data[esc_start:i]
                     if seq in (b'\x1bb', b'\x1bf'):
                         # ESC-b / ESC-f (Option+arrows as Meta prefix).
@@ -1241,6 +1345,12 @@ class LeapServer:
                         self._capture_show_hint = False
                         self._capture_delete()
                         self._capture_display(self._capture_text())
+                    elif seq == b'\x1b[A':  # Up arrow — browse saved msgs
+                        self._capture_show_hint = False
+                        self._browse_saved_history(-1)
+                    elif seq == b'\x1b[B':  # Down arrow — browse saved msgs
+                        self._capture_show_hint = False
+                        self._browse_saved_history(1)
                     elif self._is_csi_u_paste(seq):  # CSI u Ctrl+V
                         self._capture_show_hint = False
                         if self._capture_paste_image():
@@ -1255,6 +1365,10 @@ class LeapServer:
             # since we can't echo into the TUI content area.
             # Must be checked before in_prompt so capture works in any state.
             if self._queue_capture_mode:
+                # Dismiss "Saved!" hint on any key
+                if self._capture_show_saved_hint and b != 0x5e:
+                    self._capture_show_saved_hint = False
+                    self._capture_display(self._capture_text())
                 if b in (0x0d, 0x0a):  # Enter (CR or LF — LF after subprocess)
                     self._user_has_typed = True
                     self._capture_display()  # clear
@@ -1291,10 +1405,34 @@ class LeapServer:
                     self._capture_flush(cancel=True)
                     self._capture_reset_images()
                     self._terminal_input_buf.clear()
+                elif b == 0x5e:  # "^" in capture mode
+                    if self._capture_show_saved_hint:
+                        self._capture_show_saved_hint = False
+                    if self._pending_caret:
+                        # Double "^" inside capture → save message
+                        self._pending_caret = False
+                        # Remove the first "^" that was inserted
+                        text = self._capture_text()
+                        p = self._capture_cursor_pos
+                        if p > 0 and text[p - 1] == '^':
+                            text = text[:p - 1] + text[p:]
+                            self._queue_capture_buf = bytearray(
+                                text.encode('utf-8'))
+                            self._capture_cursor_pos = p - 1
+                        self._save_capture_message()
+                    else:
+                        # First "^" — insert it, wait for second
+                        self._pending_caret = True
+                        self._capture_show_hint = False
+                        self._capture_insert('^')
+                        self._capture_display(self._capture_text())
                 elif 0x20 <= b < 0x7f:
-                    # ASCII printable
+                    # ASCII printable (non-caret)
                     if self._pending_caret:
                         self._pending_caret = False
+                    if self._capture_show_saved_hint:
+                        self._capture_show_saved_hint = False
+                        self._capture_display(self._capture_text())
                     self._capture_show_hint = False
                     self._capture_insert(chr(b))
                     self._capture_display(self._capture_text())
@@ -1344,6 +1482,8 @@ class LeapServer:
                         self._queue_capture_buf)
                     self._pending_caret = False
                     self._capture_prev_lines = 0
+                    self._saved_msg_index = -1
+                    self._capture_show_saved_hint = False
                     self._capture_display(self._capture_text())
                     i += 1
                     continue
@@ -1442,9 +1582,11 @@ class LeapServer:
         # so the user doesn't miss anything that happened while typing.
         if self._queue_capture_mode:
             self._capture_output_buf.extend(data)
-            self._capture_display(
-                self._queue_capture_buf.decode(
-                    'utf-8', errors='replace'))
+            # Don't redraw over the "Saved!" hint
+            if not self._capture_show_saved_hint:
+                self._capture_display(
+                    self._queue_capture_buf.decode(
+                        'utf-8', errors='replace'))
             return b''  # suppress CLI output (buffered for later)
 
         return data

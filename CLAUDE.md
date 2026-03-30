@@ -201,11 +201,14 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Slack config | `.storage/slack/config.json` |
+| Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |
 
 ## Server Queue Shortcut
 
 Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activates capture mode — characters are hidden from the CLI and shown in a `[Leap Q]` prompt on the input line. Works at any point: type `^^msg` to start fresh, or type `hello` then `^^` to convert already-typed text into a queued message. Press Enter to queue, Escape or Ctrl+C to cancel.
+
+**Saved messages**: Type `^^` inside capture mode to save the current message to history and clear the buffer. Browse saved messages with arrow up/down. History persists across sessions in `.storage/saved_messages.json` (max 100 entries, shared across all CLIs/sessions). Editing a recalled message does not modify the saved history — only explicit `^^` save does.
 
 ## Client Commands
 
