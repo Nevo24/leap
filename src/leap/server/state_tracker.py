@@ -944,6 +944,7 @@ class CLIStateTracker:
                 should_resume = True
                 with self._screen_lock:
                     self._reset_screen()
+                    self._last_running_snapshot = []
             if should_resume:
                 _log.debug(
                     'GET_STATE idle→running (cursor hidden at poll, '
