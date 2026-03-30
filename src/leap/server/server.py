@@ -831,11 +831,24 @@ class LeapServer:
                 visible_len = len(re.sub(r'\x1b\[[0-9;]*m', '', full_line))
                 cols = shutil.get_terminal_size(fallback=(80, 24)).columns
                 wrapped = max(0, (visible_len - 1) // cols) if cols > 0 else 0
-                cursor_col = len(prefix) + self._capture_cursor_pos
+                # Position cursor correctly within wrapped text.
+                # After writing the full line, the terminal cursor is
+                # on the last wrapped line.  Move up to the cursor's
+                # line and set the column within that line.
+                cursor_abs = len(prefix) + self._capture_cursor_pos
+                if cols > 0:
+                    cursor_line = cursor_abs // cols
+                    cursor_col = cursor_abs % cols
+                else:
+                    cursor_line = 0
+                    cursor_col = cursor_abs
+                lines_up = wrapped - cursor_line
+                move_up = f'\x1b[{lines_up}A' if lines_up > 0 else ''
+                move_right = f'\x1b[{cursor_col}C' if cursor_col > 0 else ''
                 payload = (
                     f"{clear}\r\x1b[K"
                     f"\x1b[33m{prefix}{text}{hint}\x1b[0m"
-                    f"\r\x1b[{cursor_col}C"
+                    f"{move_up}\r{move_right}"
                     f"\x1b[?25h"
                 ).encode()
                 os.write(sys.stdout.fileno(), payload)
