@@ -18,9 +18,10 @@ from typing import Optional
 
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu,
-    QMessageBox, QPushButton, QScrollArea, QSplitter, QStackedWidget,
-    QStyle, QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter,
+    QStackedWidget, QStyle, QTableWidget, QTableWidgetItem, QTextEdit,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
@@ -362,6 +363,17 @@ def _get_note_mode(name: str) -> str:
 def _set_note_mode(name: str, mode: str) -> None:
     meta = _load_notes_meta()
     meta.setdefault(name, {})['mode'] = mode
+    _save_notes_meta(meta)
+
+
+def _get_include_completed(name: str) -> bool:
+    """Return whether 'Include completed' is enabled for a note."""
+    return _load_notes_meta().get(name, {}).get('include_completed', False)
+
+
+def _set_include_completed(name: str, enabled: bool) -> None:
+    meta = _load_notes_meta()
+    meta.setdefault(name, {})['include_completed'] = enabled
     _save_notes_meta(meta)
 
 
@@ -1602,6 +1614,93 @@ class _NotesTreeWidget(QTreeWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Session picker dialog (for "Run in Session")
+# ══════════════════════════════════════════════════════════════════════
+
+
+class _SessionPickerDialog(QDialog):
+    """Modal dialog to choose a running Leap session and send mode."""
+
+    def __init__(self, sessions: list[dict], aliases: dict,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle('Select Session')
+        self.resize(480, 300)
+        self._result: Optional[tuple[str, bool]] = None
+
+        layout = QVBoxLayout(self)
+
+        self._table = QTableWidget(len(sessions), 3)
+        self._table.setHorizontalHeaderLabels(['Tag', 'Project', 'State'])
+        self._table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SingleSelection)
+        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.verticalHeader().setVisible(False)
+        self._table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeToContents)
+
+        self._tags: list[str] = []
+        for row, session in enumerate(sessions):
+            tag = session['tag']
+            self._tags.append(tag)
+            display_tag = aliases.get(tag, tag)
+            self._table.setItem(row, 0, QTableWidgetItem(display_tag))
+            self._table.setItem(
+                row, 1, QTableWidgetItem(session.get('project', 'N/A')))
+            state = session.get('cli_state', '')
+            if hasattr(state, 'value'):
+                state = state.value
+            self._table.setItem(row, 2, QTableWidgetItem(str(state)))
+        self._table.doubleClicked.connect(lambda: self._accept(True))
+        layout.addWidget(self._table)
+
+        if sessions:
+            self._table.selectRow(0)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        send_next_btn = QPushButton('Send Next')
+        send_next_btn.setToolTip('Prepend messages to the front of the queue')
+        send_next_btn.clicked.connect(lambda: self._accept(False))
+        btn_row.addWidget(send_next_btn)
+        send_end_btn = QPushButton('Send at End')
+        send_end_btn.setToolTip('Append messages to the end of the queue')
+        send_end_btn.setDefault(True)
+        send_end_btn.clicked.connect(lambda: self._accept(True))
+        btn_row.addWidget(send_end_btn)
+        layout.addLayout(btn_row)
+
+    def _accept(self, at_end: bool) -> None:
+        row = self._table.currentRow()
+        if row < 0 or row >= len(self._tags):
+            return
+        self._result = (self._tags[row], at_end)
+        self.accept()
+
+    @staticmethod
+    def pick_session(
+        parent: Optional[QWidget] = None,
+    ) -> Optional[tuple[str, bool]]:
+        """Show the picker and return (tag, at_end) or None if cancelled."""
+        from leap.monitor.session_manager import get_active_sessions
+        sessions = get_active_sessions()
+        if not sessions:
+            QMessageBox.information(
+                parent, 'Run in Session', 'No active sessions found.')
+            return None
+        from leap.monitor.pr_tracking.config import load_monitor_prefs
+        aliases = load_monitor_prefs().get('aliases', {})
+        dlg = _SessionPickerDialog(sessions, aliases, parent)
+        if dlg.exec_() == QDialog.Accepted and dlg._result is not None:
+            return dlg._result
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Main dialog
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1719,16 +1818,48 @@ class NotesDialog(QDialog):
         self._title_label.setStyleSheet(
             f'font-weight: bold; font-size: {current_theme().font_size_large}px;')
         header_row.addWidget(self._title_label)
+        header_row.addStretch()
+        right_layout.addLayout(header_row)
+
+        # ── Action toolbar row ──
+        toolbar_row = QHBoxLayout()
+        toolbar_row.setContentsMargins(0, 0, 0, 0)
+        toolbar_row.setSpacing(6)
 
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(['Text', 'Checklist'])
         self._mode_combo.setFixedWidth(100)
         self._mode_combo.setEnabled(False)
+        self._mode_combo.setToolTip('Switch between plain text and checklist mode')
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        header_row.addWidget(self._mode_combo)
+        toolbar_row.addWidget(self._mode_combo)
 
-        header_row.addStretch()
-        right_layout.addLayout(header_row)
+        toolbar_row.addStretch()
+
+        self._include_completed_cb = QCheckBox('Include completed')
+        self._include_completed_cb.setToolTip(
+            'Include checked items when saving as preset or sending to session')
+        self._include_completed_cb.setVisible(False)
+        self._include_completed_cb.toggled.connect(self._on_include_completed_toggled)
+        toolbar_row.addWidget(self._include_completed_cb)
+        self._cb_spacer = QWidget()
+        self._cb_spacer.setFixedWidth(6)
+        self._cb_spacer.setVisible(False)
+        toolbar_row.addWidget(self._cb_spacer)
+
+        self._save_preset_btn = QPushButton('Save as Preset')
+        self._save_preset_btn.setToolTip('Save note content as a reusable preset')
+        self._save_preset_btn.setVisible(False)
+        self._save_preset_btn.clicked.connect(self._on_save_as_preset)
+        toolbar_row.addWidget(self._save_preset_btn)
+
+        self._run_session_btn = QPushButton('Run in Session')
+        self._run_session_btn.setToolTip('Send note content to a running session')
+        self._run_session_btn.setVisible(False)
+        self._run_session_btn.clicked.connect(self._on_run_in_session)
+        toolbar_row.addWidget(self._run_session_btn)
+
+        right_layout.addLayout(toolbar_row)
 
         self._stack = QStackedWidget()
 
@@ -1969,6 +2100,7 @@ class NotesDialog(QDialog):
             self._mode_combo.setEnabled(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText('')
+            self._update_action_visibility(False)
             return
 
         if current.data(0, self._ROLE_TYPE) == 'folder':
@@ -1980,6 +2112,7 @@ class NotesDialog(QDialog):
             self._mode_combo.setEnabled(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText(current.text(0))
+            self._update_action_visibility(False)
             return
 
         name = current.data(0, self._ROLE_PATH)
@@ -2008,6 +2141,8 @@ class NotesDialog(QDialog):
         display = name.rsplit('/', 1)[-1] if '/' in name else name
         self._title_label.setText(display)
         self._update_timestamp()
+        self._include_completed_cb.setChecked(_get_include_completed(name))
+        self._update_action_visibility(True)
 
     # ── Mode switching ──────────────────────────────────────────────
 
@@ -2033,6 +2168,7 @@ class NotesDialog(QDialog):
             self._stack.setCurrentIndex(self._MODE_TEXT)
             _set_note_mode(self._current_name, 'text')
             self._save_current()
+        self._update_action_visibility(self._current_name is not None)
 
     def _on_checklist_changed(self) -> None:
         """No-op signal receiver; _save_current reads live widget state."""
@@ -2539,6 +2675,157 @@ class NotesDialog(QDialog):
             self._tree.setCurrentItem(first)
         else:
             self._on_item_changed(None, None)
+
+    # ── Action toolbar helpers ─────────────────────────────────────
+
+    def _update_action_visibility(self, note_selected: bool) -> None:
+        """Show or hide the action buttons and include-completed checkbox."""
+        self._save_preset_btn.setVisible(note_selected)
+        self._run_session_btn.setVisible(note_selected)
+        is_checklist = (note_selected
+                        and self._current_mode() == self._MODE_CHECKLIST)
+        self._include_completed_cb.setVisible(is_checklist)
+        self._cb_spacer.setVisible(is_checklist)
+
+    def _on_include_completed_toggled(self, checked: bool) -> None:
+        """Persist the 'Include completed' checkbox state for the current note."""
+        if self._current_name:
+            _set_include_completed(self._current_name, checked)
+
+    @staticmethod
+    def _resolve_note_images(text: str) -> str:
+        """Convert ``![image](hash.png)`` markers to ``@/abs/path`` refs."""
+        def _replace(m: re.Match) -> str:
+            return '@' + str(NOTE_IMAGES_DIR / m.group(1))
+        return _IMAGE_MARKER_RE.sub(_replace, text)
+
+    def _get_note_messages(self) -> list[str]:
+        """Extract sendable messages from the current note.
+
+        For text notes: returns a single-element list with the full text.
+        For checklists: returns one message per qualifying item in original
+        order. Respects the 'Include completed' checkbox.
+        Image markers are converted to ``@/path`` references (same format
+        used by the preset system).
+        """
+        if not self._current_name:
+            return []
+        if self._current_mode() == self._MODE_CHECKLIST:
+            items = self._checklist.get_items()
+            include_checked = self._include_completed_cb.isChecked()
+            messages: list[str] = []
+            for item in items:
+                text = item['text'].strip()
+                if not text:
+                    continue
+                if not include_checked and item['checked']:
+                    continue
+                # get_items() converts placeholders back to ![image](…) markers
+                text = self._resolve_note_images(text).strip()
+                if text:
+                    messages.append(text)
+            return messages
+        else:
+            text = self._editor.get_note_content().strip()
+            text = self._resolve_note_images(text).strip()
+            return [text] if text else []
+
+    def _on_save_as_preset(self) -> None:
+        """Save the current note's content as a named preset."""
+        messages = self._get_note_messages()
+        if not messages:
+            hint = (' (or all checklist items are checked)'
+                    if self._current_mode() == self._MODE_CHECKLIST else '')
+            QMessageBox.information(
+                self, 'Save as Preset',
+                f'Nothing to save \u2014 the note is empty{hint}.')
+            return
+
+        # Default name: leaf name of the note (without folder path)
+        default_name = self._current_name or ''
+        if '/' in default_name:
+            default_name = default_name.rsplit('/', 1)[-1]
+
+        from leap.monitor.pr_tracking.config import (
+            load_saved_presets, save_named_preset,
+        )
+
+        while True:
+            name, ok = QInputDialog.getText(
+                self, 'Save as Preset', 'Preset name:',
+                QLineEdit.Normal, default_name)
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+
+            if len(name) > 70:
+                QMessageBox.warning(
+                    self, 'Save as Preset',
+                    'Preset name must be 70 characters or fewer.')
+                default_name = name
+                continue
+
+            existing = load_saved_presets()
+            if name in existing:
+                reply = QMessageBox.question(
+                    self, 'Save as Preset',
+                    f'Preset \u201c{name}\u201d already exists. Overwrite?',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if reply != QMessageBox.Yes:
+                    default_name = name
+                    continue
+            break
+
+        save_named_preset(name, messages)
+        count = len(messages)
+        noun = 'message' if count == 1 else 'messages'
+        QMessageBox.information(
+            self, 'Save as Preset',
+            f'Saved preset \u201c{name}\u201d with {count} {noun}.')
+
+    def _on_run_in_session(self) -> None:
+        """Send the current note's content to a running Leap session."""
+        messages = self._get_note_messages()
+        if not messages:
+            hint = (' (or all checklist items are checked)'
+                    if self._current_mode() == self._MODE_CHECKLIST else '')
+            QMessageBox.information(
+                self, 'Run in Session',
+                f'Nothing to send \u2014 the note is empty{hint}.')
+            return
+
+        result = _SessionPickerDialog.pick_session(self)
+        if result is None:
+            return
+        tag, at_end = result
+
+        from leap.monitor.leap_sender import (
+            prepend_to_leap_queue, send_to_leap_session_raw,
+        )
+        if at_end:
+            results = [send_to_leap_session_raw(tag, msg) for msg in messages]
+            sent = sum(results)
+            total = len(results)
+        else:
+            ok = prepend_to_leap_queue(tag, messages)
+            total = len(messages)
+            sent = total if ok else 0
+
+        noun = 'message' if total == 1 else 'messages'
+        if sent == total:
+            QMessageBox.information(
+                self, 'Run in Session',
+                f'Sent {total} {noun} to \u201c{tag}\u201d.')
+        elif sent > 0:
+            QMessageBox.warning(
+                self, 'Run in Session',
+                f'Sent {sent} of {total} {noun} to \u201c{tag}\u201d. '
+                f'Some failed \u2014 the session may have stopped.')
+        else:
+            QMessageBox.warning(
+                self, 'Run in Session',
+                f'Failed to send to \u201c{tag}\u201d. '
+                f'Is the session still running?')
 
     # ── Persistence ─────────────────────────────────────────────────
 
