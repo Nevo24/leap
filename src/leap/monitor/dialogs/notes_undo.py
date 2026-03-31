@@ -681,11 +681,10 @@ class ModeSwitchCmd(UndoCommand):
         path.write_text(content, encoding='utf-8')
         if hasattr(ctx, 'saved_text'):
             ctx.saved_text = content
-        if hasattr(ctx, 'load_note_into_editor'):
-            ctx.load_note_into_editor(self._note_name, content, mode)
-        if hasattr(ctx, 'set_mode_combo'):
-            idx = 1 if mode == 'checklist' else 0
-            ctx.set_mode_combo(idx)
+        # Select the note in tree and load into editor — covers redo when
+        # the user may have navigated away.
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._note_name)
 
     def execute(self, ctx: object) -> None:
         self._apply(self._new_mode, self._new_content, ctx)
@@ -711,7 +710,11 @@ class NoteContentChangeCmd(UndoCommand):
         path.write_text(text, encoding='utf-8')
         if hasattr(ctx, 'saved_text'):
             ctx.saved_text = text
-        if hasattr(ctx, 'load_note_into_editor'):
+        # Use select_and_load to refresh tree + select the note (may differ
+        # from the currently-selected note if the user switched away).
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._note_name)
+        elif hasattr(ctx, 'load_note_into_editor'):
             ctx.load_note_into_editor(self._note_name, text, self._mode)
 
     def execute(self, ctx: object) -> None:

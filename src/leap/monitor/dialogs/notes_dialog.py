@@ -2873,7 +2873,7 @@ class NotesDialog(QDialog):
 
     def _save_current(self) -> None:
         """Write the current note to disk if changed."""
-        if not self._current_name:
+        if not self._current_name or self._undoing:
             return
         # Guard against reading from destroyed widgets during dialog teardown.
         # If a C++ widget was already deleted, bail out — do NOT write.
