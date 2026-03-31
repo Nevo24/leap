@@ -180,6 +180,20 @@ class NotesUndoStack:
             del self._commands[:excess]
             self._cursor -= excess
 
+    def drop_trailing_checklist_cmds(self, note_name: str) -> None:
+        """Remove trailing checklist commands for *note_name*.
+
+        Called before recording a NoteContentChangeCmd that subsumes
+        individual checklist mutations — prevents double-undo.
+        """
+        _CL_TYPES = (ChecklistToggleCmd, ChecklistAddItemCmd,
+                      ChecklistDeleteItemCmd, ChecklistReorderCmd)
+        while (self._cursor > 0
+               and isinstance(self._commands[self._cursor - 1], _CL_TYPES)
+               and self._commands[self._cursor - 1]._note_name == note_name):
+            self._cursor -= 1
+            self._commands.pop()
+
     def clear(self) -> None:
         """Discard all commands."""
         self._commands.clear()

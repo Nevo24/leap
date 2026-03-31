@@ -2153,6 +2153,10 @@ class NotesDialog(QDialog):
             except RuntimeError:
                 live_text = self._saved_text
             if live_text != self._saved_text:
+                # Drop any trailing checklist commands for this note —
+                # the content change captures their net effect.
+                self._undo_stack.drop_trailing_checklist_cmds(
+                    self._current_name)
                 mode = _get_note_mode(self._current_name)
                 cmd = NoteContentChangeCmd(
                     note_name=self._current_name,
