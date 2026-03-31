@@ -1176,3 +1176,95 @@ class TestEscapeDoesNotBlockAutoResume:
         t[0] = 5.0
         feed_with_hidden_cursor(tracker, 'Some output')
         assert tracker.get_state(pty_alive=True) == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Late Notification hook guard
+# ---------------------------------------------------------------------------
+
+class TestLateNotificationGuard:
+    """The Notification hook can arrive seconds after a permission dialog
+    appears — by then the cursor+silence heuristic has already moved
+    running→idle and the dialog may have been auto-accepted (bypass
+    permissions) or Claude may have finished.
+
+    The guard verifies dialog patterns are visible on the pyte screen
+    (or in the saved running snapshot) before accepting an idle→prompt
+    signal transition.
+    """
+
+    def test_stale_notification_rejected_no_dialog_on_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """Late Notification with no dialog on screen is rejected."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Claude finishes — cursor+silence fires running→idle
+        feed_screen_text(tracker, 'Task complete. Here are the results.')
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+        # Late Notification arrives — no dialog patterns on screen
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Signal file should be deleted to avoid repeated checks
+        assert not tracker._signal_file.exists()
+
+    def test_legitimate_notification_accepted_dialog_in_snapshot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Notification accepted when dialog patterns are in the saved
+        running snapshot (screen was reset but snapshot has the dialog)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Permission dialog appears — cursor+silence fires running→idle
+        # The snapshot saved on running→idle contains the dialog
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Snapshot should contain the dialog text
+        assert tracker._last_running_snapshot
+
+        # Late Notification arrives — dialog in snapshot
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_legitimate_notification_accepted_dialog_on_live_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """Notification accepted when dialog patterns are on the live
+        pyte screen (new output arrived after screen reset)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # cursor+silence fires with non-dialog content
+        feed_screen_text(tracker, 'Processing...')
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+        # New output renders the dialog on the live screen
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+
+        # Late Notification arrives — dialog on live screen
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'

@@ -865,6 +865,54 @@ class CLIStateTracker:
 
             # -- All other signal transitions --
             else:
+                # Late Notification guard: the Notification hook can
+                # take ~6s to arrive — by then the cursor+silence
+                # heuristic has already moved running→idle and the
+                # dialog may have been auto-accepted (bypass) or the
+                # CLI finished.  Verify the dialog is actually visible
+                # before transitioning idle→needs_permission.
+                # Only for needs_permission — elicitation dialogs
+                # (needs_input) may use a different UI that doesn't
+                # contain the provider's dialog_patterns.
+                if (
+                    current == CLIState.IDLE
+                    and new_state == CLIState.NEEDS_PERMISSION
+                    and self._provider.dialog_patterns
+                ):
+                    with self._screen_lock:
+                        screen_text = self._get_screen_text()
+                        compact = screen_text.replace(
+                            ' ', '',
+                        ).replace('\n', '')
+                        # If the screen was reset (empty), check the
+                        # snapshot saved when running→idle fired.
+                        if not compact.strip():
+                            if self._last_running_snapshot:
+                                fallback = '\n'.join(
+                                    self._last_running_snapshot,
+                                )
+                                compact = fallback.replace(
+                                    ' ', '',
+                                ).replace('\n', '')
+                    has_dialog = all(
+                        p.decode('utf-8', errors='replace') in compact
+                        for p in self._provider.dialog_patterns
+                    )
+                    if not has_dialog:
+                        _log.debug(
+                            'GET_STATE signal=%s from idle but no '
+                            'dialog patterns on screen — ignoring '
+                            'stale notification',
+                            new_state,
+                        )
+                        # Delete the stale signal so it doesn't block
+                        # future transitions on every poll cycle.
+                        try:
+                            self._signal_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        return current
+
                 if current == CLIState.INTERRUPTED:
                     self._suppress_stale_interrupt = True
                 _log.debug(
