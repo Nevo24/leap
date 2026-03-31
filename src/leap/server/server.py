@@ -1073,6 +1073,9 @@ class LeapServer:
             self._capture_stale_caret = False
         if cancel and self._capture_stale_cli_input:
             self._capture_stale_cli_input = False
+        # Clear pending caret so a single ^ after exit doesn't
+        # accidentally trigger capture mode.
+        self._pending_caret = False
         # Clear capture flag BEFORE the resize — the resize triggers
         # child output via SIGWINCH, and the output filter must not
         # swallow it.
@@ -1293,6 +1296,7 @@ class LeapServer:
                         # In capture mode: Escape cancels capture
                         self._capture_display()
                         self._queue_capture_buf.clear()
+                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
                         self._queue_capture_mode = False
                         self._capture_flush(cancel=True)
                         self._capture_reset_images()
