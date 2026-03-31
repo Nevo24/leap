@@ -1011,6 +1011,8 @@ class _ChecklistWidget(QWidget):
         self._dragging_index: int = -1
         self._pasted_images: set[str] = set()  # track images pasted in checklist
         self._image_counter: int = 0
+        self._undo_stack: Optional[object] = None
+        self._cmd_ctx: Optional[object] = None
         # Maps "[Image #N]" ↔ filename for display/storage conversion
         self._placeholder_to_file: dict[str, str] = {}
         self._file_to_placeholder: dict[str, str] = {}
@@ -1073,6 +1075,11 @@ class _ChecklistWidget(QWidget):
         imgs = self._pasted_images
         self._pasted_images = set()
         return imgs
+
+    def set_undo_stack(self, stack: object, ctx: object) -> None:
+        """Attach an undo stack so checklist mutations are recorded."""
+        self._undo_stack = stack
+        self._cmd_ctx = ctx
 
     def _register_image(self, filename: str) -> str:
         """Register a filename and return its [Image #N] placeholder."""
@@ -1339,6 +1346,9 @@ class _ChecklistWidget(QWidget):
 
     def _move_item(self, src: int, dst: int) -> None:
         """Move an item from src index to before dst index in self._items."""
+        if self._undo_stack is not None:
+            from leap.monitor.dialogs.notes_undo import ChecklistReorderCmd
+            self._undo_stack.record(ChecklistReorderCmd(src_index=src, dst_index=dst))
         item = self._items.pop(src)
         # Adjust dst if it was after the removed item
         if dst > src:
@@ -1352,9 +1362,13 @@ class _ChecklistWidget(QWidget):
     def _on_toggle(self, index: int, checked: bool) -> None:
         if index < 0 or index >= len(self._items):
             return
+        old_checked = self._items[index]['checked']
         self._items[index]['checked'] = checked
         self._rebuild()
         self.content_changed.emit()
+        if self._undo_stack is not None:
+            from leap.monitor.dialogs.notes_undo import ChecklistToggleCmd
+            self._undo_stack.record(ChecklistToggleCmd(item_index=index, old_checked=old_checked))
 
     def _on_text_edited(self, index: int, text: str) -> None:
         if index < 0 or index >= len(self._items):
@@ -1365,9 +1379,14 @@ class _ChecklistWidget(QWidget):
     def _on_delete(self, index: int) -> None:
         if index < 0 or index >= len(self._items):
             return
+        item = self._items[index]
         del self._items[index]
         self._rebuild()
         self.content_changed.emit()
+        if self._undo_stack is not None:
+            from leap.monitor.dialogs.notes_undo import ChecklistDeleteItemCmd
+            self._undo_stack.record(ChecklistDeleteItemCmd(
+                item_index=index, item_text=item['text'], item_checked=item['checked']))
 
     def _on_new_after(self, index: int) -> None:
         """Insert a new empty item after the given index."""
@@ -1884,6 +1903,7 @@ class NotesDialog(QDialog):
 
         self._checklist = _ChecklistWidget()
         self._checklist.content_changed.connect(self._on_checklist_changed)
+        self._checklist.set_undo_stack(self._undo_stack, self._cmd_ctx)
         self._stack.addWidget(self._checklist)
 
         right_layout.addWidget(self._stack, 1)
@@ -2103,6 +2123,23 @@ class NotesDialog(QDialog):
         previous: Optional[QTreeWidgetItem],
     ) -> None:
         """Save the previous note, then load the newly selected one."""
+        # Snapshot content change before switching
+        if self._current_name:
+            try:
+                if self._current_mode() == self._MODE_CHECKLIST:
+                    live_text = _serialize_checklist(self._checklist.get_items())
+                else:
+                    live_text = self._editor.get_note_content()
+            except RuntimeError:
+                live_text = self._saved_text
+            if live_text != self._saved_text:
+                from leap.monitor.dialogs.notes_undo import NoteContentChangeCmd
+                mode = _get_note_mode(self._current_name)
+                cmd = NoteContentChangeCmd(
+                    note_name=self._current_name,
+                    old_text=self._saved_text, new_text=live_text, mode=mode,
+                )
+                self._undo_stack.record(cmd)
         self._save_current()
         if current is None:
             self._current_name = None
@@ -2162,20 +2199,36 @@ class NotesDialog(QDialog):
         if self._switching_mode or not self._current_name:
             return
 
+        old_mode = 'text' if index == self._MODE_CHECKLIST else 'checklist'
+        new_mode = 'checklist' if index == self._MODE_CHECKLIST else 'text'
+
         if index == self._MODE_CHECKLIST:
-            text = self._editor.get_note_content()
+            old_content = self._editor.get_note_content()
             self._checklist._pasted_images |= self._editor.take_pasted_images()
-            items = _parse_checklist(text) if text.strip() else []
+            items = _parse_checklist(old_content) if old_content.strip() else []
+            new_content = _serialize_checklist(items)
+        else:
+            items = self._checklist.get_items()
+            self._editor._pasted_images |= self._checklist.take_pasted_images()
+            old_content = _serialize_checklist(self._checklist.get_items())
+            lines = [item['text'] for item in items if item['text']]
+            new_content = '\n'.join(lines)
+
+        from leap.monitor.dialogs.notes_undo import ModeSwitchCmd
+        cmd = ModeSwitchCmd(
+            note_name=self._current_name, old_mode=old_mode, new_mode=new_mode,
+            old_content=old_content, new_content=new_content,
+        )
+        self._undo_stack.record(cmd)
+
+        # Apply the mode switch
+        if index == self._MODE_CHECKLIST:
             self._checklist.set_items(items)
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
             _set_note_mode(self._current_name, 'checklist')
             self._save_current()
         else:
-            items = self._checklist.get_items()
-            self._editor._pasted_images |= self._checklist.take_pasted_images()
-            lines = [item['text'] for item in items if item['text']]
-            text = '\n'.join(lines)
-            self._editor.set_note_content(text)
+            self._editor.set_note_content(new_content)
             self._editor.setEnabled(True)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             _set_note_mode(self._current_name, 'text')

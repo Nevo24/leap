@@ -7,12 +7,17 @@ import pytest
 
 import leap.monitor.dialogs.notes_undo as nu
 from leap.monitor.dialogs.notes_undo import (
+    ChecklistDeleteItemCmd,
+    ChecklistReorderCmd,
+    ChecklistToggleCmd,
     CreateFolderCmd,
     CreateNoteCmd,
     DeleteFolderCmd,
     DeleteNoteCmd,
+    ModeSwitchCmd,
     MoveFolderCmd,
     MoveNoteCmd,
+    NoteContentChangeCmd,
     RenameFolderCmd,
     RenameNoteCmd,
     ReorderCmd,
@@ -441,3 +446,181 @@ class TestReorderCmd:
         cmd.undo(ctx)
         meta = json.loads(meta_file.read_text(encoding='utf-8'))
         assert meta['_order'][''] == ['A', 'B', 'C']
+
+
+# ---------------------------------------------------------------------------
+# _StubChecklistCtx for checklist command tests
+# ---------------------------------------------------------------------------
+
+class _StubChecklistCtx(_StubCtx):
+    def __init__(self) -> None:
+        super().__init__()
+        self._items: list[dict] = []
+
+    def get_checklist_items(self) -> list[dict]:
+        return [dict(d) for d in self._items]
+
+    def set_checklist_items(self, items: list[dict]) -> None:
+        self._items = [dict(d) for d in items]
+
+
+# ---------------------------------------------------------------------------
+# ModeSwitchCmd tests
+# ---------------------------------------------------------------------------
+
+class TestModeSwitchCmd:
+    def test_switch_to_checklist_and_undo(self, notes_dir: Path) -> None:
+        (notes_dir / 'Note.txt').write_text('hello world', encoding='utf-8')
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({'Note': {'mode': 'text'}}), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = ModeSwitchCmd(note_name='Note', old_mode='text', new_mode='checklist',
+                            old_content='hello world', new_content='- [ ] hello world')
+        cmd.execute(ctx)
+        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        assert meta['Note']['mode'] == 'checklist'
+        assert (notes_dir / 'Note.txt').read_text(encoding='utf-8') == '- [ ] hello world'
+        cmd.undo(ctx)
+        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        assert meta['Note']['mode'] == 'text'
+        assert (notes_dir / 'Note.txt').read_text(encoding='utf-8') == 'hello world'
+
+    def test_switch_to_text_and_undo(self, notes_dir: Path) -> None:
+        (notes_dir / 'CL.txt').write_text('- [x] done\n- [ ] todo', encoding='utf-8')
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({'CL': {'mode': 'checklist'}}), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = ModeSwitchCmd(note_name='CL', old_mode='checklist', new_mode='text',
+                            old_content='- [x] done\n- [ ] todo', new_content='done\ntodo')
+        cmd.execute(ctx)
+        assert (notes_dir / 'CL.txt').read_text(encoding='utf-8') == 'done\ntodo'
+        cmd.undo(ctx)
+        assert (notes_dir / 'CL.txt').read_text(encoding='utf-8') == '- [x] done\n- [ ] todo'
+
+
+# ---------------------------------------------------------------------------
+# NoteContentChangeCmd tests
+# ---------------------------------------------------------------------------
+
+class TestNoteContentChangeCmd:
+    def test_undo_restores_old_text(self, notes_dir: Path) -> None:
+        (notes_dir / 'A.txt').write_text('new text', encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = NoteContentChangeCmd(note_name='A', old_text='old text', new_text='new text', mode='text')
+        cmd.execute(ctx)
+        assert (notes_dir / 'A.txt').read_text(encoding='utf-8') == 'new text'
+        cmd.undo(ctx)
+        assert (notes_dir / 'A.txt').read_text(encoding='utf-8') == 'old text'
+
+    def test_redo_restores_new_text(self, notes_dir: Path) -> None:
+        (notes_dir / 'B.txt').write_text('old', encoding='utf-8')
+        ctx = _StubCtx()
+        stack = NotesUndoStack(limit=50)
+        stack.push(NoteContentChangeCmd(note_name='B', old_text='old', new_text='new', mode='text'), ctx=ctx)
+        stack.undo(ctx=ctx)
+        assert (notes_dir / 'B.txt').read_text(encoding='utf-8') == 'old'
+        stack.redo(ctx=ctx)
+        assert (notes_dir / 'B.txt').read_text(encoding='utf-8') == 'new'
+
+
+# ---------------------------------------------------------------------------
+# ChecklistToggleCmd tests
+# ---------------------------------------------------------------------------
+
+class TestChecklistToggleCmd:
+    def test_toggle_and_undo(self) -> None:
+        ctx = _StubChecklistCtx()
+        ctx._items = [{'text': 'a', 'checked': False}, {'text': 'b', 'checked': False}]
+        cmd = ChecklistToggleCmd(item_index=0, old_checked=False)
+        cmd.execute(ctx)
+        assert ctx._items[0]['checked'] is True
+        cmd.undo(ctx)
+        assert ctx._items[0]['checked'] is False
+
+
+# ---------------------------------------------------------------------------
+# ChecklistDeleteItemCmd tests
+# ---------------------------------------------------------------------------
+
+class TestChecklistDeleteItemCmd:
+    def test_delete_and_undo(self) -> None:
+        ctx = _StubChecklistCtx()
+        ctx._items = [{'text': 'a', 'checked': False}, {'text': 'b', 'checked': True}, {'text': 'c', 'checked': False}]
+        cmd = ChecklistDeleteItemCmd(item_index=1, item_text='b', item_checked=True)
+        cmd.execute(ctx)
+        assert len(ctx._items) == 2
+        assert ctx._items[0]['text'] == 'a'
+        assert ctx._items[1]['text'] == 'c'
+        cmd.undo(ctx)
+        assert len(ctx._items) == 3
+        assert ctx._items[1] == {'text': 'b', 'checked': True}
+
+
+# ---------------------------------------------------------------------------
+# ChecklistReorderCmd tests
+# ---------------------------------------------------------------------------
+
+class TestChecklistReorderCmd:
+    def test_reorder_and_undo(self) -> None:
+        ctx = _StubChecklistCtx()
+        ctx._items = [{'text': 'a', 'checked': False}, {'text': 'b', 'checked': False}, {'text': 'c', 'checked': False}]
+        cmd = ChecklistReorderCmd(src_index=2, dst_index=0)
+        cmd.execute(ctx)
+        assert [d['text'] for d in ctx._items] == ['c', 'a', 'b']
+        cmd.undo(ctx)
+        assert [d['text'] for d in ctx._items] == ['a', 'b', 'c']
+
+
+# ---------------------------------------------------------------------------
+# Deferred image cleanup tests
+# ---------------------------------------------------------------------------
+
+class TestDeferredImageCleanup:
+    def test_deferred_images_not_deleted_during_session(self, notes_dir: Path) -> None:
+        img_dir = notes_dir.parent / 'note_images'
+        (img_dir / 'aaa.png').write_bytes(b'image1')
+        (notes_dir / 'PicNote.txt').write_text('![image](aaa.png)', encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = DeleteNoteCmd(name='PicNote', content='![image](aaa.png)', metadata={},
+                            order_position=('', 0), image_refs={'aaa.png'})
+        cmd.execute(ctx)
+        assert (img_dir / 'aaa.png').exists()
+        assert 'aaa.png' in ctx.pending_image_deletes
+
+    def test_undo_removes_from_deferred(self, notes_dir: Path) -> None:
+        img_dir = notes_dir.parent / 'note_images'
+        (img_dir / 'bbb.png').write_bytes(b'image2')
+        (notes_dir / 'PicNote.txt').write_text('![image](bbb.png)', encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = DeleteNoteCmd(name='PicNote', content='![image](bbb.png)', metadata={},
+                            order_position=('', 0), image_refs={'bbb.png'})
+        cmd.execute(ctx)
+        cmd.undo(ctx)
+        assert 'bbb.png' not in ctx.pending_image_deletes
+        assert (img_dir / 'bbb.png').exists()
+
+    def test_image_shared_across_notes_survives_delete(self, notes_dir: Path) -> None:
+        img_dir = notes_dir.parent / 'note_images'
+        (img_dir / 'shared.png').write_bytes(b'shared')
+        (notes_dir / 'A.txt').write_text('![image](shared.png)', encoding='utf-8')
+        (notes_dir / 'B.txt').write_text('![image](shared.png)', encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = DeleteNoteCmd(name='A', content='![image](shared.png)', metadata={},
+                            order_position=('', 0), image_refs={'shared.png'})
+        cmd.execute(ctx)
+        assert (img_dir / 'shared.png').exists()
+
+
+# ---------------------------------------------------------------------------
+# record() method tests
+# ---------------------------------------------------------------------------
+
+class TestRecordMethod:
+    def test_record_does_not_execute(self) -> None:
+        log: list[str] = []
+        stack = NotesUndoStack(limit=50)
+        stack.record(_FakeCmd('a', log))
+        assert log == []
+        assert stack.can_undo()
+        stack.undo(ctx=None)
+        assert log == ['undo:a']

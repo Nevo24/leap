@@ -166,6 +166,20 @@ class NotesUndoStack:
     def can_redo(self) -> bool:
         return self._cursor < len(self._commands)
 
+    def record(self, cmd: UndoCommand) -> None:
+        """Record *cmd* on the stack without calling execute().
+
+        Use when the operation has already been performed and you only
+        need undo support.
+        """
+        del self._commands[self._cursor:]
+        self._commands.append(cmd)
+        self._cursor = len(self._commands)
+        if len(self._commands) > self._limit:
+            excess = len(self._commands) - self._limit
+            del self._commands[:excess]
+            self._cursor -= excess
+
     def clear(self) -> None:
         """Discard all commands."""
         self._commands.clear()
@@ -607,3 +621,137 @@ class ReorderCmd(UndoCommand):
         _save_order(order)
         if hasattr(ctx, 'refresh_tree'):
             ctx.refresh_tree()
+
+
+class ModeSwitchCmd(UndoCommand):
+    """Undo command for switching between text and checklist mode."""
+
+    def __init__(self, note_name: str, old_mode: str, new_mode: str,
+                 old_content: str, new_content: str) -> None:
+        super().__init__(description=f"Switch to {new_mode}")
+        self._note_name = note_name
+        self._old_mode = old_mode
+        self._new_mode = new_mode
+        self._old_content = old_content
+        self._new_content = new_content
+
+    def _apply(self, mode: str, content: str, ctx: object) -> None:
+        meta = _load_notes_meta()
+        meta.setdefault(self._note_name, {})['mode'] = mode
+        _save_notes_meta(meta)
+        path = _note_path(self._note_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8')
+        if hasattr(ctx, 'saved_text'):
+            ctx.saved_text = content
+        if hasattr(ctx, 'load_note_into_editor'):
+            ctx.load_note_into_editor(self._note_name, content, mode)
+        if hasattr(ctx, 'set_mode_combo'):
+            idx = 1 if mode == 'checklist' else 0
+            ctx.set_mode_combo(idx)
+
+    def execute(self, ctx: object) -> None:
+        self._apply(self._new_mode, self._new_content, ctx)
+
+    def undo(self, ctx: object) -> None:
+        self._apply(self._old_mode, self._old_content, ctx)
+
+
+class NoteContentChangeCmd(UndoCommand):
+    """Undo command for note content changes (pushed on note switch)."""
+
+    def __init__(self, note_name: str, old_text: str, new_text: str, mode: str) -> None:
+        leaf = note_name.rsplit('/', 1)[-1] if '/' in note_name else note_name
+        super().__init__(description=f"Edit '{leaf}'")
+        self._note_name = note_name
+        self._old_text = old_text
+        self._new_text = new_text
+        self._mode = mode
+
+    def _write(self, text: str, ctx: object) -> None:
+        path = _note_path(self._note_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+        if hasattr(ctx, 'saved_text'):
+            ctx.saved_text = text
+        if hasattr(ctx, 'load_note_into_editor'):
+            ctx.load_note_into_editor(self._note_name, text, self._mode)
+
+    def execute(self, ctx: object) -> None:
+        self._write(self._new_text, ctx)
+
+    def undo(self, ctx: object) -> None:
+        self._write(self._old_text, ctx)
+
+
+class ChecklistToggleCmd(UndoCommand):
+    """Undo command for toggling a checklist item's checked state."""
+
+    def __init__(self, item_index: int, old_checked: bool) -> None:
+        super().__init__(description='Toggle checklist item')
+        self._index = item_index
+        self._old_checked = old_checked
+
+    def execute(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            if 0 <= self._index < len(items):
+                items[self._index]['checked'] = not self._old_checked
+                ctx.set_checklist_items(items)
+
+    def undo(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            if 0 <= self._index < len(items):
+                items[self._index]['checked'] = self._old_checked
+                ctx.set_checklist_items(items)
+
+
+class ChecklistDeleteItemCmd(UndoCommand):
+    """Undo command for deleting a checklist item."""
+
+    def __init__(self, item_index: int, item_text: str, item_checked: bool) -> None:
+        super().__init__(description='Delete checklist item')
+        self._index = item_index
+        self._text = item_text
+        self._checked = item_checked
+
+    def execute(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            if 0 <= self._index < len(items):
+                del items[self._index]
+                ctx.set_checklist_items(items)
+
+    def undo(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            items.insert(self._index, {'text': self._text, 'checked': self._checked})
+            ctx.set_checklist_items(items)
+
+
+class ChecklistReorderCmd(UndoCommand):
+    """Undo command for reordering a checklist item."""
+
+    def __init__(self, src_index: int, dst_index: int) -> None:
+        super().__init__(description='Reorder checklist item')
+        self._src = src_index
+        self._dst = dst_index
+
+    def execute(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            if 0 <= self._src < len(items):
+                item = items.pop(self._src)
+                effective_dst = self._dst if self._dst <= self._src else self._dst - 1
+                items.insert(effective_dst, item)
+                ctx.set_checklist_items(items)
+
+    def undo(self, ctx: object) -> None:
+        effective_dst = self._dst if self._dst <= self._src else self._dst - 1
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            if 0 <= effective_dst < len(items):
+                item = items.pop(effective_dst)
+                items.insert(self._src, item)
+                ctx.set_checklist_items(items)
