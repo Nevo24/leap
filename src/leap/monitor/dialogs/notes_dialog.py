@@ -1757,6 +1757,7 @@ class NotesDialog(QDialog):
         self._undo_stack = NotesUndoStack(limit=50)
         self._cmd_ctx = NotesCmdContext(self)
         self._pending_image_deletes: set[str] = set()
+        self._undoing: bool = False
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -2126,8 +2127,9 @@ class NotesDialog(QDialog):
         previous: Optional[QTreeWidgetItem],
     ) -> None:
         """Save the previous note, then load the newly selected one."""
-        # Snapshot content change before switching
-        if self._current_name:
+        # Snapshot content change before switching (skip during undo/redo
+        # to avoid polluting the stack with spurious content commands).
+        if self._current_name and not self._undoing:
             try:
                 if self._current_mode() == self._MODE_CHECKLIST:
                     live_text = _serialize_checklist(self._checklist.get_items())
@@ -2974,14 +2976,29 @@ class NotesDialog(QDialog):
             event.accept()
             return
         mods = event.modifiers()
-        # Undo/redo — only when not inside a text-editing widget
+        # Undo/redo — delegate to Qt's built-in text undo if available,
+        # otherwise use our structural undo stack.
         if (mods & Qt.ControlModifier) and event.key() == Qt.Key_Z:
+            is_redo = bool(mods & Qt.ShiftModifier)
             focus = QApplication.focusWidget()
-            if not isinstance(focus, (_NoteTextEdit, _ItemLineEdit, QTextEdit)):
-                if mods & Qt.ShiftModifier:
-                    self._undo_stack.redo(self._cmd_ctx)
-                else:
-                    self._undo_stack.undo(self._cmd_ctx)
+            # Check if the focused text widget has its own undo/redo
+            use_qt_undo = False
+            if isinstance(focus, (_NoteTextEdit, QTextEdit)):
+                avail = (focus.document().isRedoAvailable() if is_redo
+                         else focus.document().isUndoAvailable())
+                use_qt_undo = avail
+            elif isinstance(focus, _ItemLineEdit):
+                avail = focus.isRedoAvailable() if is_redo else focus.isUndoAvailable()
+                use_qt_undo = avail
+            if not use_qt_undo:
+                self._undoing = True
+                try:
+                    if is_redo:
+                        self._undo_stack.redo(self._cmd_ctx)
+                    else:
+                        self._undo_stack.undo(self._cmd_ctx)
+                finally:
+                    self._undoing = False
                 return
         if mods & Qt.ControlModifier:
             if event.key() == Qt.Key_S:

@@ -265,6 +265,8 @@ class CreateNoteCmd(UndoCommand):
         path = _note_path(self._name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('', encoding='utf-8')
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._name)
 
     def undo(self, ctx: object) -> None:
         try:
@@ -276,6 +278,13 @@ class CreateNoteCmd(UndoCommand):
         meta = _load_notes_meta()
         if meta.pop(self._name, None) is not None:
             _save_notes_meta(meta)
+        # Clear stale state, refresh tree, select another note
+        if hasattr(ctx, 'current_name'):
+            ctx.current_name = None
+        if hasattr(ctx, 'saved_text'):
+            ctx.saved_text = ''
+        if hasattr(ctx, 'refresh_tree'):
+            ctx.refresh_tree()
         if hasattr(ctx, 'select_first_or_none'):
             ctx.select_first_or_none()
 
@@ -288,6 +297,8 @@ class CreateFolderCmd(UndoCommand):
 
     def execute(self, ctx: object) -> None:
         (NOTES_DIR / self._folder_path).mkdir(parents=True, exist_ok=True)
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._folder_path, select_type='folder')
 
     def undo(self, ctx: object) -> None:
         target = NOTES_DIR / self._folder_path
@@ -296,6 +307,8 @@ class CreateFolderCmd(UndoCommand):
         parent = self._folder_path.rsplit('/', 1)[0] if '/' in self._folder_path else ''
         leaf = self._folder_path.rsplit('/', 1)[-1] if '/' in self._folder_path else self._folder_path
         _remove_from_order(parent, leaf)
+        if hasattr(ctx, 'refresh_tree'):
+            ctx.refresh_tree()
         if hasattr(ctx, 'select_first_or_none'):
             ctx.select_first_or_none()
 
@@ -324,6 +337,14 @@ class DeleteNoteCmd(UndoCommand):
         _remove_from_order(self._order_folder, leaf)
         if hasattr(ctx, 'pending_image_deletes'):
             ctx.pending_image_deletes.update(self._image_refs)
+        # Clear stale state if we just deleted the active note
+        if hasattr(ctx, 'current_name') and ctx.current_name == self._name:
+            ctx.current_name = None
+            ctx.saved_text = ''
+        if hasattr(ctx, 'refresh_tree'):
+            ctx.refresh_tree()
+        if hasattr(ctx, 'select_first_or_none'):
+            ctx.select_first_or_none()
 
     def undo(self, ctx: object) -> None:
         path = _note_path(self._name)
@@ -379,6 +400,16 @@ class DeleteFolderCmd(UndoCommand):
             shutil.rmtree(target, ignore_errors=True)
         if hasattr(ctx, 'pending_image_deletes'):
             ctx.pending_image_deletes.update(self._image_refs)
+        # Clear stale state if active note was in the deleted folder
+        if hasattr(ctx, 'current_name') and ctx.current_name:
+            cn = ctx.current_name
+            if cn in self._notes or cn.startswith(self._folder_path + '/'):
+                ctx.current_name = None
+                ctx.saved_text = ''
+        if hasattr(ctx, 'refresh_tree'):
+            ctx.refresh_tree()
+        if hasattr(ctx, 'select_first_or_none'):
+            ctx.select_first_or_none()
 
     def undo(self, ctx: object) -> None:
         (NOTES_DIR / self._folder_path).mkdir(parents=True, exist_ok=True)
@@ -529,6 +560,8 @@ class MoveNoteCmd(UndoCommand):
         _remove_from_order(self._old_folder, leaf)
         if hasattr(ctx, 'current_name') and ctx.current_name == self._old_name:
             ctx.current_name = self._new_name
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._new_name)
 
     def undo(self, ctx: object) -> None:
         dest = _note_path(self._old_name)
@@ -595,6 +628,8 @@ class MoveFolderCmd(UndoCommand):
 
     def execute(self, ctx: object) -> None:
         self._do_move(self._old_path, self._new_path, self._old_parent, ctx)
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._new_path, select_type='folder')
     def undo(self, ctx: object) -> None:
         self._do_move(self._new_path, self._old_path, self._new_parent, ctx)
         leaf = self._old_path.rsplit('/', 1)[-1] if '/' in self._old_path else self._old_path
@@ -614,6 +649,8 @@ class ReorderCmd(UndoCommand):
         order = _load_order()
         order[self._folder] = list(self._new_order)
         _save_order(order)
+        if hasattr(ctx, 'refresh_tree'):
+            ctx.refresh_tree()
 
     def undo(self, ctx: object) -> None:
         order = _load_order()
