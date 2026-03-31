@@ -67,6 +67,12 @@ def detect_ide() -> str:
             return 'Cursor'
         return 'VS Code'
 
+    # Arduino IDE (Theia-based) sets neither TERM_PROGRAM nor
+    # TERMINAL_EMULATOR, but macOS provides __CFBundleIdentifier.
+    bundle_id = os.environ.get('__CFBundleIdentifier', '')
+    if 'arduino' in bundle_id.lower():
+        return 'Arduino IDE'
+
     return 'Unknown'
 
 

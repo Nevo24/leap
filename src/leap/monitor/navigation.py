@@ -250,6 +250,9 @@ def find_terminal_with_title(
         elif preferred_ide == 'Terminal.app':
             if _navigate_terminal_app(title_pattern):
                 return True
+        elif preferred_ide == 'Arduino IDE':
+            if _navigate_arduino(title_pattern):
+                return True
 
     # Preferred IDE failed or unknown — fall back through standalone terminals
     # (Warp last to avoid activating it unexpectedly)
@@ -424,6 +427,32 @@ def _navigate_terminal_app(title_pattern: str) -> bool:
     return false
     '''
 
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+    return False
+
+
+def _navigate_arduino(title_pattern: str) -> bool:
+    """Navigate to Arduino IDE.
+
+    Arduino IDE (Theia-based) has a single terminal, so just
+    activate the app window.
+    """
+    script = '''
+    tell application "Arduino IDE"
+        activate
+    end tell
+    return true
+    '''
     try:
         result = subprocess.run(
             ['osascript', '-e', script],
