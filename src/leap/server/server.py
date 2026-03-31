@@ -186,8 +186,8 @@ class LeapServer:
         # and swallow all subsequent input until Enter → queue.
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
-        self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
         self._capture_stale_caret: bool = False  # cross-chunk ^^ left a literal ^ in CLI
+        self._capture_stale_char_count: int = 0  # chars to backspace on flush
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
         self._capture_prev_lines: int = 0  # wrapped line count from last display
@@ -460,14 +460,6 @@ class LeapServer:
         Args:
             message: Message to send.
         """
-        # If ^^ capture left stale text in the CLI's input, clear it
-        # with Ctrl+C before sending.  At idle prompt, Ctrl+C just
-        # clears the input line without side effects.
-        if self._capture_stale_cli_input:
-            self._capture_stale_cli_input = False
-            self.pty.send('\x03')
-            time.sleep(0.2)
-
         self.state.on_send()
 
         is_img = self._provider.is_image_message(message) or self._has_image_ref(message)
@@ -1117,14 +1109,20 @@ class LeapServer:
 
     def _capture_flush(self, cancel: bool = False) -> None:
         """End capture mode: handle stale CLI input, force TUI redraw."""
-        # Always backspace the stale ^ from cross-chunk ^^ entry.
-        # This is purely cosmetic — _capture_stale_cli_input stays set
-        # so _send_to_cli still sends Ctrl+C to clear any pre-typed text.
+        # Backspace the stale ^ from cross-chunk ^^ entry.
         if self._capture_stale_caret:
             self.pty.send('\x7f')
             self._capture_stale_caret = False
-        if cancel and self._capture_stale_cli_input:
-            self._capture_stale_cli_input = False
+        # Immediately clear stale pre-typed text from the CLI's input
+        # line.  On cancel, leave it — the user wants to keep it.
+        # Send End key first to move cursor to the end of the line,
+        # then backspace the full character count.  This works
+        # regardless of where the cursor was when ^^ was typed.
+        if not cancel and self._capture_stale_char_count > 0:
+            self.pty.send('\x1b[F' + '\x7f' * self._capture_stale_char_count)
+            self._capture_stale_char_count = 0
+        elif cancel:
+            self._capture_stale_char_count = 0
         # Clear pending caret so a single ^ after exit doesn't
         # accidentally trigger capture mode.
         self._pending_caret = False
@@ -1271,8 +1269,10 @@ class LeapServer:
         self._terminal_input_buf.clear()
         self._queue_capture_mode = True
         self._capture_show_hint = True
-        self._capture_stale_cli_input = stale_cli_input
         self._capture_stale_caret = stale_caret
+        self._capture_stale_char_count = (
+            len(self._capture_text()) if stale_cli_input else 0
+        )
         self._pending_caret = False
         self._capture_prev_lines = 0
         self._saved_msg_index = -1
