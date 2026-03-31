@@ -101,7 +101,6 @@ class IndicatorPopup(QLabel):
             f'  background-color: {t.popup_bg};'
             f'  color: {t.text_primary};'
             f'  border: 1px solid {t.popup_border};'
-            f'  border-radius: {t.border_radius}px;'
             f'  padding: 8px 12px;'
             f'  font-size: {t.font_size_base}px;'
             '}'

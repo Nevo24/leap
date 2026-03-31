@@ -187,7 +187,6 @@ class ColorPickerPopup(QFrame):
             f'ColorPickerPopup {{'
             f'  background-color: {t.popup_bg};'
             f'  border: 1px solid {t.popup_border};'
-            f'  border-radius: {r}px;'
             f'}}'
         )
         layout = QVBoxLayout(self)

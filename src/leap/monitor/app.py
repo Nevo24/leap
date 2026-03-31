@@ -1309,7 +1309,6 @@ class MonitorWindow(
                 background-color: {t.popup_bg};
                 color: {t.text_primary};
                 border: 1px solid {t.popup_border};
-                border-radius: {r}px;
                 selection-background-color: {btn_hover};
                 selection-color: {t.text_primary};
                 padding: 4px;
@@ -1454,7 +1453,6 @@ class MonitorWindow(
                 background-color: {t.popup_bg};
                 color: {t.text_primary};
                 border: 1px solid {t.popup_border};
-                border-radius: {r + 2}px;
                 padding: 6px;
                 font-size: {t.font_size_base}px;
             }}
@@ -1480,7 +1478,6 @@ class MonitorWindow(
                 background-color: rgba({self._hex_rgb(t.popup_bg)}, 200);
                 color: {t.text_primary};
                 border: 1px solid {t.popup_border};
-                border-radius: {r - 2}px;
                 padding: 3px 6px;
                 font-size: {t.font_size_base}px;
             }}
