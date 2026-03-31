@@ -1020,8 +1020,6 @@ class _ChecklistWidget(QWidget):
         self._undo_stack: Optional['NotesUndoStack'] = None
         self._cmd_ctx: Optional['NotesCmdContext'] = None
         self._image_counter: int = 0
-        self._undo_stack: Optional[object] = None
-        self._cmd_ctx: Optional[object] = None
         # Maps "[Image #N]" ↔ filename for display/storage conversion
         self._placeholder_to_file: dict[str, str] = {}
         self._file_to_placeholder: dict[str, str] = {}
@@ -1085,7 +1083,8 @@ class _ChecklistWidget(QWidget):
         self._pasted_images = set()
         return imgs
 
-    def set_undo_stack(self, stack: object, ctx: object) -> None:
+    def set_undo_stack(self, stack: 'NotesUndoStack',
+                       ctx: 'NotesCmdContext') -> None:
         """Attach an undo stack so checklist mutations are recorded."""
         self._undo_stack = stack
         self._cmd_ctx = ctx
