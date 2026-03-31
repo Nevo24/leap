@@ -201,6 +201,11 @@ class LeapServer:
         self._saved_messages: list[str] = self._load_saved_messages()
         self._saved_msg_index: int = -1  # -1 = not browsing
         self._capture_show_saved_hint: bool = False  # "Saved!" hint active
+        # Bracketed paste detection — terminals wrap pasted text in
+        # ESC[200~ ... ESC[201~.  While inside a paste, ^^ is treated
+        # as literal text so pasted tracebacks (which contain ^^^^)
+        # don't accidentally trigger capture mode.
+        self._in_bracketed_paste: bool = False
         self._last_output_time: float = 0.0  # timestamp of last CLI output
 
         # Clean up old history files
@@ -896,6 +901,10 @@ class LeapServer:
                          (clear or '\r\x1b[K').encode())
                 self._capture_prev_lines = 0
             else:
+                # Replace newlines (from pasted multi-line text) with a
+                # visual marker for the single-line display.  The actual
+                # capture buffer retains real newlines for the queued msg.
+                text = text.replace('\n', '\u23ce')
                 q_size = self.queue.size
                 prefix = '[Leap Q] '
                 hint = (f' \x1b[2m({q_size} queued \u2022 Enter=queue'
@@ -1265,10 +1274,33 @@ class LeapServer:
 
         out = bytearray()
         i = 0
+        capture_dirty = False  # deferred display update for pastes
+
+        # Bracketed paste detection: ESC[200~ starts paste, ESC[201~ ends.
+        # While pasting, ^^ is treated as literal to prevent accidental
+        # capture-mode activation from pasted text containing "^^^^".
+        _BP_START = b'\x1b[200~'
+        _BP_END = b'\x1b[201~'
+        bp_start_pos = data.find(_BP_START)
+        bp_end_pos = data.find(_BP_END)
+        # chunk_has_paste is True if ANY pasted content exists in this
+        # chunk — used to suppress ^^ for the entire chunk.
+        chunk_has_paste = self._in_bracketed_paste or bp_start_pos >= 0
+        # Update cross-chunk state for subsequent calls.
+        if bp_end_pos >= 0:
+            self._in_bracketed_paste = False
+        elif bp_start_pos >= 0:
+            self._in_bracketed_paste = True
+        # Clear stale pending caret so a ^ typed before the paste
+        # doesn't combine with a ^ inside the paste.
+        if chunk_has_paste and self._pending_caret:
+            self._pending_caret = False
 
         # Check if the very first byte is "^" and _pending_caret is set
         # from the previous chunk → double-caret capture trigger.
+        # Skip if we're inside a bracketed paste.
         if (not self._queue_capture_mode
+                and not chunk_has_paste
                 and i < len(data)
                 and data[i] == 0x5e
                 and self._pending_caret):
@@ -1502,6 +1534,25 @@ class LeapServer:
                     self._capture_show_saved_hint = False
                     self._capture_display(self._capture_text())
                 if b in (0x0d, 0x0a):  # Enter (CR or LF — LF after subprocess)
+                    # Detect pasted newlines: bracketed paste markers
+                    # (chunk_has_paste) or fallback — a typed Enter is a
+                    # tiny chunk (1–2 bytes); pasted multi-line text
+                    # arrives as a large chunk.
+                    is_paste_newline = chunk_has_paste or len(data) > 4
+                    if is_paste_newline:
+                        # Insert literal newline so multi-line pastes stay
+                        # in the capture buffer as one message.  Terminals
+                        # send \r for pasted newlines; skip \n after \r to
+                        # avoid double newlines from \r\n pairs.
+                        if b == 0x0d:
+                            self._capture_insert('\n')
+                            capture_dirty = True
+                        elif b == 0x0a:
+                            if not (i > 0 and data[i - 1] == 0x0d):
+                                self._capture_insert('\n')
+                                capture_dirty = True
+                        i += 1
+                        continue
                     self._user_has_typed = True
                     self._capture_display()  # clear
                     msg = self._capture_text().strip()
@@ -1540,7 +1591,7 @@ class LeapServer:
                 elif b == 0x5e:  # "^" in capture mode
                     if self._capture_show_saved_hint:
                         self._capture_show_saved_hint = False
-                    if self._pending_caret:
+                    if self._pending_caret and not chunk_has_paste:
                         # Double "^" inside capture → save message
                         self._pending_caret = False
                         # Remove the first "^" that was inserted
@@ -1555,23 +1606,31 @@ class LeapServer:
                         # If save didn't fire (empty buffer), update display
                         # to clear the removed "^" from screen.
                         if not self._capture_show_saved_hint:
-                            self._capture_display(self._capture_text())
+                            if chunk_has_paste:
+                                capture_dirty = True
+                            else:
+                                self._capture_display(self._capture_text())
                     else:
                         # First "^" — insert it, wait for second
                         self._pending_caret = True
                         self._capture_show_hint = False
                         self._capture_insert('^')
-                        self._capture_display(self._capture_text())
+                        if chunk_has_paste:
+                            capture_dirty = True
+                        else:
+                            self._capture_display(self._capture_text())
                 elif 0x20 <= b < 0x7f:
                     # ASCII printable (non-caret)
                     if self._pending_caret:
                         self._pending_caret = False
                     if self._capture_show_saved_hint:
                         self._capture_show_saved_hint = False
-                        self._capture_display(self._capture_text())
                     self._capture_show_hint = False
                     self._capture_insert(chr(b))
-                    self._capture_display(self._capture_text())
+                    if chunk_has_paste:
+                        capture_dirty = True
+                    else:
+                        self._capture_display(self._capture_text())
                 elif b >= 0x80:
                     # Multi-byte UTF-8
                     if self._pending_caret:
@@ -1584,7 +1643,10 @@ class LeapServer:
                         self._capture_utf8_buf.clear()
                     except UnicodeDecodeError:
                         pass  # incomplete, wait for more bytes
-                    self._capture_display(self._capture_text())
+                    if chunk_has_paste:
+                        capture_dirty = True
+                    else:
+                        self._capture_display(self._capture_text())
                 else:
                     if self._pending_caret:
                         self._pending_caret = False
@@ -1596,8 +1658,10 @@ class LeapServer:
             # First "^" is held as literal.  If the next byte is also
             # "^", capture triggers.  Otherwise the first "^" stays
             # as a literal character.
+            # Skip trigger inside bracketed paste to prevent accidental
+            # activation from pasted text containing "^^".
             if b == 0x5e:
-                if self._pending_caret:
+                if self._pending_caret and not chunk_has_paste:
                     # Second "^" → capture (same chunk).
                     # Remove the first "^" from buffer and out.
                     if (self._terminal_input_buf
@@ -1670,6 +1734,11 @@ class LeapServer:
             else:
                 out.append(b)
             i += 1
+
+        # Deferred display update after paste in capture mode — one
+        # refresh instead of one per character.
+        if capture_dirty and self._queue_capture_mode:
+            self._capture_display(self._capture_text())
 
         # Track input for state detection using only the bytes that
         # actually reach the CLI.  Capture-mode keystrokes are excluded
