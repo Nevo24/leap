@@ -11,6 +11,11 @@ from leap.monitor.dialogs.notes_undo import (
     CreateNoteCmd,
     DeleteFolderCmd,
     DeleteNoteCmd,
+    MoveFolderCmd,
+    MoveNoteCmd,
+    RenameFolderCmd,
+    RenameNoteCmd,
+    ReorderCmd,
     NotesUndoStack,
     UndoCommand,
 )
@@ -334,3 +339,105 @@ class TestDeleteFolderCmd:
         assert 'img1.png' in ctx.pending_image_deletes
         cmd.undo(ctx)
         assert 'img1.png' not in ctx.pending_image_deletes
+
+
+# ---------------------------------------------------------------------------
+# RenameNoteCmd tests
+# ---------------------------------------------------------------------------
+
+class TestRenameNoteCmd:
+    def test_rename_and_undo(self, notes_dir: Path) -> None:
+        (notes_dir / 'Old.txt').write_text('content', encoding='utf-8')
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({'Old': {'mode': 'text'}, '_order': {'': ['Old']}}), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = RenameNoteCmd(old_name='Old', new_name='New', parent_folder='', old_leaf='Old', new_leaf='New')
+        cmd.execute(ctx)
+        assert not (notes_dir / 'Old.txt').exists()
+        assert (notes_dir / 'New.txt').exists()
+        cmd.undo(ctx)
+        assert (notes_dir / 'Old.txt').exists()
+        assert not (notes_dir / 'New.txt').exists()
+
+
+# ---------------------------------------------------------------------------
+# RenameFolderCmd tests
+# ---------------------------------------------------------------------------
+
+class TestRenameFolderCmd:
+    def test_rename_and_undo(self, notes_dir: Path) -> None:
+        (notes_dir / 'OldDir').mkdir()
+        (notes_dir / 'OldDir' / 'Note.txt').write_text('hi', encoding='utf-8')
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({
+            'OldDir/Note': {'mode': 'text'}, '_order': {'': ['OldDir'], 'OldDir': ['Note']},
+        }), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = RenameFolderCmd(old_path='OldDir', new_path='NewDir', parent_folder='', old_leaf='OldDir', new_leaf='NewDir')
+        cmd.execute(ctx)
+        assert not (notes_dir / 'OldDir').exists()
+        assert (notes_dir / 'NewDir').is_dir()
+        cmd.undo(ctx)
+        assert (notes_dir / 'OldDir').is_dir()
+        assert not (notes_dir / 'NewDir').exists()
+
+
+# ---------------------------------------------------------------------------
+# MoveNoteCmd tests
+# ---------------------------------------------------------------------------
+
+class TestMoveNoteCmd:
+    def test_move_and_undo(self, notes_dir: Path) -> None:
+        (notes_dir / 'Work').mkdir()
+        (notes_dir / 'Task.txt').write_text('hello', encoding='utf-8')
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({'Task': {'mode': 'text'}, '_order': {'': ['Task', 'Work']}}), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = MoveNoteCmd(old_name='Task', new_name='Work/Task', old_folder='', new_folder='Work', old_order_position=('', 0))
+        cmd.execute(ctx)
+        assert not (notes_dir / 'Task.txt').exists()
+        assert (notes_dir / 'Work' / 'Task.txt').exists()
+        cmd.undo(ctx)
+        assert (notes_dir / 'Task.txt').exists()
+        assert not (notes_dir / 'Work' / 'Task.txt').exists()
+
+
+# ---------------------------------------------------------------------------
+# MoveFolderCmd tests
+# ---------------------------------------------------------------------------
+
+class TestMoveFolderCmd:
+    def test_move_and_undo(self, notes_dir: Path) -> None:
+        (notes_dir / 'A').mkdir()
+        (notes_dir / 'B').mkdir()
+        (notes_dir / 'A' / 'Note.txt').write_text('x', encoding='utf-8')
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({
+            'A/Note': {'mode': 'text'}, '_order': {'': ['A', 'B'], 'A': ['Note']},
+        }), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = MoveFolderCmd(old_path='A', new_path='B/A', old_parent='', new_parent='B', old_order_position=('', 0))
+        cmd.execute(ctx)
+        assert not (notes_dir / 'A').exists()
+        assert (notes_dir / 'B' / 'A').is_dir()
+        cmd.undo(ctx)
+        assert (notes_dir / 'A').is_dir()
+        assert not (notes_dir / 'B' / 'A').exists()
+
+
+# ---------------------------------------------------------------------------
+# ReorderCmd tests
+# ---------------------------------------------------------------------------
+
+class TestReorderCmd:
+    def test_reorder_and_undo(self, notes_dir: Path) -> None:
+        meta_file = notes_dir / '.notes_meta.json'
+        meta_file.write_text(json.dumps({'_order': {'': ['A', 'B', 'C']}}), encoding='utf-8')
+        ctx = _StubCtx()
+        cmd = ReorderCmd(folder='', old_order=['A', 'B', 'C'], new_order=['C', 'A', 'B'])
+        cmd.execute(ctx)
+        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        assert meta['_order'][''] == ['C', 'A', 'B']
+        cmd.undo(ctx)
+        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        assert meta['_order'][''] == ['A', 'B', 'C']

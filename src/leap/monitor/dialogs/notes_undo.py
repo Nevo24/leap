@@ -390,3 +390,220 @@ class DeleteFolderCmd(UndoCommand):
             ctx.pending_image_deletes -= self._image_refs
         if hasattr(ctx, 'select_and_load'):
             ctx.select_and_load(name=self._folder_path, select_type='folder')
+
+
+class BatchDeleteCmd(UndoCommand):
+    """Wraps multiple delete commands into a single undo action."""
+    def __init__(self, commands: list[UndoCommand], description: str) -> None:
+        super().__init__(description=description)
+        self._commands = commands
+    def execute(self, ctx: object) -> None:
+        for cmd in self._commands:
+            cmd.execute(ctx)
+    def undo(self, ctx: object) -> None:
+        for cmd in reversed(self._commands):
+            cmd.undo(ctx)
+
+
+class RenameNoteCmd(UndoCommand):
+    def __init__(self, old_name: str, new_name: str, parent_folder: str,
+                 old_leaf: str, new_leaf: str) -> None:
+        super().__init__(description=f"Rename note '{old_leaf}' to '{new_leaf}'")
+        self._old_name = old_name
+        self._new_name = new_name
+        self._parent_folder = parent_folder
+        self._old_leaf = old_leaf
+        self._new_leaf = new_leaf
+
+    def _do_rename(self, from_name: str, to_name: str, from_leaf: str, to_leaf: str, ctx: object) -> None:
+        try:
+            _note_path(from_name).rename(_note_path(to_name))
+        except OSError:
+            return
+        meta = _load_notes_meta()
+        if from_name in meta:
+            meta[to_name] = meta.pop(from_name)
+            _save_notes_meta(meta)
+        order = _load_order()
+        lst = order.get(self._parent_folder, [])
+        if from_leaf in lst:
+            lst[lst.index(from_leaf)] = to_leaf
+            order[self._parent_folder] = lst
+            _save_order(order)
+        if hasattr(ctx, 'current_name') and ctx.current_name == from_name:
+            ctx.current_name = to_name
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=to_name)
+
+    def execute(self, ctx: object) -> None:
+        self._do_rename(self._old_name, self._new_name, self._old_leaf, self._new_leaf, ctx)
+    def undo(self, ctx: object) -> None:
+        self._do_rename(self._new_name, self._old_name, self._new_leaf, self._old_leaf, ctx)
+
+
+class RenameFolderCmd(UndoCommand):
+    def __init__(self, old_path: str, new_path: str, parent_folder: str,
+                 old_leaf: str, new_leaf: str) -> None:
+        super().__init__(description=f"Rename folder '{old_leaf}' to '{new_leaf}'")
+        self._old_path = old_path
+        self._new_path = new_path
+        self._parent_folder = parent_folder
+        self._old_leaf = old_leaf
+        self._new_leaf = new_leaf
+
+    def _do_rename(self, from_path: str, to_path: str, from_leaf: str, to_leaf: str, ctx: object) -> None:
+        try:
+            (NOTES_DIR / from_path).rename(NOTES_DIR / to_path)
+        except OSError:
+            return
+        meta = _load_notes_meta()
+        updated: dict = {}
+        for key, value in meta.items():
+            if key == '_order':
+                updated[key] = value
+                continue
+            if key.startswith(from_path + '/') or key == from_path:
+                updated[to_path + key[len(from_path):]] = value
+            else:
+                updated[key] = value
+        _save_notes_meta(updated)
+        order = _load_order()
+        lst = order.get(self._parent_folder, [])
+        if from_leaf in lst:
+            lst[lst.index(from_leaf)] = to_leaf
+            order[self._parent_folder] = lst
+        for old_k in [k for k in order if k == from_path or k.startswith(from_path + '/')]:
+            order[to_path + old_k[len(from_path):]] = order.pop(old_k)
+        _save_order(order)
+        if hasattr(ctx, 'current_name') and ctx.current_name:
+            cn = ctx.current_name
+            if cn.startswith(from_path + '/'):
+                ctx.current_name = to_path + cn[len(from_path):]
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=to_path, select_type='folder')
+
+    def execute(self, ctx: object) -> None:
+        self._do_rename(self._old_path, self._new_path, self._old_leaf, self._new_leaf, ctx)
+    def undo(self, ctx: object) -> None:
+        self._do_rename(self._new_path, self._old_path, self._new_leaf, self._old_leaf, ctx)
+
+
+class MoveNoteCmd(UndoCommand):
+    def __init__(self, old_name: str, new_name: str, old_folder: str, new_folder: str,
+                 old_order_position: tuple[str, int]) -> None:
+        leaf = old_name.rsplit('/', 1)[-1] if '/' in old_name else old_name
+        super().__init__(description=f"Move note '{leaf}'")
+        self._old_name = old_name
+        self._new_name = new_name
+        self._old_folder = old_folder
+        self._new_folder = new_folder
+        self._old_order_folder = old_order_position[0]
+        self._old_order_index = old_order_position[1]
+
+    def execute(self, ctx: object) -> None:
+        dest = _note_path(self._new_name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _note_path(self._old_name).rename(dest)
+        except OSError:
+            return
+        meta = _load_notes_meta()
+        if self._old_name in meta:
+            meta[self._new_name] = meta.pop(self._old_name)
+            _save_notes_meta(meta)
+        leaf = self._old_name.rsplit('/', 1)[-1] if '/' in self._old_name else self._old_name
+        _remove_from_order(self._old_folder, leaf)
+        if hasattr(ctx, 'current_name') and ctx.current_name == self._old_name:
+            ctx.current_name = self._new_name
+
+    def undo(self, ctx: object) -> None:
+        dest = _note_path(self._old_name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            _note_path(self._new_name).rename(dest)
+        except OSError:
+            return
+        meta = _load_notes_meta()
+        if self._new_name in meta:
+            meta[self._old_name] = meta.pop(self._new_name)
+            _save_notes_meta(meta)
+        leaf = self._new_name.rsplit('/', 1)[-1] if '/' in self._new_name else self._new_name
+        _remove_from_order(self._new_folder, leaf)
+        old_leaf = self._old_name.rsplit('/', 1)[-1] if '/' in self._old_name else self._old_name
+        _insert_into_order(self._old_order_folder, old_leaf, self._old_order_index)
+        if hasattr(ctx, 'current_name') and ctx.current_name == self._new_name:
+            ctx.current_name = self._old_name
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._old_name)
+
+
+class MoveFolderCmd(UndoCommand):
+    def __init__(self, old_path: str, new_path: str, old_parent: str, new_parent: str,
+                 old_order_position: tuple[str, int]) -> None:
+        leaf = old_path.rsplit('/', 1)[-1] if '/' in old_path else old_path
+        super().__init__(description=f"Move folder '{leaf}'")
+        self._old_path = old_path
+        self._new_path = new_path
+        self._old_parent = old_parent
+        self._new_parent = new_parent
+        self._old_order_folder = old_order_position[0]
+        self._old_order_index = old_order_position[1]
+
+    def _do_move(self, from_path: str, to_path: str, from_parent: str, ctx: object) -> None:
+        src = NOTES_DIR / from_path
+        dest = NOTES_DIR / to_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            src.rename(dest)
+        except OSError:
+            return
+        meta = _load_notes_meta()
+        updated: dict = {}
+        for key, value in meta.items():
+            if key == '_order':
+                updated[key] = value
+                continue
+            if key.startswith(from_path + '/') or key == from_path:
+                updated[to_path + key[len(from_path):]] = value
+            else:
+                updated[key] = value
+        _save_notes_meta(updated)
+        leaf = from_path.rsplit('/', 1)[-1] if '/' in from_path else from_path
+        _remove_from_order(from_parent, leaf)
+        order = _load_order()
+        for old_k in [k for k in order if k == from_path or k.startswith(from_path + '/')]:
+            order[to_path + old_k[len(from_path):]] = order.pop(old_k)
+        _save_order(order)
+        if hasattr(ctx, 'current_name') and ctx.current_name:
+            cn = ctx.current_name
+            if cn.startswith(from_path + '/'):
+                ctx.current_name = to_path + cn[len(from_path):]
+
+    def execute(self, ctx: object) -> None:
+        self._do_move(self._old_path, self._new_path, self._old_parent, ctx)
+    def undo(self, ctx: object) -> None:
+        self._do_move(self._new_path, self._old_path, self._new_parent, ctx)
+        leaf = self._old_path.rsplit('/', 1)[-1] if '/' in self._old_path else self._old_path
+        _insert_into_order(self._old_order_folder, leaf, self._old_order_index)
+        if hasattr(ctx, 'select_and_load'):
+            ctx.select_and_load(name=self._old_path, select_type='folder')
+
+
+class ReorderCmd(UndoCommand):
+    def __init__(self, folder: str, old_order: list[str], new_order: list[str]) -> None:
+        super().__init__(description=f"Reorder in '{folder or 'root'}'")
+        self._folder = folder
+        self._old_order = old_order
+        self._new_order = new_order
+
+    def execute(self, ctx: object) -> None:
+        order = _load_order()
+        order[self._folder] = list(self._new_order)
+        _save_order(order)
+
+    def undo(self, ctx: object) -> None:
+        order = _load_order()
+        order[self._folder] = list(self._old_order)
+        _save_order(order)
+        if hasattr(ctx, 'refresh_tree'):
+            ctx.refresh_tree()

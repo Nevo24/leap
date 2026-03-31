@@ -2240,17 +2240,12 @@ class NotesDialog(QDialog):
 
         self._save_current()
         src_folder = note_name.rsplit('/', 1)[0] if '/' in note_name else ''
-        try:
-            dest = _note_path(new_name)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            _note_path(note_name).rename(dest)
-        except OSError:
-            QMessageBox.warning(self, 'Error', 'Could not move the note.')
-            return False
-        _rename_note_meta(note_name, new_name)
-        _remove_from_order(src_folder, leaf)
-        if self._current_name == note_name:
-            self._current_name = new_name
+        order = _load_order().get(src_folder, [])
+        pos = order.index(leaf) if leaf in order else len(order)
+        from leap.monitor.dialogs.notes_undo import MoveNoteCmd
+        cmd = MoveNoteCmd(old_name=note_name, new_name=new_name, old_folder=src_folder,
+                          new_folder=target_folder, old_order_position=(src_folder, pos))
+        self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=new_name)
         self._on_item_changed(self._tree.currentItem(), None)
         return True
@@ -2274,20 +2269,14 @@ class NotesDialog(QDialog):
 
         self._save_current()
         src_parent = folder_path.rsplit('/', 1)[0] if '/' in folder_path else ''
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            (NOTES_DIR / folder_path).rename(dest)
-        except OSError:
-            QMessageBox.warning(self, 'Error', 'Could not move the folder.')
-            return False
-        _rename_folder_meta(folder_path, new_path)
-        _remove_from_order(src_parent, leaf)
-        _rename_order_keys(folder_path, new_path)
-        # Update current_name if it was under the moved folder
-        if (self._current_name
-                and self._current_name.startswith(folder_path + '/')):
-            self._current_name = (
-                new_path + self._current_name[len(folder_path):])
+        order = _load_order().get(src_parent, [])
+        pos = order.index(leaf) if leaf in order else len(order)
+        from leap.monitor.dialogs.notes_undo import MoveFolderCmd
+        cmd = MoveFolderCmd(old_path=folder_path, new_path=new_path, old_parent=src_parent,
+                            new_parent=target_folder, old_order_position=(src_parent, pos))
+        self._undo_stack.push(cmd, self._cmd_ctx)
+        if self._current_name and self._current_name.startswith(folder_path + '/'):
+            self._current_name = new_path + self._current_name[len(folder_path):]
         self._refresh_tree(select_name=new_path, select_type='folder')
         return True
 
@@ -2350,7 +2339,8 @@ class NotesDialog(QDialog):
         before_leaf = (before_path.rsplit('/', 1)[-1]
                        if before_path else '')
 
-        order = self._effective_order(folder)
+        old_order = list(self._effective_order(folder))
+        order = list(old_order)
         if src_leaf not in order:
             return
         order.remove(src_leaf)
@@ -2358,10 +2348,12 @@ class NotesDialog(QDialog):
             order.insert(order.index(before_leaf), src_leaf)
         else:
             order.append(src_leaf)
+        if order == old_order:
+            return
 
-        all_order = _load_order()
-        all_order[folder] = order
-        _save_order(all_order)
+        from leap.monitor.dialogs.notes_undo import ReorderCmd
+        cmd = ReorderCmd(folder=folder, old_order=old_order, new_order=order)
+        self._undo_stack.push(cmd, self._cmd_ctx)
 
         select_type = 'folder' if src_type == 'folder' else 'note'
         self._refresh_tree(select_name=src_path, select_type=select_type)
@@ -2414,9 +2406,9 @@ class NotesDialog(QDialog):
             break
 
         self._save_current()
-        path = _note_path(full_name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('', encoding='utf-8')
+        from leap.monitor.dialogs.notes_undo import CreateNoteCmd
+        cmd = CreateNoteCmd(name=full_name, folder=folder)
+        self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=full_name)
         self._on_item_changed(self._tree.currentItem(), None)
         if self._current_mode() == self._MODE_TEXT:
@@ -2451,11 +2443,9 @@ class NotesDialog(QDialog):
                 continue
             break
 
-        try:
-            (NOTES_DIR / full_path).mkdir(parents=True, exist_ok=True)
-        except OSError:
-            QMessageBox.warning(self, 'Error', 'Could not create folder.')
-            return
+        from leap.monitor.dialogs.notes_undo import CreateFolderCmd
+        cmd = CreateFolderCmd(folder_path=full_path)
+        self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=full_path, select_type='folder')
 
     def _on_rename(self) -> None:
@@ -2515,36 +2505,17 @@ class NotesDialog(QDialog):
 
         if item_type == 'note':
             self._save_current()
-            try:
-                _note_path(old_path).rename(_note_path(new_full))
-            except OSError:
-                QMessageBox.warning(
-                    self, 'Error', 'Could not rename the note.')
-                return
-            _rename_note_meta(old_path, new_full)
-            _rename_in_order(parent_folder, old_display, new_name)
-            if self._current_name == old_path:
-                self._current_name = new_full
+            from leap.monitor.dialogs.notes_undo import RenameNoteCmd
+            cmd = RenameNoteCmd(old_name=old_path, new_name=new_full, parent_folder=parent_folder,
+                                old_leaf=old_display, new_leaf=new_name)
+            self._undo_stack.push(cmd, self._cmd_ctx)
             self._refresh_tree(select_name=new_full)
             self._on_item_changed(self._tree.currentItem(), None)
         else:
-            # Rename folder directory
-            old_dir = NOTES_DIR / old_path
-            new_dir = NOTES_DIR / new_full
-            try:
-                old_dir.rename(new_dir)
-            except OSError:
-                QMessageBox.warning(
-                    self, 'Error', 'Could not rename the folder.')
-                return
-            _rename_folder_meta(old_path, new_full)
-            _rename_in_order(parent_folder, old_display, new_name)
-            _rename_order_keys(old_path, new_full)
-            # Update current_name if it was under the renamed folder
-            if (self._current_name
-                    and self._current_name.startswith(old_path + '/')):
-                self._current_name = (
-                    new_full + self._current_name[len(old_path):])
+            from leap.monitor.dialogs.notes_undo import RenameFolderCmd
+            cmd = RenameFolderCmd(old_path=old_path, new_path=new_full, parent_folder=parent_folder,
+                                  old_leaf=old_display, new_leaf=new_name)
+            self._undo_stack.push(cmd, self._cmd_ctx)
             self._refresh_tree(select_name=new_full, select_type='folder')
 
     def _on_delete(self) -> None:
@@ -2589,95 +2560,98 @@ class NotesDialog(QDialog):
         if reply != QMessageBox.Yes:
             return
 
-        # Collect all note names to delete (including those inside folders)
-        all_notes: set[str] = set(note_names)
+        self._save_current()
+
+        from leap.monitor.dialogs.notes_undo import (
+            BatchDeleteCmd, DeleteFolderCmd, DeleteNoteCmd,
+        )
+
+        # Build undo commands for each item
+        commands: list = []
+        meta = _load_notes_meta()
+        order = _load_order()
+
+        # Folder commands
         for fp in folder_paths:
+            # Snapshot all notes inside this folder
+            folder_notes: dict[str, str] = {}
+            folder_meta: dict[str, dict] = {}
+            folder_image_refs: set[str] = set()
             prefix = fp + '/'
             for n in _list_notes():
-                if n.startswith(prefix):
-                    all_notes.add(n)
-
-        # Collect image refs from notes being deleted
-        all_refs: set[str] = set()
-        if self._current_name and self._current_name in all_notes:
-            if self._current_mode() == self._MODE_CHECKLIST:
-                live_text = _serialize_checklist(self._checklist.get_items())
-            else:
-                live_text = self._editor.get_note_content()
-            all_refs |= (self._editor.take_pasted_images()
-                         | self._checklist.take_pasted_images())
-            all_refs |= _collect_image_refs(live_text)
-
-        for name in all_notes:
-            path = _note_path(name)
-            try:
-                if path.exists():
-                    all_refs |= _collect_image_refs(
-                        path.read_text(encoding='utf-8'))
-            except OSError:
-                pass
-
-        # Find images still referenced by surviving notes
-        surviving_refs: set[str] = set()
-        for n in _list_notes():
-            if n not in all_notes:
-                try:
-                    surviving_refs |= _collect_image_refs(
-                        _note_path(n).read_text(encoding='utf-8'))
-                except OSError:
-                    pass
-
-        # Delete orphaned images
-        for filename in all_refs - surviving_refs:
-            try:
-                (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        # Delete note files and metadata
-        for name in all_notes:
-            try:
-                _note_path(name).unlink(missing_ok=True)
-            except OSError:
-                pass
-            _remove_note_meta(name)
-
-        # Delete folders
-        for fp in sorted(folder_paths, reverse=True):
-            _delete_folder_meta(fp)
-            shutil.rmtree(NOTES_DIR / fp, ignore_errors=True)
-
-        # Clean up _order entries for all deleted items
-        all_order = _load_order()
-        order_changed = False
-        for name in all_notes:
-            parent = name.rsplit('/', 1)[0] if '/' in name else ''
-            leaf = name.rsplit('/', 1)[-1] if '/' in name else name
-            lst = all_order.get(parent, [])
-            if leaf in lst:
-                lst.remove(leaf)
-                if lst:
-                    all_order[parent] = lst
-                else:
-                    all_order.pop(parent, None)
-                order_changed = True
-        for fp in folder_paths:
+                if n.startswith(prefix) or n == fp:
+                    # Get content: use live editor if this is the current note
+                    if self._current_name and self._current_name == n:
+                        if self._current_mode() == self._MODE_CHECKLIST:
+                            content = _serialize_checklist(self._checklist.get_items())
+                        else:
+                            content = self._editor.get_note_content()
+                        folder_image_refs |= (self._editor.take_pasted_images()
+                                              | self._checklist.take_pasted_images())
+                    else:
+                        try:
+                            content = _note_path(n).read_text(encoding='utf-8')
+                        except OSError:
+                            content = ''
+                    folder_notes[n] = content
+                    folder_image_refs |= _collect_image_refs(content)
+                    if n in meta:
+                        folder_meta[n] = dict(meta[n])
+            # Snapshot order entries for this folder and subfolders
+            folder_order: dict[str, list[str]] = {}
+            for k, v in order.items():
+                if k == fp or k.startswith(prefix):
+                    folder_order[k] = list(v)
+            # Snapshot subfolder paths
+            subfolder_paths = [f for f in _list_folders()
+                               if f.startswith(prefix)]
+            # Parent order position
             parent = fp.rsplit('/', 1)[0] if '/' in fp else ''
             leaf = fp.rsplit('/', 1)[-1] if '/' in fp else fp
-            lst = all_order.get(parent, [])
-            if leaf in lst:
-                lst.remove(leaf)
-                if lst:
-                    all_order[parent] = lst
+            parent_lst = order.get(parent, [])
+            pos = parent_lst.index(leaf) if leaf in parent_lst else len(parent_lst)
+            commands.append(DeleteFolderCmd(
+                folder_path=fp, notes=folder_notes,
+                metadata_entries=folder_meta, order_entries=folder_order,
+                subfolder_paths=subfolder_paths,
+                parent_order_position=(parent, pos),
+                image_refs=folder_image_refs))
+
+        # Note commands (standalone, not inside any deleted folder)
+        deleted_folder_prefixes = [fp + '/' for fp in folder_paths]
+        for name in note_names:
+            if any(name.startswith(pfx) for pfx in deleted_folder_prefixes):
+                continue  # already handled by a folder command
+            # Get content
+            if self._current_name and self._current_name == name:
+                if self._current_mode() == self._MODE_CHECKLIST:
+                    content = _serialize_checklist(self._checklist.get_items())
                 else:
-                    all_order.pop(parent, None)
-                order_changed = True
-            for k in [k for k in all_order
-                      if k == fp or k.startswith(fp + '/')]:
-                del all_order[k]
-                order_changed = True
-        if order_changed:
-            _save_order(all_order)
+                    content = self._editor.get_note_content()
+                image_refs = (self._editor.take_pasted_images()
+                              | self._checklist.take_pasted_images())
+                image_refs |= _collect_image_refs(content)
+            else:
+                try:
+                    content = _note_path(name).read_text(encoding='utf-8')
+                except OSError:
+                    content = ''
+                image_refs = _collect_image_refs(content)
+            note_meta = dict(meta[name]) if name in meta else {}
+            parent = name.rsplit('/', 1)[0] if '/' in name else ''
+            leaf = name.rsplit('/', 1)[-1] if '/' in name else name
+            parent_lst = order.get(parent, [])
+            pos = parent_lst.index(leaf) if leaf in parent_lst else len(parent_lst)
+            commands.append(DeleteNoteCmd(
+                name=name, content=content, metadata=note_meta,
+                order_position=(parent, pos), image_refs=image_refs))
+
+        # Push as batch or single command
+        if len(commands) == 1:
+            self._undo_stack.push(commands[0], self._cmd_ctx)
+        elif commands:
+            batch = BatchDeleteCmd(commands, f'Delete {" and ".join(parts)}')
+            self._undo_stack.push(batch, self._cmd_ctx)
 
         self._current_name = None
         self._saved_text = ''
