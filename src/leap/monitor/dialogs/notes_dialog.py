@@ -2624,7 +2624,7 @@ class NotesDialog(QDialog):
             folder_image_refs: set[str] = set()
             prefix = fp + '/'
             for n in _list_notes():
-                if n.startswith(prefix) or n == fp:
+                if n.startswith(prefix):
                     # Get content: use live editor if this is the current note
                     if self._current_name and self._current_name == n:
                         if self._current_mode() == self._MODE_CHECKLIST:
@@ -2986,7 +2986,7 @@ class NotesDialog(QDialog):
                 avail = (focus.document().isRedoAvailable() if is_redo
                          else focus.document().isUndoAvailable())
                 use_qt_undo = avail
-            elif isinstance(focus, _ItemLineEdit):
+            elif isinstance(focus, QLineEdit):
                 avail = focus.isRedoAvailable() if is_redo else focus.isUndoAvailable()
                 use_qt_undo = avail
             if not use_qt_undo:
