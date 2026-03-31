@@ -47,6 +47,10 @@ class NotesCmdContext:
     def pending_image_deletes(self) -> set:
         return self._d._pending_image_deletes
 
+    @pending_image_deletes.setter
+    def pending_image_deletes(self, value: set) -> None:
+        self._d._pending_image_deletes = value
+
     def refresh_tree(self, select_name: Optional[str] = None,
                      select_type: Optional[str] = None) -> None:
         kwargs: dict = {}

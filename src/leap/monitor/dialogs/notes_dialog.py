@@ -1924,7 +1924,8 @@ class NotesDialog(QDialog):
         bottom_row = QHBoxLayout()
         hint = QLabel(
             'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
-            '  |  Cmd+Z: Undo  |  Delete/\u232b: Delete  |  Right-click: More')
+            '  |  Cmd+Z: Undo  |  Cmd+Shift+Z: Redo'
+            '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
             f'color: {current_theme().text_muted};'
             f' font-size: {current_theme().font_size_small}px;')
