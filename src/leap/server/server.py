@@ -201,6 +201,7 @@ class LeapServer:
         self._saved_messages: list[str] = self._load_saved_messages()
         self._saved_msg_index: int = -1  # -1 = not browsing
         self._capture_show_saved_hint: bool = False  # "Saved!" hint active
+        self._last_output_time: float = 0.0  # timestamp of last CLI output
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -831,12 +832,18 @@ class LeapServer:
                 traceback.print_exc(file=sys.stderr)
 
     def _title_keeper_loop(self) -> None:
-        """Background thread to maintain terminal title."""
+        """Background thread to maintain terminal title.
+
+        Skips the write when CLI output was received recently to avoid
+        interleaving OSC escape sequences with the TUI rendering, which
+        can corrupt colors and produce visual artefacts.
+        """
         while self.running:
-            try:
-                set_terminal_title(f"lps {self.tag}", vscode_rename=False)
-            except Exception:
-                pass
+            if time.time() - self._last_output_time > 0.2:
+                try:
+                    set_terminal_title(f"lps {self.tag}", vscode_rename=False)
+                except Exception:
+                    pass
             time.sleep(TITLE_RESET_INTERVAL)
 
     def _stdin_watchdog_loop(self) -> None:
@@ -1709,6 +1716,10 @@ class LeapServer:
         # naturally when capture ends and the next message is sent.
         if self._queue_capture_mode:
             return b''
+
+        # Track last output time so _title_keeper_loop can avoid
+        # writing to stdout while the CLI is actively rendering.
+        self._last_output_time = time.time()
 
         return data
 
