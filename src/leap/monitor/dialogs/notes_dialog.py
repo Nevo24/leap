@@ -2319,8 +2319,6 @@ class NotesDialog(QDialog):
                           new_folder=target_folder, old_order_position=(src_folder, pos),
                           new_order_position=target_position)
         self._undo_stack.push(cmd, self._cmd_ctx)
-        self._refresh_tree(select_name=new_name)
-        self._on_item_changed(self._tree.currentItem(), None)
         return True
 
     def _move_folder(self, folder_path: str, target_folder: str,
@@ -2349,7 +2347,6 @@ class NotesDialog(QDialog):
                             new_parent=target_folder, old_order_position=(src_parent, pos),
                             new_order_position=target_position)
         self._undo_stack.push(cmd, self._cmd_ctx)
-        self._refresh_tree(select_name=new_path, select_type='folder')
         return True
 
     def _on_tree_drop(self, src_path: str, src_type: str,
@@ -2421,9 +2418,6 @@ class NotesDialog(QDialog):
         cmd = ReorderCmd(folder=folder, old_order=old_order, new_order=order)
         self._undo_stack.push(cmd, self._cmd_ctx)
 
-        select_type = 'folder' if src_type == 'folder' else 'note'
-        self._refresh_tree(select_name=src_path, select_type=select_type)
-
     def _insert_at_position(self, folder: str, leaf: str,
                             before_path: str) -> None:
         """Insert *leaf* into *folder*'s stored order at the drop position."""
@@ -2474,8 +2468,6 @@ class NotesDialog(QDialog):
         self._save_current()
         cmd = CreateNoteCmd(name=full_name, folder=folder)
         self._undo_stack.push(cmd, self._cmd_ctx)
-        self._refresh_tree(select_name=full_name)
-        self._on_item_changed(self._tree.currentItem(), None)
         if self._current_mode() == self._MODE_TEXT:
             self._editor.setFocus()
 
@@ -2510,7 +2502,6 @@ class NotesDialog(QDialog):
 
         cmd = CreateFolderCmd(folder_path=full_path)
         self._undo_stack.push(cmd, self._cmd_ctx)
-        self._refresh_tree(select_name=full_path, select_type='folder')
 
     def _on_rename(self) -> None:
         """Rename the selected note or folder."""
@@ -2572,13 +2563,10 @@ class NotesDialog(QDialog):
             cmd = RenameNoteCmd(old_name=old_path, new_name=new_full, parent_folder=parent_folder,
                                 old_leaf=old_display, new_leaf=new_name)
             self._undo_stack.push(cmd, self._cmd_ctx)
-            self._refresh_tree(select_name=new_full)
-            self._on_item_changed(self._tree.currentItem(), None)
         else:
             cmd = RenameFolderCmd(old_path=old_path, new_path=new_full, parent_folder=parent_folder,
                                   old_leaf=old_display, new_leaf=new_name)
             self._undo_stack.push(cmd, self._cmd_ctx)
-            self._refresh_tree(select_name=new_full, select_type='folder')
 
     def _on_delete(self) -> None:
         """Delete the selected note(s) or folder(s)."""
@@ -2704,21 +2692,18 @@ class NotesDialog(QDialog):
                 name=name, content=content, metadata=note_meta,
                 order_position=(parent, pos), image_refs=image_refs))
 
-        # Push as batch or single command
-        if len(commands) == 1:
-            self._undo_stack.push(commands[0], self._cmd_ctx)
-        elif commands:
-            batch = BatchDeleteCmd(commands, f'Delete {" and ".join(parts)}')
-            self._undo_stack.push(batch, self._cmd_ctx)
-
-        self._current_name = None
-        self._saved_text = ''
-        self._refresh_tree()
-        first = self._find_first_note(self._tree.invisibleRootItem())
-        if first:
-            self._tree.setCurrentItem(first)
-        else:
-            self._on_item_changed(None, None)
+        # Push as batch or single command; suppress content snapshots
+        # during batch delete to avoid recording spurious changes from
+        # intermediate _on_item_changed calls.
+        self._undoing = True
+        try:
+            if len(commands) == 1:
+                self._undo_stack.push(commands[0], self._cmd_ctx)
+            elif commands:
+                batch = BatchDeleteCmd(commands, f'Delete {" and ".join(parts)}')
+                self._undo_stack.push(batch, self._cmd_ctx)
+        finally:
+            self._undoing = False
 
     # ── Action toolbar helpers ─────────────────────────────────────
 
