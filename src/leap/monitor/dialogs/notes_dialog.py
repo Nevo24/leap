@@ -2994,6 +2994,9 @@ class NotesDialog(QDialog):
                 avail = focus.isRedoAvailable() if is_redo else focus.isUndoAvailable()
                 use_qt_undo = avail
             if not use_qt_undo:
+                # Clear search filter so undo/redo target is visible
+                if self._search.text():
+                    self._search.clear()
                 self._undoing = True
                 try:
                     if is_redo:
