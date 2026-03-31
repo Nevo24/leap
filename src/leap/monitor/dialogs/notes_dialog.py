@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
 
+from leap.monitor.dialogs.notes_undo import NotesCmdContext, NotesUndoStack
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR, QUEUE_IMAGES_DIR
@@ -94,11 +95,16 @@ def _all_note_image_refs(exclude_name: Optional[str] = None) -> set[str]:
 def _cleanup_orphaned_images(
     current_text: str, previous_text: str, note_name: str,
     pasted: Optional[set[str]] = None,
+    deferred: Optional[set[str]] = None,
 ) -> None:
     """Delete images removed from a note, unless still used by another note.
 
     *pasted* includes images saved to disk this session that may not appear
     in *previous_text* (e.g. pasted then deleted before save).
+
+    When *deferred* is provided (a mutable set), orphaned filenames are
+    collected into the set instead of being deleted immediately.  The caller
+    is responsible for calling the actual unlink later (e.g. on dialog close).
     """
     old_refs = _collect_image_refs(previous_text)
     if pasted:
@@ -110,10 +116,13 @@ def _cleanup_orphaned_images(
     # Check all other notes before deleting
     other_refs = _all_note_image_refs(exclude_name=note_name)
     for filename in candidates - other_refs:
-        try:
-            (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
-        except OSError:
-            pass
+        if deferred is not None:
+            deferred.add(filename)
+        else:
+            try:
+                (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 
@@ -1723,6 +1732,9 @@ class NotesDialog(QDialog):
         self._current_name: Optional[str] = None
         self._saved_text: str = ''
         self._switching_mode: bool = False
+        self._undo_stack = NotesUndoStack(limit=50)
+        self._cmd_ctx = NotesCmdContext(self)
+        self._pending_image_deletes: set[str] = set()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -1888,7 +1900,7 @@ class NotesDialog(QDialog):
         bottom_row = QHBoxLayout()
         hint = QLabel(
             'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
-            '  |  Delete/\u232b: Delete  |  Right-click: More')
+            '  |  Cmd+Z: Undo  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
             f'color: {current_theme().text_muted};'
             f' font-size: {current_theme().font_size_small}px;')
@@ -2863,11 +2875,24 @@ class NotesDialog(QDialog):
                 pasted = (self._editor.take_pasted_images()
                           | self._checklist.take_pasted_images())
                 _cleanup_orphaned_images(
-                    text, self._saved_text, self._current_name, pasted)
+                    text, self._saved_text, self._current_name, pasted,
+                    deferred=self._pending_image_deletes)
                 self._saved_text = text
                 self._update_timestamp()
             except (OSError, RuntimeError):
                 pass
+
+    def _finalize_image_cleanup(self) -> None:
+        """Delete deferred orphaned images. Called on dialog close."""
+        if not self._pending_image_deletes:
+            return
+        all_refs = _all_note_image_refs()
+        for filename in self._pending_image_deletes - all_refs:
+            try:
+                (NOTE_IMAGES_DIR / filename).unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._pending_image_deletes.clear()
 
     def done(self, result: int) -> None:
         """Auto-save and persist geometry on Escape / reject."""
@@ -2880,6 +2905,8 @@ class NotesDialog(QDialog):
         except (TypeError, RuntimeError):
             pass
         self._save_current()
+        self._finalize_image_cleanup()
+        self._undo_stack.clear()
         if self._current_name:
             meta = _load_notes_meta()
             meta['_last_note'] = self._current_name
@@ -2903,6 +2930,8 @@ class NotesDialog(QDialog):
         except (TypeError, RuntimeError):
             pass
         self._save_current()
+        self._finalize_image_cleanup()
+        self._undo_stack.clear()
         # Persist last-open note for next session
         if self._current_name:
             meta = _load_notes_meta()
@@ -2930,6 +2959,15 @@ class NotesDialog(QDialog):
             event.accept()
             return
         mods = event.modifiers()
+        # Undo/redo — only when not inside a text-editing widget
+        if (mods & Qt.ControlModifier) and event.key() == Qt.Key_Z:
+            focus = QApplication.focusWidget()
+            if not isinstance(focus, (_NoteTextEdit, _ItemLineEdit, QTextEdit)):
+                if mods & Qt.ShiftModifier:
+                    self._undo_stack.redo(self._cmd_ctx)
+                else:
+                    self._undo_stack.undo(self._cmd_ctx)
+                return
         if mods & Qt.ControlModifier:
             if event.key() == Qt.Key_S:
                 self._save_current()
