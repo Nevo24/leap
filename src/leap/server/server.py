@@ -186,6 +186,7 @@ class LeapServer:
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
         self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
+        self._capture_stale_caret: bool = False  # cross-chunk ^^ left a literal ^ in CLI
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
         self._capture_prev_lines: int = 0  # wrapped line count from last display
@@ -1064,8 +1065,13 @@ class LeapServer:
 
     def _capture_flush(self, cancel: bool = False) -> None:
         """End capture mode: handle stale CLI input, force TUI redraw."""
-        if cancel and self._capture_stale_cli_input:
+        # Always backspace the stale ^ from cross-chunk ^^ entry.
+        # This is purely cosmetic — _capture_stale_cli_input stays set
+        # so _send_to_cli still sends Ctrl+C to clear any pre-typed text.
+        if self._capture_stale_caret:
             self.pty.send('\x7f')
+            self._capture_stale_caret = False
+        if cancel and self._capture_stale_cli_input:
             self._capture_stale_cli_input = False
         # Clear capture flag BEFORE the resize — the resize triggers
         # child output via SIGWINCH, and the output filter must not
@@ -1215,6 +1221,7 @@ class LeapServer:
             self._terminal_input_buf.clear()
             self._queue_capture_mode = True; self._capture_show_hint = True
             self._capture_stale_cli_input = True
+            self._capture_stale_caret = True
             self._pending_caret = False
             self._capture_prev_lines = 0
             self._saved_msg_index = -1
