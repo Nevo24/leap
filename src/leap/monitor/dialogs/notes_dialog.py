@@ -1355,7 +1355,7 @@ class _ChecklistWidget(QWidget):
     def _move_item(self, src: int, dst: int) -> None:
         """Move an item from src index to before dst index in self._items."""
         if self._undo_stack is not None:
-            self._undo_stack.record(ChecklistReorderCmd(src_index=src, dst_index=dst))
+            self._undo_stack.record(ChecklistReorderCmd(note_name=self._cmd_ctx.current_name, src_index=src, dst_index=dst))
         item = self._items.pop(src)
         # Adjust dst if it was after the removed item
         if dst > src:
@@ -1374,7 +1374,7 @@ class _ChecklistWidget(QWidget):
         self._rebuild()
         self.content_changed.emit()
         if self._undo_stack is not None:
-            self._undo_stack.record(ChecklistToggleCmd(item_index=index, old_checked=old_checked))
+            self._undo_stack.record(ChecklistToggleCmd(note_name=self._cmd_ctx.current_name, item_index=index, old_checked=old_checked))
 
     def _on_text_edited(self, index: int, text: str) -> None:
         if index < 0 or index >= len(self._items):
@@ -1391,7 +1391,7 @@ class _ChecklistWidget(QWidget):
         self.content_changed.emit()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistDeleteItemCmd(
-                item_index=index, item_text=item['text'], item_checked=item['checked']))
+                note_name=self._cmd_ctx.current_name, item_index=index, item_text=item['text'], item_checked=item['checked']))
 
     def _on_new_after(self, index: int) -> None:
         """Insert a new empty item after the given index."""
@@ -1404,7 +1404,7 @@ class _ChecklistWidget(QWidget):
         self.content_changed.emit()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistAddItemCmd(
-                item_index=new_idx, item_text=''))
+                note_name=self._cmd_ctx.current_name, item_index=new_idx, item_text=''))
 
     def _on_merge_up(self, index: int) -> None:
         """Backspace on empty item → delete it and focus the previous one."""
@@ -1429,7 +1429,7 @@ class _ChecklistWidget(QWidget):
         self.content_changed.emit()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistDeleteItemCmd(
-                item_index=index, item_text=item['text'],
+                note_name=self._cmd_ctx.current_name, item_index=index, item_text=item['text'],
                 item_checked=item['checked']))
 
     def _on_add_item(self) -> None:
@@ -1450,7 +1450,7 @@ class _ChecklistWidget(QWidget):
         self.content_changed.emit()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistAddItemCmd(
-                item_index=new_idx, item_text=text))
+                note_name=self._cmd_ctx.current_name, item_index=new_idx, item_text=text))
 
     def _expand_add_field(self) -> None:
         """Swap the Add item QLineEdit for a wrapping editor."""

@@ -526,7 +526,8 @@ class TestChecklistToggleCmd:
     def test_toggle_and_undo(self) -> None:
         ctx = _StubChecklistCtx()
         ctx._items = [{'text': 'a', 'checked': False}, {'text': 'b', 'checked': False}]
-        cmd = ChecklistToggleCmd(item_index=0, old_checked=False)
+        ctx.current_name = 'test'
+        cmd = ChecklistToggleCmd(note_name='test', item_index=0, old_checked=False)
         cmd.execute(ctx)
         assert ctx._items[0]['checked'] is True
         cmd.undo(ctx)
@@ -541,7 +542,8 @@ class TestChecklistDeleteItemCmd:
     def test_delete_and_undo(self) -> None:
         ctx = _StubChecklistCtx()
         ctx._items = [{'text': 'a', 'checked': False}, {'text': 'b', 'checked': True}, {'text': 'c', 'checked': False}]
-        cmd = ChecklistDeleteItemCmd(item_index=1, item_text='b', item_checked=True)
+        ctx.current_name = 'test'
+        cmd = ChecklistDeleteItemCmd(note_name='test', item_index=1, item_text='b', item_checked=True)
         cmd.execute(ctx)
         assert len(ctx._items) == 2
         assert ctx._items[0]['text'] == 'a'
@@ -559,7 +561,8 @@ class TestChecklistReorderCmd:
     def test_reorder_and_undo(self) -> None:
         ctx = _StubChecklistCtx()
         ctx._items = [{'text': 'a', 'checked': False}, {'text': 'b', 'checked': False}, {'text': 'c', 'checked': False}]
-        cmd = ChecklistReorderCmd(src_index=2, dst_index=0)
+        ctx.current_name = 'test'
+        cmd = ChecklistReorderCmd(note_name='test', src_index=2, dst_index=0)
         cmd.execute(ctx)
         assert [d['text'] for d in ctx._items] == ['c', 'a', 'b']
         cmd.undo(ctx)

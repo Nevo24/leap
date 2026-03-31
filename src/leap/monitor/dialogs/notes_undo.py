@@ -688,18 +688,23 @@ class NoteContentChangeCmd(UndoCommand):
 class ChecklistToggleCmd(UndoCommand):
     """Undo command for toggling a checklist item's checked state."""
 
-    def __init__(self, item_index: int, old_checked: bool) -> None:
+    def __init__(self, note_name: str, item_index: int, old_checked: bool) -> None:
         super().__init__(description='Toggle checklist item')
+        self._note_name = note_name
         self._index = item_index
         self._old_checked = old_checked
 
     def execute(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         if 0 <= self._index < len(items):
             items[self._index]['checked'] = not self._old_checked
             ctx.set_checklist_items(items)
 
     def undo(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         if 0 <= self._index < len(items):
             items[self._index]['checked'] = self._old_checked
@@ -709,17 +714,22 @@ class ChecklistToggleCmd(UndoCommand):
 class ChecklistAddItemCmd(UndoCommand):
     """Undo command for adding a checklist item (Enter or Add field)."""
 
-    def __init__(self, item_index: int, item_text: str) -> None:
+    def __init__(self, note_name: str, item_index: int, item_text: str) -> None:
         super().__init__(description='Add checklist item')
+        self._note_name = note_name
         self._index = item_index
         self._text = item_text
 
     def execute(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         items.insert(self._index, {'text': self._text, 'checked': False})
         ctx.set_checklist_items(items)
 
     def undo(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         if 0 <= self._index < len(items):
             del items[self._index]
@@ -729,19 +739,24 @@ class ChecklistAddItemCmd(UndoCommand):
 class ChecklistDeleteItemCmd(UndoCommand):
     """Undo command for deleting a checklist item."""
 
-    def __init__(self, item_index: int, item_text: str, item_checked: bool) -> None:
+    def __init__(self, note_name: str, item_index: int, item_text: str, item_checked: bool) -> None:
         super().__init__(description='Delete checklist item')
+        self._note_name = note_name
         self._index = item_index
         self._text = item_text
         self._checked = item_checked
 
     def execute(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         if 0 <= self._index < len(items):
             del items[self._index]
             ctx.set_checklist_items(items)
 
     def undo(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         items.insert(self._index, {'text': self._text, 'checked': self._checked})
         ctx.set_checklist_items(items)
@@ -750,12 +765,15 @@ class ChecklistDeleteItemCmd(UndoCommand):
 class ChecklistReorderCmd(UndoCommand):
     """Undo command for reordering a checklist item."""
 
-    def __init__(self, src_index: int, dst_index: int) -> None:
+    def __init__(self, note_name: str, src_index: int, dst_index: int) -> None:
         super().__init__(description='Reorder checklist item')
+        self._note_name = note_name
         self._src = src_index
         self._dst = dst_index
 
     def execute(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
         if 0 <= self._src < len(items):
             item = items.pop(self._src)
@@ -764,6 +782,8 @@ class ChecklistReorderCmd(UndoCommand):
             ctx.set_checklist_items(items)
 
     def undo(self, ctx: NotesCmdContext) -> None:
+        if ctx.current_name != self._note_name:
+            ctx.select_and_load(name=self._note_name)
         effective_dst = self._dst if self._dst <= self._src else self._dst - 1
         items = ctx.get_checklist_items()
         if 0 <= effective_dst < len(items):
