@@ -18,6 +18,7 @@ from leap.monitor.dialogs.notes_undo import (
     MoveFolderCmd,
     MoveNoteCmd,
     NoteContentChangeCmd,
+    NotesCmdContext,
     RenameFolderCmd,
     RenameNoteCmd,
     ReorderCmd,
@@ -34,10 +35,10 @@ class _FakeCmd(UndoCommand):
         self._label = label
         self._log = log
 
-    def execute(self, ctx: object) -> None:
+    def execute(self, ctx: NotesCmdContext) -> None:
         self._log.append(f'exec:{self._label}')
 
-    def undo(self, ctx: object) -> None:
+    def undo(self, ctx: NotesCmdContext) -> None:
         self._log.append(f'undo:{self._label}')
 
 
@@ -151,22 +152,16 @@ class _StubCtx:
     def select_first_or_none(self) -> None:
         pass
 
-    def set_mode_combo(self, index: int) -> None:
-        pass
-
-    def load_note_into_editor(self, name, text, mode) -> None:
-        pass
+    def clear_and_select_first(self) -> None:
+        self.current_name = None
+        self.saved_text = ''
+        self.refresh_tree()
+        self.select_first_or_none()
 
     def get_checklist_items(self) -> list[dict]:
         return []
 
     def set_checklist_items(self, items: list[dict]) -> None:
-        pass
-
-    def get_editor_content(self) -> str:
-        return ''
-
-    def set_editor_content(self, text: str) -> None:
         pass
 
 
