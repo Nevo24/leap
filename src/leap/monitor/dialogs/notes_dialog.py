@@ -26,7 +26,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
 
-from leap.monitor.dialogs.notes_undo import NotesCmdContext, NotesUndoStack
+from leap.monitor.dialogs.notes_undo import (
+    BatchDeleteCmd, ChecklistDeleteItemCmd, ChecklistReorderCmd,
+    ChecklistToggleCmd, CreateFolderCmd, CreateNoteCmd, DeleteFolderCmd,
+    DeleteNoteCmd, ModeSwitchCmd, MoveFolderCmd, MoveNoteCmd,
+    NoteContentChangeCmd, NotesCmdContext, NotesUndoStack,
+    RenameFolderCmd, RenameNoteCmd, ReorderCmd,
+)
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR, QUEUE_IMAGES_DIR
@@ -1347,7 +1353,6 @@ class _ChecklistWidget(QWidget):
     def _move_item(self, src: int, dst: int) -> None:
         """Move an item from src index to before dst index in self._items."""
         if self._undo_stack is not None:
-            from leap.monitor.dialogs.notes_undo import ChecklistReorderCmd
             self._undo_stack.record(ChecklistReorderCmd(src_index=src, dst_index=dst))
         item = self._items.pop(src)
         # Adjust dst if it was after the removed item
@@ -1367,7 +1372,6 @@ class _ChecklistWidget(QWidget):
         self._rebuild()
         self.content_changed.emit()
         if self._undo_stack is not None:
-            from leap.monitor.dialogs.notes_undo import ChecklistToggleCmd
             self._undo_stack.record(ChecklistToggleCmd(item_index=index, old_checked=old_checked))
 
     def _on_text_edited(self, index: int, text: str) -> None:
@@ -1384,7 +1388,6 @@ class _ChecklistWidget(QWidget):
         self._rebuild()
         self.content_changed.emit()
         if self._undo_stack is not None:
-            from leap.monitor.dialogs.notes_undo import ChecklistDeleteItemCmd
             self._undo_stack.record(ChecklistDeleteItemCmd(
                 item_index=index, item_text=item['text'], item_checked=item['checked']))
 
@@ -2133,7 +2136,6 @@ class NotesDialog(QDialog):
             except RuntimeError:
                 live_text = self._saved_text
             if live_text != self._saved_text:
-                from leap.monitor.dialogs.notes_undo import NoteContentChangeCmd
                 mode = _get_note_mode(self._current_name)
                 cmd = NoteContentChangeCmd(
                     note_name=self._current_name,
@@ -2214,7 +2216,6 @@ class NotesDialog(QDialog):
             lines = [item['text'] for item in items if item['text']]
             new_content = '\n'.join(lines)
 
-        from leap.monitor.dialogs.notes_undo import ModeSwitchCmd
         cmd = ModeSwitchCmd(
             note_name=self._current_name, old_mode=old_mode, new_mode=new_mode,
             old_content=old_content, new_content=new_content,
@@ -2295,7 +2296,6 @@ class NotesDialog(QDialog):
         src_folder = note_name.rsplit('/', 1)[0] if '/' in note_name else ''
         order = _load_order().get(src_folder, [])
         pos = order.index(leaf) if leaf in order else len(order)
-        from leap.monitor.dialogs.notes_undo import MoveNoteCmd
         cmd = MoveNoteCmd(old_name=note_name, new_name=new_name, old_folder=src_folder,
                           new_folder=target_folder, old_order_position=(src_folder, pos))
         self._undo_stack.push(cmd, self._cmd_ctx)
@@ -2324,12 +2324,9 @@ class NotesDialog(QDialog):
         src_parent = folder_path.rsplit('/', 1)[0] if '/' in folder_path else ''
         order = _load_order().get(src_parent, [])
         pos = order.index(leaf) if leaf in order else len(order)
-        from leap.monitor.dialogs.notes_undo import MoveFolderCmd
         cmd = MoveFolderCmd(old_path=folder_path, new_path=new_path, old_parent=src_parent,
                             new_parent=target_folder, old_order_position=(src_parent, pos))
         self._undo_stack.push(cmd, self._cmd_ctx)
-        if self._current_name and self._current_name.startswith(folder_path + '/'):
-            self._current_name = new_path + self._current_name[len(folder_path):]
         self._refresh_tree(select_name=new_path, select_type='folder')
         return True
 
@@ -2404,7 +2401,6 @@ class NotesDialog(QDialog):
         if order == old_order:
             return
 
-        from leap.monitor.dialogs.notes_undo import ReorderCmd
         cmd = ReorderCmd(folder=folder, old_order=old_order, new_order=order)
         self._undo_stack.push(cmd, self._cmd_ctx)
 
@@ -2459,7 +2455,6 @@ class NotesDialog(QDialog):
             break
 
         self._save_current()
-        from leap.monitor.dialogs.notes_undo import CreateNoteCmd
         cmd = CreateNoteCmd(name=full_name, folder=folder)
         self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=full_name)
@@ -2496,7 +2491,6 @@ class NotesDialog(QDialog):
                 continue
             break
 
-        from leap.monitor.dialogs.notes_undo import CreateFolderCmd
         cmd = CreateFolderCmd(folder_path=full_path)
         self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=full_path, select_type='folder')
@@ -2558,14 +2552,12 @@ class NotesDialog(QDialog):
 
         if item_type == 'note':
             self._save_current()
-            from leap.monitor.dialogs.notes_undo import RenameNoteCmd
             cmd = RenameNoteCmd(old_name=old_path, new_name=new_full, parent_folder=parent_folder,
                                 old_leaf=old_display, new_leaf=new_name)
             self._undo_stack.push(cmd, self._cmd_ctx)
             self._refresh_tree(select_name=new_full)
             self._on_item_changed(self._tree.currentItem(), None)
         else:
-            from leap.monitor.dialogs.notes_undo import RenameFolderCmd
             cmd = RenameFolderCmd(old_path=old_path, new_path=new_full, parent_folder=parent_folder,
                                   old_leaf=old_display, new_leaf=new_name)
             self._undo_stack.push(cmd, self._cmd_ctx)
@@ -2614,10 +2606,6 @@ class NotesDialog(QDialog):
             return
 
         self._save_current()
-
-        from leap.monitor.dialogs.notes_undo import (
-            BatchDeleteCmd, DeleteFolderCmd, DeleteNoteCmd,
-        )
 
         # Build undo commands for each item
         commands: list = []
