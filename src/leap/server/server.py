@@ -1234,6 +1234,235 @@ class LeapServer:
         self._capture_image_counter = 0
         self._capture_image_map.clear()
 
+    def _capture_cancel(self) -> None:
+        """Cancel capture mode — clear buffer, display, and state."""
+        self._capture_display()
+        self._queue_capture_buf.clear()
+        self._capture_cursor_pos = 0
+        self._capture_utf8_buf.clear()
+        self._queue_capture_mode = False
+        self._capture_flush(cancel=True)
+        self._capture_reset_images()
+        self._terminal_input_buf.clear()
+
+    def _enter_capture_mode(self, stale_cli_input: bool,
+                            stale_caret: bool) -> None:
+        """Enter queue-capture mode with the current input buffer."""
+        self._queue_capture_buf = bytearray(self._terminal_input_buf)
+        self._capture_cursor_pos = len(self._capture_text())
+        self._terminal_input_buf.clear()
+        self._queue_capture_mode = True
+        self._capture_show_hint = True
+        self._capture_stale_cli_input = stale_cli_input
+        self._capture_stale_caret = stale_caret
+        self._pending_caret = False
+        self._capture_prev_lines = 0
+        self._saved_msg_index = -1
+        self._capture_show_saved_hint = False
+        self._capture_display(self._capture_text())
+
+    def _capture_word_move(self, direction: int) -> None:
+        """Move capture cursor by one word. direction: -1=left, +1=right."""
+        text = self._capture_text()
+        p = self._capture_cursor_pos
+        if direction < 0:
+            while p > 0 and text[p - 1] == ' ':
+                p -= 1
+            while p > 0 and text[p - 1] != ' ':
+                p -= 1
+        else:
+            while p < len(text) and text[p] != ' ':
+                p += 1
+            while p < len(text) and text[p] == ' ':
+                p += 1
+        self._capture_cursor_pos = p
+        self._capture_display(text)
+
+    def _capture_handle_escape(self, seq: bytes,
+                               is_standalone_esc: bool) -> None:
+        """Handle an escape sequence while in capture mode.
+
+        Dispatches editing keys (arrows, Home/End, Delete, word
+        movement), cancels on standalone Escape or CSI-u Ctrl+C,
+        and silently drops unrecognized sequences.
+        """
+        if self._capture_show_saved_hint:
+            self._capture_show_saved_hint = False
+            self._capture_display(self._capture_text())
+        if seq in (b'\x1bb', b'\x1bf'):
+            # Meta word movement (ESC-b / ESC-f)
+            self._capture_word_move(-1 if seq == b'\x1bb' else 1)
+        elif is_standalone_esc:
+            self._capture_cancel()
+        elif self._is_csi_u_cancel(seq):
+            self._capture_cancel()
+        elif seq == b'\x1b[D':  # Left arrow
+            if self._capture_cursor_pos > 0:
+                self._capture_cursor_pos -= 1
+            self._capture_display(self._capture_text())
+        elif seq == b'\x1b[C':  # Right arrow
+            if self._capture_cursor_pos < len(self._capture_text()):
+                self._capture_cursor_pos += 1
+            self._capture_display(self._capture_text())
+        elif seq == b'\x1b[1;3D':  # Opt+Left
+            self._capture_word_move(-1)
+        elif seq == b'\x1b[1;3C':  # Opt+Right
+            self._capture_word_move(1)
+        elif seq in (b'\x1b[H', b'\x1b[1~'):  # Home
+            self._capture_cursor_pos = 0
+            self._capture_utf8_buf.clear()
+            self._capture_display(self._capture_text())
+        elif seq in (b'\x1b[F', b'\x1b[4~'):  # End
+            self._capture_cursor_pos = len(self._capture_text())
+            self._capture_display(self._capture_text())
+        elif seq == b'\x1b[3~':  # Delete
+            self._capture_show_hint = False
+            self._capture_delete()
+            self._capture_display(self._capture_text())
+        elif seq == b'\x1b[A':  # Up arrow — browse saved msgs
+            self._capture_show_hint = False
+            self._browse_saved_history(-1)
+        elif seq == b'\x1b[B':  # Down arrow — browse saved msgs
+            self._capture_show_hint = False
+            self._browse_saved_history(1)
+        elif self._is_csi_u_paste(seq):  # CSI u Ctrl+V
+            self._capture_show_hint = False
+            if self._capture_paste_image():
+                self._capture_display(self._capture_text())
+        # Other CSI/OSC/SS3 sequences silently dropped.
+
+    def _detect_paste(self, data: bytes) -> bool:
+        """Detect bracketed paste markers in input data.
+
+        Returns True if this chunk contains pasted content.  Also
+        updates ``_in_bracketed_paste`` for cross-chunk tracking and
+        clears ``_pending_caret`` to prevent a stale ``^`` typed
+        before the paste from combining with ``^`` inside it.
+        """
+        _BP_START = b'\x1b[200~'
+        _BP_END = b'\x1b[201~'
+        bp_start = data.find(_BP_START)
+        bp_end = data.find(_BP_END)
+        chunk_has_paste = self._in_bracketed_paste or bp_start >= 0
+        if bp_end >= 0:
+            self._in_bracketed_paste = False
+        elif bp_start >= 0:
+            self._in_bracketed_paste = True
+        if chunk_has_paste and self._pending_caret:
+            self._pending_caret = False
+        return chunk_has_paste
+
+    def _capture_handle_char(self, b: int, data: bytes, i: int,
+                             chunk_has_paste: bool) -> tuple[int, bool]:
+        """Process one byte in capture mode.
+
+        Returns ``(new_i, display_dirty)`` — the caller should set
+        ``capture_dirty |= display_dirty`` and ``continue``.
+        """
+        dirty = False
+
+        def _display_or_defer() -> None:
+            nonlocal dirty
+            if chunk_has_paste:
+                dirty = True
+            else:
+                self._capture_display(self._capture_text())
+
+        # Dismiss "Saved!" hint on any key
+        if self._capture_show_saved_hint and b != 0x5e:
+            self._capture_show_saved_hint = False
+            self._capture_display(self._capture_text())
+
+        if b in (0x0d, 0x0a):  # Enter / LF
+            # Detect pasted newlines: bracketed paste markers or
+            # fallback — a typed Enter is a tiny chunk (1–2 bytes);
+            # pasted multi-line text arrives as a large chunk.
+            if chunk_has_paste or len(data) > 4:
+                # Insert literal newline; skip \n after \r to avoid
+                # doubles from \r\n pairs.
+                if b == 0x0d:
+                    self._capture_insert('\n')
+                    dirty = True
+                elif b == 0x0a:
+                    if not (i > 0 and data[i - 1] == 0x0d):
+                        self._capture_insert('\n')
+                        dirty = True
+            else:
+                self._user_has_typed = True
+                self._capture_display()  # clear
+                msg = self._capture_text().strip()
+                if self._capture_image_map:
+                    msg = self._capture_resolve_images(msg)
+                if msg:
+                    self.queue.add(msg)
+                    self._capture_flush()
+                else:
+                    self._capture_flush(cancel=True)
+                self._queue_capture_buf.clear()
+                self._capture_cursor_pos = 0
+                self._capture_utf8_buf.clear()
+                self._queue_capture_mode = False
+                self._capture_reset_images()
+                self._terminal_input_buf.clear()
+        elif b == 0x16:  # Ctrl+V — paste clipboard image
+            if self._pending_caret:
+                self._pending_caret = False
+            self._capture_show_hint = False
+            if self._capture_paste_image():
+                self._capture_display(self._capture_text())
+        elif b == 0x7f:  # Backspace
+            self._capture_show_hint = False
+            if self._capture_backspace():
+                self._capture_display(self._capture_text())
+        elif b == 0x03:  # Ctrl+C — cancel capture
+            self._capture_cancel()
+        elif b == 0x5e:  # "^" in capture mode
+            if self._capture_show_saved_hint:
+                self._capture_show_saved_hint = False
+            if self._pending_caret and not chunk_has_paste:
+                # Double "^" → save message
+                self._pending_caret = False
+                text = self._capture_text()
+                p = self._capture_cursor_pos
+                if p > 0 and text[p - 1] == '^':
+                    text = text[:p - 1] + text[p:]
+                    self._queue_capture_buf = bytearray(
+                        text.encode('utf-8'))
+                    self._capture_cursor_pos = p - 1
+                self._save_capture_message()
+                if not self._capture_show_saved_hint:
+                    _display_or_defer()
+            else:
+                self._pending_caret = True
+                self._capture_show_hint = False
+                self._capture_insert('^')
+                _display_or_defer()
+        elif 0x20 <= b < 0x7f:  # ASCII printable
+            if self._pending_caret:
+                self._pending_caret = False
+            if self._capture_show_saved_hint:
+                self._capture_show_saved_hint = False
+            self._capture_show_hint = False
+            self._capture_insert(chr(b))
+            _display_or_defer()
+        elif b >= 0x80:  # Multi-byte UTF-8
+            if self._pending_caret:
+                self._pending_caret = False
+            self._capture_show_hint = False
+            self._capture_utf8_buf.append(b)
+            try:
+                char = self._capture_utf8_buf.decode('utf-8')
+                self._capture_insert(char)
+                self._capture_utf8_buf.clear()
+            except UnicodeDecodeError:
+                pass
+            _display_or_defer()
+        else:
+            if self._pending_caret:
+                self._pending_caret = False
+
+        return i + 1, dirty
+
     def _input_filter(self, data: bytes) -> bytes:
         """Track user keyboard input for state detection.
 
@@ -1275,26 +1504,7 @@ class LeapServer:
         out = bytearray()
         i = 0
         capture_dirty = False  # deferred display update for pastes
-
-        # Bracketed paste detection: ESC[200~ starts paste, ESC[201~ ends.
-        # While pasting, ^^ is treated as literal to prevent accidental
-        # capture-mode activation from pasted text containing "^^^^".
-        _BP_START = b'\x1b[200~'
-        _BP_END = b'\x1b[201~'
-        bp_start_pos = data.find(_BP_START)
-        bp_end_pos = data.find(_BP_END)
-        # chunk_has_paste is True if ANY pasted content exists in this
-        # chunk — used to suppress ^^ for the entire chunk.
-        chunk_has_paste = self._in_bracketed_paste or bp_start_pos >= 0
-        # Update cross-chunk state for subsequent calls.
-        if bp_end_pos >= 0:
-            self._in_bracketed_paste = False
-        elif bp_start_pos >= 0:
-            self._in_bracketed_paste = True
-        # Clear stale pending caret so a ^ typed before the paste
-        # doesn't combine with a ^ inside the paste.
-        if chunk_has_paste and self._pending_caret:
-            self._pending_caret = False
+        chunk_has_paste = self._detect_paste(data)
 
         # Check if the very first byte is "^" and _pending_caret is set
         # from the previous chunk → double-caret capture trigger.
@@ -1305,24 +1515,12 @@ class LeapServer:
                 and data[i] == 0x5e
                 and self._pending_caret):
             # Second "^" arrived in a new chunk.  Enter capture mode.
-            # Don't erase CLI input now — it causes display corruption.
-            # The stale input is cleaned up at send time via Ctrl+C.
             self._partial_escape = None
             if (self._terminal_input_buf
                     and self._terminal_input_buf[-1] == 0x5e):
                 self._terminal_input_buf.pop()
-            self._queue_capture_buf = bytearray(
-                self._terminal_input_buf)
-            self._capture_cursor_pos = len(self._capture_text())
-            self._terminal_input_buf.clear()
-            self._queue_capture_mode = True; self._capture_show_hint = True
-            self._capture_stale_cli_input = True
-            self._capture_stale_caret = True
-            self._pending_caret = False
-            self._capture_prev_lines = 0
-            self._saved_msg_index = -1
-            self._capture_show_saved_hint = False
-            self._capture_display(self._capture_text())
+            self._enter_capture_mode(stale_cli_input=True,
+                                     stale_caret=True)
             i += 1
 
         # If a previous call ended mid-escape, skip continuation bytes.
@@ -1387,13 +1585,7 @@ class LeapServer:
                         out.append(b)
                     else:
                         # In capture mode: Escape cancels capture
-                        self._capture_display()
-                        self._queue_capture_buf.clear()
-                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                        self._queue_capture_mode = False
-                        self._capture_flush(cancel=True)
-                        self._capture_reset_images()
-                        self._terminal_input_buf.clear()
+                        self._capture_cancel()
                     continue
                 kind = data[i]
                 if kind == 0x5b:  # CSI
@@ -1433,225 +1625,17 @@ class LeapServer:
                     is_standalone_esc = True
 
                 if self._queue_capture_mode:
-                    # In capture mode: handle editing keys, cancel on
-                    # Escape, drop everything else.
-                    if self._capture_show_saved_hint:
-                        self._capture_show_saved_hint = False
-                        self._capture_display(self._capture_text())
-                    seq = data[esc_start:i]
-                    if seq in (b'\x1bb', b'\x1bf'):
-                        # ESC-b / ESC-f (Option+arrows as Meta prefix).
-                        # Handle as word movement, not standalone Escape.
-                        text = self._capture_text()
-                        p = self._capture_cursor_pos
-                        if seq == b'\x1bb':  # word left
-                            while p > 0 and text[p - 1] == ' ':
-                                p -= 1
-                            while p > 0 and text[p - 1] != ' ':
-                                p -= 1
-                        else:  # word right
-                            while p < len(text) and text[p] != ' ':
-                                p += 1
-                            while p < len(text) and text[p] == ' ':
-                                p += 1
-                        self._capture_cursor_pos = p
-                        self._capture_display(text)
-                    elif is_standalone_esc:
-                        self._capture_display()
-                        self._queue_capture_buf.clear()
-                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                        self._queue_capture_mode = False
-                        self._capture_flush(cancel=True)
-                        self._capture_reset_images()
-                        self._terminal_input_buf.clear()
-                    elif self._is_csi_u_cancel(seq):
-                        # CSI u Ctrl+C (e.g. \x1b[3u) — cancel capture
-                        self._capture_display()
-                        self._queue_capture_buf.clear()
-                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                        self._queue_capture_mode = False
-                        self._capture_flush(cancel=True)
-                        self._capture_reset_images()
-                        self._terminal_input_buf.clear()
-                    elif seq == b'\x1b[D':  # Left arrow
-                        if self._capture_cursor_pos > 0:
-                            self._capture_cursor_pos -= 1
-                        self._capture_display(self._capture_text())
-                    elif seq == b'\x1b[C':  # Right arrow
-                        if self._capture_cursor_pos < len(self._capture_text()):
-                            self._capture_cursor_pos += 1
-                        self._capture_display(self._capture_text())
-                    elif seq in (b'\x1b[1;3D', b'\x1bb'):  # Opt+Left (word left)
-                        text = self._capture_text()
-                        p = self._capture_cursor_pos
-                        while p > 0 and text[p - 1] == ' ':
-                            p -= 1
-                        while p > 0 and text[p - 1] != ' ':
-                            p -= 1
-                        self._capture_cursor_pos = p
-                        self._capture_display(text)
-                    elif seq in (b'\x1b[1;3C', b'\x1bf'):  # Opt+Right (word right)
-                        text = self._capture_text()
-                        p = self._capture_cursor_pos
-                        while p < len(text) and text[p] != ' ':
-                            p += 1
-                        while p < len(text) and text[p] == ' ':
-                            p += 1
-                        self._capture_cursor_pos = p
-                        self._capture_display(text)
-                    elif seq in (b'\x1b[H', b'\x1b[1~'):  # Home
-                        self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                        self._capture_display(self._capture_text())
-                    elif seq in (b'\x1b[F', b'\x1b[4~'):  # End
-                        self._capture_cursor_pos = len(self._capture_text())
-                        self._capture_display(self._capture_text())
-                    elif seq == b'\x1b[3~':  # Delete
-                        self._capture_show_hint = False
-                        self._capture_delete()
-                        self._capture_display(self._capture_text())
-                    elif seq == b'\x1b[A':  # Up arrow — browse saved msgs
-                        self._capture_show_hint = False
-                        self._browse_saved_history(-1)
-                    elif seq == b'\x1b[B':  # Down arrow — browse saved msgs
-                        self._capture_show_hint = False
-                        self._browse_saved_history(1)
-                    elif self._is_csi_u_paste(seq):  # CSI u Ctrl+V
-                        self._capture_show_hint = False
-                        if self._capture_paste_image():
-                            self._capture_display(self._capture_text())
-                    # Other CSI/OSC/SS3 sequences silently dropped.
+                    self._capture_handle_escape(
+                        data[esc_start:i], is_standalone_esc)
                 else:
                     out.extend(data[esc_start:i])
                 continue
 
             # --- Queue-capture mode: swallow input, queue on Enter ---
-            # The terminal title bar shows "[Leap Q] <text>" as live feedback
-            # since we can't echo into the TUI content area.
-            # Must be checked before in_prompt so capture works in any state.
             if self._queue_capture_mode:
-                # Dismiss "Saved!" hint on any key
-                if self._capture_show_saved_hint and b != 0x5e:
-                    self._capture_show_saved_hint = False
-                    self._capture_display(self._capture_text())
-                if b in (0x0d, 0x0a):  # Enter (CR or LF — LF after subprocess)
-                    # Detect pasted newlines: bracketed paste markers
-                    # (chunk_has_paste) or fallback — a typed Enter is a
-                    # tiny chunk (1–2 bytes); pasted multi-line text
-                    # arrives as a large chunk.
-                    is_paste_newline = chunk_has_paste or len(data) > 4
-                    if is_paste_newline:
-                        # Insert literal newline so multi-line pastes stay
-                        # in the capture buffer as one message.  Terminals
-                        # send \r for pasted newlines; skip \n after \r to
-                        # avoid double newlines from \r\n pairs.
-                        if b == 0x0d:
-                            self._capture_insert('\n')
-                            capture_dirty = True
-                        elif b == 0x0a:
-                            if not (i > 0 and data[i - 1] == 0x0d):
-                                self._capture_insert('\n')
-                                capture_dirty = True
-                        i += 1
-                        continue
-                    self._user_has_typed = True
-                    self._capture_display()  # clear
-                    msg = self._capture_text().strip()
-                    if self._capture_image_map:
-                        msg = self._capture_resolve_images(msg)
-                    if msg:
-                        self.queue.add(msg)
-                        self._capture_flush()  # keep stale for Ctrl+C cleanup
-                    else:
-                        # Empty message — treat as cancel, erase stale ^
-                        self._capture_flush(cancel=True)
-                    self._queue_capture_buf.clear()
-                    self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                    self._queue_capture_mode = False
-                    self._capture_reset_images()
-                    self._terminal_input_buf.clear()
-                elif b == 0x16:  # Ctrl+V — paste clipboard image
-                    if self._pending_caret:
-                        self._pending_caret = False
-                    self._capture_show_hint = False
-                    if self._capture_paste_image():
-                        self._capture_display(self._capture_text())
-                elif b == 0x7f:  # Backspace
-                    self._capture_show_hint = False
-                    if self._capture_backspace():
-                        self._capture_display(self._capture_text())
-                    # If at start, just ignore (can't backspace past start)
-                elif b == 0x03:  # Ctrl+C — cancel capture (discard)
-                    self._capture_display()  # clear
-                    self._queue_capture_buf.clear()
-                    self._capture_cursor_pos = 0; self._capture_utf8_buf.clear()
-                    self._queue_capture_mode = False
-                    self._capture_flush(cancel=True)
-                    self._capture_reset_images()
-                    self._terminal_input_buf.clear()
-                elif b == 0x5e:  # "^" in capture mode
-                    if self._capture_show_saved_hint:
-                        self._capture_show_saved_hint = False
-                    if self._pending_caret and not chunk_has_paste:
-                        # Double "^" inside capture → save message
-                        self._pending_caret = False
-                        # Remove the first "^" that was inserted
-                        text = self._capture_text()
-                        p = self._capture_cursor_pos
-                        if p > 0 and text[p - 1] == '^':
-                            text = text[:p - 1] + text[p:]
-                            self._queue_capture_buf = bytearray(
-                                text.encode('utf-8'))
-                            self._capture_cursor_pos = p - 1
-                        self._save_capture_message()
-                        # If save didn't fire (empty buffer), update display
-                        # to clear the removed "^" from screen.
-                        if not self._capture_show_saved_hint:
-                            if chunk_has_paste:
-                                capture_dirty = True
-                            else:
-                                self._capture_display(self._capture_text())
-                    else:
-                        # First "^" — insert it, wait for second
-                        self._pending_caret = True
-                        self._capture_show_hint = False
-                        self._capture_insert('^')
-                        if chunk_has_paste:
-                            capture_dirty = True
-                        else:
-                            self._capture_display(self._capture_text())
-                elif 0x20 <= b < 0x7f:
-                    # ASCII printable (non-caret)
-                    if self._pending_caret:
-                        self._pending_caret = False
-                    if self._capture_show_saved_hint:
-                        self._capture_show_saved_hint = False
-                    self._capture_show_hint = False
-                    self._capture_insert(chr(b))
-                    if chunk_has_paste:
-                        capture_dirty = True
-                    else:
-                        self._capture_display(self._capture_text())
-                elif b >= 0x80:
-                    # Multi-byte UTF-8
-                    if self._pending_caret:
-                        self._pending_caret = False
-                    self._capture_show_hint = False
-                    self._capture_utf8_buf.append(b)
-                    try:
-                        char = self._capture_utf8_buf.decode('utf-8')
-                        self._capture_insert(char)
-                        self._capture_utf8_buf.clear()
-                    except UnicodeDecodeError:
-                        pass  # incomplete, wait for more bytes
-                    if chunk_has_paste:
-                        capture_dirty = True
-                    else:
-                        self._capture_display(self._capture_text())
-                else:
-                    if self._pending_caret:
-                        self._pending_caret = False
-                # Swallowed — nothing goes to out.
-                i += 1
+                i, dirty = self._capture_handle_char(
+                    b, data, i, chunk_has_paste)
+                capture_dirty |= dirty
                 continue
 
             # "^^" (double caret) → queue capture mode.
@@ -1669,21 +1653,12 @@ class LeapServer:
                         self._terminal_input_buf.pop()
                     if out and out[-1] == 0x5e:
                         out.pop()
-                    self._queue_capture_buf = bytearray(
-                        self._terminal_input_buf)
-                    self._capture_cursor_pos = len(self._capture_text())
-                    self._terminal_input_buf.clear()
-                    self._queue_capture_mode = True; self._capture_show_hint = True
-                    # Only flag stale input if the CLI received text from
-                    # previous chunks.  In same-chunk ^^, the first "^"
-                    # was popped from out — CLI never got it.
-                    self._capture_stale_cli_input = bool(
-                        self._queue_capture_buf)
-                    self._pending_caret = False
-                    self._capture_prev_lines = 0
-                    self._saved_msg_index = -1
-                    self._capture_show_saved_hint = False
-                    self._capture_display(self._capture_text())
+                    # Flag stale only if CLI received text from previous
+                    # chunks.  In same-chunk ^^, the first "^" was popped
+                    # from out — CLI never got it.
+                    stale = bool(self._terminal_input_buf)
+                    self._enter_capture_mode(stale_cli_input=stale,
+                                             stale_caret=False)
                     i += 1
                     continue
                 else:
