@@ -185,7 +185,6 @@ class LeapServer:
         # and swallow all subsequent input until Enter → queue.
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
-        self._capture_output_buf: bytearray = bytearray()  # buffered CLI output
         self._capture_stale_cli_input: bool = False  # CLI has stale text from ^^
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
@@ -1064,17 +1063,27 @@ class LeapServer:
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
     def _capture_flush(self, cancel: bool = False) -> None:
-        """End capture mode: discard buffered output, handle stale input."""
-        buf_size = len(self._capture_output_buf)
+        """End capture mode: handle stale CLI input, force TUI redraw."""
         if cancel and self._capture_stale_cli_input:
             self.pty.send('\x7f')
             self._capture_stale_cli_input = False
-        # Discard buffered output — flushing stale TUI escape sequences
-        # corrupts the display (especially after image paste which
-        # accumulates thousands of bytes during the osascript block).
-        # The TUI redraws naturally when it receives the next message.
-        if self._capture_output_buf:
-            self._capture_output_buf.clear()
+        # Clear capture flag BEFORE the resize — the resize triggers
+        # child output via SIGWINCH, and the output filter must not
+        # swallow it.
+        self._queue_capture_mode = False
+        # Force the Ink TUI to do an immediate full-screen repaint.
+        # macOS only sends SIGWINCH when the size actually changes, so
+        # we shrink by one row, let the child handle it, then restore.
+        # The delay runs in a thread so we don't block the interact loop.
+        def _deferred_resize() -> None:
+            try:
+                cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+                self.pty.resize(max(1, rows - 1), cols)
+                time.sleep(0.05)
+                self.pty.resize(rows, cols)
+            except OSError:
+                pass
+        threading.Thread(target=_deferred_resize, daemon=True).start()
 
     def _capture_paste_image(self) -> bool:
         """Try to paste a clipboard image into the capture buffer.
@@ -1205,7 +1214,6 @@ class LeapServer:
             self._capture_cursor_pos = len(self._capture_text())
             self._terminal_input_buf.clear()
             self._queue_capture_mode = True; self._capture_show_hint = True
-            self._capture_output_buf.clear()
             self._capture_stale_cli_input = True
             self._pending_caret = False
             self._capture_prev_lines = 0
@@ -1530,7 +1538,6 @@ class LeapServer:
                     self._capture_cursor_pos = len(self._capture_text())
                     self._terminal_input_buf.clear()
                     self._queue_capture_mode = True; self._capture_show_hint = True
-                    self._capture_output_buf.clear()
                     # Only flag stale input if the CLI received text from
                     # previous chunks.  In same-chunk ^^, the first "^"
                     # was popped from out — CLI never got it.
@@ -1633,17 +1640,10 @@ class LeapServer:
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
 
-        # In capture mode, buffer CLI output instead of discarding it.
-        # The buffered output is flushed when capture ends (Enter/Esc/Ctrl+C)
-        # so the user doesn't miss anything that happened while typing.
+        # In capture mode, suppress CLI output — the TUI redraws
+        # naturally when capture ends and the next message is sent.
         if self._queue_capture_mode:
-            self._capture_output_buf.extend(data)
-            # Don't redraw over the "Saved!" hint
-            if not self._capture_show_saved_hint:
-                self._capture_display(
-                    self._queue_capture_buf.decode(
-                        'utf-8', errors='replace'))
-            return b''  # suppress CLI output (buffered for later)
+            return b''
 
         return data
 

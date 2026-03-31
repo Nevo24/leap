@@ -169,7 +169,7 @@ class CLIStateTracker:
 
         Must be called with _screen_lock held.
         """
-        snapshot = list(self._screen.display)
+        snapshot = self._get_display_lines()
         if all(not line.strip() for line in snapshot):
             if self._last_running_snapshot:
                 _log.debug(
@@ -192,6 +192,26 @@ class CLIStateTracker:
         self._screen.reset()
         self._stream = pyte.Stream(self._screen)
 
+    def _get_display_lines(self) -> list[str]:
+        """Return the screen content as a list of strings (one per row).
+
+        Reads the screen buffer directly instead of using pyte's
+        ``screen.display`` property, which crashes on empty chars in the
+        buffer (``wcwidth(char[0])`` with ``char=''``).  Empty cells
+        (wide-char placeholders or corrupted entries) are replaced with
+        spaces — safe for pattern matching and snapshots.
+        Must be called with _screen_lock held.
+        """
+        lines: list[str] = []
+        for y in range(self._screen.lines):
+            row = self._screen.buffer[y]
+            chars: list[str] = []
+            for x in range(self._screen.columns):
+                data = row[x].data
+                chars.append(data if data else ' ')
+            lines.append(''.join(chars).rstrip())
+        return lines
+
     def _get_screen_text(self) -> str:
         """Return the rendered screen content as a single string.
 
@@ -201,20 +221,7 @@ class CLIStateTracker:
         patterns that wrap across screen lines.
         Must be called with _screen_lock held.
         """
-        # Read the screen buffer directly instead of using pyte's
-        # screen.display property, which crashes on empty chars in the
-        # buffer (wcwidth(char[0]) with char='').  Empty cells (wide
-        # char placeholders or corrupted entries) are replaced with
-        # spaces — safe for pattern matching.
-        lines: list[str] = []
-        for y in range(self._screen.lines):
-            row = self._screen.buffer[y]
-            chars: list[str] = []
-            for x in range(self._screen.columns):
-                data = row[x].data
-                chars.append(data if data else ' ')
-            lines.append(''.join(chars).rstrip())
-        return '\n'.join(lines)
+        return '\n'.join(self._get_display_lines())
 
     # -- Public API -----------------------------------------------------------
 
@@ -504,7 +511,7 @@ class CLIStateTracker:
                     '(startup dialog: trust=%s dialog=%s)',
                     is_trust, is_dialog,
                 )
-                self._prompt_snapshot = list(self._screen.display)
+                self._prompt_snapshot = self._get_display_lines()
                 self._reset_screen()
                 if is_trust:
                     self._trust_dialog_phase = True
@@ -709,7 +716,7 @@ class CLIStateTracker:
         # it — the screen was reset after capture and may contain only
         # fragments from subsequent Ink TUI redraws.
         if not self._trust_dialog_phase:
-            self._prompt_snapshot = list(self._screen.display)
+            self._prompt_snapshot = self._get_display_lines()
 
     # -- State polling --------------------------------------------------------
 
@@ -809,9 +816,7 @@ class CLIStateTracker:
                         self._seen_user_input = False
                     self._trust_dialog_phase = False
                     with self._screen_lock:
-                        self._last_running_snapshot = list(
-                            self._screen.display,
-                        )
+                        self._last_running_snapshot = self._get_display_lines()
                         self._reset_screen()
                         self._prompt_snapshot = []
                     return CLIState.IDLE
@@ -917,9 +922,7 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
-                    self._last_running_snapshot = list(
-                        self._screen.display,
-                    )
+                    self._last_running_snapshot = self._get_display_lines()
                     self._reset_screen()
                 return CLIState.IDLE
 
@@ -987,9 +990,7 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
-                    self._last_running_snapshot = list(
-                        self._screen.display,
-                    )
+                    self._last_running_snapshot = self._get_display_lines()
                     self._reset_screen()
                     self._prompt_snapshot = []
                 return CLIState.IDLE
@@ -1012,9 +1013,7 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
-                    self._last_running_snapshot = list(
-                        self._screen.display,
-                    )
+                    self._last_running_snapshot = self._get_display_lines()
                     self._reset_screen()
                     self._prompt_snapshot = []
                 return CLIState.IDLE
@@ -1126,7 +1125,7 @@ class CLIStateTracker:
         with self._screen_lock:
             snapshot = self._prompt_snapshot
             if not snapshot and self._state in WAITING_STATES:
-                snapshot = list(self._screen.display)
+                snapshot = self._get_display_lines()
         if not snapshot:
             return ''
         _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')
