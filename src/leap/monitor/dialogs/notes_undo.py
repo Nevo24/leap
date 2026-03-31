@@ -323,7 +323,7 @@ class DeleteNoteCmd(UndoCommand):
         leaf = self._name.rsplit('/', 1)[-1] if '/' in self._name else self._name
         _remove_from_order(self._order_folder, leaf)
         if hasattr(ctx, 'pending_image_deletes'):
-            ctx.pending_image_deletes |= self._image_refs
+            ctx.pending_image_deletes.update(self._image_refs)
 
     def undo(self, ctx: object) -> None:
         path = _note_path(self._name)
@@ -336,7 +336,7 @@ class DeleteNoteCmd(UndoCommand):
         leaf = self._name.rsplit('/', 1)[-1] if '/' in self._name else self._name
         _insert_into_order(self._order_folder, leaf, self._order_index)
         if hasattr(ctx, 'pending_image_deletes'):
-            ctx.pending_image_deletes -= self._image_refs
+            ctx.pending_image_deletes.difference_update(self._image_refs)
         if hasattr(ctx, 'select_and_load'):
             ctx.select_and_load(name=self._name)
 
@@ -378,7 +378,7 @@ class DeleteFolderCmd(UndoCommand):
         if target.is_dir():
             shutil.rmtree(target, ignore_errors=True)
         if hasattr(ctx, 'pending_image_deletes'):
-            ctx.pending_image_deletes |= self._image_refs
+            ctx.pending_image_deletes.update(self._image_refs)
 
     def undo(self, ctx: object) -> None:
         (NOTES_DIR / self._folder_path).mkdir(parents=True, exist_ok=True)
@@ -401,7 +401,7 @@ class DeleteFolderCmd(UndoCommand):
         leaf = self._folder_path.rsplit('/', 1)[-1] if '/' in self._folder_path else self._folder_path
         _insert_into_order(self._parent_folder, leaf, self._parent_index)
         if hasattr(ctx, 'pending_image_deletes'):
-            ctx.pending_image_deletes -= self._image_refs
+            ctx.pending_image_deletes.difference_update(self._image_refs)
         if hasattr(ctx, 'select_and_load'):
             ctx.select_and_load(name=self._folder_path, select_type='folder')
 
