@@ -1413,9 +1413,7 @@ class LeapServer:
                     msg = self._capture_resolve_images(msg)
                 if msg:
                     self.queue.add(msg)
-                    self._capture_flush()
-                else:
-                    self._capture_flush(cancel=True)
+                self._capture_flush()
                 self._queue_capture_buf.clear()
                 self._capture_cursor_pos = 0
                 self._capture_utf8_buf.clear()
