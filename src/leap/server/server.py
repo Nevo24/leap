@@ -21,8 +21,8 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
 from leap.utils.constants import (
-    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, QUEUE_IMAGES_DIR, STORAGE_DIR,
-    POLL_INTERVAL, TITLE_RESET_INTERVAL,
+    QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, NOTE_IMAGES_DIR, QUEUE_IMAGES_DIR,
+    STORAGE_DIR, POLL_INTERVAL, TITLE_RESET_INTERVAL,
     atomic_json_write, ensure_storage_dirs, load_settings, save_settings,
 )
 from leap.utils.terminal import set_terminal_title, print_banner
@@ -493,52 +493,103 @@ class LeapServer:
     def _cleanup_old_images() -> None:
         """Delete images in .storage/queue_images/ not referenced anywhere.
 
-        Called once on server startup. Scans queue files (``id|message``
-        format) and the presets JSON for image paths, then removes any
-        image file not found in either.
+        Called once on server startup.  Also migrates legacy
+        ``@note_images/`` references in presets and queue files to
+        ``@queue_images/`` (copies the file, rewrites the path) so that
+        note-image cleanup never breaks presets or queued messages.
         """
-        if not QUEUE_IMAGES_DIR.is_dir():
-            return
+        QUEUE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
-        images_dir_str = str(QUEUE_IMAGES_DIR)
+        queue_dir_str = str(QUEUE_IMAGES_DIR)
+        note_dir_str = str(NOTE_IMAGES_DIR)
+
+        referenced: set[str] = set()
 
         def _collect_refs(text: str) -> None:
             """Find all @<QUEUE_IMAGES_DIR>/... references in *text*."""
             for token in text.split():
-                # Token may be bare @path or embedded after a | separator
                 at_idx = token.find('@')
                 if at_idx < 0:
                     continue
                 path_part = token[at_idx + 1:]
-                if path_part.startswith(images_dir_str):
+                if path_part.startswith(queue_dir_str):
                     referenced.add(path_part)
 
-        referenced: set[str] = set()
+        def _migrate_note_refs(text: str) -> str:
+            """Rewrite ``@<NOTE_IMAGES_DIR>/file`` → ``@<QUEUE_IMAGES_DIR>/file``.
 
-        # Scan queue files (format: "id|message\n")
+            Copies each image file on first encounter, then does a bulk
+            string replacement.  Returns the original *text* object (same
+            identity) when no legacy references are found so callers can
+            use ``is not`` for a cheap changed-check.
+            """
+            note_prefix = '@' + note_dir_str + '/'
+            if note_prefix not in text:
+                return text
+            # Copy referenced image files before rewriting paths
+            search_start = 0
+            while True:
+                pos = text.find(note_prefix, search_start)
+                if pos < 0:
+                    break
+                # Extract the full path (everything after @ until whitespace)
+                path_start = pos + 1  # skip @
+                path_end = path_start
+                while path_end < len(text) and not text[path_end].isspace():
+                    path_end += 1
+                full_path = text[path_start:path_end]
+                filename = full_path[len(note_dir_str) + 1:]
+                src = Path(full_path)
+                dst = QUEUE_IMAGES_DIR / filename
+                if src.is_file() and not dst.exists():
+                    try:
+                        shutil.copy2(str(src), str(dst))
+                    except OSError:
+                        pass
+                search_start = path_end
+            # Bulk-replace the directory prefix (preserves all whitespace)
+            queue_prefix = '@' + queue_dir_str + '/'
+            return text.replace(note_prefix, queue_prefix)
+
+        # ── Migrate + collect refs from queue files ──────────────────
         if QUEUE_DIR.is_dir():
             for queue_file in QUEUE_DIR.iterdir():
+                if not queue_file.suffix == '.queue':
+                    continue  # skip .tmp and other non-queue files
                 try:
-                    _collect_refs(queue_file.read_text())
+                    content = queue_file.read_text()
+                    migrated = _migrate_note_refs(content)
+                    if migrated is not content:
+                        queue_file.write_text(migrated)
+                    _collect_refs(migrated)
                 except OSError:
                     pass
 
-        # Scan presets JSON (format: {"name": ["msg1", ...], ...})
+        # ── Migrate + collect refs from presets JSON ─────────────────
         presets_file = STORAGE_DIR / 'leap_presets.json'
         if presets_file.is_file():
             try:
-                import json as _json
-                data = _json.loads(presets_file.read_text())
+                data = json.loads(presets_file.read_text())
+                presets_changed = False
                 if isinstance(data, dict):
-                    for messages in data.values():
-                        if isinstance(messages, list):
-                            for msg in messages:
-                                if isinstance(msg, str):
-                                    _collect_refs(msg)
+                    for name, messages in data.items():
+                        if not isinstance(messages, list):
+                            continue
+                        for j, msg in enumerate(messages):
+                            if not isinstance(msg, str):
+                                continue
+                            migrated = _migrate_note_refs(msg)
+                            if migrated is not msg:
+                                messages[j] = migrated
+                                presets_changed = True
+                            _collect_refs(migrated)
+                    if presets_changed:
+                        atomic_json_write(presets_file, data,
+                                          ensure_ascii=False)
             except (OSError, ValueError):
                 pass
 
-        # Delete unreferenced images
+        # ── Delete unreferenced images ───────────────────────────────
         for entry in QUEUE_IMAGES_DIR.iterdir():
             try:
                 if entry.is_file() and str(entry) not in referenced:

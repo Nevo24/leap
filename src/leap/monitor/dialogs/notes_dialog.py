@@ -28,7 +28,7 @@ from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCurs
 
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
-from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR
+from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR, QUEUE_IMAGES_DIR
 
 
 MAX_NOTE_NAME_LEN = 80
@@ -2694,9 +2694,22 @@ class NotesDialog(QDialog):
 
     @staticmethod
     def _resolve_note_images(text: str) -> str:
-        """Convert ``![image](hash.png)`` markers to ``@/abs/path`` refs."""
+        """Convert ``![image](hash.png)`` markers to ``@/abs/path`` refs.
+
+        Images are **copied** from ``note_images/`` to ``queue_images/`` so
+        that presets and queue messages own their own copy.  This ensures
+        deleting a note never breaks image references in presets or queues.
+        """
         def _replace(m: re.Match) -> str:
-            return '@' + str(NOTE_IMAGES_DIR / m.group(1))
+            filename = m.group(1)
+            src = NOTE_IMAGES_DIR / filename
+            dst = QUEUE_IMAGES_DIR / filename
+            if src.is_file() and not dst.exists():
+                QUEUE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(src), str(dst))
+            # Always point to queue_images — the copy is the authoritative
+            # reference for presets/queue messages.
+            return '@' + str(QUEUE_IMAGES_DIR / filename)
         return _IMAGE_MARKER_RE.sub(_replace, text)
 
     def _get_note_messages(self) -> list[str]:
