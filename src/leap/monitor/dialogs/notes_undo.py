@@ -539,7 +539,8 @@ class RenameFolderCmd(UndoCommand):
 
 class MoveNoteCmd(UndoCommand):
     def __init__(self, old_name: str, new_name: str, old_folder: str, new_folder: str,
-                 old_order_position: tuple[str, int]) -> None:
+                 old_order_position: tuple[str, int],
+                 new_order_position: Optional[int] = None) -> None:
         leaf = old_name.rsplit('/', 1)[-1] if '/' in old_name else old_name
         super().__init__(description=f"Move note '{leaf}'")
         self._old_name = old_name
@@ -548,6 +549,7 @@ class MoveNoteCmd(UndoCommand):
         self._new_folder = new_folder
         self._old_order_folder = old_order_position[0]
         self._old_order_index = old_order_position[1]
+        self._new_order_position = new_order_position
 
     def execute(self, ctx: object) -> None:
         dest = _note_path(self._new_name)
@@ -562,6 +564,8 @@ class MoveNoteCmd(UndoCommand):
             _save_notes_meta(meta)
         leaf = self._old_name.rsplit('/', 1)[-1] if '/' in self._old_name else self._old_name
         _remove_from_order(self._old_folder, leaf)
+        new_leaf = self._new_name.rsplit('/', 1)[-1] if '/' in self._new_name else self._new_name
+        _insert_into_order(self._new_folder, new_leaf, self._new_order_position)
         if hasattr(ctx, 'current_name') and ctx.current_name == self._old_name:
             ctx.current_name = self._new_name
         if hasattr(ctx, 'select_and_load'):
@@ -578,8 +582,8 @@ class MoveNoteCmd(UndoCommand):
         if self._new_name in meta:
             meta[self._old_name] = meta.pop(self._new_name)
             _save_notes_meta(meta)
-        leaf = self._new_name.rsplit('/', 1)[-1] if '/' in self._new_name else self._new_name
-        _remove_from_order(self._new_folder, leaf)
+        new_leaf = self._new_name.rsplit('/', 1)[-1] if '/' in self._new_name else self._new_name
+        _remove_from_order(self._new_folder, new_leaf)
         old_leaf = self._old_name.rsplit('/', 1)[-1] if '/' in self._old_name else self._old_name
         _insert_into_order(self._old_order_folder, old_leaf, self._old_order_index)
         if hasattr(ctx, 'current_name') and ctx.current_name == self._new_name:
@@ -590,7 +594,8 @@ class MoveNoteCmd(UndoCommand):
 
 class MoveFolderCmd(UndoCommand):
     def __init__(self, old_path: str, new_path: str, old_parent: str, new_parent: str,
-                 old_order_position: tuple[str, int]) -> None:
+                 old_order_position: tuple[str, int],
+                 new_order_position: Optional[int] = None) -> None:
         leaf = old_path.rsplit('/', 1)[-1] if '/' in old_path else old_path
         super().__init__(description=f"Move folder '{leaf}'")
         self._old_path = old_path
@@ -599,8 +604,10 @@ class MoveFolderCmd(UndoCommand):
         self._new_parent = new_parent
         self._old_order_folder = old_order_position[0]
         self._old_order_index = old_order_position[1]
+        self._new_order_position = new_order_position
 
-    def _do_move(self, from_path: str, to_path: str, from_parent: str, ctx: object) -> None:
+    def _do_move(self, from_path: str, to_path: str, from_parent: str,
+                 to_parent: str, to_position: Optional[int], ctx: object) -> None:
         src = NOTES_DIR / from_path
         dest = NOTES_DIR / to_path
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -625,19 +632,22 @@ class MoveFolderCmd(UndoCommand):
         for old_k in [k for k in order if k == from_path or k.startswith(from_path + '/')]:
             order[to_path + old_k[len(from_path):]] = order.pop(old_k)
         _save_order(order)
+        # Insert into target parent order at specified position
+        to_leaf = to_path.rsplit('/', 1)[-1] if '/' in to_path else to_path
+        _insert_into_order(to_parent, to_leaf, to_position)
         if hasattr(ctx, 'current_name') and ctx.current_name:
             cn = ctx.current_name
             if cn.startswith(from_path + '/'):
                 ctx.current_name = to_path + cn[len(from_path):]
 
     def execute(self, ctx: object) -> None:
-        self._do_move(self._old_path, self._new_path, self._old_parent, ctx)
+        self._do_move(self._old_path, self._new_path, self._old_parent,
+                      self._new_parent, self._new_order_position, ctx)
         if hasattr(ctx, 'select_and_load'):
             ctx.select_and_load(name=self._new_path, select_type='folder')
     def undo(self, ctx: object) -> None:
-        self._do_move(self._new_path, self._old_path, self._new_parent, ctx)
-        leaf = self._old_path.rsplit('/', 1)[-1] if '/' in self._old_path else self._old_path
-        _insert_into_order(self._old_order_folder, leaf, self._old_order_index)
+        self._do_move(self._new_path, self._old_path, self._new_parent,
+                      self._old_parent, self._old_order_index, ctx)
         if hasattr(ctx, 'select_and_load'):
             ctx.select_and_load(name=self._old_path, select_type='folder')
 
@@ -748,6 +758,28 @@ class ChecklistToggleCmd(UndoCommand):
             items = ctx.get_checklist_items()
             if 0 <= self._index < len(items):
                 items[self._index]['checked'] = self._old_checked
+                ctx.set_checklist_items(items)
+
+
+class ChecklistAddItemCmd(UndoCommand):
+    """Undo command for adding a checklist item (Enter or Add field)."""
+
+    def __init__(self, item_index: int, item_text: str) -> None:
+        super().__init__(description='Add checklist item')
+        self._index = item_index
+        self._text = item_text
+
+    def execute(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            items.insert(self._index, {'text': self._text, 'checked': False})
+            ctx.set_checklist_items(items)
+
+    def undo(self, ctx: object) -> None:
+        if hasattr(ctx, 'get_checklist_items'):
+            items = ctx.get_checklist_items()
+            if 0 <= self._index < len(items):
+                del items[self._index]
                 ctx.set_checklist_items(items)
 
 

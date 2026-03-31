@@ -27,8 +27,9 @@ from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
 
 from leap.monitor.dialogs.notes_undo import (
-    BatchDeleteCmd, ChecklistDeleteItemCmd, ChecklistReorderCmd,
-    ChecklistToggleCmd, CreateFolderCmd, CreateNoteCmd, DeleteFolderCmd,
+    BatchDeleteCmd, ChecklistAddItemCmd, ChecklistDeleteItemCmd,
+    ChecklistReorderCmd, ChecklistToggleCmd,
+    CreateFolderCmd, CreateNoteCmd, DeleteFolderCmd,
     DeleteNoteCmd, ModeSwitchCmd, MoveFolderCmd, MoveNoteCmd,
     NoteContentChangeCmd, NotesCmdContext, NotesUndoStack,
     RenameFolderCmd, RenameNoteCmd, ReorderCmd,
@@ -1016,6 +1017,8 @@ class _ChecklistWidget(QWidget):
         self._focus_add_after_rebuild: bool = False
         self._dragging_index: int = -1
         self._pasted_images: set[str] = set()  # track images pasted in checklist
+        self._undo_stack: Optional['NotesUndoStack'] = None
+        self._cmd_ctx: Optional['NotesCmdContext'] = None
         self._image_counter: int = 0
         self._undo_stack: Optional[object] = None
         self._cmd_ctx: Optional[object] = None
@@ -1400,6 +1403,9 @@ class _ChecklistWidget(QWidget):
         self._focus_after_rebuild = (new_idx, True)
         self._rebuild()
         self.content_changed.emit()
+        if self._undo_stack is not None:
+            self._undo_stack.record(ChecklistAddItemCmd(
+                item_index=new_idx, item_text=''))
 
     def _on_merge_up(self, index: int) -> None:
         """Backspace on empty item → delete it and focus the previous one."""
@@ -1415,12 +1421,17 @@ class _ChecklistWidget(QWidget):
         if pos <= 0:
             return
         prev_idx = unchecked[pos - 1]
+        item = self._items[index]
         del self._items[index]
         if prev_idx > index:
             prev_idx -= 1
         self._focus_after_rebuild = (prev_idx, True)
         self._rebuild()
         self.content_changed.emit()
+        if self._undo_stack is not None:
+            self._undo_stack.record(ChecklistDeleteItemCmd(
+                item_index=index, item_text=item['text'],
+                item_checked=item['checked']))
 
     def _on_add_item(self) -> None:
         # If the add popup is active, read from it
@@ -1433,10 +1444,14 @@ class _ChecklistWidget(QWidget):
             return
         if not text:
             return
+        new_idx = len(self._items)
         self._items.append({'text': text, 'checked': False})
         self._focus_add_after_rebuild = True
         self._rebuild()
         self.content_changed.emit()
+        if self._undo_stack is not None:
+            self._undo_stack.record(ChecklistAddItemCmd(
+                item_index=new_idx, item_text=text))
 
     def _expand_add_field(self) -> None:
         """Swap the Add item QLineEdit for a wrapping editor."""
@@ -2282,7 +2297,8 @@ class NotesDialog(QDialog):
 
         menu.exec_(self._tree.viewport().mapToGlobal(pos))
 
-    def _move_note(self, note_name: str, target_folder: str) -> bool:
+    def _move_note(self, note_name: str, target_folder: str,
+                   target_position: Optional[int] = None) -> bool:
         """Move a note to a different folder. Returns True on success."""
         leaf = note_name.rsplit('/', 1)[-1] if '/' in note_name else note_name
         new_name = f'{target_folder}/{leaf}' if target_folder else leaf
@@ -2300,13 +2316,15 @@ class NotesDialog(QDialog):
         order = _load_order().get(src_folder, [])
         pos = order.index(leaf) if leaf in order else len(order)
         cmd = MoveNoteCmd(old_name=note_name, new_name=new_name, old_folder=src_folder,
-                          new_folder=target_folder, old_order_position=(src_folder, pos))
+                          new_folder=target_folder, old_order_position=(src_folder, pos),
+                          new_order_position=target_position)
         self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=new_name)
         self._on_item_changed(self._tree.currentItem(), None)
         return True
 
-    def _move_folder(self, folder_path: str, target_folder: str) -> bool:
+    def _move_folder(self, folder_path: str, target_folder: str,
+                     target_position: Optional[int] = None) -> bool:
         """Move a folder into another folder (or root). Returns True on success."""
         leaf = folder_path.rsplit('/', 1)[-1] if '/' in folder_path else folder_path
         new_path = f'{target_folder}/{leaf}' if target_folder else leaf
@@ -2328,7 +2346,8 @@ class NotesDialog(QDialog):
         order = _load_order().get(src_parent, [])
         pos = order.index(leaf) if leaf in order else len(order)
         cmd = MoveFolderCmd(old_path=folder_path, new_path=new_path, old_parent=src_parent,
-                            new_parent=target_folder, old_order_position=(src_parent, pos))
+                            new_parent=target_folder, old_order_position=(src_parent, pos),
+                            new_order_position=target_position)
         self._undo_stack.push(cmd, self._cmd_ctx)
         self._refresh_tree(select_name=new_path, select_type='folder')
         return True
@@ -2343,24 +2362,19 @@ class NotesDialog(QDialog):
             self._reorder_in_folder(
                 src_path, src_type, target_folder, before_path)
         else:
-            # Move to a different folder
-            ok = False
+            # Move to a different folder — compute target position from
+            # drop location so the move command places it correctly.
+            before_leaf = (before_path.rsplit('/', 1)[-1]
+                           if before_path else '')
+            target_order = self._effective_order(target_folder)
+            if before_leaf and before_leaf in target_order:
+                new_pos: Optional[int] = target_order.index(before_leaf)
+            else:
+                new_pos = None  # append
             if src_type == 'note':
-                ok = self._move_note(src_path, target_folder)
+                self._move_note(src_path, target_folder, new_pos)
             elif src_type == 'folder':
-                ok = self._move_folder(src_path, target_folder)
-            if ok:
-                # Place at drop position in the target folder's order,
-                # then re-refresh so the visual matches the stored order.
-                moved_leaf = (src_path.rsplit('/', 1)[-1]
-                              if '/' in src_path else src_path)
-                self._insert_at_position(
-                    target_folder, moved_leaf, before_path)
-                new_full = (f'{target_folder}/{moved_leaf}'
-                            if target_folder else moved_leaf)
-                sel_type = 'folder' if src_type == 'folder' else 'note'
-                self._refresh_tree(
-                    select_name=new_full, select_type=sel_type)
+                self._move_folder(src_path, target_folder, new_pos)
         # macOS deactivates the window during native drag — reactivate so
         # focus and cursors work immediately after the drop.
         QApplication.setActiveWindow(self)
