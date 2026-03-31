@@ -894,7 +894,7 @@ class CLIStateTracker:
                                 compact = fallback.replace(
                                     ' ', '',
                                 ).replace('\n', '')
-                    has_dialog = all(
+                    has_dialog = any(
                         p.decode('utf-8', errors='replace') in compact
                         for p in self._provider.dialog_patterns
                     )

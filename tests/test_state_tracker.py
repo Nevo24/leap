@@ -1268,3 +1268,34 @@ class TestLateNotificationGuard:
         # Late Notification arrives — dialog on live screen
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_legitimate_notification_accepted_partial_dialog_patterns(
+        self, tmp_path: Path,
+    ) -> None:
+        """Notification accepted when only SOME dialog patterns are
+        present (e.g., 'Esc to cancel' without 'Enter to select').
+        Claude Code's edit-confirmation dialogs show numbered options
+        with 'Esc to cancel' but no 'Enter to select'."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Permission dialog with only "Esc to cancel"
+        feed_screen_text(
+            tracker,
+            'Do you want to make this edit?\n'
+            '1. Yes\n'
+            '2. Yes, allow all\n'
+            '3. No\n'
+            'Esc to cancel',
+        )
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker._last_running_snapshot
+
+        # Late Notification arrives — partial dialog patterns in snapshot
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'

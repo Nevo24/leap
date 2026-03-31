@@ -180,6 +180,7 @@ class LeapServer:
         # when transitioning from running to idle (prevents keyboard-layout
         # artefacts from leaking into the tracked "last message").
         self._prev_filter_state: Optional[CLIState] = None
+        self._pending_resize: bool = False
         # Queue-from-server: "^" prefix capture mode.
         # When "^" is the first char on a line we enter capture mode
         # and swallow all subsequent input until Enter → queue.
@@ -873,7 +874,24 @@ class LeapServer:
                 return
 
     def _handle_resize(self, sig: int, frame: Any) -> None:
-        """Handle terminal resize signal."""
+        """Handle terminal resize signal.
+
+        Signal handlers must not acquire locks — ``on_resize`` takes
+        ``_screen_lock``, which may already be held by the main thread
+        (e.g., inside ``on_output``).  Acquiring a non-reentrant
+        ``threading.Lock`` from the same thread deadlocks permanently.
+
+        Instead, set a flag and let the output filter (which runs on
+        every PTY read cycle) apply the resize outside the signal
+        context.
+        """
+        self._pending_resize = True
+
+    def _apply_pending_resize(self) -> None:
+        """Apply a deferred terminal resize (called outside signal context)."""
+        if not self._pending_resize:
+            return
+        self._pending_resize = False
         try:
             cols, rows = shutil.get_terminal_size(fallback=(80, 24))
             self.state.on_resize(rows, cols)
@@ -1491,6 +1509,9 @@ class LeapServer:
 
     def _input_filter_impl(self, data: bytes) -> bytes:
         """Implementation of _input_filter (separated for crash protection)."""
+        # Apply deferred SIGWINCH resize outside the signal context.
+        self._apply_pending_resize()
+
         # Note: on_input() is called AFTER the byte loop (see end of
         # method) with only the bytes that reach the CLI.  This prevents
         # capture-mode keystrokes from affecting state tracker flags
@@ -1745,6 +1766,10 @@ class LeapServer:
 
     def _output_filter_impl(self, data: bytes) -> bytes:
         """Implementation of _output_filter (separated for crash protection)."""
+        # Apply deferred SIGWINCH resize outside the signal context
+        # (signal handlers must not acquire locks).
+        self._apply_pending_resize()
+
         # Strip OSC title-change sequences so the CLI cannot override
         # the "lps <tag>" tab name used by the monitor for navigation.
         data = self._OSC_TITLE_RE.sub(b'', data)
