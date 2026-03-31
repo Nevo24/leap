@@ -589,6 +589,18 @@ class LeapServer:
             except (OSError, ValueError):
                 pass
 
+        # ── Collect refs from saved messages history ───────────────────
+        saved_file = STORAGE_DIR / 'saved_messages.json'
+        if saved_file.is_file():
+            try:
+                saved = json.loads(saved_file.read_text())
+                if isinstance(saved, list):
+                    for msg in saved:
+                        if isinstance(msg, str):
+                            _collect_refs(msg)
+            except (OSError, ValueError):
+                pass
+
         # ── Delete unreferenced images ───────────────────────────────
         for entry in QUEUE_IMAGES_DIR.iterdir():
             try:
@@ -956,6 +968,10 @@ class LeapServer:
         msg = self._capture_text().strip()
         if not msg:
             return
+        # Resolve image placeholders so saved messages carry the actual
+        # @path references and work when recalled in a future session.
+        if self._capture_image_map:
+            msg = self._capture_resolve_images(msg)
         # Remove duplicate if already at the end
         if self._saved_messages and self._saved_messages[-1] == msg:
             pass
@@ -1010,8 +1026,10 @@ class LeapServer:
                 return
             self._saved_msg_index = new_idx
 
-        # Load the message at current index
+        # Load the message at current index, converting @path refs back
+        # to [Image #N] placeholders for a friendly display.
         msg = self._saved_messages[self._saved_msg_index]
+        msg = self._capture_unresolve_images(msg)
         self._queue_capture_buf = bytearray(msg.encode('utf-8'))
         self._capture_cursor_pos = len(msg)
         self._capture_display(self._capture_text())
@@ -1150,14 +1168,50 @@ class LeapServer:
         """Replace [Image #N] placeholders with @path references."""
         image_parts: list[str] = []
         for placeholder, path in self._capture_image_map.items():
-            if placeholder in message:
+            count = message.count(placeholder)
+            if count:
                 message = message.replace(placeholder, '')
-                image_parts.append(f'@{path}')
+                image_parts.extend(f'@{path}' for _ in range(count))
         if image_parts:
             text = message.strip()
             result = (' '.join(image_parts) + ' ' + text).strip() if text else ' '.join(image_parts)
             return result
         return message
+
+    def _capture_unresolve_images(self, message: str) -> str:
+        """Replace ``@path`` image refs with ``[Image #N]`` placeholders.
+
+        The reverse of :meth:`_capture_resolve_images`.  Populates
+        ``_capture_image_map`` so the placeholders can be resolved back
+        when the message is sent or saved.
+        """
+        images_dir = str(QUEUE_IMAGES_DIR)
+        tokens = message.split()
+        changed = False
+        for i, token in enumerate(tokens):
+            if not token.startswith('@'):
+                continue
+            path_part = token[1:]
+            try:
+                if not os.path.realpath(path_part).startswith(images_dir):
+                    continue
+            except (OSError, ValueError):
+                continue
+            # Check if already mapped (same path from a previous recall)
+            existing_ph = None
+            for ph, p in self._capture_image_map.items():
+                if p == path_part:
+                    existing_ph = ph
+                    break
+            if existing_ph:
+                tokens[i] = existing_ph
+            else:
+                self._capture_image_counter += 1
+                placeholder = f'[Image #{self._capture_image_counter}]'
+                self._capture_image_map[placeholder] = path_part
+                tokens[i] = placeholder
+            changed = True
+        return ' '.join(tokens) if changed else message
 
     def _capture_reset_images(self) -> None:
         """Reset image state for the next capture session."""
