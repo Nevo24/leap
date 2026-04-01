@@ -462,6 +462,14 @@ class LeapServer:
         Args:
             message: Message to send.
         """
+        # If ^^ capture left stale text in the CLI's input, clear it
+        # with Ctrl+C before sending.  The 200ms sleep gives the CLI
+        # time to process the clear before receiving the message.
+        if self._capture_stale_char_count > 0:
+            self._capture_stale_char_count = 0
+            self.pty.send('\x03')
+            time.sleep(0.2)
+
         self.state.on_send()
 
         is_img = self._provider.is_image_message(message) or self._has_image_ref(message)
@@ -1122,16 +1130,7 @@ class LeapServer:
         # Clear pending caret so a single ^ after exit doesn't
         # accidentally trigger capture mode.
         self._pending_caret = False
-        # Clear capture flag BEFORE Ctrl+C — the output filter
-        # suppresses all CLI output during capture mode, and we need
-        # the CLI's response to Ctrl+C to reach the terminal.
         self._queue_capture_mode = False
-        # Clear stale pre-typed text with Ctrl+C.  At idle prompt it
-        # just clears the input line.  Sent here (not deferred to
-        # _send_to_cli) so empty-Enter also cleans up.
-        if self._capture_stale_char_count > 0:
-            self.pty.send('\x03')
-            self._capture_stale_char_count = 0
         # Force the Ink TUI to do an immediate full-screen repaint.
         # macOS only sends SIGWINCH when the size actually changes, so
         # we shrink by one row, let the child handle it, then restore.
@@ -1457,7 +1456,16 @@ class LeapServer:
                     msg = self._capture_resolve_images(msg)
                 if msg:
                     self.queue.add(msg)
-                self._capture_flush()
+                    # Stale text cleanup deferred to _send_to_cli
+                    # (with 200ms delay before the message).
+                    self._capture_flush()
+                else:
+                    # Empty Enter with stale text — no message to
+                    # trigger _send_to_cli, so clear here directly.
+                    stale = self._capture_stale_char_count > 0
+                    self._capture_flush()
+                    if stale:
+                        self.pty.send('\x03')
                 self._queue_capture_buf.clear()
                 self._capture_cursor_pos = 0
                 self._capture_utf8_buf.clear()
