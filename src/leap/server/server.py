@@ -189,6 +189,7 @@ class LeapServer:
         self._capture_stale_caret: bool = False  # cross-chunk ^^ left a literal ^ in CLI
         self._capture_stale_char_count: int = 0  # chars to backspace on flush
         self._capture_pre_input_buf: bytearray = bytearray()  # snapshot for cancel
+        self._capture_cancel_pending: bool = False  # bg thread sending text
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
         self._capture_prev_lines: int = 0  # wrapped line count from last display
@@ -1265,32 +1266,45 @@ class LeapServer:
         self._capture_reset_images()
         # Transfer capture buffer text back to the CLI's input line.
         # If the user edited the text in capture mode, update the CLI.
-        if capture_text == pre_text:
+        # Replace newlines with spaces — sending a raw newline to the
+        # CLI would execute partial text.
+        safe_text = capture_text.replace('\n', ' ')
+        if safe_text == pre_text:
             # Unchanged — just restore input tracking.
             self._terminal_input_buf = bytearray(
                 self._capture_pre_input_buf)
         else:
             # Text was edited — clear CLI line and type the new text.
-            # Use a background thread so the sleep doesn't block the
-            # interact loop, and the CLI has time to process Ctrl+C
-            # before receiving the new text.
+            # Background thread gives the CLI time to process Ctrl+C
+            # before receiving the new text.  The _cancel_pending flag
+            # blocks _enter_capture_mode until the send completes.
+            self._capture_cancel_pending = True
+
             def _apply_cancel_text() -> None:
                 try:
                     if pre_text:
                         self.pty.send('\x03')
                         time.sleep(0.15)
-                    if capture_text:
-                        self.pty.send(capture_text)
+                    if safe_text:
+                        self.pty.send(safe_text)
                 except OSError:
                     pass
+                finally:
+                    self._capture_cancel_pending = False
             threading.Thread(
                 target=_apply_cancel_text, daemon=True).start()
             self._terminal_input_buf = bytearray(
-                capture_text.encode('utf-8'))
+                safe_text.encode('utf-8'))
 
     def _enter_capture_mode(self, stale_cli_input: bool,
                             stale_caret: bool) -> None:
         """Enter queue-capture mode with the current input buffer."""
+        # Wait for any pending cancel-text send to finish so the CLI
+        # has the correct text before we snapshot it.
+        if self._capture_cancel_pending:
+            deadline = time.time() + 0.3
+            while self._capture_cancel_pending and time.time() < deadline:
+                time.sleep(0.01)
         # Snapshot the pre-capture input so _capture_cancel can restore
         # it if the user toggles back out without sending.
         self._capture_pre_input_buf = bytearray(self._terminal_input_buf)
