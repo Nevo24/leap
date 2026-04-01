@@ -1113,23 +1113,23 @@ class LeapServer:
         if self._capture_stale_caret:
             self.pty.send('\x7f')
             self._capture_stale_caret = False
-        # Immediately clear stale pre-typed text from the CLI's input
-        # line.  On cancel, leave it — the user wants to keep it.
-        # Send End key first to move cursor to the end of the line,
-        # then backspace the full character count.  This works
-        # regardless of where the cursor was when ^^ was typed.
-        if not cancel and self._capture_stale_char_count > 0:
-            self.pty.send('\x1b[F' + '\x7f' * self._capture_stale_char_count)
-            self._capture_stale_char_count = 0
-        elif cancel:
+        # On cancel (Escape/Ctrl+C), discard the stale count so the
+        # text stays on the CLI — the user wants to keep it.
+        if cancel:
             self._capture_stale_char_count = 0
         # Clear pending caret so a single ^ after exit doesn't
         # accidentally trigger capture mode.
         self._pending_caret = False
-        # Clear capture flag BEFORE the resize — the resize triggers
-        # child output via SIGWINCH, and the output filter must not
-        # swallow it.
+        # Clear capture flag BEFORE Ctrl+C — the output filter
+        # suppresses all CLI output during capture mode, and we need
+        # the CLI's response to Ctrl+C to reach the terminal.
         self._queue_capture_mode = False
+        # Clear stale pre-typed text with Ctrl+C.  At idle prompt it
+        # just clears the input line.  Sent here (not deferred to
+        # _send_to_cli) so empty-Enter also cleans up.
+        if self._capture_stale_char_count > 0:
+            self.pty.send('\x03')
+            self._capture_stale_char_count = 0
         # Force the Ink TUI to do an immediate full-screen repaint.
         # macOS only sends SIGWINCH when the size actually changes, so
         # we shrink by one row, let the child handle it, then restore.
