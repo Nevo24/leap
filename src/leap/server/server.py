@@ -1279,11 +1279,21 @@ class LeapServer:
             # blocks _enter_capture_mode until the send completes.
             self._capture_cancel_pending = True
 
+            pre_buf = self._capture_pre_input_buf
+
             def _apply_cancel_text() -> None:
                 try:
                     if pre_text:
-                        self.pty.send('\x03')
-                        time.sleep(0.15)
+                        # Only clear the CLI line if idle — Ctrl+C
+                        # while running would interrupt the task.
+                        if self.state.current_state == CLIState.IDLE:
+                            self.pty.send('\x03')
+                            time.sleep(0.15)
+                        else:
+                            # CLI is busy; can't clear — restore the
+                            # input buf to match what's actually on CLI.
+                            self._terminal_input_buf = bytearray(pre_buf)
+                            return
                     if safe_text:
                         self.pty.send(safe_text)
                 except OSError:
