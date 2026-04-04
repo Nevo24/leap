@@ -1119,10 +1119,26 @@ class LeapServer:
 
     def _capture_flush(self, cancel: bool = False) -> None:
         """End capture mode: handle stale CLI input, force TUI redraw."""
-        # Backspace the stale ^ from cross-chunk ^^ entry.
+        # The stale ^ from cross-chunk ^^ entry used to be removed with
+        # a backspace, but that only works if the cursor is still right
+        # after the ^.  Arrow keys (or other escape sequences) between
+        # the two ^'s move the cursor, making the backspace delete the
+        # wrong character (or nothing).  Instead, fold the ^ into the
+        # stale-char count so _send_to_cli uses Ctrl+C to clear the
+        # entire line — cursor-position-independent.
         if self._capture_stale_caret:
-            self.pty.send('\x7f')
             self._capture_stale_caret = False
+            if cancel:
+                # On cancel, try a backspace to remove the stale ^.
+                # This works when the cursor is still right after the ^
+                # (the common cancel case).  If arrow keys moved the
+                # cursor it's a no-op — acceptable for cancel.
+                self.pty.send('\x7f')
+            else:
+                # On send, use Ctrl+C (via stale-char count) instead
+                # of backspace — cursor-position-independent.
+                self._capture_stale_char_count = max(
+                    self._capture_stale_char_count, 1)
         # On cancel (Escape/Ctrl+C), discard the stale count so the
         # text stays on the CLI — the user wants to keep it.
         if cancel:
@@ -1472,9 +1488,9 @@ class LeapServer:
                 else:
                     # Empty Enter with stale text — no message to
                     # trigger _send_to_cli, so clear here directly.
-                    stale = self._capture_stale_char_count > 0
                     self._capture_flush()
-                    if stale:
+                    if self._capture_stale_char_count > 0:
+                        self._capture_stale_char_count = 0
                         self.pty.send('\x03')
                 self._queue_capture_buf.clear()
                 self._capture_cursor_pos = 0
@@ -1585,6 +1601,7 @@ class LeapServer:
         out = bytearray()
         i = 0
         capture_dirty = False  # deferred display update for pastes
+        pending_caret_out_pos = -1  # index of first "^" in out (for same-chunk ^^)
         chunk_has_paste = self._detect_paste(data)
 
         # Check if the very first byte is "^" and _pending_caret is set
@@ -1732,19 +1749,32 @@ class LeapServer:
                     if (self._terminal_input_buf
                             and self._terminal_input_buf[-1] == 0x5e):
                         self._terminal_input_buf.pop()
-                    if out and out[-1] == 0x5e:
-                        out.pop()
+                    # The first "^" may not be at out[-1] if an escape
+                    # sequence (arrow key, etc.) was processed after it.
+                    # Use the tracked index to remove exactly that byte.
+                    caret_removed_from_out = False
+                    if (pending_caret_out_pos >= 0
+                            and pending_caret_out_pos < len(out)
+                            and out[pending_caret_out_pos] == 0x5e):
+                        del out[pending_caret_out_pos]
+                        caret_removed_from_out = True
                     # Flag stale only if CLI received text from previous
                     # chunks.  In same-chunk ^^, the first "^" was popped
                     # from out — CLI never got it.
                     stale = bool(self._terminal_input_buf)
-                    self._enter_capture_mode(stale_cli_input=stale,
-                                             stale_caret=False)
+                    self._enter_capture_mode(
+                        stale_cli_input=stale,
+                        stale_caret=not caret_removed_from_out,
+                    )
                     i += 1
                     continue
                 else:
                     # First "^" — hold it, wait for second.
                     self._pending_caret = True
+                    # Record where the "^" will land in out so the
+                    # same-chunk trigger can remove exactly that byte
+                    # (not a 0x5e that happens to be an escape final).
+                    pending_caret_out_pos = len(out)
                     # Fall through to normal handling (adds to buffer
                     # and out as literal "^").
 
