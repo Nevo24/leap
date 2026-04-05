@@ -162,18 +162,24 @@ class CLIStateTracker:
     def _capture_prompt_snapshot(self) -> list[str]:
         """Capture a prompt snapshot from the current screen, with fallback.
 
-        If the pyte screen is all blank (e.g., it was reset on a prior
-        running→idle transition before the hook signal arrived), falls
-        back to ``_last_running_snapshot`` — the screen content saved
-        when leaving RUNNING state.
+        After a running→idle transition the pyte screen is reset.  By
+        the time the Notification hook fires (seconds later), the live
+        screen may be empty or may contain only partial TUI redraws
+        without the full dialog.  Fall back to ``_last_running_snapshot``
+        (saved at running→idle time) whenever it has more non-blank
+        lines than the live screen.
 
         Must be called with _screen_lock held.
         """
         snapshot = self._get_display_lines()
-        if all(not line.strip() for line in snapshot):
-            if self._last_running_snapshot:
+        if self._last_running_snapshot:
+            live_filled = sum(1 for ln in snapshot if ln.strip())
+            saved_filled = sum(1 for ln in self._last_running_snapshot if ln.strip())
+            if saved_filled > live_filled:
                 _log.debug(
-                    'prompt snapshot empty, using last running snapshot',
+                    'prompt snapshot sparse (%d lines vs %d saved), '
+                    'using last running snapshot',
+                    live_filled, saved_filled,
                 )
                 snapshot = self._last_running_snapshot
         self._last_running_snapshot = []
@@ -715,8 +721,18 @@ class CLIStateTracker:
         # at detection time (in _handle_idle_output).  Don't overwrite
         # it — the screen was reset after capture and may contain only
         # fragments from subsequent Ink TUI redraws.
+        #
+        # Similarly, after a running→needs_permission transition the
+        # screen is reset (line 943 in get_state).  The initial snapshot
+        # captured the full dialog, but subsequent TUI redraws on the
+        # fresh screen may be partial.  Only replace the snapshot when
+        # the new content has at least as many non-blank lines.
         if not self._trust_dialog_phase:
-            self._prompt_snapshot = self._get_display_lines()
+            new_lines = self._get_display_lines()
+            old_filled = sum(1 for ln in self._prompt_snapshot if ln.strip())
+            new_filled = sum(1 for ln in new_lines if ln.strip())
+            if new_filled >= old_filled:
+                self._prompt_snapshot = new_lines
 
     # -- State polling --------------------------------------------------------
 
@@ -884,16 +900,19 @@ class CLIStateTracker:
                         compact = screen_text.replace(
                             ' ', '',
                         ).replace('\n', '')
-                        # If the screen was reset (empty), check the
-                        # snapshot saved when running→idle fired.
-                        if not compact.strip():
-                            if self._last_running_snapshot:
-                                fallback = '\n'.join(
-                                    self._last_running_snapshot,
-                                )
-                                compact = fallback.replace(
-                                    ' ', '',
-                                ).replace('\n', '')
+                        # After running→idle the screen was reset.  The
+                        # Notification hook can arrive seconds later, by
+                        # which time the live screen may be empty or may
+                        # contain only partial TUI redraws (without the
+                        # full dialog).  Always check the snapshot saved
+                        # at running→idle time as a fallback.
+                        if self._last_running_snapshot:
+                            fallback = '\n'.join(
+                                self._last_running_snapshot,
+                            )
+                            compact += fallback.replace(
+                                ' ', '',
+                            ).replace('\n', '')
                     has_dialog = any(
                         p.decode('utf-8', errors='replace') in compact
                         for p in self._provider.dialog_patterns
@@ -1103,11 +1122,12 @@ class CLIStateTracker:
         return self.is_ready_for_state(self.get_state(pty_alive))
 
     def is_ready_for_state(self, state: str) -> bool:
-        """Check readiness given an already-computed state."""
-        if state == CLIState.INTERRUPTED:
-            return False
-        if self._auto_send_mode == AutoSendMode.ALWAYS:
-            return state != CLIState.RUNNING
+        """Check readiness for sending the next queued message.
+
+        In both modes, queued messages are only sent when IDLE.
+        Permission auto-approve (ALWAYS mode) is handled separately
+        by the auto-sender loop in ``LeapServer``.
+        """
         return state == CLIState.IDLE
 
     @staticmethod

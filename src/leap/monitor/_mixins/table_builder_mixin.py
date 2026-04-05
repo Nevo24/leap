@@ -1651,13 +1651,13 @@ class TableBuilderMixin(_Base):
         always_action.setCheckable(True)
         always_action.setChecked(current_mode == AutoSendMode.ALWAYS)
         always_action.setToolTip(
-            'Auto-send queued messages whenever the CLI is\n'
-            'not actively running — even if waiting for input.\n'
+            'Auto-approve permission prompts and send queued\n'
+            'messages when idle.\n'
             '\n'
             '\u25cb Idle — sends next queued message\n'
             '\u25cf Running — waits until finished\n'
-            '\u25b2 Permission — sends (interrupts the prompt)\n'
-            '\u25c6 Question — sends (interrupts the prompt)\n'
+            '\u25b2 Permission — auto-approves "Yes"\n'
+            '\u25c6 Question — waits (does not interrupt)\n'
             '\u25c7 Interrupted — waits (needs manual resume)')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.ALWAYS)

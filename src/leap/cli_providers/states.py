@@ -23,8 +23,9 @@ class CLIState(str, Enum):
 class AutoSendMode(str, Enum):
     """Queue auto-send behavior.
 
-    PAUSE:  Only send when CLI is idle.
-    ALWAYS: Send whenever CLI is not running (even during prompts).
+    PAUSE:  Only send queued messages when CLI is idle.
+    ALWAYS: Send queued messages when idle and auto-approve permission
+            prompts (select "Yes" if available).  Questions wait.
     """
 
     PAUSE = 'pause'

@@ -478,6 +478,45 @@ class LeapServer:
         else:
             self.pty.sendline(message)
 
+    def _try_auto_approve(self) -> bool:
+        """Try to auto-approve a permission prompt (Always-send mode).
+
+        For CLIs with numbered menus (Claude), finds an exact ``Yes`` or
+        ``yes`` option label.  For CLIs without numbered menus (Codex,
+        Gemini, Cursor Agent), selects option 1 (the approve action).
+
+        Returns:
+            True if the permission was successfully approved.
+        """
+        prompt = self.state.get_prompt_output()
+        options = _extract_menu_options(prompt, self._provider)
+
+        if options:
+            # Numbered menu: require exact "Yes" / "yes" label.
+            yes_num: Optional[int] = None
+            for num, label in options:
+                if label in ('Yes', 'yes'):
+                    yes_num = num
+                    break
+            if yes_num is None:
+                return False
+            options_dict = {num: lbl for num, lbl in options}
+        elif not self._provider.has_numbered_menus:
+            # Non-menu CLI (Codex y/n, Gemini/Cursor radio): option 1 = approve.
+            yes_num = 1
+            options_dict = {}
+        else:
+            # Has menus but none found yet (prompt still rendering).
+            return False
+
+        result = self._provider.select_option(
+            yes_num, options_dict, self.pty.send, self.pty.sendline,
+        )
+        if result.get('status') != 'error':
+            self.state.on_send()
+            return True
+        return False
+
     def _has_image_ref(self, message: str) -> bool:
         """Check if the message contains any @path refs to .storage/queue_images/.
 
@@ -794,6 +833,22 @@ class LeapServer:
                             )
                     finally:
                         delayed_write_due = 0.0
+
+                # Auto-approve permissions in Always-send mode.
+                # Wait until delayed Slack write is flushed so the
+                # prompt output is captured before on_send() clears it.
+                if (
+                    current_state == CLIState.NEEDS_PERMISSION
+                    and self.state.auto_send_mode == AutoSendMode.ALWAYS
+                    and not delayed_write_due
+                ):
+                    if self._try_auto_approve():
+                        # on_send() moved state to RUNNING — update
+                        # prev_state so the next idle transition is
+                        # seen as running→idle (needed for Slack
+                        # delayed-write to capture the response).
+                        prev_state = CLIState.RUNNING
+                    continue
 
                 if self.queue.is_empty or not self.state.is_ready_for_state(current_state):
                     continue

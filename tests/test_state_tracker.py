@@ -824,12 +824,17 @@ class TestIsReady:
         assert tracker.is_ready_for_state('interrupted') is False
 
     def test_is_ready_always_mode(self, tmp_path: Path) -> None:
+        """In both modes, only IDLE triggers queue message sending.
+
+        Permission auto-approve is handled by the server loop, not
+        by is_ready_for_state.
+        """
         t = [0.0]
         tracker = make_tracker(tmp_path, t, auto_send_mode='always')
         assert tracker.is_ready_for_state('idle') is True
         assert tracker.is_ready_for_state('running') is False
-        assert tracker.is_ready_for_state('needs_permission') is True
-        assert tracker.is_ready_for_state('needs_input') is True
+        assert tracker.is_ready_for_state('needs_permission') is False
+        assert tracker.is_ready_for_state('needs_input') is False
         assert tracker.is_ready_for_state('interrupted') is False
 
 

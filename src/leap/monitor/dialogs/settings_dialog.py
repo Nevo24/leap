@@ -235,8 +235,8 @@ class SettingsDialog(QDialog):
             '  Waits during running, permission, and question states.\n'
             '\n'
             'Always send:\n'
-            '  Sends queued messages whenever the CLI is not actively running.\n'
-            '  Interrupts permission and question prompts to send.')
+            '  Auto-approves permission prompts ("Yes") and sends\n'
+            '  queued messages when idle. Waits during questions.')
         grid.addWidget(auto_send_label, 4, 0)
         self._auto_send_combo = QComboBox()
         self._auto_send_combo.setToolTip(auto_send_label.toolTip())
