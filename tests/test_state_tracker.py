@@ -149,6 +149,11 @@ class TestSignalFile:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        # Dialog patterns must be on screen for the guard to accept
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
@@ -595,6 +600,11 @@ class TestSafetyTimeouts:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        # Dialog patterns must be on screen for the guard to accept
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
         write_signal(tracker, 'needs_permission')
         tracker.get_state(pty_alive=True)
         t[0] = 1.0
@@ -869,6 +879,11 @@ class TestPromptOutput:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        # Dialog patterns must be on screen for the guard to accept
+        feed_screen_text(
+            tracker,
+            'Allow tool use?  Enter to select  Esc to cancel',
+        )
         # Enter needs_permission via signal
         write_signal(tracker, 'needs_permission')
         tracker.get_state(pty_alive=True)

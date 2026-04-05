@@ -891,7 +891,7 @@ class CLIStateTracker:
                 # (needs_input) may use a different UI that doesn't
                 # contain the provider's dialog_patterns.
                 if (
-                    current == CLIState.IDLE
+                    current in (CLIState.IDLE, CLIState.RUNNING)
                     and new_state == CLIState.NEEDS_PERMISSION
                     and self._provider.dialog_patterns
                 ):
@@ -1046,6 +1046,50 @@ class CLIStateTracker:
             with self._screen_lock:
                 cursor_visible = not self._screen.cursor.hidden
             if cursor_visible:
+                # Before transitioning to idle, check if the screen
+                # has a permission/input dialog.  This detects prompts
+                # seconds earlier than the Notification hook and avoids
+                # a false "idle" flash in the monitor.
+                # Check only the last 5 non-blank rows (where the
+                # dialog footer lives) and require ALL patterns to
+                # reduce false positives from response text mentioning
+                # these phrases.  Using non-blank rows handles tall
+                # terminals where blank rows pad the screen below the
+                # dialog.
+                if self._provider.dialog_patterns:
+                    with self._screen_lock:
+                        all_lines = self._get_display_lines()
+                    filled = [ln for ln in all_lines if ln.strip()]
+                    tail = filled[-5:] if filled else []
+                    compact_tail = ''.join(tail).replace(
+                        ' ', '',
+                    )
+                    has_dialog = all(
+                        p.decode('utf-8', errors='replace') in compact_tail
+                        for p in self._provider.dialog_patterns
+                    )
+                    if has_dialog:
+                        _log.debug(
+                            'GET_STATE running→needs_permission '
+                            '(dialog on screen + output silent %.1fs)',
+                            self._clock() - self._last_output_time,
+                        )
+                        self._interrupt_pending = False
+                        self._user_responded = False
+                        if self._trust_dialog_phase:
+                            self._trust_dialog_phase = False
+                        with self._lock:
+                            self._state = CLIState.NEEDS_PERMISSION
+                            self._waiting_since = self._clock()
+                        with self._screen_lock:
+                            # Reuse the lines already captured above
+                            # instead of re-reading the screen.
+                            self._prompt_snapshot = all_lines
+                            self._last_running_snapshot = list(
+                                all_lines)
+                            self._reset_screen()
+                        return CLIState.NEEDS_PERMISSION
+
                 _log.debug(
                     'GET_STATE running→idle (cursor visible + '
                     'output silent %.1fs)',
