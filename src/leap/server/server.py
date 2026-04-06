@@ -463,11 +463,15 @@ class LeapServer:
             message: Message to send.
         """
         # If ^^ capture left stale text in the CLI's input, clear it
-        # with Ctrl+C before sending.  The 200ms sleep gives the CLI
-        # time to process the clear before receiving the message.
+        # with backspaces before sending.  At send time the CLI is idle
+        # and the cursor is at the end of the stale text, so backspaces
+        # erase it reliably.  Unlike Ctrl+C this is safe even if there
+        # is a race where the CLI is still finishing a response — BS
+        # only affects the input line, it won't interrupt the operation.
         if self._capture_stale_char_count > 0:
+            n = self._capture_stale_char_count
             self._capture_stale_char_count = 0
-            self.pty.send('\x03')
+            self.pty.send('\x7f' * n)
             time.sleep(0.2)
 
         self.state.on_send()
@@ -1190,10 +1194,9 @@ class LeapServer:
                 # cursor it's a no-op — acceptable for cancel.
                 self.pty.send('\x7f')
             else:
-                # On send, use Ctrl+C (via stale-char count) instead
-                # of backspace — cursor-position-independent.
-                self._capture_stale_char_count = max(
-                    self._capture_stale_char_count, 1)
+                # On send, fold the stale ^ into the count so the
+                # cleanup erases the full line.
+                self._capture_stale_char_count += 1
         # On cancel (Escape/Ctrl+C), discard the stale count so the
         # text stays on the CLI — the user wants to keep it.
         if cancel:
@@ -1371,10 +1374,10 @@ class LeapServer:
                     pass
                 finally:
                     self._capture_cancel_pending = False
-            threading.Thread(
-                target=_apply_cancel_text, daemon=True).start()
             self._terminal_input_buf = bytearray(
                 safe_text.encode('utf-8'))
+            threading.Thread(
+                target=_apply_cancel_text, daemon=True).start()
 
     def _enter_capture_mode(self, stale_cli_input: bool,
                             stale_caret: bool) -> None:
