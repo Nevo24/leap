@@ -49,7 +49,7 @@ Just run `leap <tag>` — that's it! Leap wraps your AI CLI with queueing and se
 ```bash
 leap my-feature         # First run starts a server
 leap my-feature         # Second run connects a client (queue messages here)
-^^hello world           # Type ^^ in the server tab to queue directly
+^^hello world           # Type ^^ (quickly) in the server tab to queue directly
 ^^                      # Inside ^^: save msg to history (↑↓ to browse)
 ```
 

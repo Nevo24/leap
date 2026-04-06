@@ -199,6 +199,8 @@ class LeapServer:
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
+        self._pending_caret_time: float = 0.0  # when ^ was held
+        self._pending_caret_timer: Optional[threading.Timer] = None
         self._pending_caret_flush: bool = False  # paste cleared held ^
         # Saved message history (^^ inside capture mode saves + clears).
         # Browsed with arrow up/down.  Persisted to .storage/.
@@ -1477,6 +1479,22 @@ class LeapServer:
                 self._capture_display(self._capture_text())
         # Other CSI/OSC/SS3 sequences silently dropped.
 
+    def _flush_pending_caret(self) -> None:
+        """Timer callback: flush the held ``^`` to the CLI.
+
+        Called from a background thread after ~200ms if no second
+        ``^`` arrived.  Writes the ``^`` directly to the PTY so it
+        appears on the CLI's input line.
+        """
+        if not self._pending_caret:
+            return
+        self._pending_caret = False
+        try:
+            self.pty.send('^')
+        except OSError:
+            pass
+        self._terminal_input_buf.append(0x5e)
+
     def _detect_paste(self, data: bytes) -> bool:
         """Detect bracketed paste markers in input data.
 
@@ -1654,6 +1672,23 @@ class LeapServer:
         # Apply deferred SIGWINCH resize outside the signal context.
         self._apply_pending_resize()
 
+        # Safety net: if a held "^" has been pending for >200ms and
+        # the timer hasn't flushed it yet, treat it as a literal now.
+        # This prevents a stale _pending_caret from combining with a
+        # "^" typed much later.
+        if (self._pending_caret
+                and not self._queue_capture_mode
+                and time.time() - self._pending_caret_time > 0.2):
+            if self._pending_caret_timer is not None:
+                self._pending_caret_timer.cancel()
+                self._pending_caret_timer = None
+            self._pending_caret = False
+            # The timer may have already flushed via pty.send — check
+            # if the buf already has the ^.  If not, the ^ was lost
+            # (timer raced), so we skip the buf append.  The CLI may
+            # or may not have it depending on timer timing — either
+            # way, clearing _pending_caret is the safe thing to do.
+
         # Note: on_input() is called AFTER the byte loop (see end of
         # method) with only the bytes that reach the CLI.  This prevents
         # capture-mode keystrokes from affecting state tracker flags
@@ -1685,6 +1720,9 @@ class LeapServer:
             # Second "^" arrived in a new chunk.  Enter capture mode.
             # The first "^" was held (never sent to CLI), so there is
             # no stale caret to clean up.
+            if self._pending_caret_timer is not None:
+                self._pending_caret_timer.cancel()
+                self._pending_caret_timer = None
             self._partial_escape = None
             self._enter_capture_mode(
                 stale_cli_input=bool(self._terminal_input_buf),
@@ -1693,9 +1731,12 @@ class LeapServer:
         elif self._pending_caret and not self._queue_capture_mode:
             # Previous chunk held a "^" but this chunk doesn't start
             # with "^" — it was a literal.  Flush it to CLI now.
+            if self._pending_caret_timer is not None:
+                self._pending_caret_timer.cancel()
+                self._pending_caret_timer = None
+            self._pending_caret = False
             out.append(0x5e)
             self._terminal_input_buf.append(0x5e)
-            self._pending_caret = False
 
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape == 'csi':
@@ -1823,6 +1864,9 @@ class LeapServer:
                     # Second "^" → capture (same chunk).
                     # The first "^" was held (never added to out or
                     # buf), so no stale caret on CLI.
+                    if self._pending_caret_timer is not None:
+                        self._pending_caret_timer.cancel()
+                        self._pending_caret_timer = None
                     self._enter_capture_mode(
                         stale_cli_input=bool(self._terminal_input_buf),
                         stale_caret=False,
@@ -1834,13 +1878,24 @@ class LeapServer:
                     # Do NOT add to out or buf yet — if the next byte
                     # is also "^", capture triggers and the CLI never
                     # sees the "^" (no stale caret to clean up).
+                    # Start a timer to flush as literal after 200ms.
                     self._pending_caret = True
+                    self._pending_caret_time = time.time()
+                    if self._pending_caret_timer is not None:
+                        self._pending_caret_timer.cancel()
+                    self._pending_caret_timer = threading.Timer(
+                        0.2, self._flush_pending_caret)
+                    self._pending_caret_timer.daemon = True
+                    self._pending_caret_timer.start()
                     i += 1
                     continue
 
             # If we were waiting for a second "^" but got something
             # else, the pending caret was a literal — flush it now.
             elif self._pending_caret:
+                if self._pending_caret_timer is not None:
+                    self._pending_caret_timer.cancel()
+                    self._pending_caret_timer = None
                 self._pending_caret = False
                 out.append(0x5e)
                 self._terminal_input_buf.append(0x5e)
