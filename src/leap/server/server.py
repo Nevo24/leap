@@ -199,6 +199,7 @@ class LeapServer:
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
+        self._pending_caret_flush: bool = False  # paste cleared held ^
         # Saved message history (^^ inside capture mode saves + clears).
         # Browsed with arrow up/down.  Persisted to .storage/.
         self._saved_messages: list[str] = self._load_saved_messages()
@@ -1494,6 +1495,10 @@ class LeapServer:
         elif bp_start >= 0:
             self._in_bracketed_paste = True
         if chunk_has_paste and self._pending_caret:
+            # Flush the held "^" — it was a literal, not a capture
+            # trigger.  We can't add to `out` here (no access), so
+            # set a flag for the caller to handle.
+            self._pending_caret_flush = True
             self._pending_caret = False
         return chunk_has_paste
 
@@ -1522,7 +1527,9 @@ class LeapServer:
             # Detect pasted newlines: bracketed paste markers or
             # fallback — a typed Enter is a tiny chunk (1–2 bytes);
             # pasted multi-line text arrives as a large chunk.
-            if chunk_has_paste or len(data) > 4:
+            # Use (len - i) so pre-capture bytes (e.g. "hello^^")
+            # don't inflate the count when ^^ and Enter share a chunk.
+            if chunk_has_paste or (len(data) - i) > 4:
                 # Insert literal newline; skip \n after \r to avoid
                 # doubles from \r\n pairs.
                 if b == 0x0d:
@@ -1548,8 +1555,9 @@ class LeapServer:
                     # trigger _send_to_cli, so clear here directly.
                     self._capture_flush()
                     if self._capture_stale_char_count > 0:
+                        n = self._capture_stale_char_count
                         self._capture_stale_char_count = 0
-                        self.pty.send('\x03')
+                        self.pty.send('\x7f' * n)
                 self._queue_capture_buf.clear()
                 self._capture_cursor_pos = 0
                 self._capture_utf8_buf.clear()
@@ -1659,8 +1667,12 @@ class LeapServer:
         out = bytearray()
         i = 0
         capture_dirty = False  # deferred display update for pastes
-        pending_caret_out_pos = -1  # index of first "^" in out (for same-chunk ^^)
         chunk_has_paste = self._detect_paste(data)
+        # Flush held "^" that was dropped by paste detection.
+        if self._pending_caret_flush:
+            self._pending_caret_flush = False
+            out.append(0x5e)
+            self._terminal_input_buf.append(0x5e)
 
         # Check if the very first byte is "^" and _pending_caret is set
         # from the previous chunk → double-caret capture trigger.
@@ -1671,13 +1683,19 @@ class LeapServer:
                 and data[i] == 0x5e
                 and self._pending_caret):
             # Second "^" arrived in a new chunk.  Enter capture mode.
+            # The first "^" was held (never sent to CLI), so there is
+            # no stale caret to clean up.
             self._partial_escape = None
-            if (self._terminal_input_buf
-                    and self._terminal_input_buf[-1] == 0x5e):
-                self._terminal_input_buf.pop()
-            self._enter_capture_mode(stale_cli_input=True,
-                                     stale_caret=True)
+            self._enter_capture_mode(
+                stale_cli_input=bool(self._terminal_input_buf),
+                stale_caret=False)
             i += 1
+        elif self._pending_caret and not self._queue_capture_mode:
+            # Previous chunk held a "^" but this chunk doesn't start
+            # with "^" — it was a literal.  Flush it to CLI now.
+            out.append(0x5e)
+            self._terminal_input_buf.append(0x5e)
+            self._pending_caret = False
 
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape == 'csi':
@@ -1803,43 +1821,29 @@ class LeapServer:
             if b == 0x5e:
                 if self._pending_caret and not chunk_has_paste:
                     # Second "^" → capture (same chunk).
-                    # Remove the first "^" from buffer and out.
-                    if (self._terminal_input_buf
-                            and self._terminal_input_buf[-1] == 0x5e):
-                        self._terminal_input_buf.pop()
-                    # The first "^" may not be at out[-1] if an escape
-                    # sequence (arrow key, etc.) was processed after it.
-                    # Use the tracked index to remove exactly that byte.
-                    caret_removed_from_out = False
-                    if (pending_caret_out_pos >= 0
-                            and pending_caret_out_pos < len(out)
-                            and out[pending_caret_out_pos] == 0x5e):
-                        del out[pending_caret_out_pos]
-                        caret_removed_from_out = True
-                    # Flag stale only if CLI received text from previous
-                    # chunks.  In same-chunk ^^, the first "^" was popped
-                    # from out — CLI never got it.
-                    stale = bool(self._terminal_input_buf)
+                    # The first "^" was held (never added to out or
+                    # buf), so no stale caret on CLI.
                     self._enter_capture_mode(
-                        stale_cli_input=stale,
-                        stale_caret=not caret_removed_from_out,
+                        stale_cli_input=bool(self._terminal_input_buf),
+                        stale_caret=False,
                     )
                     i += 1
                     continue
                 else:
                     # First "^" — hold it, wait for second.
+                    # Do NOT add to out or buf yet — if the next byte
+                    # is also "^", capture triggers and the CLI never
+                    # sees the "^" (no stale caret to clean up).
                     self._pending_caret = True
-                    # Record where the "^" will land in out so the
-                    # same-chunk trigger can remove exactly that byte
-                    # (not a 0x5e that happens to be an escape final).
-                    pending_caret_out_pos = len(out)
-                    # Fall through to normal handling (adds to buffer
-                    # and out as literal "^").
+                    i += 1
+                    continue
 
             # If we were waiting for a second "^" but got something
-            # else, the pending caret was a literal — clear the flag.
+            # else, the pending caret was a literal — flush it now.
             elif self._pending_caret:
                 self._pending_caret = False
+                out.append(0x5e)
+                self._terminal_input_buf.append(0x5e)
 
             if in_prompt:
                 out.append(b)
