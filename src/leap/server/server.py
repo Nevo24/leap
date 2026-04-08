@@ -465,12 +465,9 @@ class LeapServer:
         Args:
             message: Message to send.
         """
-        # If ^^ capture left stale text in the CLI's input, clear it
-        # with backspaces before sending.  At send time the CLI is idle
-        # and the cursor is at the end of the stale text, so backspaces
-        # erase it reliably.  Unlike Ctrl+C this is safe even if there
-        # is a race where the CLI is still finishing a response — BS
-        # only affects the input line, it won't interrupt the operation.
+        # Safety net: the Enter handler in _capture_handle_char sends
+        # backspaces immediately on queue, but if an edge case left a
+        # non-zero count, clean it up here before sending the message.
         if self._capture_stale_char_count > 0:
             n = self._capture_stale_char_count
             self._capture_stale_char_count = 0
@@ -1575,9 +1572,16 @@ class LeapServer:
                 if self._capture_image_map:
                     msg = self._capture_resolve_images(msg)
                 if msg:
+                    # Clear stale text from CLI input BEFORE the
+                    # deferred resize in _capture_flush so the TUI
+                    # repaints with a clean input line.  Clearing the
+                    # count before queue.add() prevents the auto-sender's
+                    # _send_to_cli from double-sending backspaces.
+                    if self._capture_stale_char_count > 0:
+                        n = self._capture_stale_char_count
+                        self._capture_stale_char_count = 0
+                        self.pty.send('\x7f' * n)
                     self.queue.add(msg)
-                    # Stale text cleanup deferred to _send_to_cli
-                    # (with 200ms delay before the message).
                     self._capture_flush()
                 else:
                     # Empty Enter with stale text — no message to
