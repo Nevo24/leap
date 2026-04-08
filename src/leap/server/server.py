@@ -940,15 +940,26 @@ class LeapServer:
     def _handle_resize(self, sig: int, frame: Any) -> None:
         """Handle terminal resize signal.
 
-        Signal handlers must not acquire locks — ``on_resize`` takes
-        ``_screen_lock``, which may already be held by the main thread
-        (e.g., inside ``on_output``).  Acquiring a non-reentrant
-        ``threading.Lock`` from the same thread deadlocks permanently.
+        Resize the PTY immediately so the child process (Claude, etc.)
+        receives its own ``SIGWINCH`` right away and can redraw its TUI
+        without waiting for I/O.  ``ioctl`` is async-signal-safe, so
+        calling ``setwinsize`` from a signal handler is fine.
 
-        Instead, set a flag and let the output filter (which runs on
-        every PTY read cycle) apply the resize outside the signal
-        context.
+        The pyte virtual-terminal update (``state.on_resize``) is
+        *deferred* because it acquires ``_screen_lock``, which may
+        already be held by the main thread — acquiring a non-reentrant
+        ``threading.Lock`` from the same thread deadlocks permanently.
+        The flag is picked up by the next input/output filter cycle
+        (which fires immediately once the child redraws).
         """
+        # Resize the PTY immediately — the child gets SIGWINCH at once.
+        try:
+            cols, rows = shutil.get_terminal_size(fallback=(80, 24))
+            if self.pty and self.pty.process:
+                self.pty.process.setwinsize(rows, cols)
+        except Exception:
+            pass
+        # Defer pyte screen update (needs lock).
         self._pending_resize = True
 
     def _apply_pending_resize(self) -> None:
