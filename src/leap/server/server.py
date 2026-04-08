@@ -987,8 +987,11 @@ class LeapServer:
                          + (f'\x1b[A\r\x1b[K' * self._capture_prev_lines))
 
             if text is None:
+                # Hide cursor to prevent ghost cursors during the gap
+                # between capture-end and the CLI's TUI repaint.
+                hide = '\x1b[?25l'
                 os.write(sys.stdout.fileno(),
-                         (clear or '\r\x1b[K').encode())
+                         (hide + (clear or '\r\x1b[K')).encode())
                 self._capture_prev_lines = 0
             else:
                 # Replace newlines (from pasted multi-line text) with a
