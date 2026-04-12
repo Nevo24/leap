@@ -35,7 +35,8 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(poetry run pytest tests/ -v 2>&1 | tail -5)",
-      "Bash(grep -n \"_merge_sessions\" src/leap/monitor/_mixins/*.py)"
+      "Bash(grep -n \"_merge_sessions\" src/leap/monitor/_mixins/*.py)",
+      "mcp__cmd-executor__execute"
     ]
   }
 }
