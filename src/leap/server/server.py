@@ -1407,6 +1407,7 @@ class LeapServer:
                     self._capture_cancel_pending = False
             self._terminal_input_buf = bytearray(
                 safe_text.encode('utf-8'))
+            self._chars_sent_to_cli = len(safe_text)
             threading.Thread(
                 target=_apply_cancel_text, daemon=True).start()
 
