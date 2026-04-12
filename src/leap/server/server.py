@@ -188,7 +188,9 @@ class LeapServer:
         self._queue_capture_buf: bytearray = bytearray()
         self._capture_stale_caret: bool = False  # cross-chunk ^^ left a literal ^ in CLI
         self._capture_stale_char_count: int = 0  # chars to backspace on flush
+        self._chars_sent_to_cli: int = 0  # printable chars actually on CLI's input
         self._capture_pre_input_buf: bytearray = bytearray()  # snapshot for cancel
+        self._capture_pre_chars_sent: int = 0  # snapshot for cancel
         self._capture_cancel_pending: bool = False  # bg thread sending text
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
@@ -213,6 +215,9 @@ class LeapServer:
         # don't accidentally trigger capture mode.
         self._in_bracketed_paste: bool = False
         self._last_output_time: float = 0.0  # timestamp of last CLI output
+        self._stale_text_pending: bool = False  # Enter handler set; _send_to_cli clears
+        self._send_clear_queue: list[bool] = []  # per-message clear flags (FIFO)
+        self._suppress_send_until: float = 0.0  # suppress output until monotonic time
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -465,22 +470,40 @@ class LeapServer:
         Args:
             message: Message to send.
         """
-        # Safety net: the Enter handler in _capture_handle_char sends
-        # backspaces immediately on queue, but if an edge case left a
-        # non-zero count, clean it up here before sending the message.
-        if self._capture_stale_char_count > 0:
-            n = self._capture_stale_char_count
-            self._capture_stale_char_count = 0
-            self.pty.send('\x7f' * n)
+        self._capture_stale_char_count = 0
+
+        # Pop per-message clear flag (set by Enter handler when
+        # stale text exists during RUNNING).  This fixes the bug
+        # where a global flag was consumed by the wrong message.
+        needs_clear = (self._send_clear_queue.pop(0)
+                       if self._send_clear_queue else False)
+        # Also clear if user typed after capture exit.
+        if self._terminal_input_buf:
+            needs_clear = True
+        self._stale_text_pending = False
+        self._terminal_input_buf.clear()
+
+        if needs_clear:
+            # Ctrl+E (end of line) then Ctrl+U (kill to start).
+            # Separate writes so Ink processes cursor move first.
+            self.pty.send('\x05')
+            time.sleep(0.02)
+            self.pty.send('\x15')
             time.sleep(0.2)
+
+        # Suppress from here — hides message echo only.
+        self._suppress_send_until = float('inf')
 
         self.state.on_send()
 
         is_img = self._provider.is_image_message(message) or self._has_image_ref(message)
-        if is_img:
-            self.pty.send_image_message(message)
-        else:
-            self.pty.sendline(message)
+        try:
+            if is_img:
+                self.pty.send_image_message(message)
+            else:
+                self.pty.sendline(message)
+        finally:
+            self._suppress_send_until = 0.0
 
     def _try_auto_approve(self) -> bool:
         """Try to auto-approve a permission prompt (Always-send mode).
@@ -779,7 +802,10 @@ class LeapServer:
         delayed_queue_has_next: bool = False
         delayed_target_state: str = ''
         while self.running:
-            time.sleep(POLL_INTERVAL)
+            # Fast-poll when stale text pending — Ctrl+C must fire
+            # quickly after IDLE so stale text is cleared fast.
+            time.sleep(0.01 if self._stale_text_pending
+                       else POLL_INTERVAL)
 
             try:
                 current_state = self.state.get_state(self.pty.is_alive())
@@ -1192,25 +1218,12 @@ class LeapServer:
 
     def _capture_flush(self, cancel: bool = False) -> None:
         """End capture mode: handle stale CLI input, force TUI redraw."""
-        # The stale ^ from cross-chunk ^^ entry used to be removed with
-        # a backspace, but that only works if the cursor is still right
-        # after the ^.  Arrow keys (or other escape sequences) between
-        # the two ^'s move the cursor, making the backspace delete the
-        # wrong character (or nothing).  Instead, fold the ^ into the
-        # stale-char count so _send_to_cli uses Ctrl+C to clear the
-        # entire line — cursor-position-independent.
+        # Handle stale ^ from cross-chunk ^^ entry.
         if self._capture_stale_caret:
             self._capture_stale_caret = False
             if cancel:
-                # On cancel, try a backspace to remove the stale ^.
-                # This works when the cursor is still right after the ^
-                # (the common cancel case).  If arrow keys moved the
-                # cursor it's a no-op — acceptable for cancel.
-                self.pty.send('\x7f')
-            else:
-                # On send, fold the stale ^ into the count so the
-                # cleanup erases the full line.
-                self._capture_stale_char_count += 1
+                self.pty.send('\x7f')  # best-effort backspace
+            # On send: _send_to_cli's Ctrl+C clears the full line.
         # On cancel (Escape/Ctrl+C), discard the stale count so the
         # text stays on the CLI — the user wants to keep it.
         if cancel:
@@ -1222,7 +1235,9 @@ class LeapServer:
         # Force the Ink TUI to do an immediate full-screen repaint.
         # macOS only sends SIGWINCH when the size actually changes, so
         # we shrink by one row, let the child handle it, then restore.
-        # The delay runs in a thread so we don't block the interact loop.
+        # Force TUI repaint via deferred SIGWINCH.  Ctrl+U already
+        # cleared stale text in the Enter handler, so the CLI repaints
+        # with clean input.
         def _deferred_resize() -> None:
             try:
                 cols, rows = shutil.get_terminal_size(fallback=(80, 24))
@@ -1360,6 +1375,7 @@ class LeapServer:
             # Unchanged — just restore input tracking.
             self._terminal_input_buf = bytearray(
                 self._capture_pre_input_buf)
+            self._chars_sent_to_cli = self._capture_pre_chars_sent
         else:
             # Text was edited — clear CLI line and type the new text.
             # Background thread gives the CLI time to process Ctrl+C
@@ -1372,10 +1388,11 @@ class LeapServer:
             def _apply_cancel_text() -> None:
                 try:
                     if pre_text:
-                        # Only clear the CLI line if idle — Ctrl+C
-                        # while running would interrupt the task.
+                        # Only clear the CLI line if idle.
                         if self.state.current_state == CLIState.IDLE:
-                            self.pty.send('\x03')
+                            self.pty.send('\x05')  # Ctrl+E: end of line
+                            time.sleep(0.02)
+                            self.pty.send('\x15')  # Ctrl+U: kill line
                             time.sleep(0.15)
                         else:
                             # CLI is busy; can't clear — restore the
@@ -1405,15 +1422,26 @@ class LeapServer:
         # Snapshot the pre-capture input so _capture_cancel can restore
         # it if the user toggles back out without sending.
         self._capture_pre_input_buf = bytearray(self._terminal_input_buf)
+        self._capture_pre_chars_sent = self._chars_sent_to_cli  # for cancel restore
         self._queue_capture_buf = bytearray(self._terminal_input_buf)
         self._capture_cursor_pos = len(self._capture_text())
         self._terminal_input_buf.clear()
         self._queue_capture_mode = True
         self._capture_show_hint = True
         self._capture_stale_caret = stale_caret
+        # Only count chars actually sent to CLI (not held during RUNNING).
         self._capture_stale_char_count = (
-            len(self._capture_text()) if stale_cli_input else 0
+            self._chars_sent_to_cli if stale_cli_input else 0
         )
+        self._chars_sent_to_cli = 0
+        # tcflush to discard any stale text still in the PTY buffer.
+        if self._capture_stale_char_count > 0:
+            try:
+                import termios
+                termios.tcflush(self.pty.process.child_fd,
+                                termios.TCOFLUSH)
+            except Exception:
+                pass
         self._pending_caret = False
         self._capture_prev_lines = 0
         self._saved_msg_index = -1
@@ -1505,6 +1533,7 @@ class LeapServer:
         except OSError:
             pass
         self._terminal_input_buf.append(0x5e)
+        self._chars_sent_to_cli += 1
 
     def _detect_paste(self, data: bytes) -> bool:
         """Detect bracketed paste markers in input data.
@@ -1575,25 +1604,40 @@ class LeapServer:
                 if self._capture_image_map:
                     msg = self._capture_resolve_images(msg)
                 if msg:
-                    # Clear stale text from CLI input BEFORE the
-                    # deferred resize in _capture_flush so the TUI
-                    # repaints with a clean input line.  Clearing the
-                    # count before queue.add() prevents the auto-sender's
-                    # _send_to_cli from double-sending backspaces.
+                    # Clear stale text typed before ^^.  When IDLE:
+                    # Ctrl+C clears immediately (50ms delay so CLI
+                    # processes before deferred resize).  When RUNNING:
+                    # flag for _send_to_cli (fast-poll ~50ms of IDLE).
                     if self._capture_stale_char_count > 0:
-                        n = self._capture_stale_char_count
+                        # Ctrl+E (end of line) then Ctrl+U (kill to
+                        # start).  Separate writes so Ink processes
+                        # the cursor move before the kill.  During
+                        # RUNNING, skip Ctrl+E (cursor at end from
+                        # typing, and Ctrl+E may interfere).
+                        if self.state.current_state == CLIState.IDLE:
+                            self.pty.send('\x05')  # Ctrl+E: end
+                            time.sleep(0.02)
+                        self.pty.send('\x15')  # Ctrl+U: kill
+                        time.sleep(0.03)
                         self._capture_stale_char_count = 0
-                        self.pty.send('\x7f' * n)
+                    self._send_clear_queue.append(False)
                     self.queue.add(msg)
                     self._capture_flush()
                 else:
-                    # Empty Enter with stale text — no message to
-                    # trigger _send_to_cli, so clear here directly.
-                    self._capture_flush()
+                    # Empty Enter — clear stale if IDLE, else leave.
                     if self._capture_stale_char_count > 0:
-                        n = self._capture_stale_char_count
+                        try:
+                            import termios
+                            termios.tcflush(self.pty.process.child_fd,
+                                            termios.TCOFLUSH)
+                        except Exception:
+                            pass
+                        if self.state.current_state == CLIState.IDLE:
+                            self.pty.send('\x05')  # Ctrl+E: end of line
+                            time.sleep(0.02)
+                            self.pty.send('\x15')  # Ctrl+U: kill line
                         self._capture_stale_char_count = 0
-                        self.pty.send('\x7f' * n)
+                    self._capture_flush()
                 self._queue_capture_buf.clear()
                 self._capture_cursor_pos = 0
                 self._capture_utf8_buf.clear()
@@ -1679,10 +1723,11 @@ class LeapServer:
         """
         # Wrap the entire filter in try/except — any unhandled exception
         # here propagates to pexpect's interact loop and kills the PTY.
-        # On crash, pass through raw data so the CLI at least receives it.
         try:
             return self._input_filter_impl(data)
         except Exception:
+            if self._queue_capture_mode:
+                return b''  # don't leak capture text to CLI
             return data
 
     def _input_filter_impl(self, data: bytes) -> bytes:
@@ -1726,6 +1771,7 @@ class LeapServer:
             self._pending_caret_flush = False
             out.append(0x5e)
             self._terminal_input_buf.append(0x5e)
+            self._chars_sent_to_cli += 1
 
         # Check if the very first byte is "^" and _pending_caret is set
         # from the previous chunk → double-caret capture trigger.
@@ -1755,6 +1801,7 @@ class LeapServer:
             self._pending_caret = False
             out.append(0x5e)
             self._terminal_input_buf.append(0x5e)
+            self._chars_sent_to_cli += 1
 
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape == 'csi':
@@ -1917,6 +1964,7 @@ class LeapServer:
                 self._pending_caret = False
                 out.append(0x5e)
                 self._terminal_input_buf.append(0x5e)
+                self._chars_sent_to_cli += 1
 
             if in_prompt:
                 out.append(b)
@@ -1932,6 +1980,7 @@ class LeapServer:
                     if msg:
                         self.queue.track_sent(msg)
                     self._terminal_input_buf.clear()
+                self._chars_sent_to_cli = 0
                 out.append(b)
             elif b == 0x7f:  # Backspace
                 if self._terminal_input_buf:
@@ -1946,12 +1995,16 @@ class LeapServer:
                     if self._terminal_input_buf:
                         self._terminal_input_buf.pop()
                 out.append(b)
+                self._chars_sent_to_cli = max(
+                    0, self._chars_sent_to_cli - 1)
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
+                self._chars_sent_to_cli = 0
                 out.append(b)
             elif 0x20 <= b < 0x7f or b >= 0x80:
                 self._terminal_input_buf.append(b)
                 out.append(b)
+                self._chars_sent_to_cli += 1
             else:
                 out.append(b)
             i += 1
@@ -1987,6 +2040,8 @@ class LeapServer:
         try:
             return self._output_filter_impl(data)
         except Exception:
+            if self._queue_capture_mode or time.monotonic() < self._suppress_send_until:
+                return b''
             return data
 
     def _output_filter_impl(self, data: bytes) -> bytes:
@@ -2006,9 +2061,9 @@ class LeapServer:
         # send_image_message to replace fixed sleeps with event waits).
         self.pty.notify_output_received()
 
-        # In capture mode, suppress CLI output — the TUI redraws
-        # naturally when capture ends and the next message is sent.
-        if self._queue_capture_mode:
+        # Suppress during capture (TUI redraws on exit) and during
+        # message send (hides echo so delivery is invisible).
+        if self._queue_capture_mode or time.monotonic() < self._suppress_send_until:
             return b''
 
         # Track last output time so _title_keeper_loop can avoid
