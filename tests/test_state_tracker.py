@@ -352,6 +352,86 @@ class TestUserRespondedFlag:
         write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'interrupted'
 
+    def test_user_responded_cursor_hidden_goes_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """When user answers a permission prompt in the terminal and the
+        CLI starts processing (cursor hidden), state should transition
+        from needs_permission → running without waiting for Stop hook."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # Feed dialog patterns so Late Notification Guard accepts signal
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)  # → needs_permission
+        tracker.on_input(b'1')  # user answered
+        # CLI starts processing — cursor hidden in output
+        feed_with_hidden_cursor(tracker, 'Processing...')
+        # Poll detects cursor hidden + user_responded → running
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_user_responded_cursor_visible_stays_waiting(
+        self, tmp_path: Path,
+    ) -> None:
+        """If the user responded but cursor is still visible (dialog
+        still showing), state should remain needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)  # → needs_permission
+        tracker.on_input(b'x')  # user typed something
+        # Dialog still showing — cursor visible output
+        feed_screen_text(tracker, 'Select an option')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_no_user_responded_cursor_hidden_stays_waiting(
+        self, tmp_path: Path,
+    ) -> None:
+        """Cursor hidden without _user_responded should NOT trigger
+        the transition — could be a TUI redraw during the dialog."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)  # → needs_permission
+        # Cursor hidden output but user hasn't responded
+        feed_with_hidden_cursor(tracker, 'Rendering...')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_interrupted_responded_cursor_hidden_goes_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """INTERRUPTED → running when user types and cursor hides.
+        Must also set _suppress_stale_interrupt."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')  # interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        # on_output detected interrupt_pending + pattern → interrupted
+        # (state tracker wrote "interrupted" to signal file internally)
+        assert tracker.current_state == 'interrupted'
+        # Delete signal file — real scenario: the self-written
+        # "interrupted" signal is ignored by get_state (line 768)
+        tracker._signal_file.unlink(missing_ok=True)
+        tracker.on_input(b'1')  # user types new input
+        feed_with_hidden_cursor(tracker, 'Working...')
+        assert tracker.get_state(pty_alive=True) == 'running'
+        assert tracker._suppress_stale_interrupt is True
+
 
 # ---------------------------------------------------------------------------
 # Interrupt pattern on pyte screen

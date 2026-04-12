@@ -993,6 +993,46 @@ class CLIStateTracker:
                     self._reset_screen()
                 return CLIState.IDLE
 
+        # -- Waiting → running via cursor visibility (poll-based) --
+        # When the user answers a permission/input prompt directly in the
+        # terminal, on_input() sets _user_responded but no signal fires
+        # until the CLI finishes (Stop hook → idle).  The monitor stays
+        # stuck at needs_permission/needs_input for the entire run.
+        # Detect that the CLI has moved past the dialog by checking
+        # cursor visibility at poll time: Ink TUIs hide the cursor while
+        # processing.  Poll-based (not on_output) to avoid false triggers
+        # from mid-render cursor-hidden chunks.
+        # Does NOT delete the signal file — if this is a false trigger
+        # (brief cursor hide during TUI redraw), the signal file lets
+        # the Late Notification guard self-correct on the next poll.
+        if (
+            current in WAITING_STATES
+            and self._user_responded
+            and not self._provider.cursor_hidden_while_idle
+        ):
+            with self._screen_lock:
+                cursor_hidden = self._screen.cursor.hidden
+            if cursor_hidden:
+                _log.debug(
+                    'GET_STATE %s→running (user_responded + cursor '
+                    'hidden at poll)',
+                    current,
+                )
+                if current == CLIState.INTERRUPTED:
+                    self._suppress_stale_interrupt = True
+                self._running_since = self._clock()
+                self._interrupt_pending = False
+                self._user_responded = False
+                self._user_input_since_idle = False
+                with self._screen_lock:
+                    self._prompt_snapshot = []
+                    self._last_running_snapshot = []
+                    self._reset_screen()
+                with self._lock:
+                    self._state = CLIState.RUNNING
+                    self._waiting_since = None
+                return CLIState.RUNNING
+
         # -- Auto-resume via cursor visibility (poll-based) --
         # Checked at poll time (every 0.5s) rather than on_output to
         # avoid false triggers from mid-render cursor-hidden state.
