@@ -154,9 +154,13 @@ def open_terminal_with_command(
             if _open_warp_terminal(command):
                 return True
             logger.debug("Warp open failed, falling back")
+        elif preferred_ide == 'WezTerm':
+            if _open_wezterm_terminal(command):
+                return True
+            logger.debug("WezTerm open failed, falling back")
 
     # Preferred IDE failed or unknown — fall back to Terminal.app then iTerm2.
-    # Warp is intentionally excluded: opening a *new* terminal in an app
+    # Warp/WezTerm intentionally excluded: opening a *new* terminal in an app
     # the user doesn't use is more disruptive than navigating/closing.
     if _open_terminal_app_terminal(command):
         return True
@@ -194,6 +198,9 @@ def close_terminal_with_title(
         elif preferred_ide == 'Warp':
             if _close_warp(title_pattern):
                 return True
+        elif preferred_ide == 'WezTerm':
+            if _close_wezterm(title_pattern):
+                return True
         elif preferred_ide == 'iTerm2':
             if _close_iterm2(title_pattern):
                 return True
@@ -202,12 +209,14 @@ def close_terminal_with_title(
                 return True
 
     # Preferred IDE failed or unknown — fall back through standalone terminals
-    # (Warp last to avoid activating it unexpectedly)
+    # (Warp/WezTerm last to avoid activating them unexpectedly)
     if _close_terminal_app(title_pattern):
         return True
     if _close_iterm2(title_pattern):
         return True
     if _close_warp(title_pattern):
+        return True
+    if _close_wezterm(title_pattern):
         return True
 
     return False
@@ -244,6 +253,9 @@ def find_terminal_with_title(
         elif preferred_ide == 'Warp':
             if _navigate_warp(title_pattern):
                 return True
+        elif preferred_ide == 'WezTerm':
+            if _navigate_wezterm(title_pattern):
+                return True
         elif preferred_ide == 'iTerm2':
             if _navigate_iterm2(title_pattern):
                 return True
@@ -255,12 +267,14 @@ def find_terminal_with_title(
                 return True
 
     # Preferred IDE failed or unknown — fall back through standalone terminals
-    # (Warp last to avoid activating it unexpectedly)
+    # (Warp/WezTerm last to avoid activating them unexpectedly)
     if _navigate_terminal_app(title_pattern):
         return True
     if _navigate_iterm2(title_pattern):
         return True
     if _navigate_warp(title_pattern):
+        return True
+    if _navigate_wezterm(title_pattern):
         return True
 
     return False
@@ -441,7 +455,7 @@ def _navigate_terminal_app(title_pattern: str) -> bool:
     return False
 
 
-def _navigate_arduino(title_pattern: str) -> bool:
+def _navigate_arduino(_title_pattern: str) -> bool:
     """Navigate to Arduino IDE.
 
     Arduino IDE (Theia-based) has a single terminal, so just
@@ -730,6 +744,137 @@ def _close_iterm2(title_pattern: str) -> bool:
     return False
 
 
+_WEZTERM_BUNDLE_ID = 'com.github.wez.wezterm'
+
+
+def _find_wezterm_cli() -> Optional[str]:
+    """Find the wezterm CLI binary.
+
+    Checks PATH first, then known .app bundle locations, then falls back
+    to ``mdfind`` (Spotlight) to locate the app anywhere on disk.
+    """
+    cli = shutil.which('wezterm')
+    if cli:
+        return cli
+    for app_dir in ('/Applications', os.path.expanduser('~/Applications')):
+        candidate = os.path.join(app_dir, 'WezTerm.app', 'Contents', 'MacOS', 'wezterm')
+        if os.path.isfile(candidate):
+            return candidate
+    # Spotlight fallback — finds the app even if installed in ~/Downloads etc.
+    try:
+        result = subprocess.run(
+            ['mdfind', f'kMDItemCFBundleIdentifier == "{_WEZTERM_BUNDLE_ID}"'],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines():
+            candidate = os.path.join(line.strip(), 'Contents', 'MacOS', 'wezterm')
+            if os.path.isfile(candidate):
+                return candidate
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return None
+
+
+def _wezterm_list_panes(cli: str) -> list[dict[str, Any]]:
+    """Return the list of panes from ``wezterm cli list --format json``."""
+    try:
+        import json as _json
+        result = subprocess.run(
+            [cli, 'cli', 'list', '--format', 'json'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return _json.loads(result.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+    return []
+
+
+def _activate_wezterm() -> bool:
+    """Bring WezTerm to the foreground."""
+    try:
+        result = subprocess.run(
+            ['open', '-a', 'WezTerm'],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
+def _navigate_wezterm(title_pattern: str) -> bool:
+    """Navigate to a WezTerm pane whose title contains *title_pattern*.
+
+    Uses ``wezterm cli list`` to find the pane, then
+    ``wezterm cli activate-pane`` to focus it.
+    """
+    cli = _find_wezterm_cli()
+    if not cli:
+        return False
+
+    panes = _wezterm_list_panes(cli)
+    for pane in panes:
+        title = pane.get('title', '')
+        if title_pattern in title:
+            pane_id = pane.get('pane_id')
+            if pane_id is None:
+                continue
+            try:
+                subprocess.run(
+                    [cli, 'cli', 'activate-pane', '--pane-id', str(pane_id)],
+                    capture_output=True, timeout=5,
+                )
+            except (subprocess.SubprocessError, OSError):
+                return False
+            _activate_wezterm()
+            return True
+    return False
+
+
+def _close_wezterm(title_pattern: str) -> bool:
+    """Close a WezTerm pane whose title contains *title_pattern*."""
+    cli = _find_wezterm_cli()
+    if not cli:
+        return False
+
+    panes = _wezterm_list_panes(cli)
+    for pane in panes:
+        title = pane.get('title', '')
+        if title_pattern in title:
+            pane_id = pane.get('pane_id')
+            if pane_id is None:
+                continue
+            try:
+                subprocess.run(
+                    [cli, 'cli', 'kill-pane', '--pane-id', str(pane_id)],
+                    capture_output=True, timeout=5,
+                )
+                return True
+            except (subprocess.SubprocessError, OSError):
+                return False
+    return False
+
+
+def _open_wezterm_terminal(command: str) -> bool:
+    """Open a new WezTerm tab and run *command*."""
+    cli = _find_wezterm_cli()
+    if not cli:
+        return False
+
+    try:
+        result = subprocess.run(
+            [cli, 'cli', 'spawn', '--', command],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode == 0:
+            _activate_wezterm()
+            return True
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
 _WARP_BUNDLE_ID = 'dev.warp.Warp-Stable'
 
 
@@ -743,12 +888,15 @@ def _get_app_pid(bundle_id: str) -> Optional[int]:
     """
     try:
         import AppKit
+    except ImportError:
+        logger.debug("AppKit ImportError in _get_app_pid")
+        return None
+
+    try:
         workspace = AppKit.NSWorkspace.sharedWorkspace()
         for app in workspace.runningApplications():
             if app.bundleIdentifier() == bundle_id:
                 return app.processIdentifier()
-    except ImportError:
-        logger.debug("AppKit ImportError in _get_app_pid")
     except Exception as exc:
         logger.debug("_get_app_pid error: %s", exc)
     return None
@@ -874,11 +1022,11 @@ def _navigate_warp(title_pattern: str) -> bool:
 
     ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
 
-    def _get_title(window_ref: object) -> str:
+    def _get_title(window_ref: Any) -> str:
         e, t = AXUIElementCopyAttributeValue(window_ref, "AXTitle", None)
         return str(t) if e == kAXErrorSuccess and t else ''
 
-    def _raise_and_activate(window_ref: object) -> None:
+    def _raise_and_activate(window_ref: Any) -> None:
         AXUIElementPerformAction(window_ref, "AXRaise")
         if ns_app:
             ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)

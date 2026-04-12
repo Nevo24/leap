@@ -22,7 +22,7 @@ try:
 
     # Register Kitty keyboard protocol (CSI u) sequences that prompt_toolkit
     # doesn't know about natively.  These are sent by VS Code, Kitty, Ghostty,
-    # Alacritty, Warp, and iTerm2 (with CSI u enabled).
+    # Alacritty, Warp, WezTerm, and iTerm2 (with CSI u enabled).
     _SHIFT_ENTER_SENTINEL = '\x80'
     _ansi_seq.ANSI_SEQUENCES['\x1b[13u'] = Keys.ControlM       # Enter
     _ansi_seq.ANSI_SEQUENCES['\x1b[13;2u'] = _SHIFT_ENTER_SENTINEL  # Shift+Enter
@@ -73,6 +73,7 @@ class InputHandler:
             # (\x1b[>1u) at runtime, because some terminals (VS Code) then encode
             # ALL keys as CSI u sequences, breaking normal input.  Instead:
             # - iTerm2: configured via plist during `make install` (sends \n for Shift+Enter)
+            # - WezTerm: configured via Lua config during `make install`
             # - VS Code/Kitty/Ghostty: handle CSI u natively; if they send CSI u
             #   sequences, the ANSI_SEQUENCES registrations above will parse them.
         else:
@@ -108,7 +109,7 @@ class InputHandler:
         def _newline(event: object) -> None:
             event.current_buffer.insert_text('\n')  # type: ignore[union-attr]
 
-        # Shift+Enter via full Kitty CSI u sequence (Warp, Kitty, Ghostty, Alacritty)
+        # Shift+Enter via full Kitty CSI u sequence (Warp, Kitty, Ghostty, Alacritty, WezTerm)
         if _SHIFT_ENTER_SENTINEL:
             @kb.add(_SHIFT_ENTER_SENTINEL)
             def _newline_kitty(event: object) -> None:

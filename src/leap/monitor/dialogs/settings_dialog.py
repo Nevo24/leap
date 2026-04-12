@@ -79,8 +79,21 @@ def _detect_installed_terminals() -> list[str]:
         ('Terminal.app', [Path('/System/Applications/Utilities/Terminal.app')]),
         ('iTerm2', [Path('/Applications/iTerm.app'), home / 'Applications' / 'iTerm.app']),
         ('Warp', [Path('/Applications/Warp.app'), home / 'Applications' / 'Warp.app']),
+        ('WezTerm', [Path('/Applications/WezTerm.app'), home / 'Applications' / 'WezTerm.app']),
     ]
-    return [name for name, paths in candidates if any(p.is_dir() for p in paths)]
+    found = [name for name, paths in candidates if any(p.is_dir() for p in paths)]
+    # WezTerm may be installed outside standard locations — use Spotlight
+    if 'WezTerm' not in found:
+        try:
+            result = subprocess.run(
+                ['mdfind', 'kMDItemCFBundleIdentifier == "com.github.wez.wezterm"'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                found.append('WezTerm')
+        except (subprocess.SubprocessError, OSError):
+            pass
+    return found
 
 
 # JetBrains IDEs to search, in priority order (PyCharm first).

@@ -803,7 +803,7 @@ class LeapClient:
         print("Ready! Type your messages:")
 
         # Show newline hint for terminals where Shift+Enter doesn't work
-        _SHIFT_ENTER_TERMINALS = {'VS Code', 'Cursor', 'iTerm2', 'Warp', 'Kitty', 'Ghostty'}
+        _SHIFT_ENTER_TERMINALS = {'VS Code', 'Cursor', 'iTerm2', 'Warp', 'Kitty', 'Ghostty', 'WezTerm'}
         ide = detect_ide()
         if ide not in _SHIFT_ENTER_TERMINALS:
             if ide == 'Terminal.app':

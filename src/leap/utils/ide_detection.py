@@ -52,6 +52,9 @@ def detect_ide() -> str:
     if term_program == 'ghostty':
         return 'Ghostty'
 
+    if term_program == 'WezTerm':
+        return 'WezTerm'
+
     # Check for JetBrains IDE (only if TERM_PROGRAM didn't identify
     # a known terminal — avoids false positives from leaked env vars)
     if 'JetBrains' in terminal_emulator or 'jetbrains' in terminal_emulator.lower():

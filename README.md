@@ -2,7 +2,7 @@
 
 **A queueing system and dashboard for managing multiple AI CLI sessions.**
 
-Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, Cursor, iTerm2, Arduino IDE, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
+Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, Cursor, iTerm2, WezTerm, Arduino IDE, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
 
 ## Key Features
 

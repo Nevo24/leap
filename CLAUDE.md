@@ -363,6 +363,9 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 ### iTerm2
 **Automatically configured during `make install`** — CSI u (Kitty keyboard protocol) enabled in all profiles so Shift+Enter sends a distinct sequence. Restart iTerm2 after installation for the change to take effect.
 
+### WezTerm
+**Automatically configured during `make install`** — `enable_csi_u_key_encoding = true` added to Lua config (`~/.wezterm.lua` or `~/.config/wezterm/wezterm.lua`) so Shift+Enter sends a distinct CSI u sequence. Creates a new config file if none exists. Restart WezTerm after installation for the change to take effect. Full monitor navigation support via `wezterm cli` (navigate, close, open tabs).
+
 ## Troubleshooting
 
 **"Another client already connected"** → `rm .storage/sockets/<tag>.client.lock`

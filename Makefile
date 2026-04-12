@@ -336,6 +336,7 @@ update: .env
 	@$(MAKE) .configure-cursor
 	@$(MAKE) .configure-jetbrains
 	@$(MAKE) .configure-iterm2
+	@$(MAKE) .configure-wezterm
 	@echo "$(GREEN)✓ IDE/terminal configurations updated$(NC)"
 	@$(MAKE) .configure-hooks
 	@echo ""; \
@@ -402,6 +403,7 @@ configure-shell:
 	@$(MAKE) .configure-cursor
 	@$(MAKE) .configure-jetbrains
 	@$(MAKE) .configure-iterm2
+	@$(MAKE) .configure-wezterm
 	@$(MAKE) .detect-shell
 
 .PHONY: .configure-vscode
@@ -689,6 +691,18 @@ configure-shell:
 		fi; \
 		PY=$${VENV_PY:-python3}; \
 		$$PY "$(SCRIPTS_DIR)/configure_iterm2_csi_u.py"; \
+	fi
+
+.PHONY: .configure-wezterm
+.configure-wezterm:
+	@if [ -d "/Applications/WezTerm.app" ] || [ -d "$$HOME/Applications/WezTerm.app" ] || command -v wezterm >/dev/null 2>&1 || mdfind 'kMDItemCFBundleIdentifier == "com.github.wez.wezterm"' 2>/dev/null | grep -q .; then \
+		echo "$(PROMPT_PREFIX) Configuring WezTerm..."; \
+		VENV_PY=""; \
+		if [ -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+			VENV_PY="$$(cat $(REPO_PATH)/.storage/venv-path)/bin/python3"; \
+		fi; \
+		PY=$${VENV_PY:-python3}; \
+		$$PY "$(SCRIPTS_DIR)/configure_wezterm_csi_u.py"; \
 	fi
 
 .PHONY: .configure-hooks
