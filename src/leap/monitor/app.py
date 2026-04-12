@@ -2091,8 +2091,9 @@ def _request_notification_permission() -> None:
             NSRunLoop.currentRunLoop().runUntilDate_(
                 NSDate.dateWithTimeIntervalSinceNow_(0.25))
             timeout -= 0.25
-    except Exception:
-        pass  # Best-effort; don't block installation
+    except Exception as exc:
+        print(f"  Note: Could not request notification permission ({exc})")
+        print("  You can grant it later in System Settings > Notifications > Leap Monitor")
 
     sys.exit(0)
 

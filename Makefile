@@ -234,7 +234,13 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "  A macOS permission dialog will appear — click Allow to enable."
 	@read -p "  Request notification permission? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
 	if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-		open -W -a "Leap Monitor" --args --request-permissions; \
+		if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
+			echo "  Leap Monitor is already running — skipping permission request."; \
+			echo "  Grant notifications in System Settings > Notifications > Leap Monitor."; \
+		elif ! open -W -a "Leap Monitor" --args --request-permissions 2>/dev/null; then \
+			echo "  $(YELLOW)Could not launch Leap Monitor for permission request.$(NC)"; \
+			echo "  You can grant notification permission later in System Settings."; \
+		fi; \
 	fi
 
 .PHONY: install-slack-app
