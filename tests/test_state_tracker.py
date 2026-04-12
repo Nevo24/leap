@@ -161,6 +161,10 @@ class TestSignalFile:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'What should I name this?  Enter to select  Esc to cancel',
+        )
         write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'needs_input'
 
@@ -281,6 +285,10 @@ class TestUserRespondedFlag:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'What should I do?  Enter to select  Esc to cancel',
+        )
         write_signal(tracker, 'needs_input')
         tracker.get_state(pty_alive=True)  # → needs_input
         tracker.on_input(b'x')
@@ -292,6 +300,10 @@ class TestUserRespondedFlag:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'What should I do?  Enter to select  Esc to cancel',
+        )
         write_signal(tracker, 'needs_input')
         tracker.get_state(pty_alive=True)  # → needs_input
         # Signal idle without user responding
@@ -1074,6 +1086,10 @@ class TestCLIStateEnum:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'What should I do?  Enter to select  Esc to cancel',
+        )
         tracker._signal_file.write_text(
             json.dumps({"state": "has_question"}),
         )
@@ -1399,3 +1415,49 @@ class TestLateNotificationGuard:
         # Late Notification arrives — partial dialog patterns in snapshot
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_stale_needs_input_rejected_no_dialog_on_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """Late Notification for elicitation_dialog (needs_input) with
+        no dialog on screen is rejected — same guard as needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Claude finishes — cursor+silence fires running→idle
+        feed_screen_text(tracker, 'Task complete.')
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+        # Late elicitation Notification arrives — no dialog on screen
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert not tracker._signal_file.exists()
+
+    def test_legitimate_needs_input_accepted_with_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        """Elicitation dialog with patterns on screen is accepted."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        feed_screen_text(
+            tracker,
+            'What should I name this?\n'
+            '1. Type something\n'
+            'Enter to select  Esc to cancel',
+        )
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker._last_running_snapshot
+
+        write_signal(tracker, 'needs_input')
+        assert tracker.get_state(pty_alive=True) == 'needs_input'

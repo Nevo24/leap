@@ -886,13 +886,16 @@ class CLIStateTracker:
                 # heuristic has already moved running→idle and the
                 # dialog may have been auto-accepted (bypass) or the
                 # CLI finished.  Verify the dialog is actually visible
-                # before transitioning idle→needs_permission.
-                # Only for needs_permission — elicitation dialogs
-                # (needs_input) may use a different UI that doesn't
-                # contain the provider's dialog_patterns.
+                # before transitioning.
+                # Covers both needs_permission (permission_prompt) and
+                # needs_input (elicitation_dialog) — both use the same
+                # Ink TUI chrome with dialog_patterns.
                 if (
                     current in (CLIState.IDLE, CLIState.RUNNING)
-                    and new_state == CLIState.NEEDS_PERMISSION
+                    and new_state in (
+                        CLIState.NEEDS_PERMISSION,
+                        CLIState.NEEDS_INPUT,
+                    )
                     and self._provider.dialog_patterns
                 ):
                     with self._screen_lock:
