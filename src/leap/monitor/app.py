@@ -2045,8 +2045,64 @@ class MonitorWindow(
         os._exit(0)
 
 
+def _request_notification_permission() -> None:
+    """Request macOS notification permission and exit.
+
+    Called when the app is launched with ``--request-permissions``.
+    This registers the app bundle with the notification system so it
+    appears in System Settings > Notifications, then exits without
+    showing any GUI.  The user sees only the native macOS permission
+    dialog.
+    """
+    try:
+        import objc
+        from Foundation import NSRunLoop, NSDate
+
+        objc.loadBundle(
+            'UserNotifications', globals(),
+            '/System/Library/Frameworks/UserNotifications.framework',
+        )
+        UNUserNotificationCenter = objc.lookUpClass('UNUserNotificationCenter')
+
+        objc.registerMetaDataForSelector(
+            b'UNUserNotificationCenter',
+            b'requestAuthorizationWithOptions:completionHandler:',
+            {'arguments': {3: {'callable': {
+                'retval': {'type': b'v'},
+                'arguments': {0: {'type': b'^v'}, 1: {'type': b'Z'}, 2: {'type': b'@'}},
+            }}}},
+        )
+
+        center = UNUserNotificationCenter.currentNotificationCenter()
+        done = [False]
+
+        def _on_auth(granted: bool, error: object) -> None:
+            done[0] = True
+
+        center.requestAuthorizationWithOptions_completionHandler_(
+            (1 << 0) | (1 << 1) | (1 << 2),  # badge | sound | alert
+            _on_auth,
+        )
+
+        # Spin the run loop so the completion handler fires and the
+        # system dialog can be presented / dismissed.
+        timeout = 30.0  # seconds — generous limit
+        while not done[0] and timeout > 0:
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.25))
+            timeout -= 0.25
+    except Exception:
+        pass  # Best-effort; don't block installation
+
+    sys.exit(0)
+
+
 def main() -> None:
     """Main entry point for Leap Monitor."""
+    # Handle --request-permissions early, before any GUI setup.
+    if '--request-permissions' in sys.argv:
+        _request_notification_permission()
+
     import faulthandler
     faulthandler.enable()
     load_shell_env()

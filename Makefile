@@ -223,22 +223,18 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
 	@echo "$(YELLOW)Optional: Grant macOS permissions for full functionality$(NC)"
-	@echo "  • Accessibility: Required for IDE terminal navigation"
-	@echo "  • Notifications: Required for system notifications"
 	@echo ""
+	@echo "  $(YELLOW)Accessibility$(NC) — Required for IDE terminal navigation"
 	@read -p "  Open Accessibility settings? (Y/n) " -n 1 -r REPLY_ACC; echo; \
 	if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
 		open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
 	fi
-	@NOTIF_KNOWN=$$(python3 -c "import plistlib,pathlib; \
-		p=pathlib.Path.home()/'Library/Preferences/com.apple.ncprefs.plist'; \
-		data=plistlib.load(open(p,'rb')) if p.exists() else {}; \
-		print('yes' if any(a.get('bundle-id')=='com.leap.monitor' for a in data.get('apps',[])) else 'no')" 2>/dev/null || echo "no"); \
-	if [ "$$NOTIF_KNOWN" != "yes" ]; then \
-		read -p "  Open Notifications settings? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
-		if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-			open "x-apple.systempreferences:com.apple.preference.notifications"; \
-		fi; \
+	@echo ""
+	@echo "  $(YELLOW)Notifications$(NC) — Required for system notifications"
+	@echo "  A macOS permission dialog will appear — click Allow to enable."
+	@read -p "  Request notification permission? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
+	if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
+		open -W -a "Leap Monitor" --args --request-permissions; \
 	fi
 
 .PHONY: install-slack-app
