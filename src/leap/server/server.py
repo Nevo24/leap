@@ -1373,11 +1373,15 @@ class LeapServer:
         capture_text = self._capture_text()
         pre_text = self._capture_pre_input_buf.decode(
             'utf-8', errors='replace')
-        # Resolve images → @path so the CLI gets real file references.
-        # On the next ^^, _enter_capture_mode unresolves them back to
-        # [Image #N] — so images round-trip between modes.
-        resolved_text = (self._capture_resolve_images(capture_text)
-                         if self._capture_image_map else capture_text)
+        # Resolve images → @path in-place so the CLI gets real file
+        # references while preserving the text-image interleaving.
+        # (The queue/Enter flow uses _capture_resolve_images which
+        # prepends all images — CLIs expect that for send protocol.)
+        resolved_text = capture_text
+        if self._capture_image_map:
+            for placeholder, path in self._capture_image_map.items():
+                resolved_text = resolved_text.replace(
+                    placeholder, f'@{path}')
         has_images = bool(self._capture_image_map)
         self._queue_capture_buf.clear()
         self._capture_cursor_pos = 0
