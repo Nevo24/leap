@@ -1999,6 +1999,17 @@ class LeapServer:
                     self._capture_handle_escape(
                         data[esc_start:i], is_standalone_esc)
                 elif (not in_prompt
+                      and self._is_csi_u_cancel(data[esc_start:i])):
+                    # CSI-u Ctrl+C outside capture — clear input
+                    # buf just like the raw 0x03 handler does.
+                    self._terminal_input_buf.clear()
+                    self._chars_sent_to_cli = 0
+                    if self._pending_paste_images:
+                        self._pending_paste_images = [
+                            (-1, p) for _, p in
+                            self._pending_paste_images]
+                    out.extend(data[esc_start:i])
+                elif (not in_prompt
                       and not chunk_has_paste
                       and self._is_csi_u_paste(data[esc_start:i])):
                     # CSI-u Ctrl+V outside capture — save clipboard
