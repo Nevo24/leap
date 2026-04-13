@@ -83,6 +83,46 @@ class CLIProvider(ABC):
         """Compact patterns (ANSI-stripped, spaces removed) that indicate
         a permission/question dialog.  ALL must be present for a match."""
 
+    def has_dialog_indicator(self, compact_text: str) -> bool:
+        """Lenient dialog check: any single indicator is sufficient.
+
+        Used by the Late Notification guard to *verify* a hook signal —
+        the hook already confirmed a dialog, so a weak match suffices.
+        Default: any single ``dialog_patterns`` entry is present
+        (catches edit-confirmation dialogs that only show "Esc to cancel"
+        without "Enter to select").
+
+        Override for CLIs with additional dialog formats (e.g. numbered
+        menus) that don't contain the standard dialog footer patterns.
+
+        Args:
+            compact_text: Screen text with spaces and newlines removed.
+        """
+        return any(
+            p.decode('utf-8', errors='replace') in compact_text
+            for p in self.dialog_patterns
+        )
+
+    def is_dialog_certain(self, compact_text: str) -> bool:
+        """Strict dialog check: high confidence that a dialog is visible.
+
+        Used for *proactive* detection (running→idle, startup) where no
+        hook signal exists yet and false positives are costly (state gets
+        stuck in needs_permission until the 60s safety timeout).
+
+        Default: ALL ``dialog_patterns`` must be present.
+        Override to add provider-specific high-confidence indicators
+        (e.g. numbered menu cursor character).
+
+        Args:
+            compact_text: Screen text with spaces and newlines removed.
+        """
+        patterns = self.dialog_patterns
+        return bool(patterns) and all(
+            p.decode('utf-8', errors='replace') in compact_text
+            for p in patterns
+        )
+
     @property
     def valid_signal_states(self) -> frozenset[str]:
         """States that can appear in the hook signal file."""

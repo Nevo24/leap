@@ -1069,6 +1069,58 @@ class TestEscapeCorrectionFromPermission:
 # CLIState enum
 # ---------------------------------------------------------------------------
 
+class TestClaudeDialogIndicator:
+    """Claude's has_dialog_indicator() must detect both standard footer
+    patterns and numbered menu prompts."""
+
+    def test_standard_dialog_detected(self) -> None:
+        from leap.cli_providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+        # Both patterns present
+        assert p.has_dialog_indicator('AllowReadEntertoselectEsctocancel')
+        # Only one (edit-confirmation style)
+        assert p.has_dialog_indicator('MakethiseditEsctocancel')
+        assert p.has_dialog_indicator('Entertoselectoption')
+
+    def test_numbered_menu_detected(self) -> None:
+        from leap.cli_providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+        # ❯ cursor (U+276F)
+        assert p.has_dialog_indicator('\u276f1.Yes2.No(esc)')
+        # › cursor (U+203A)
+        assert p.has_dialog_indicator('\u203a1.Yes2.No(esc)')
+
+    def test_no_dialog_not_detected(self) -> None:
+        from leap.cli_providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+        assert not p.has_dialog_indicator('Taskcompletehereareresults')
+        assert not p.has_dialog_indicator('Processingfiles...')
+
+    def test_strict_rejects_partial_pattern_in_response_text(self) -> None:
+        """is_dialog_certain must NOT match response text that happens
+        to mention 'Esc to cancel' — only all() of standard patterns
+        or a numbered menu cursor qualifies."""
+        from leap.cli_providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+        # Response text explaining keyboard shortcuts
+        response = 'pressEsctocanceltheoperation'
+        assert p.has_dialog_indicator(response)  # lenient: matches
+        assert not p.is_dialog_certain(response)  # strict: rejects
+
+    def test_strict_detects_numbered_menu(self) -> None:
+        from leap.cli_providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+        assert p.is_dialog_certain('\u276f1.Yes2.No(esc)')
+        assert p.is_dialog_certain('\u203a1.Yes2.No(esc)')
+
+    def test_strict_detects_full_standard_dialog(self) -> None:
+        from leap.cli_providers.claude import ClaudeProvider
+        p = ClaudeProvider()
+        assert p.is_dialog_certain('AllowReadEntertoselectEsctocancel')
+        # Partial (only Esc to cancel) — strict rejects
+        assert not p.is_dialog_certain('MakethiseditEsctocancel')
+
+
 class TestCLIStateEnum:
     def test_cli_state_string_comparison(self) -> None:
         from leap.cli_providers.states import CLIState
@@ -1331,6 +1383,30 @@ class TestLateNotificationGuard:
         # Signal file should be deleted to avoid repeated checks
         assert not tracker._signal_file.exists()
 
+    def test_response_mentioning_esc_to_cancel_not_false_positive(
+        self, tmp_path: Path,
+    ) -> None:
+        """Response text explaining keyboard shortcuts (e.g. 'press Esc
+        to cancel') must NOT false-trigger dialog detection at the
+        running→idle cursor+silence check."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+
+        # Response text with "Esc to cancel" in last rows
+        feed_with_visible_cursor(
+            tracker,
+            'Here are the keyboard shortcuts:\n'
+            '- Press Esc to cancel the current operation\n'
+            '- Press Enter to confirm',
+        )
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        # cursor visible + 2s silence → should go to IDLE, not
+        # needs_permission (would be a false positive)
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
     def test_legitimate_notification_accepted_dialog_in_snapshot(
         self, tmp_path: Path,
     ) -> None:
@@ -1415,6 +1491,117 @@ class TestLateNotificationGuard:
         # Late Notification arrives — partial dialog patterns in snapshot
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_numbered_menu_permission_accepted_from_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """Notification hook accepted when a numbered menu permission prompt
+        (e.g., 'Network request outside of sandbox') is visible.
+        These prompts use ❯ cursor indicator + numbered options instead
+        of the standard 'Enter to select / Esc to cancel' footer."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Numbered menu permission prompt appears while still RUNNING
+        feed_screen_text(
+            tracker,
+            'Network request outside of sandbox\n'
+            '    Host: mcp-proxy.anthropic.com\n'
+            'Do you want to allow this connection?\n'
+            '\u276f 1. Yes\n'
+            '  2. Yes, and don\'t ask again\n'
+            '  3. No, and tell Claude what to do differently (esc)',
+        )
+
+        # Hook signal arrives while still running (cursor may be hidden)
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_numbered_menu_permission_accepted_from_snapshot(
+        self, tmp_path: Path,
+    ) -> None:
+        """Numbered menu dialog in saved running snapshot is accepted
+        after cursor+silence moves to idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Numbered menu permission prompt
+        feed_screen_text(
+            tracker,
+            'Do you want to allow this connection?\n'
+            '\u276f 1. Yes\n'
+            '  2. Yes, and don\'t ask again\n'
+            '  3. No (esc)',
+        )
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker._last_running_snapshot
+
+        # Late Notification arrives — numbered menu in snapshot
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_numbered_menu_detected_at_running_to_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Running→idle cursor+silence check detects numbered menu
+        prompts and goes directly to needs_permission."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()  # → running
+
+        # Cursor visible + numbered menu prompt on last 5 rows
+        feed_with_visible_cursor(
+            tracker,
+            'Do you want to allow?\n'
+            '\u203a 1. Yes\n'
+            '  2. No (esc)',
+        )
+        t[0] = 5.0
+        tracker._last_output_time = 2.0
+        # No signal yet — proactive detection via cursor+silence
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_stale_snapshot_cleared_on_waiting_to_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """After answering a dialog (waiting→idle), the running snapshot
+        must be cleared so a late Notification hook doesn't false-match
+        the old dialog content in the snapshot."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+
+        # Numbered menu detected via hook → needs_permission
+        feed_screen_text(
+            tracker,
+            '\u276f 1. Yes\n  2. No (esc)',
+        )
+        write_signal(tracker, 'needs_permission')
+        t[0] = 1.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+        # User answers → user_responded
+        tracker.on_input(b'1\r')
+
+        # Stop hook → idle (should clear snapshot)
+        write_signal(tracker, 'idle')
+        t[0] = 5.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        assert tracker._last_running_snapshot == []
+
+        # Late stale Notification — must be rejected
+        write_signal(tracker, 'needs_permission')
+        t[0] = 8.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_stale_needs_input_rejected_no_dialog_on_screen(
         self, tmp_path: Path,

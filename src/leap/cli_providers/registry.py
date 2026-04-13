@@ -21,10 +21,21 @@ from leap.utils.constants import STORAGE_DIR
 class CustomCLIProvider(CLIProvider):
     """A user-defined CLI that wraps a base provider with custom identity and env vars.
 
-    Delegates ALL behavior to the base provider via __getattr__.
-    Abstract methods are explicitly implemented (required by ABC).
-    Only overrides: name, display_name, get_spawn_env (adds custom env vars).
+    Delegates ALL behavior to the base provider.  ``__getattribute__``
+    intercepts every attribute lookup and forwards it to ``_base`` unless
+    the attribute is explicitly overridden on this class (name,
+    display_name, get_spawn_env) or is a private/dunder field needed
+    for bootstrap.  This correctly delegates properties, methods, and
+    plain attributes — unlike ``__getattr__``, which fires too late
+    for properties defined on a parent class (Python's MRO finds the
+    parent descriptor first).
     """
+
+    # Attributes resolved on *this* instance (not forwarded to _base).
+    _OWN_ATTRS: frozenset[str] = frozenset({
+        '_custom_id', '_base', '_custom_display_name', '_env_vars',
+        'name', 'display_name', 'get_spawn_env',
+    })
 
     def __init__(
         self,
@@ -38,9 +49,18 @@ class CustomCLIProvider(CLIProvider):
         self._custom_display_name = custom_display_name
         self._env_vars = env_vars or {}
 
-    def __getattr__(self, attr: str) -> Any:
-        """Delegate any non-overridden attribute access to the base provider."""
-        return getattr(self._base, attr)
+    def __getattribute__(self, attr: str) -> Any:
+        """Delegate attribute access to the base provider.
+
+        Resolves on *this* instance only for bootstrap fields (_custom_id,
+        _base, etc.), identity overrides (name, display_name), and
+        get_spawn_env.  Everything else — including properties and methods
+        that CLIProvider defines with defaults — is forwarded to _base.
+        """
+        if attr.startswith('__') or attr in CustomCLIProvider._OWN_ATTRS:
+            return super().__getattribute__(attr)
+        base = super().__getattribute__('_base')
+        return getattr(base, attr)
 
     # -- Identity (overridden) -------------------------------------------
 
@@ -53,6 +73,8 @@ class CustomCLIProvider(CLIProvider):
         return self._custom_display_name
 
     # -- Abstract methods (must be explicit for ABC) ---------------------
+    # Required by ABC even though __getattribute__ handles delegation —
+    # Python's ABCMeta checks the class dict at class-creation time.
 
     @property
     def command(self) -> str:

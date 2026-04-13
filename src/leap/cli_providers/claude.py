@@ -59,6 +59,23 @@ class ClaudeProvider(CLIProvider):
     def dialog_patterns(self) -> list[bytes]:
         return [b'Entertoselect', b'Esctocancel']
 
+    def _has_numbered_menu(self, compact_text: str) -> bool:
+        """Check for numbered menu cursor indicator (❯ or ›) before option 1."""
+        # ❯ = U+276F, › = U+203A — both used by Ink TUI
+        return '\u276f1.' in compact_text or '\u203a1.' in compact_text
+
+    def has_dialog_indicator(self, compact_text: str) -> bool:
+        """Lenient: standard footer patterns OR numbered menu cursor."""
+        if super().has_dialog_indicator(compact_text):
+            return True
+        return self._has_numbered_menu(compact_text)
+
+    def is_dialog_certain(self, compact_text: str) -> bool:
+        """Strict: all standard footer patterns OR numbered menu cursor."""
+        if super().is_dialog_certain(compact_text):
+            return True
+        return self._has_numbered_menu(compact_text)
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

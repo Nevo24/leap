@@ -492,7 +492,6 @@ class CLIStateTracker:
         # -- Startup dialog detection --
         if not self._seen_user_input:
             trust_patterns = self._provider.trust_dialog_patterns
-            dialog_patterns = self._provider.dialog_patterns
 
             _log.debug(
                 'ON_OUTPUT idle (startup) compact_tail=%r',
@@ -503,13 +502,7 @@ class CLIStateTracker:
                 p.decode('utf-8', errors='replace') in compact
                 for p in trust_patterns
             )
-            is_dialog = (
-                bool(dialog_patterns)
-                and all(
-                    p.decode('utf-8', errors='replace') in compact
-                    for p in dialog_patterns
-                )
-            )
+            is_dialog = self._provider.is_dialog_certain(compact)
 
             if is_trust or is_dialog:
                 _log.debug(
@@ -631,6 +624,7 @@ class CLIStateTracker:
                 self._interrupt_pending = False
                 self._suppress_stale_interrupt = False
                 self._prompt_snapshot = []
+                self._last_running_snapshot = []
                 self._reset_screen()
                 with self._lock:
                     self._state = CLIState.IDLE
@@ -714,6 +708,7 @@ class CLIStateTracker:
                     self._waiting_since = None
                 self._user_input_since_idle = False
                 self._prompt_snapshot = []
+                self._last_running_snapshot = []
                 return
 
         # -- Accumulate prompt snapshot --
@@ -860,6 +855,7 @@ class CLIStateTracker:
                     with self._screen_lock:
                         self._reset_screen()
                         self._prompt_snapshot = []
+                        self._last_running_snapshot = []
                     return CLIState.IDLE
                 else:
                     _log.debug(
@@ -888,8 +884,14 @@ class CLIStateTracker:
                 # CLI finished.  Verify the dialog is actually visible
                 # before transitioning.
                 # Covers both needs_permission (permission_prompt) and
-                # needs_input (elicitation_dialog) — both use the same
-                # Ink TUI chrome with dialog_patterns.
+                # needs_input (elicitation_dialog).  Dialogs may use
+                # different UI formats: standard footer ("Enter to
+                # select / Esc to cancel") or numbered menus (❯ 1. Yes).
+                # Delegate to provider.has_dialog_indicator() which
+                # knows all its dialog formats.
+                # Skip for providers with empty dialog_patterns (Codex)
+                # — they have no PTY-based dialog detection and rely
+                # entirely on hook signals.
                 if (
                     current in (CLIState.IDLE, CLIState.RUNNING)
                     and new_state in (
@@ -916,9 +918,8 @@ class CLIStateTracker:
                             compact += fallback.replace(
                                 ' ', '',
                             ).replace('\n', '')
-                    has_dialog = any(
-                        p.decode('utf-8', errors='replace') in compact
-                        for p in self._provider.dialog_patterns
+                    has_dialog = self._provider.has_dialog_indicator(
+                        compact,
                     )
                     if not has_dialog:
                         _log.debug(
@@ -1094,44 +1095,41 @@ class CLIStateTracker:
                 # seconds earlier than the Notification hook and avoids
                 # a false "idle" flash in the monitor.
                 # Check only the last 5 non-blank rows (where the
-                # dialog footer lives) and require ALL patterns to
-                # reduce false positives from response text mentioning
-                # these phrases.  Using non-blank rows handles tall
-                # terminals where blank rows pad the screen below the
-                # dialog.
-                if self._provider.dialog_patterns:
+                # dialog footer/menu lives).  Uses the strict
+                # is_dialog_certain() (all patterns or numbered menu)
+                # to avoid false positives from response text that
+                # mentions e.g. "Esc to cancel" in an explanation.
+                with self._screen_lock:
+                    all_lines = self._get_display_lines()
+                filled = [ln for ln in all_lines if ln.strip()]
+                tail = filled[-5:] if filled else []
+                compact_tail = ''.join(tail).replace(
+                    ' ', '',
+                )
+                has_dialog = self._provider.is_dialog_certain(
+                    compact_tail,
+                )
+                if has_dialog:
+                    _log.debug(
+                        'GET_STATE running→needs_permission '
+                        '(dialog on screen + output silent %.1fs)',
+                        self._clock() - self._last_output_time,
+                    )
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    if self._trust_dialog_phase:
+                        self._trust_dialog_phase = False
+                    with self._lock:
+                        self._state = CLIState.NEEDS_PERMISSION
+                        self._waiting_since = self._clock()
                     with self._screen_lock:
-                        all_lines = self._get_display_lines()
-                    filled = [ln for ln in all_lines if ln.strip()]
-                    tail = filled[-5:] if filled else []
-                    compact_tail = ''.join(tail).replace(
-                        ' ', '',
-                    )
-                    has_dialog = all(
-                        p.decode('utf-8', errors='replace') in compact_tail
-                        for p in self._provider.dialog_patterns
-                    )
-                    if has_dialog:
-                        _log.debug(
-                            'GET_STATE running→needs_permission '
-                            '(dialog on screen + output silent %.1fs)',
-                            self._clock() - self._last_output_time,
-                        )
-                        self._interrupt_pending = False
-                        self._user_responded = False
-                        if self._trust_dialog_phase:
-                            self._trust_dialog_phase = False
-                        with self._lock:
-                            self._state = CLIState.NEEDS_PERMISSION
-                            self._waiting_since = self._clock()
-                        with self._screen_lock:
-                            # Reuse the lines already captured above
-                            # instead of re-reading the screen.
-                            self._prompt_snapshot = all_lines
-                            self._last_running_snapshot = list(
-                                all_lines)
-                            self._reset_screen()
-                        return CLIState.NEEDS_PERMISSION
+                        # Reuse the lines already captured above
+                        # instead of re-reading the screen.
+                        self._prompt_snapshot = all_lines
+                        self._last_running_snapshot = list(
+                            all_lines)
+                        self._reset_screen()
+                    return CLIState.NEEDS_PERMISSION
 
                 _log.debug(
                     'GET_STATE running→idle (cursor visible + '
@@ -1200,6 +1198,7 @@ class CLIStateTracker:
                     with self._screen_lock:
                         self._reset_screen()
                         self._prompt_snapshot = []
+                        self._last_running_snapshot = []
                     return CLIState.IDLE
 
         return current
