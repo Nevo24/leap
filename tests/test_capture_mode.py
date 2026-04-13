@@ -47,6 +47,8 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
               '_capture_utf8_buf', '_terminal_input_buf']:
         setattr(srv, a, bytearray())
     srv._capture_image_map = {}
+    srv._pending_paste_images = []  # list[tuple[int, str]]
+    srv._capture_initial_text = ""
     srv._partial_escape = None
     srv._pending_caret_time = 0.0
     srv._pending_caret_timer = None

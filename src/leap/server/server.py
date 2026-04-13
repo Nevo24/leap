@@ -198,6 +198,17 @@ class LeapServer:
         self._capture_utf8_buf: bytearray = bytearray()  # incomplete UTF-8 bytes
         self._capture_image_counter: int = 0
         self._capture_image_map: dict[str, str] = {}  # "[Image #N]" → path
+        # Clipboard images saved by Ctrl+V outside capture mode —
+        # picked up automatically when ^^ enters capture.
+        # Each entry is (char_offset, path).  char_offset is the
+        # position in _terminal_input_buf at paste time so that ^^
+        # injects the image at the right place.  -1 means "append
+        # at end" (used for images saved back from cancel).
+        self._pending_paste_images: list[tuple[int, str]] = []
+        # Snapshot of capture buffer right after entering capture mode
+        # (including any auto-injected image).  Used by _capture_cancel
+        # to detect whether the user actually edited the text.
+        self._capture_initial_text: str = ""
         # True when a single "^" was typed mid-text, waiting to see
         # if the next byte is also "^" (double-caret → capture mode).
         self._pending_caret: bool = False
@@ -1248,45 +1259,47 @@ class LeapServer:
                 pass
         threading.Thread(target=_deferred_resize, daemon=True).start()
 
-    def _capture_paste_image(self) -> bool:
-        """Try to paste a clipboard image into the capture buffer.
+    def _save_clipboard_image(self) -> Optional[str]:
+        """Save clipboard image to disk and return its path.
 
-        Uses PyObjC (AppKit) to read the clipboard directly — no
-        subprocess, so terminal raw mode settings are not corrupted.
+        Returns ``None`` when the clipboard has no image or on failure.
+        Uses PyObjC (AppKit) directly — no subprocess, so terminal raw
+        mode settings are not corrupted.
         """
         import hashlib
         from leap.utils.constants import QUEUE_IMAGES_DIR
         try:
             from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
         except ImportError:
-            return False
+            return None
         pb = NSPasteboard.generalPasteboard()
-        # Check for PNG first, then TIFF (screenshots are often TIFF)
         png_data = pb.dataForType_(NSPasteboardTypePNG)
         if png_data is None:
             tiff_data = pb.dataForType_(NSPasteboardTypeTIFF)
             if tiff_data is None:
-                return False
-            # Convert TIFF to PNG via NSBitmapImageRep
+                return None
             try:
                 from AppKit import NSBitmapImageRep
                 rep = NSBitmapImageRep.imageRepWithData_(tiff_data)
                 if rep is None:
-                    return False
+                    return None
                 from AppKit import NSPNGFileType
                 png_data = rep.representationUsingType_properties_(NSPNGFileType, None)
                 if png_data is None:
-                    return False
-            except Exception as e:
-                return False
-        # Save with MD5 dedup (same logic as image_handler.save_clipboard_image)
+                    return None
+            except Exception:
+                return None
         raw_bytes = bytes(png_data)
         content_hash = hashlib.md5(raw_bytes).hexdigest()[:12]
         QUEUE_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
         dest = QUEUE_IMAGES_DIR / f'{content_hash}.png'
         if not dest.is_file():
             dest.write_bytes(raw_bytes)
-        path = str(dest)
+        return str(dest)
+
+    def _capture_paste_image(self) -> bool:
+        """Try to paste a clipboard image into the capture buffer."""
+        path = self._save_clipboard_image()
         if not path:
             return False
         # Reuse existing placeholder if same image was already pasted
@@ -1360,56 +1373,78 @@ class LeapServer:
         capture_text = self._capture_text()
         pre_text = self._capture_pre_input_buf.decode(
             'utf-8', errors='replace')
+        # Resolve images → @path so the CLI gets real file references.
+        # On the next ^^, _enter_capture_mode unresolves them back to
+        # [Image #N] — so images round-trip between modes.
+        resolved_text = (self._capture_resolve_images(capture_text)
+                         if self._capture_image_map else capture_text)
+        has_images = bool(self._capture_image_map)
         self._queue_capture_buf.clear()
         self._capture_cursor_pos = 0
         self._capture_utf8_buf.clear()
         self._queue_capture_mode = False
         self._capture_flush(cancel=True)
         self._capture_reset_images()
-        # Transfer capture buffer text back to the CLI's input line.
-        # If the user edited the text in capture mode, update the CLI.
-        # Replace newlines with spaces — sending a raw newline to the
-        # CLI would execute partial text.
-        safe_text = capture_text.replace('\n', ' ')
-        if safe_text == pre_text:
-            # Unchanged — just restore input tracking.
-            self._terminal_input_buf = bytearray(
-                self._capture_pre_input_buf)
-            self._chars_sent_to_cli = self._capture_pre_chars_sent
+        # Transfer text back to the CLI's input line.
+        # When images are present, always send the resolved text so
+        # the user sees the @path on the CLI.  When no images, only
+        # send if the user actually edited the text.
+        safe_text = resolved_text.replace('\n', ' ')
+        if has_images:
+            # Images present — send resolved text to CLI.
+            # But if resolved text is empty (user deleted all images
+            # and text), just restore the pre-capture state.
+            if not safe_text:
+                self._terminal_input_buf = bytearray(
+                    self._capture_pre_input_buf)
+                self._chars_sent_to_cli = self._capture_pre_chars_sent
+                return
+            cancel_text = safe_text
         else:
-            # Text was edited — clear CLI line and type the new text.
-            # Background thread gives the CLI time to process Ctrl+C
-            # before receiving the new text.  The _cancel_pending flag
-            # blocks _enter_capture_mode until the send completes.
-            self._capture_cancel_pending = True
+            # No images — compare to detect edits.
+            initial_text = self._capture_initial_text.replace('\n', ' ')
+            if safe_text == initial_text:
+                # Unchanged — just restore input tracking.
+                self._terminal_input_buf = bytearray(
+                    self._capture_pre_input_buf)
+                self._chars_sent_to_cli = self._capture_pre_chars_sent
+                return
+            cancel_text = safe_text
+        self._capture_cancel_pending = True
 
-            pre_buf = self._capture_pre_input_buf
+        pre_buf = self._capture_pre_input_buf
+        pre_chars = self._capture_pre_chars_sent
 
-            def _apply_cancel_text() -> None:
-                try:
-                    if pre_text:
-                        # Only clear the CLI line if idle.
-                        if self.state.current_state == CLIState.IDLE:
-                            self.pty.send('\x05')  # Ctrl+E: end of line
-                            time.sleep(0.02)
-                            self.pty.send('\x15')  # Ctrl+U: kill line
-                            time.sleep(0.15)
-                        else:
-                            # CLI is busy; can't clear — restore the
-                            # input buf to match what's actually on CLI.
-                            self._terminal_input_buf = bytearray(pre_buf)
-                            return
-                    if safe_text:
-                        self.pty.send(safe_text)
-                except OSError:
-                    pass
-                finally:
-                    self._capture_cancel_pending = False
-            self._terminal_input_buf = bytearray(
-                safe_text.encode('utf-8'))
-            self._chars_sent_to_cli = len(safe_text)
-            threading.Thread(
-                target=_apply_cancel_text, daemon=True).start()
+        def _apply_cancel_text() -> None:
+            try:
+                if self.state.current_state == CLIState.IDLE:
+                    # Always Ctrl+E+U even if pre_text is empty —
+                    # the capture overlay writes directly to the
+                    # terminal and the CLI's diff-renderer won't
+                    # clean up the ghost text without an explicit
+                    # input-line refresh.
+                    self.pty.send('\x05')  # Ctrl+E: end of line
+                    time.sleep(0.02)
+                    self.pty.send('\x15')  # Ctrl+U: kill line
+                    time.sleep(0.15)
+                elif pre_text:
+                    # CLI is busy and has pre-text; can't clear —
+                    # restore the input buf AND char count to match
+                    # what's actually on CLI (lesson from b65bc04).
+                    self._terminal_input_buf = bytearray(pre_buf)
+                    self._chars_sent_to_cli = pre_chars
+                    return
+                if cancel_text:
+                    self.pty.send(cancel_text)
+            except OSError:
+                pass
+            finally:
+                self._capture_cancel_pending = False
+        self._terminal_input_buf = bytearray(
+            cancel_text.encode('utf-8'))
+        self._chars_sent_to_cli = len(cancel_text)
+        threading.Thread(
+            target=_apply_cancel_text, daemon=True).start()
 
     def _enter_capture_mode(self, stale_cli_input: bool,
                             stale_caret: bool) -> None:
@@ -1447,7 +1482,62 @@ class LeapServer:
         self._capture_prev_lines = 0
         self._saved_msg_index = -1
         self._capture_show_saved_hint = False
-        self._capture_display(self._capture_text())
+        # Inject clipboard images saved by prior Ctrl+V presses.
+        # Each entry carries the char offset from the original paste so
+        # images appear at the right position (not all lumped at the end).
+        # Entries with pos=-1 go at the end.
+        if self._pending_paste_images:
+            text = self._capture_text()
+            text_len = len(text)
+
+            # Split into positioned (pos >= 0) and end-append (pos < 0).
+            # Track original index for stable ordering at same position.
+            positioned: list[tuple[int, int, str]] = []
+            at_end: list[str] = []
+            for idx, (pos, path) in enumerate(self._pending_paste_images):
+                if pos >= 0:
+                    positioned.append((min(pos, text_len), idx, path))
+                else:
+                    at_end.append(path)
+
+            # Two-pass injection: assign counters left-to-right so
+            # #1 is the leftmost image, then insert right-to-left so
+            # earlier offsets stay valid after each insertion.
+            positioned.sort(key=lambda x: (x[0], x[1]))
+            placeholders: list[tuple[int, str]] = []
+            for pos, _, path in positioned:
+                ph = None
+                for k, v in self._capture_image_map.items():
+                    if v == path:
+                        ph = k
+                        break
+                if not ph:
+                    self._capture_image_counter += 1
+                    ph = f'[Image #{self._capture_image_counter}]'
+                    self._capture_image_map[ph] = path
+                placeholders.append((pos, ph))
+            for pos, ph in reversed(placeholders):
+                text = text[:pos] + ph + text[pos:]
+
+            # Append end-positioned images (from cancel round-trip).
+            for path in at_end:
+                ph = None
+                for k, v in self._capture_image_map.items():
+                    if v == path:
+                        ph = k
+                        break
+                if not ph:
+                    self._capture_image_counter += 1
+                    ph = f'[Image #{self._capture_image_counter}]'
+                    self._capture_image_map[ph] = path
+                text += ph
+
+            self._queue_capture_buf = bytearray(text.encode('utf-8'))
+            self._capture_cursor_pos = len(text)
+            self._pending_paste_images.clear()
+            self._capture_show_hint = False
+        self._capture_initial_text = self._capture_text()
+        self._capture_display(self._capture_initial_text)
 
     def _capture_word_move(self, direction: int) -> None:
         """Move capture cursor by one word. direction: -1=left, +1=right."""
@@ -1908,6 +1998,17 @@ class LeapServer:
                 if self._queue_capture_mode:
                     self._capture_handle_escape(
                         data[esc_start:i], is_standalone_esc)
+                elif (not in_prompt
+                      and not chunk_has_paste
+                      and self._is_csi_u_paste(data[esc_start:i])):
+                    # CSI-u Ctrl+V outside capture — save clipboard
+                    # image so the next ^^ picks it up.
+                    path = self._save_clipboard_image()
+                    if path:
+                        pos = len(self._terminal_input_buf.decode(
+                            'utf-8', errors='replace'))
+                        self._pending_paste_images.append((pos, path))
+                    out.extend(data[esc_start:i])
                 else:
                     out.extend(data[esc_start:i])
                 continue
@@ -1982,6 +2083,11 @@ class LeapServer:
                         self.queue.track_sent(msg)
                     self._terminal_input_buf.clear()
                 self._chars_sent_to_cli = 0
+                # Reset stale image positions — the CLI input context
+                # changed so old offsets are meaningless.
+                if self._pending_paste_images:
+                    self._pending_paste_images = [
+                        (-1, p) for _, p in self._pending_paste_images]
                 out.append(b)
             elif b == 0x7f:  # Backspace
                 if self._terminal_input_buf:
@@ -2001,6 +2107,17 @@ class LeapServer:
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
                 self._chars_sent_to_cli = 0
+                if self._pending_paste_images:
+                    self._pending_paste_images = [
+                        (-1, p) for _, p in self._pending_paste_images]
+                out.append(b)
+            elif b == 0x16:  # Ctrl+V — save clipboard image for next ^^
+                if not chunk_has_paste:
+                    path = self._save_clipboard_image()
+                    if path:
+                        pos = len(self._terminal_input_buf.decode(
+                            'utf-8', errors='replace'))
+                        self._pending_paste_images.append((pos, path))
                 out.append(b)
             elif 0x20 <= b < 0x7f or b >= 0x80:
                 self._terminal_input_buf.append(b)
