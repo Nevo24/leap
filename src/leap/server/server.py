@@ -1467,6 +1467,10 @@ class LeapServer:
             deadline = time.time() + 0.3
             while self._capture_cancel_pending and time.time() < deadline:
                 time.sleep(0.01)
+        # Clean slate for image tracking — previous capture sessions
+        # (especially cancelled ones or exceptions) may have left
+        # stale entries in the map.
+        self._capture_reset_images()
         # Snapshot the pre-capture input so _capture_cancel can restore
         # it if the user toggles back out without sending.
         self._capture_pre_input_buf = bytearray(self._terminal_input_buf)
@@ -2016,10 +2020,7 @@ class LeapServer:
                     # buf just like the raw 0x03 handler does.
                     self._terminal_input_buf.clear()
                     self._chars_sent_to_cli = 0
-                    if self._pending_paste_images:
-                        self._pending_paste_images = [
-                            (-1, p) for _, p in
-                            self._pending_paste_images]
+                    self._pending_paste_images.clear()
                     out.extend(data[esc_start:i])
                 elif (not in_prompt
                       and not chunk_has_paste
@@ -2106,11 +2107,11 @@ class LeapServer:
                         self.queue.track_sent(msg)
                     self._terminal_input_buf.clear()
                 self._chars_sent_to_cli = 0
-                # Reset stale image positions — the CLI input context
-                # changed so old offsets are meaningless.
-                if self._pending_paste_images:
-                    self._pending_paste_images = [
-                        (-1, p) for _, p in self._pending_paste_images]
+                # Clear pending paste images — the user committed
+                # the current input to the CLI.  Keeping stale images
+                # across Enter presses causes them to silently
+                # accumulate and get injected into a later ^^ message.
+                self._pending_paste_images.clear()
                 out.append(b)
             elif b == 0x7f:  # Backspace
                 if self._terminal_input_buf:
@@ -2130,9 +2131,7 @@ class LeapServer:
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
                 self._chars_sent_to_cli = 0
-                if self._pending_paste_images:
-                    self._pending_paste_images = [
-                        (-1, p) for _, p in self._pending_paste_images]
+                self._pending_paste_images.clear()
                 out.append(b)
             elif b == 0x16:  # Ctrl+V — save clipboard image for next ^^
                 if not chunk_has_paste:
