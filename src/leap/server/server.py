@@ -446,6 +446,14 @@ class LeapServer:
             settings['auto_send_mode'] = mode
             save_settings(settings)
             self._save_pinned_auto_send_mode(self.tag, mode)
+            # If switching to ALWAYS while already at a permission
+            # prompt, auto-approve immediately rather than waiting
+            # for the next auto-sender loop iteration.
+            if (
+                mode == AutoSendMode.ALWAYS
+                and self.state.current_state == CLIState.NEEDS_PERMISSION
+            ):
+                self._try_auto_approve()
             return {'status': 'ok', 'auto_send_mode': mode}
 
         elif msg_type == 'interrupt':
