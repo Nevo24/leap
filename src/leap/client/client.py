@@ -802,14 +802,11 @@ class LeapClient:
         self._print_startup_banner()
         print("Ready! Type your messages:")
 
-        # Show newline hint for terminals where Shift+Enter doesn't work
-        _SHIFT_ENTER_TERMINALS = {'VS Code', 'Cursor', 'iTerm2', 'Warp', 'Kitty', 'Ghostty', 'WezTerm'}
         ide = detect_ide()
-        if ide not in _SHIFT_ENTER_TERMINALS:
-            if ide == 'Terminal.app':
-                print("Tip: Press Escape then Enter for newline (Shift+Enter not supported in Terminal.app)")
-            else:
-                print("Tip: Use Alt+Enter for newline (Shift+Enter not supported in this terminal)")
+        if ide == 'Terminal.app':
+            print("Tip: Multiline input (Shift+Enter) is not supported in this terminal")
+        else:
+            print("Tip: Use Shift+Enter for newline (or Option+Enter)")
         print()
 
         # Get initial queue status
