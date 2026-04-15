@@ -229,6 +229,13 @@ class LeapServer:
         self._stale_text_pending: bool = False  # Enter handler set; _send_to_cli clears
         self._send_clear_queue: list[bool] = []  # per-message clear flags (FIFO)
         self._suppress_send_until: float = 0.0  # suppress output until monotonic time
+        # Preserved user input: when a queue message interrupts typing,
+        # the partial text is saved here and restored after the CLI
+        # returns to idle and the queue is empty.
+        self._preserved_input_buf: bytearray = bytearray()
+        self._preserved_chars_sent: int = 0
+        self._queue_sending: bool = False  # blocks input filter during send
+        self._queue_sending_held: bytearray = bytearray()  # keystrokes buffered during send
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -496,33 +503,73 @@ class LeapServer:
         # where a global flag was consumed by the wrong message.
         needs_clear = (self._send_clear_queue.pop(0)
                        if self._send_clear_queue else False)
-        # Also clear if user typed after capture exit.
-        if self._terminal_input_buf:
-            needs_clear = True
-        self._stale_text_pending = False
-        self._terminal_input_buf.clear()
-
-        if needs_clear:
-            # Ctrl+E (end of line) then Ctrl+U (kill to start).
-            # Separate writes so Ink processes cursor move first.
-            self.pty.send('\x05')
-            time.sleep(0.02)
-            self.pty.send('\x15')
-            time.sleep(0.2)
-
-        # Suppress from here — hides message echo only.
-        self._suppress_send_until = float('inf')
-
-        self.state.on_send()
-
-        is_img = self._provider.is_image_message(message) or self._has_image_ref(message)
+        # Block the input filter for the entire send sequence so user
+        # keystrokes can't interleave with the clear/paste/Enter writes
+        # and can't modify _terminal_input_buf while we snapshot it.
+        self._queue_sending = True
         try:
-            if is_img:
-                self.pty.send_image_message(message)
-            else:
-                self.pty.sendline(message)
+            # Also clear if user typed after capture exit.
+            if self._terminal_input_buf:
+                needs_clear = True
+                # Preserve the user's partial input so it can be restored
+                # after the queued message is sent.  Only snapshot on
+                # the first interruption — subsequent queue sends should
+                # not overwrite the original text.
+                if not self._preserved_input_buf:
+                    self._preserved_input_buf = bytearray(
+                        self._terminal_input_buf)
+                    self._preserved_chars_sent = self._chars_sent_to_cli
+            self._stale_text_pending = False
+            self._terminal_input_buf.clear()
+
+            if needs_clear:
+                # Ctrl+E (end of line) then Ctrl+U (kill to start).
+                # Separate writes so Ink processes cursor move first.
+                self.pty.send('\x05')
+                time.sleep(0.02)
+                self.pty.send('\x15')
+                time.sleep(0.2)
+
+            # Suppress from here — hides message echo only.
+            self._suppress_send_until = float('inf')
+
+            self.state.on_send()
+
+            is_img = self._provider.is_image_message(message) or self._has_image_ref(message)
+            try:
+                if is_img:
+                    self.pty.send_image_message(message)
+                else:
+                    self.pty.sendline(message)
+            finally:
+                self._suppress_send_until = 0.0
+
+            # Restore user's partial text immediately after the send so
+            # they can keep editing while the CLI processes the message.
+            if self._preserved_input_buf:
+                self._restore_preserved_input()
         finally:
-            self._suppress_send_until = 0.0
+            self._queue_sending = False
+
+    def _restore_preserved_input(self) -> None:
+        """Restore user's partial input that was interrupted by a queue send.
+
+        Types the preserved text back into the CLI's input line right
+        after the queue message is sent, so the user can continue
+        editing while the CLI processes.
+        """
+        text = self._preserved_input_buf.decode('utf-8', errors='replace')
+        chars = self._preserved_chars_sent
+        self._preserved_input_buf.clear()
+        self._preserved_chars_sent = 0
+        if not text:
+            return
+        self._terminal_input_buf = bytearray(text.encode('utf-8'))
+        self._chars_sent_to_cli = chars
+        try:
+            self.pty.send(text)
+        except OSError:
+            pass
 
     def _try_auto_approve(self) -> bool:
         """Try to auto-approve a permission prompt (Always-send mode).
@@ -1839,6 +1886,21 @@ class LeapServer:
 
     def _input_filter_impl(self, data: bytes) -> bytes:
         """Implementation of _input_filter (separated for crash protection)."""
+        # Block all input while a queue message is being sent to the CLI.
+        # Without this, user keystrokes could interleave with the
+        # Ctrl+E/Ctrl+U clear and the message paste, corrupting the send.
+        # Buffer the raw bytes so they can be replayed after the send.
+        if self._queue_sending:
+            self._queue_sending_held.extend(data)
+            return b''
+
+        # Flush any keystrokes that were held during a queue send.
+        # Prepend them so they're processed through the full filter
+        # (tracking, escape handling, ^^ detection, etc.).
+        if self._queue_sending_held:
+            data = bytes(self._queue_sending_held) + data
+            self._queue_sending_held.clear()
+
         # Apply deferred SIGWINCH resize outside the signal context.
         self._apply_pending_resize()
 
@@ -2020,6 +2082,8 @@ class LeapServer:
                     # buf just like the raw 0x03 handler does.
                     self._terminal_input_buf.clear()
                     self._chars_sent_to_cli = 0
+                    self._preserved_input_buf.clear()
+                    self._preserved_chars_sent = 0
                     self._pending_paste_images.clear()
                     out.extend(data[esc_start:i])
                 elif (not in_prompt
@@ -2107,6 +2171,9 @@ class LeapServer:
                         self.queue.track_sent(msg)
                     self._terminal_input_buf.clear()
                 self._chars_sent_to_cli = 0
+                # User committed input — discard any preserved text.
+                self._preserved_input_buf.clear()
+                self._preserved_chars_sent = 0
                 # Clear pending paste images — the user committed
                 # the current input to the CLI.  Keeping stale images
                 # across Enter presses causes them to silently
@@ -2131,6 +2198,8 @@ class LeapServer:
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
                 self._chars_sent_to_cli = 0
+                self._preserved_input_buf.clear()
+                self._preserved_chars_sent = 0
                 self._pending_paste_images.clear()
                 out.append(b)
             elif b == 0x16:  # Ctrl+V — save clipboard image for next ^^

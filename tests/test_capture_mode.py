@@ -37,14 +37,16 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
               '_pending_caret', '_pending_caret_flush',
               '_in_bracketed_paste', '_user_has_typed',
               '_pending_resize', '_capture_show_saved_hint',
-              '_stale_text_pending']:
+              '_stale_text_pending', '_queue_sending']:
         setattr(srv, a, False)
     for a in ['_capture_stale_char_count', '_capture_cursor_pos',
               '_capture_prev_lines', '_capture_image_counter',
-              '_chars_sent_to_cli', '_capture_pre_chars_sent']:
+              '_chars_sent_to_cli', '_capture_pre_chars_sent',
+              '_preserved_chars_sent']:
         setattr(srv, a, 0)
     for a in ['_queue_capture_buf', '_capture_pre_input_buf',
-              '_capture_utf8_buf', '_terminal_input_buf']:
+              '_capture_utf8_buf', '_terminal_input_buf',
+              '_preserved_input_buf', '_queue_sending_held']:
         setattr(srv, a, bytearray())
     srv._capture_image_map = {}
     srv._pending_paste_images = []  # list[tuple[int, str]]
