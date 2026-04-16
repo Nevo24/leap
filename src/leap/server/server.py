@@ -1169,15 +1169,11 @@ class LeapServer:
         msg = self._capture_text().strip()
         if not msg:
             return
-        # Resolve image placeholders in-place so the text-image
-        # interleaving is preserved in history (same approach as
-        # _capture_cancel).  Unlike the queue/Enter path which
-        # prepends all @paths for the CLI send protocol, saved
-        # messages are for user recall and must read the way the
-        # user typed them.
+        # Resolve image placeholders → @path refs, preserving the
+        # text-image interleaving so recalled messages read the way
+        # the user typed them.
         if self._capture_image_map:
-            for placeholder, path in self._capture_image_map.items():
-                msg = msg.replace(placeholder, f'@{path}')
+            msg = self._capture_resolve_images(msg)
         # Remove duplicate if already at the end
         if self._saved_messages and self._saved_messages[-1] == msg:
             pass
@@ -1405,17 +1401,15 @@ class LeapServer:
         return True
 
     def _capture_resolve_images(self, message: str) -> str:
-        """Replace [Image #N] placeholders with @path references."""
-        image_parts: list[str] = []
+        """Replace ``[Image #N]`` placeholders with ``@path`` references.
+
+        Replacement is in-place so the text-image interleaving the
+        user typed is preserved on send.  ``_has_image_ref`` detects
+        ``@path`` tokens anywhere in the message, so routing through
+        the image send protocol is unaffected by position.
+        """
         for placeholder, path in self._capture_image_map.items():
-            count = message.count(placeholder)
-            if count:
-                message = message.replace(placeholder, '')
-                image_parts.extend(f'@{path}' for _ in range(count))
-        if image_parts:
-            text = message.strip()
-            result = (' '.join(image_parts) + ' ' + text).strip() if text else ' '.join(image_parts)
-            return result
+            message = message.replace(placeholder, f'@{path}')
         return message
 
     def _capture_unresolve_images(self, message: str) -> str:
@@ -1464,15 +1458,9 @@ class LeapServer:
         capture_text = self._capture_text()
         pre_text = self._capture_pre_input_buf.decode(
             'utf-8', errors='replace')
-        # Resolve images → @path in-place so the CLI gets real file
-        # references while preserving the text-image interleaving.
-        # (The queue/Enter flow uses _capture_resolve_images which
-        # prepends all images — CLIs expect that for send protocol.)
-        resolved_text = capture_text
-        if self._capture_image_map:
-            for placeholder, path in self._capture_image_map.items():
-                resolved_text = resolved_text.replace(
-                    placeholder, f'@{path}')
+        # Resolve images → @path refs preserving interleaving.
+        resolved_text = (self._capture_resolve_images(capture_text)
+                         if self._capture_image_map else capture_text)
         has_images = bool(self._capture_image_map)
         self._queue_capture_buf.clear()
         self._capture_cursor_pos = 0
