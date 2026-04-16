@@ -1085,7 +1085,7 @@ class CLIStateTracker:
             current == CLIState.RUNNING
             and not self._provider.cursor_hidden_while_idle
             and self._last_output_time > 0
-            and (self._clock() - self._last_output_time) > 2.0
+            and (self._clock() - self._last_output_time) > 5.0
         ):
             with self._screen_lock:
                 cursor_visible = not self._screen.cursor.hidden
