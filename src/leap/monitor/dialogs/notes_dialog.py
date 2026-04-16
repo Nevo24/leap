@@ -662,6 +662,9 @@ class _ItemLineEdit(QLineEdit):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.enter_pressed.emit()
             return
+        if event.key() == Qt.Key_Escape:
+            self.clearFocus()
+            return
         if event.key() == Qt.Key_Backspace and not self.text():
             self.empty_backspace.emit()
             return
