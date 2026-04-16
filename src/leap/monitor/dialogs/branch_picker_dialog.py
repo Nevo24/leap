@@ -10,20 +10,23 @@ from PyQt5.QtWidgets import (
     QLabel, QRadioButton, QVBoxLayout,
 )
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.pr_tracking.git_utils import detect_default_branch
 
 logger = logging.getLogger(__name__)
 
 
-class BranchPickerDialog(QDialog):
+class BranchPickerDialog(ZoomMixin, QDialog):
     """Branch picker with Remote/Local toggle and type-to-filter combobox."""
+
+    _DEFAULT_SIZE = (400, 130)
 
     def __init__(self, project_path: str, parent: object = None) -> None:
         super().__init__(parent)
         self._project_path = project_path
         self.setWindowTitle('Compare to branch')
-        self.resize(400, 130)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('branch_picker')
         if saved:
             self.resize(saved[0], saved[1])
@@ -61,6 +64,7 @@ class BranchPickerDialog(QDialog):
         # Populate initial branches
         self._default_branch = detect_default_branch(project_path)
         self._populate(remote=True)
+        self._init_zoom('branch_picker_font_size')
 
     def _on_toggle(self, checked: bool) -> None:
         """Handle Remote/Local radio toggle, preserving current selection."""

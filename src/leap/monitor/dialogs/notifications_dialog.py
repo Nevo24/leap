@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget,
 )
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import (
     MACOS_SYSTEM_SOUNDS, load_dialog_geometry, save_dialog_geometry,
 )
@@ -60,8 +61,10 @@ _SECTIONS: list[tuple[str, list[str]]] = [
 _TYPE_ORDER = [key for _, keys in _SECTIONS for key in keys]
 
 
-class NotificationsDialog(QDialog):
+class NotificationsDialog(ZoomMixin, QDialog):
     """Dialog for configuring per-type notification preferences."""
+
+    _DEFAULT_SIZE = (520, 340)
 
     def __init__(
         self,
@@ -70,7 +73,7 @@ class NotificationsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle('Notifications')
-        self.resize(520, 340)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('notifications')
         if saved:
             self.resize(saved[0], saved[1])
@@ -175,7 +178,7 @@ class NotificationsDialog(QDialog):
             'Enable in: System Settings > Notifications > Leap Monitor\n'
             '(or "Python" if running from source)'
         )
-        hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
+        hint.setStyleSheet(f'color: {current_theme().text_muted};')
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -183,6 +186,8 @@ class NotificationsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        self._init_zoom('notifications_font_size')
 
     def done(self, result: int) -> None:
         """Save dialog size on close."""

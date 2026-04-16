@@ -286,6 +286,20 @@ class QueueManager:
                     return True
             return False
 
+    def delete_message_by_id(self, msg_id: str) -> bool:
+        """Delete a message by its ID.
+
+        Returns:
+            True if message was found and deleted, False otherwise.
+        """
+        with self._lock:
+            for i, entry in enumerate(self.queue):
+                if entry['id'] == msg_id:
+                    del self.queue[i]
+                    self.save()
+                    return True
+            return False
+
     @property
     def size(self) -> int:
         """Get current queue size."""

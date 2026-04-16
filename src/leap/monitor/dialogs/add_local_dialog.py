@@ -5,16 +5,19 @@ from PyQt5.QtWidgets import (
     QLineEdit, QPushButton, QRadioButton, QVBoxLayout,
 )
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 
 
-class AddLocalDialog(QDialog):
+class AddLocalDialog(ZoomMixin, QDialog):
     """Simple dialog to select a local directory and choose clone vs open mode."""
+
+    _DEFAULT_SIZE = (500, 200)
 
     def __init__(self, parent: object = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Add from Local Path')
-        self.resize(500, 200)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('add_local')
         if saved:
             self.resize(saved[0], saved[1])
@@ -45,6 +48,8 @@ class AddLocalDialog(QDialog):
         btn_box.accepted.connect(self.accept)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
+
+        self._init_zoom('add_local_font_size')
 
     def _browse(self) -> None:
         """Open a directory chooser."""

@@ -95,17 +95,31 @@ class IndicatorPopup(QLabel):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent, Qt.ToolTip)
         self.setWordWrap(True)
+        # objectName so PopupZoomManager's QSS rule targets this class
+        self.setObjectName('leapIndicatorPopup')
         t = current_theme()
+        # Omit font-size: app-level popup QSS + the objectName selector
+        # below control it so it scales with popup zoom.
         self.setStyleSheet(
-            'QLabel {'
+            'QLabel#leapIndicatorPopup {'
             f'  background-color: {t.popup_bg};'
             f'  color: {t.text_primary};'
             f'  border: 1px solid {t.popup_border};'
             f'  padding: 8px 12px;'
-            f'  font-size: {t.font_size_base}px;'
             '}'
         )
         self.setMaximumWidth(280)
+        # Apply the current popup-zoom font size explicitly so the widget
+        # shows the right size even if the app-level popup rule isn't
+        # reaching top-level tool-tip windows on some platforms.
+        try:
+            from leap.monitor.popup_zoom import PopupZoomManager
+            pt = PopupZoomManager.instance().font_size
+            f = self.font()
+            f.setPointSize(pt)
+            self.setFont(f)
+        except Exception:
+            pass
 
 
 class IndicatorLabel(QLabel):
@@ -367,10 +381,11 @@ class PulsingLabel(QLabel):
             t = current_theme()
             c = QColor(t.accent_orange)
             r, g, b = c.red(), c.green(), c.blue()
+            # Intentionally omit font-size so the parent window's zoomed
+            # stylesheet (QLabel { font-size: Npx }) cascades in.
             self.setStyleSheet(
                 f'color: rgba({r}, {g}, {b}, {opacity:.2f});'
                 f' font-weight: bold;'
-                f' font-size: {t.font_size_base}px;'
             )
         except Exception:
             self._pulse_timer.stop()

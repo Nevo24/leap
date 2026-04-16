@@ -10,13 +10,15 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QEvent, Qt, QTimer
 
 from leap.monitor.ui.image_text_edit import ImageTextEdit
-
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.utils.socket_utils import send_socket_request
 
 
-class QueueEditDialog(QDialog):
+class QueueEditDialog(ZoomMixin, QDialog):
     """Dialog to view and edit queued messages for a Leap session."""
+
+    _DEFAULT_SIZE = (600, 450)
 
     def __init__(
         self,
@@ -35,13 +37,18 @@ class QueueEditDialog(QDialog):
         self._reordering: bool = False  # True from drop until reorder sync completes
 
         self.setWindowTitle(f'Edit Queue — {tag}')
-        self.resize(600, 450)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('queue_edit')
         if saved:
             self.resize(saved[0], saved[1])
 
         self._build_ui()
         self._load_queue()
+        self._init_zoom(
+            pref_key='queue_edit_font_size',
+            content_pref_key='queue_edit_text_font_size',
+            content_widgets=[self._list, self._editor],
+        )
 
     def _build_ui(self) -> None:
         """Build the dialog layout."""
@@ -77,6 +84,12 @@ class QueueEditDialog(QDialog):
         self._save_btn.setEnabled(False)
         self._save_btn.clicked.connect(self._save_current)
         btn_layout.addWidget(self._save_btn)
+
+        self._delete_btn = QPushButton('Delete')
+        self._delete_btn.setEnabled(False)
+        self._delete_btn.setToolTip('Delete selected message from queue')
+        self._delete_btn.clicked.connect(self._delete_current)
+        btn_layout.addWidget(self._delete_btn)
 
         btn_layout.addStretch()
 
@@ -257,6 +270,7 @@ class QueueEditDialog(QDialog):
 
         self._current_index = row
         self._editor.setEnabled(True)
+        self._delete_btn.setEnabled(True)
         self._editor.reset_images()
         self._editor.blockSignals(True)
         self._editor.setPlainText(self._messages[row]['msg'])
@@ -270,6 +284,47 @@ class QueueEditDialog(QDialog):
             return
         self._modified = True
         self._save_btn.setEnabled(True)
+
+    def _delete_current(self) -> None:
+        """Delete the currently selected message from the queue."""
+        if self._current_index < 0:
+            return
+        entry = self._messages[self._current_index]
+        reply = QMessageBox.question(
+            self, 'Delete Message',
+            'Delete this message from the queue?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        response = send_socket_request(
+            self._socket_path,
+            {'type': 'delete_message', 'id': entry['id']},
+        )
+        if not response:
+            QMessageBox.warning(
+                self, 'Delete Failed',
+                'Could not reach the server (offline).')
+            return
+        if response.get('status') != 'ok':
+            QMessageBox.warning(
+                self, 'Delete Failed',
+                'Message was already sent or removed from queue.')
+            self._load_queue()
+            return
+
+        # Remove from local state and refresh
+        if self._current_index < len(self._messages):
+            self._messages.pop(self._current_index)
+        self._current_index = -1
+        self._modified = False
+        self._save_btn.setEnabled(False)
+        self._delete_btn.setEnabled(False)
+        self._editor.setEnabled(False)
+        self._editor.clear()
+        self._populate_list()
+        if not self._messages:
+            self._editor.setPlaceholderText('Queue is empty')
 
     def _save_current(self) -> None:
         """Save the currently edited message and/or pending reorder."""
@@ -306,6 +361,7 @@ class QueueEditDialog(QDialog):
             self._current_index = -1
             self._modified = False
             self._save_btn.setEnabled(False)
+            self._delete_btn.setEnabled(False)
             self._editor.setEnabled(False)
             self._editor.clear()
             self._populate_list()
@@ -367,5 +423,6 @@ class QueueEditDialog(QDialog):
                 if self._modified:
                     self._do_save(self._current_index)
                 self._commit_reorder()
+        self._zoom_flush()
         save_dialog_geometry('queue_edit', self.width(), self.height())
         event.accept()

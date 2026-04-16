@@ -120,11 +120,15 @@ class TableBuilderMixin(_Base):
         lay = QHBoxLayout(wrapper)
         lay.setContentsMargins(3, 2, 3, 2)
         lay.setSpacing(0)
-        # Enforce consistent height on all buttons inside cell widgets
+        # Enforce a consistent height on every QPushButton inside cell
+        # widgets (so X/close buttons line up with Terminal/active pills).
+        # Scale with the main font so rows grow with zoom.
+        cell_h = max(CELL_BTN_H, int(CELL_BTN_H * self._main_font_size
+                                     / current_theme().font_size_base))
         for btn in widget.findChildren(QPushButton):
-            btn.setFixedHeight(CELL_BTN_H)
+            btn.setFixedHeight(cell_h)
         if isinstance(widget, QPushButton):
-            widget.setFixedHeight(CELL_BTN_H)
+            widget.setFixedHeight(cell_h)
         lay.addWidget(widget)
         self.table.setCellWidget(row, col, wrapper)
 
@@ -184,7 +188,7 @@ class TableBuilderMixin(_Base):
         if col in self._MONO_COLS:
             mono = QFont('Menlo')
             mono.setStyleHint(QFont.Monospace)
-            mono.setPointSize(max(10, current_theme().font_size_base - 1))
+            mono.setPointSize(max(10, self._zoomed_size(-1)))
             item.setFont(mono)
         # Dim 'N/A' cells
         if text == 'N/A':
@@ -259,9 +263,9 @@ class TableBuilderMixin(_Base):
             tag_label.setStyleSheet(f'QLabel {{ font-weight: 600; }}')
         tag_layout.addWidget(tag_label, 1)
 
-        palette_btn = HoverIconButton(_PALETTE_SVG, 14)
-        palette_btn.setFixedSize(22, palette_btn.sizeHint().height())
-        palette_btn.setStyleSheet(menu_btn_style())
+        palette_btn = HoverIconButton(_PALETTE_SVG, self._zoomed_btn_w(14))
+        palette_btn.setFixedSize(self._zoomed_btn_w(22),palette_btn.sizeHint().height())
+        palette_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
         palette_btn.setToolTip('Set row color')
         palette_btn.clicked.connect(
             lambda checked, t=tag, btn=palette_btn:
@@ -420,7 +424,7 @@ class TableBuilderMixin(_Base):
                 muted_fg = ensure_contrast(t.text_muted, row_color)
                 btn.setStyleSheet(
                     f'QPushButton {{ color: {muted_fg};'
-                    f' font-size: {t.font_size_base + 2}px;'
+                    f' font-size: {self._zoomed_size(2)}px;'
                     f' background-color: {btn_bg};'
                     f' border: 1px solid {btn_border};'
                     f' border-radius: {r_radius}px;'
@@ -455,7 +459,7 @@ class TableBuilderMixin(_Base):
         path_label.setToolTip(path_text)
         mono = QFont('Menlo')
         mono.setStyleHint(QFont.Monospace)
-        mono.setPointSize(max(10, current_theme().font_size_base - 1))
+        mono.setPointSize(max(10, self._zoomed_size(-1)))
         path_label.setFont(mono)
         if has_path:
             path_label.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -464,9 +468,9 @@ class TableBuilderMixin(_Base):
             )
         path_layout.addWidget(path_label, 1)
 
-        path_menu_btn = HoverIconButton(_OPEN_EXTERNAL_SVG, 14)
-        path_menu_btn.setFixedSize(22, path_menu_btn.sizeHint().height())
-        path_menu_btn.setStyleSheet(menu_btn_style())
+        path_menu_btn = HoverIconButton(_OPEN_EXTERNAL_SVG, self._zoomed_btn_w(14))
+        path_menu_btn.setFixedSize(self._zoomed_btn_w(22),path_menu_btn.sizeHint().height())
+        path_menu_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
         path_menu_btn.setToolTip('Open in Terminal / IDE' if has_path
                                  else 'No project path available')
         path_menu_btn.setEnabled(has_path)
@@ -510,7 +514,7 @@ class TableBuilderMixin(_Base):
         branch_label.setToolTip(branch_text)
         mono = QFont('Menlo')
         mono.setStyleHint(QFont.Monospace)
-        mono.setPointSize(max(10, current_theme().font_size_base - 1))
+        mono.setPointSize(max(10, self._zoomed_size(-1)))
         branch_label.setFont(mono)
         if has_git:
             branch_label.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -519,9 +523,9 @@ class TableBuilderMixin(_Base):
             )
         branch_layout.addWidget(branch_label, 1)
 
-        git_btn = HoverIconButton(_GIT_BRANCH_SVG, 14)
-        git_btn.setFixedSize(22, git_btn.sizeHint().height())
-        git_btn.setStyleSheet(menu_btn_style())
+        git_btn = HoverIconButton(_GIT_BRANCH_SVG, self._zoomed_btn_w(14))
+        git_btn.setFixedSize(self._zoomed_btn_w(22),git_btn.sizeHint().height())
+        git_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
         git_btn.setToolTip('Git Changes' if has_git
                            else 'No git project detected')
         git_btn.setEnabled(has_git)
@@ -604,7 +608,7 @@ class TableBuilderMixin(_Base):
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setForeground(QColor(t_empty.text_muted))
                 font = item.font()
-                font.setPointSize(t_empty.font_size_large)
+                font.setPointSize(self._zoomed_size(2))
                 item.setFont(font)
                 return
 
@@ -645,8 +649,8 @@ class TableBuilderMixin(_Base):
                     del_layout.setContentsMargins(0, 0, 0, 0)
                     del_layout.setSpacing(0)
                     del_btn = QPushButton('\u00d7')
-                    del_btn.setFixedSize(28, del_btn.sizeHint().height())
-                    del_btn.setStyleSheet(close_btn_style())
+                    del_btn.setFixedSize(self._zoomed_btn_w(28),del_btn.sizeHint().height())
+                    del_btn.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
                     del_btn.setProperty('_btn_role', 'close')
                     del_btn.setToolTip(f'Remove row for {tag}')
                     del_btn.clicked.connect(
@@ -681,14 +685,14 @@ class TableBuilderMixin(_Base):
                         if row_color:
                             fg = ensure_contrast(t_cli.text_secondary, row_color)
                             border_c = ensure_contrast(t_cli.border_solid, row_color)
-                        cli_label.setFixedHeight(24)
+                        cli_label.setFixedHeight(self._zoomed_btn_w(24))
                         cli_label.setStyleSheet(
                             f'QLabel {{'
                             f'  color: {fg};'
                             f'  border: 1px solid {border_c};'
                             f'  border-radius: 12px;'
                             f'  padding: 0px 10px;'
-                            f'  font-size: {t_cli.font_size_base}px;'
+                            f'  font-size: {self._zoomed_size()}px;'
                             f'}}'
                         )
                     self._set_cell_widget(row, self.COL_CLI, cli_label)
@@ -737,10 +741,11 @@ class TableBuilderMixin(_Base):
                         dq_layout.setContentsMargins(0, 0, 0, 0)
                         dq_layout.setSpacing(2)
 
-                        dq_menu_btn = HoverIconButton(_THREE_DOT_SVG, 14)
+                        dq_menu_btn = HoverIconButton(_THREE_DOT_SVG, self._zoomed_btn_w(14))
                         dq_menu_btn.setFixedSize(
-                            24, dq_menu_btn.sizeHint().height())
-                        dq_menu_btn.setStyleSheet(menu_btn_style())
+                            self._zoomed_btn_w(24),
+                            dq_menu_btn.sizeHint().height())
+                        dq_menu_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
                         dq_menu_btn.setToolTip('Queue options')
                         dq_menu_btn.clicked.connect(
                             lambda checked, btn=dq_menu_btn, t=tag:
@@ -754,10 +759,11 @@ class TableBuilderMixin(_Base):
                         dq_label.setAlignment(Qt.AlignCenter)
                         dq_layout.addWidget(dq_label, 1)
 
-                        dq_action_btn = HoverIconButton(_SEND_SVG, 14)
+                        dq_action_btn = HoverIconButton(_SEND_SVG, self._zoomed_btn_w(14))
                         dq_action_btn.setFixedSize(
-                            24, dq_action_btn.sizeHint().height())
-                        dq_action_btn.setStyleSheet(menu_btn_style())
+                            self._zoomed_btn_w(24),
+                            dq_action_btn.sizeHint().height())
+                        dq_action_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
                         dq_action_btn.setEnabled(False)
                         dq_action_btn.setToolTip('Send options (server offline)')
                         dq_layout.addWidget(
@@ -837,7 +843,7 @@ class TableBuilderMixin(_Base):
 
                         # Left spacer balances the indicator dot width
                         spacer = QWidget()
-                        spacer.setFixedWidth(14)
+                        spacer.setFixedWidth(int(max(10, self._zoomed_size(-3)) * 1.4))
                         c_layout.addWidget(spacer)
 
                         # Status text — colored, bold, centered
@@ -860,7 +866,8 @@ class TableBuilderMixin(_Base):
                         fire_label = QLabel(
                             '\U0001f525' if show_fire else '')
                         fire_label.setObjectName('_fireLabel')
-                        fire_label.setFixedWidth(14)
+                        fire_px = max(10, self._zoomed_size(-3))
+                        fire_label.setFixedWidth(int(fire_px * 1.4))
                         fire_label.setAlignment(
                             Qt.AlignCenter | Qt.AlignVCenter)
                         if show_fire:
@@ -869,7 +876,7 @@ class TableBuilderMixin(_Base):
                                 fire_color = ensure_contrast(
                                     t.accent_orange, row_color)
                             fire_label.setStyleSheet(
-                                f'color: {fire_color}; font-size: 10px;')
+                                f'color: {fire_color}; font-size: {fire_px}px;')
                         c_layout.addWidget(fire_label)
 
                         # Left-click: dismiss fire indicator.
@@ -988,10 +995,11 @@ class TableBuilderMixin(_Base):
                         q_layout.setContentsMargins(0, 0, 0, 0)
                         q_layout.setSpacing(2)
 
-                        q_menu_btn = HoverIconButton(_THREE_DOT_SVG, 14)
+                        q_menu_btn = HoverIconButton(_THREE_DOT_SVG, self._zoomed_btn_w(14))
                         q_menu_btn.setFixedSize(
-                            24, q_menu_btn.sizeHint().height())
-                        q_menu_btn.setStyleSheet(menu_btn_style())
+                            self._zoomed_btn_w(24),
+                            q_menu_btn.sizeHint().height())
+                        q_menu_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
                         q_menu_btn.setToolTip('Queue options')
                         q_menu_btn.clicked.connect(
                             lambda checked, btn=q_menu_btn, t=tag:
@@ -1008,16 +1016,17 @@ class TableBuilderMixin(_Base):
                             q_label.setStyleSheet(
                                 f'QLabel {{'
                                 f'  color: {t_q.accent_blue};'
-                                f'  font-size: {t_q.font_size_small}px;'
+                                f'  font-size: {self._zoomed_size(-2)}px;'
                                 f'  font-weight: bold;'
                                 f'}}'
                             )
                         q_layout.addWidget(q_label, 1, Qt.AlignCenter)
 
-                        q_action_btn = HoverIconButton(_SEND_SVG, 14)
+                        q_action_btn = HoverIconButton(_SEND_SVG, self._zoomed_btn_w(14))
                         q_action_btn.setFixedSize(
-                            24, q_action_btn.sizeHint().height())
-                        q_action_btn.setStyleSheet(menu_btn_style())
+                            self._zoomed_btn_w(24),
+                            q_action_btn.sizeHint().height())
+                        q_action_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
                         q_action_btn.setToolTip('Send options')
                         q_action_btn.clicked.connect(
                             lambda checked, btn=q_action_btn, t=tag:
@@ -1061,8 +1070,8 @@ class TableBuilderMixin(_Base):
 
                     if not is_dead:
                         server_x = QPushButton('\u00d7')
-                        server_x.setFixedSize(28, server_x.sizeHint().height())
-                        server_x.setStyleSheet(close_btn_style())
+                        server_x.setFixedSize(self._zoomed_btn_w(28),server_x.sizeHint().height())
+                        server_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
                         server_x.setProperty('_btn_role', 'close')
                         server_x.setToolTip(f'Close server {tag}')
                         server_x.clicked.connect(
@@ -1126,8 +1135,8 @@ class TableBuilderMixin(_Base):
 
                     if has_client:
                         client_x = QPushButton('\u00d7')
-                        client_x.setFixedSize(28, client_x.sizeHint().height())
-                        client_x.setStyleSheet(close_btn_style())
+                        client_x.setFixedSize(self._zoomed_btn_w(28),client_x.sizeHint().height())
+                        client_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
                         client_x.setProperty('_btn_role', 'close')
                         client_x.setToolTip(f'Close client {tag}')
                         client_x.clicked.connect(
@@ -1205,8 +1214,8 @@ class TableBuilderMixin(_Base):
                         slack_layout.setSpacing(2)
 
                         slack_x = QPushButton('\u00d7')
-                        slack_x.setFixedSize(28, slack_x.sizeHint().height())
-                        slack_x.setStyleSheet(close_btn_style())
+                        slack_x.setFixedSize(self._zoomed_btn_w(28),slack_x.sizeHint().height())
+                        slack_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
                         slack_x.setProperty('_btn_role', 'close')
                         slack_x.setToolTip(f'Disconnect Slack for {tag}')
                         slack_x.clicked.connect(
@@ -1304,8 +1313,8 @@ class TableBuilderMixin(_Base):
                         pr_layout.setSpacing(2)
 
                         pr_x = QPushButton('\u00d7')
-                        pr_x.setFixedSize(28, pr_x.sizeHint().height())
-                        pr_x.setStyleSheet(close_btn_style())
+                        pr_x.setFixedSize(self._zoomed_btn_w(28),pr_x.sizeHint().height())
+                        pr_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
                         pr_x.setProperty('_btn_role', 'close')
                         pr_x.setToolTip(f'Stop tracking PR for {tag}')
                         pr_x.clicked.connect(
@@ -1323,7 +1332,8 @@ class TableBuilderMixin(_Base):
                         pr_fire_label = QLabel(
                             '\U0001f525' if show_pr_fire else '')
                         pr_fire_label.setObjectName('_prFireLabel')
-                        pr_fire_label.setFixedWidth(14)
+                        pr_fire_px = max(10, self._zoomed_size(-3))
+                        pr_fire_label.setFixedWidth(int(pr_fire_px * 1.4))
                         pr_fire_label.setAlignment(
                             Qt.AlignCenter | Qt.AlignVCenter)
                         if show_pr_fire:
@@ -1333,7 +1343,7 @@ class TableBuilderMixin(_Base):
                                 pf_color = ensure_contrast(
                                     t_pf.accent_orange, row_color)
                             pr_fire_label.setStyleSheet(
-                                f'color: {pf_color}; font-size: 10px;')
+                                f'color: {pf_color}; font-size: {pr_fire_px}px;')
                             pr_fire_label.setToolTip(
                                 self._pr_fire_tooltip(tag))
 
@@ -1431,8 +1441,8 @@ class TableBuilderMixin(_Base):
                             pr_br_layout.setSpacing(4)
 
                             pr_br_x = QPushButton('\u00d7')
-                            pr_br_x.setFixedSize(28, pr_br_x.sizeHint().height())
-                            pr_br_x.setStyleSheet(close_btn_style())
+                            pr_br_x.setFixedSize(self._zoomed_btn_w(28),pr_br_x.sizeHint().height())
+                            pr_br_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
                             pr_br_x.setProperty('_btn_role', 'close')
                             pr_br_x.setToolTip(
                                 f'Clear pinned PR data for {tag}')

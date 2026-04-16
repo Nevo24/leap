@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QKeySequence
 
 from leap.monitor.dialogs.notifications_dialog import NotificationsDialog
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.cli_providers.states import AutoSendMode
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import THEMES, current_theme
@@ -144,8 +145,10 @@ def detect_default_difftool() -> str:
     return ''
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(ZoomMixin, QDialog):
     """Dialog for configuring monitor preferences."""
+
+    _DEFAULT_SIZE = (800, 440)
 
     def __init__(
         self,
@@ -172,7 +175,7 @@ class SettingsDialog(QDialog):
         self._on_theme_change = on_theme_change
         self._original_theme = current_theme_name
         self.setWindowTitle('Settings')
-        self.resize(800, 440)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('settings')
         if saved:
             self.resize(saved[0], saved[1])
@@ -212,7 +215,7 @@ class SettingsDialog(QDialog):
             'Grant in: System Settings > Privacy & Security > Accessibility\n'
             '> enable "Leap Monitor" (or your IDE/terminal if running from source)'
         )
-        self._warp_hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
+        self._warp_hint.setStyleSheet(f'color: {current_theme().text_muted};')
         self._warp_hint.setWordWrap(True)
         self._warp_hint.setVisible(self._terminal_combo.currentText() == 'Warp')
         grid.addWidget(self._warp_hint, 2, 0, 1, 4)
@@ -361,8 +364,7 @@ class SettingsDialog(QDialog):
             'Grant in: System Settings > Privacy & Security > Accessibility\n'
             '> enable "Leap Monitor" (or "Python" if running from source)')
         shortcut_hint.setStyleSheet(
-            f'color: {current_theme().text_muted};'
-            f' font-size: {current_theme().font_size_small}px;')
+            f'color: {current_theme().text_muted};')
         shortcut_hint.setWordWrap(True)
         grid.addWidget(shortcut_hint, 12, 0, 1, 4)
 
@@ -381,6 +383,7 @@ class SettingsDialog(QDialog):
             if tip and w is not self._tooltips_check:
                 self._tooltip_widgets.append((w, tip))
         self._apply_tooltips(show_tooltips)
+        self._init_zoom('settings_font_size')
 
     def _apply_tooltips(self, enabled: bool) -> None:
         """Show or hide tooltips on all settings widgets.

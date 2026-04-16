@@ -235,6 +235,42 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 - **Socket communication** → Use `send_socket_request()` from `utils/socket_utils.py` for any new code that needs to talk to a Leap server via Unix socket. Do not duplicate the connect/send/recv pattern. Incoming messages are capped at `MAX_MESSAGE_SIZE` (1 MB) in `socket_handler.py`; larger payloads are rejected.
 - **New third-party dependencies** → Add to `pyproject.toml` under the appropriate group: `[tool.poetry.dependencies]` for core, `[tool.poetry.group.monitor.dependencies]` for GUI-only deps. Run `poetry lock && poetry install` after. All imports must be at module top level (no inline imports except optional deps).
 - **New dialogs** → All new resizable dialogs (except simple warning/error/info popups) must save/restore their size using `load_dialog_geometry(key)` / `save_dialog_geometry(key, w, h)` from `monitor/pr_tracking/config.py`. Call `load_dialog_geometry()` in `__init__` to restore. For persistence: if the dialog closes via `accept()`/`reject()`, save in `done()`. If it closes via `close()` or the X button, save in `closeEvent()` instead — `done()` is **not** called for `close()`/X.
+
+  **Font zoom (Cmd+scroll / Cmd+±/0):** Every new dialog must inherit from `ZoomMixin` (`monitor/dialogs/zoom_mixin.py`) and call `_init_zoom(...)` at the end of `__init__`. Two forms are supported:
+
+  * **Single-target** — for form dialogs with no distinct "content" area (inputs, combos, checkboxes, and buttons only):
+
+    ```python
+    class MyDialog(ZoomMixin, QDialog):
+        def __init__(self, ...):
+            super().__init__(...)
+            # ... build UI ...
+            self._init_zoom('my_dialog_font_size')
+    ```
+
+  * **Split-target (REQUIRED when the dialog has a primary content area** — QTextEdit, QListWidget, QTreeView, QTableWidget, message cards, a diff viewer, etc.) — so the user can enlarge the content without blowing up the buttons/chrome, and vice versa:
+
+    ```python
+    class MyDialog(ZoomMixin, QDialog):
+        def __init__(self, ...):
+            super().__init__(...)
+            self._editor = QTextEdit()
+            self._list = QListWidget()
+            # ... build UI ...
+            self._init_zoom(
+                pref_key='my_dialog_font_size',             # buttons/chrome
+                content_pref_key='my_dialog_text_font_size',  # content area
+                content_widgets=[self._editor, self._list],
+            )
+    ```
+
+  For dialogs that rebuild content widgets dynamically (e.g. message cards recreated on save), pass a **callable** as `content_widgets` — the mixin calls it on every event so new widgets are picked up automatically — and call `self._zoom_reapply_content()` at the end of the rebuild method so the new widgets render at the current content size.
+
+  **Close hooks:** Font sizes are persisted per-dialog in `monitor_prefs.json` and flushed by `done()` automatically. If your dialog closes via `closeEvent()` instead of `done()`, call `self._zoom_flush()` explicitly in `closeEvent()`. Font sizes are NOT cleared by the "reset window sizes" button.
+
+  **Hint labels:** Any inline `setStyleSheet(... font-size: ... )` on a hint/label will override the dialog's cascade and NOT scale with zoom. Leave `font-size` out of the inline stylesheet (set only `color:`) so ZoomMixin's cascade applies.
+
+  **Popups** (QMessageBox / QInputDialog / QMenu / QFileDialog / tooltips) are handled globally by `PopupZoomManager` (`monitor/popup_zoom.py`) — one shared `popup_font_size` pref. You don't need to do anything for popups shown from your dialog.
 - **New `.storage` subdirectories** → If you add a new subdirectory under `.storage/`, you **must** update three places:
   1. Add the constant in `utils/constants.py` (next to `QUEUE_DIR`, `SOCKET_DIR`, `HISTORY_DIR`)
   2. Add a `.mkdir()` call in `ensure_storage_dirs()` in `utils/constants.py`

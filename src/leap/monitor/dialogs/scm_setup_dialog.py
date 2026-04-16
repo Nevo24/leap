@@ -11,12 +11,13 @@ from PyQt5.QtWidgets import (
 
 from leap.utils.constants import SCM_POLL_INTERVAL
 from leap.monitor.pr_tracking.base import ConnectionTestResult
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.scm_polling import TestConnectionWorker
 from leap.monitor.themes import current_theme
 
 
-class SCMSetupDialog(QDialog):
+class SCMSetupDialog(ZoomMixin, QDialog):
     """Base dialog for configuring SCM provider connections.
 
     Subclasses must implement:
@@ -44,6 +45,7 @@ class SCMSetupDialog(QDialog):
         self._test_worker: Optional[TestConnectionWorker] = None
         self._init_ui()
         self._load_existing()
+        self._init_zoom(f'{self._geometry_key}_font_size')
 
     @abstractmethod
     def _window_title(self) -> str:
@@ -146,7 +148,7 @@ class SCMSetupDialog(QDialog):
         self.poll_input.setValue(SCM_POLL_INTERVAL)
         poll_layout.addWidget(self.poll_input)
         poll_note = QLabel('(min: 5s)')
-        poll_note.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
+        poll_note.setStyleSheet(f'color: {current_theme().text_muted};')
         poll_layout.addWidget(poll_note)
         poll_layout.addStretch()
         layout.addLayout(poll_layout)
@@ -163,7 +165,7 @@ class SCMSetupDialog(QDialog):
         # Warnings label (shown when token has limited permissions)
         self.warnings_label = QLabel('')
         self.warnings_label.setWordWrap(True)
-        self.warnings_label.setStyleSheet(f'color: {current_theme().accent_orange}; font-size: {current_theme().font_size_base}px;')
+        self.warnings_label.setStyleSheet(f'color: {current_theme().accent_orange};')
         self.warnings_label.setVisible(False)
         layout.addWidget(self.warnings_label)
 

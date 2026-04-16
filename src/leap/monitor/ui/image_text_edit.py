@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QMimeData, QPoint, Qt
 from PyQt5.QtGui import QImage, QPixmap, QTextCursor
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.themes import current_theme
 from leap.utils.constants import QUEUE_IMAGES_DIR
 
@@ -237,12 +238,14 @@ class ImageTextEdit(QTextEdit):
         self._image_placeholders.clear()
 
 
-class SendMessageDialog(QDialog):
+class SendMessageDialog(ZoomMixin, QDialog):
     """Custom send-message dialog with image paste support.
 
     Replaces ``QInputDialog.getMultiLineText()`` for monitor message
     composition, adding clipboard image paste support.
     """
+
+    _DEFAULT_SIZE = (480, 250)
 
     def __init__(
         self,
@@ -253,7 +256,7 @@ class SendMessageDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(480, 250)
+        self.resize(*self._DEFAULT_SIZE)
 
         layout = QVBoxLayout(self)
 
@@ -268,7 +271,7 @@ class SendMessageDialog(QDialog):
 
         hint = QLabel('Tip: paste an image from clipboard to attach it\n'
                       'Tip: cmd+Enter to send')
-        hint.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px;')
+        hint.setStyleSheet(f'color: {current_theme().text_muted};')
         layout.addWidget(hint)
 
         btn_layout = QHBoxLayout()
@@ -281,6 +284,12 @@ class SendMessageDialog(QDialog):
         btn_layout.addWidget(ok_btn)
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
+
+        self._init_zoom(
+            pref_key='send_message_font_size',
+            content_pref_key='send_message_text_font_size',
+            content_widgets=[self._editor],
+        )
 
     def get_text(self) -> str:
         """Return the composed message with placeholders resolved."""

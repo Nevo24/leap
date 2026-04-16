@@ -426,6 +426,12 @@ class LeapServer:
                 return {'status': 'ok', 'message': 'Message edited'}
             return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
 
+        elif msg_type == 'delete_message':
+            msg_id = msg.get('id', '')
+            if self.queue.delete_message_by_id(msg_id):
+                return {'status': 'ok', 'message': 'Message deleted'}
+            return {'status': 'error', 'message': 'Message not found (already sent or invalid ID)'}
+
         elif msg_type == 'reorder_queue':
             ordered_ids = msg.get('ordered_ids', [])
             if not ordered_ids or not isinstance(ordered_ids, list):

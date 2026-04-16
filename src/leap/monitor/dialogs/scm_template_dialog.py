@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QTimer, Qt
 from PyQt5.QtGui import QDrag, QPainter, QPixmap
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.themes import current_theme
 from leap.monitor.ui.image_text_edit import ImageTextEdit
 
@@ -45,7 +46,7 @@ class _DragHandle(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setCursor(Qt.OpenHandCursor)
         self.setStyleSheet(
-            f'border: none; color: {t.text_muted}; font-size: {t.font_size_base + 4}px;'
+            f'border: none; color: {t.text_muted};'
         )
         self.setToolTip('Drag to reorder')
         self._drag_start: QPoint = QPoint()
@@ -118,14 +119,15 @@ class _MessageCard(QFrame):
         self._drag_handle = _DragHandle(self)
         header.addWidget(self._drag_handle)
         self._label = QLabel(f'Message {index + 1}')
-        self._label.setStyleSheet(f'border: none; font-weight: bold; font-size: {current_theme().font_size_base}px;')
+        # Omit font-size so the dialog-level ZoomMixin stylesheet cascades in.
+        self._label.setStyleSheet('border: none; font-weight: bold;')
         header.addWidget(self._label)
         header.addStretch()
         self._remove_btn = QPushButton('\u00d7')
         self._remove_btn.setFixedSize(20, 20)
         t = current_theme()
         self._remove_btn.setStyleSheet(
-            f'QPushButton {{ border: none; color: {t.text_muted}; font-size: {t.font_size_base}px; }}'
+            f'QPushButton {{ border: none; color: {t.text_muted}; }}'
             f'QPushButton:hover {{ color: {t.accent_red}; font-weight: bold; }}'
         )
         self._remove_btn.setToolTip('Remove this message')
@@ -159,13 +161,15 @@ class _MessageCard(QFrame):
         self._text_edit.setFocus()
 
 
-class PresetEditorDialog(QDialog):
+class PresetEditorDialog(ZoomMixin, QDialog):
     """Dialog to edit Leap presets with named entries."""
+
+    _DEFAULT_SIZE = (780, 500)
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Edit Presets')
-        self.resize(780, 500)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('preset_editor')
         if saved:
             self.resize(saved[0], saved[1])
@@ -181,13 +185,13 @@ class PresetEditorDialog(QDialog):
         hint_pr = QLabel(PR_PRESET_HINT)
         hint_pr.setWordWrap(True)
         hint_pr.setIndent(0)
-        hint_pr.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px; margin-bottom: 0px;')
+        hint_pr.setStyleSheet(f'color: {current_theme().text_muted}; margin-bottom: 0px;')
         dlg_layout.addWidget(hint_pr)
 
         hint_quick = QLabel(QUICK_MSG_PRESET_HINT)
         hint_quick.setWordWrap(True)
         hint_quick.setIndent(0)
-        hint_quick.setStyleSheet(f'color: {current_theme().text_muted}; font-size: {current_theme().font_size_small}px; margin-bottom: 4px;')
+        hint_quick.setStyleSheet(f'color: {current_theme().text_muted}; margin-bottom: 4px;')
         dlg_layout.addWidget(hint_quick)
 
         # Preset row: combo + New + Save + Save As... + Delete
@@ -277,6 +281,44 @@ class PresetEditorDialog(QDialog):
                 self._rebuild_cards()
                 self._update_button_states()
 
+        # Split zoom: text (message cards' QTextEdit) vs. buttons/chrome.
+        # ZoomMixin queries _card_text_widgets() on each Ctrl+wheel/key to
+        # handle cards being added/removed/reordered.
+        self._init_zoom(
+            pref_key='preset_editor_font_size',
+            content_pref_key='preset_editor_text_font_size',
+            content_widgets=self._card_text_widgets,
+        )
+
+    def _card_text_widgets(self) -> list:
+        """Current list of content widgets for split-zoom routing.
+
+        Includes the scroll area (so mouse-wheel over *any* part of the
+        scrollable cards region — gaps between cards, card headers, the
+        viewport itself — routes to content zoom), plus each card's text
+        editor for explicit lookup.
+        """
+        widgets = []
+        if getattr(self, '_scroll', None) is not None:
+            widgets.append(self._scroll)
+        widgets.extend(
+            c._text_edit for c in self._cards if c is not None)
+        return widgets
+
+    def _apply_zoom_content_font_size(self) -> None:  # type: ignore[override]
+        """Apply content zoom and scale each card's text-edit height so
+        more (zoomed) lines stay visible without clipping."""
+        super()._apply_zoom_content_font_size()
+        pt = getattr(self, '_zoom_content_font_size', None)
+        if pt is None:
+            return
+        base = current_theme().font_size_base
+        scale = max(0.5, pt / base)
+        new_h = max(50, int(80 * scale))
+        for card in self._cards:
+            if card is not None and card._text_edit is not None:
+                card._text_edit.setFixedHeight(new_h)
+
     # -- Card management ----------------------------------------------------
 
     def _rebuild_cards(self) -> None:
@@ -324,6 +366,10 @@ class PresetEditorDialog(QDialog):
 
         # Push cards to the top
         self._scroll_layout.addStretch()
+
+        # Apply text-zoom size to the freshly-built cards (via ZoomMixin)
+        if hasattr(self, '_zoom_content_pref_key'):
+            self._zoom_reapply_content()
 
     def _add_message(self) -> None:
         """Append a new empty message and rebuild cards."""
@@ -375,7 +421,7 @@ class PresetEditorDialog(QDialog):
     _MIME_TYPE = 'application/x-leap-preset-card'
 
     def eventFilter(self, obj: object, event: object) -> bool:
-        """Handle drag events on the scroll viewport to show drop indicator."""
+        """Handle drag events on the scroll viewport (zoom is handled by ZoomMixin)."""
         if obj is not self._scroll.viewport():
             return super().eventFilter(obj, event)
 

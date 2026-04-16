@@ -212,7 +212,7 @@ class ColorPickerPopup(QFrame):
 
         clear_btn = QPushButton('Clear')
         clear_btn.setStyleSheet(
-            f'QPushButton {{ color: {t.text_primary}; font-size: {t.font_size_small}px;'
+            f'QPushButton {{ color: {t.text_primary};'
             f' background: transparent; border: 1px solid {t.popup_border};'
             f' border-radius: {r}px; padding: 4px 12px; }}'
             f'QPushButton:hover {{ border-color: {t.accent_blue};'
@@ -255,14 +255,16 @@ MAX_COMBO_DISPLAY = 40
 CELL_BTN_H = 24  # consistent height for all cell buttons
 
 
-def close_btn_style(fg_override: Optional[str] = None) -> str:
+def close_btn_style(fg_override: Optional[str] = None,
+                    font_size: Optional[int] = None) -> str:
     """Return stylesheet for close/delete buttons."""
     t = current_theme()
     fg = fg_override or t.text_muted
+    fs = font_size if font_size is not None else t.font_size_base
     h = t.accent_red.lstrip('#')
     rr, gg, bb = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return (
-        f'QPushButton {{ color: {fg}; font-size: {t.font_size_base}px;'
+        f'QPushButton {{ color: {fg}; font-size: {fs}px;'
         f' padding: 0px 6px 1px 6px;'
         f' background-color: {t.button_bg or t.window_bg};'
         f' border: 1px solid {t.button_border or t.border_solid};'
@@ -308,14 +310,16 @@ def inactive_btn_style(fg_override: Optional[str] = None) -> str:
     )
 
 
-def menu_btn_style(fg_override: Optional[str] = None) -> str:
+def menu_btn_style(fg_override: Optional[str] = None,
+                   font_size: Optional[int] = None) -> str:
     """Return stylesheet for icon/menu buttons in table cells."""
     t = current_theme()
     fg = fg_override or t.icon_color
     hover = fg_override or t.text_primary
     hover_bg = t.button_hover_bg or t.border_solid
+    fs = font_size if font_size is not None else t.font_size_base
     return (
-        f'QPushButton {{ color: {fg}; font-size: {t.font_size_base}px;'
+        f'QPushButton {{ color: {fg}; font-size: {fs}px;'
         f' padding: 0px 4px;'
         f' background-color: {t.button_bg or t.window_bg};'
         f' border: 1px solid {t.button_border or t.border_solid};'

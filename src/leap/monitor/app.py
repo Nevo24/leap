@@ -13,12 +13,12 @@ import time
 from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QFrame, QGridLayout, QMainWindow, QMenu,
+    QAction, QApplication, QComboBox, QDialog, QFrame, QGridLayout, QMainWindow, QMenu,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout, QTableWidget,
     QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QTimer, Qt
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QTimer, Qt
 from PyQt5.QtGui import (
     QColor, QCursor, QDrag, QIcon, QImage, QCloseEvent, QPalette, QPixmap,
     QResizeEvent,
@@ -144,6 +144,11 @@ class MonitorWindow(
         self._notes_focused_monitor: Optional[object] = None
         self._notes_global_monitor: Optional[object] = None
 
+        # Main-window font zoom (Cmd+scroll / Cmd+±/0)
+        self._main_font_size: int = self._prefs.get(
+            'main_font_size', current_theme().font_size_base)
+        self._main_zoom_save_timer: Optional[QTimer] = None
+
         # Row drag-and-drop state
         self._drag_source_row: int = -1
         self._drag_start_pos: QPoint = QPoint()
@@ -190,6 +195,15 @@ class MonitorWindow(
         # Register global focus shortcut (if configured)
         self._register_global_shortcut()
         self._register_notes_shortcut()
+
+        # Cmd+Q to quit — works even when modal dialogs are open.
+        # macOS Dock Quit is unreliable for non-bundled Python apps,
+        # so this ensures the user always has a way to quit.
+        from PyQt5.QtWidgets import QShortcut
+        from PyQt5.QtGui import QKeySequence
+        quit_shortcut = QShortcut(QKeySequence.Quit, self)
+        quit_shortcut.setContext(Qt.ApplicationShortcut)
+        quit_shortcut.activated.connect(self.close)
 
         # Set up modern notification API (UNUserNotificationCenter) for
         # banner action buttons and click handling
@@ -278,9 +292,10 @@ class MonitorWindow(
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(36)  # taller rows for pill badges
 
-        # Delete column: narrow fixed width
-        self.table.setColumnWidth(self.COL_DELETE, 34)
-        header.setSectionResizeMode(self.COL_DELETE, QHeaderView.Fixed)
+        # Delete column: auto-size to the X button width so zooming the
+        # row-cell font (which scales the X's width) is always wrapped
+        # by the column and the button never overflows.
+        header.setSectionResizeMode(self.COL_DELETE, QHeaderView.ResizeToContents)
 
         # Hide Slack column when Slack app is not installed
         self._slack_available = is_slack_installed()
@@ -345,6 +360,7 @@ class MonitorWindow(
         logo_container.setFrameShape(QFrame.NoFrame)
         logo_container.setContentsMargins(0, 0, 0, 0)
         logo_container.setFixedHeight(50)
+        self._logo_container = logo_container
         stacked = QStackedLayout(logo_container)
         stacked.setContentsMargins(0, 0, 0, 0)
         stacked.setStackingMode(QStackedLayout.StackAll)
@@ -622,8 +638,12 @@ class MonitorWindow(
         if not logo_path.exists() and bundle_assets:
             logo_path = bundle_assets / 'leap-text.png'
         if logo_path.exists():
+            base = current_theme().font_size_base
+            size = getattr(self, '_main_font_size', base)
+            scale = max(0.5, size / base)
+            logo_h = max(24, int(40 * scale))
             pm = QPixmap(str(logo_path)).scaledToHeight(
-                40, Qt.SmoothTransformation)
+                logo_h, Qt.SmoothTransformation)
             self._logo_label.setPixmap(pm)
 
     @staticmethod
@@ -988,13 +1008,24 @@ class MonitorWindow(
         """Reset window geometry, column widths, and dialog sizes.
 
         Column visibility (hidden columns) is preserved — only sizes
-        and positions are reset.
+        and positions are reset.  Also resizes any dialog currently open
+        (Notes, Settings, CommitList, etc.) back to its ``_DEFAULT_SIZE``
+        class attribute — otherwise the dialog would save its current
+        size back to disk on close and silently undo this reset.
         """
         self._prefs.pop('dialog_geometry', None)
         save_monitor_prefs(self._prefs)
 
         self._center_on_screen()
         self._apply_equal_column_widths()
+
+        # Resize any currently-open dialog back to its declared default.
+        for dlg in self.findChildren(QDialog):
+            if not dlg.isVisible():
+                continue
+            default = getattr(dlg, '_DEFAULT_SIZE', None)
+            if default is not None and len(default) == 2:
+                dlg.resize(default[0], default[1])
 
     # ------------------------------------------------------------------
     #  Column visibility
@@ -1053,6 +1084,32 @@ class MonitorWindow(
     def eventFilter(self, obj: object, event: QEvent) -> bool:
         """Intercept events on table cell widgets for copy and drag."""
         etype = event.type()
+
+        # ── Main-window font zoom (Cmd+wheel / Cmd+±/0) ─────────────
+        # Resolve target by mouse cursor (Qt sometimes routes wheel to
+        # the focus widget on macOS), falling back to obj.  Keyboard
+        # shares the same routing so the two gestures are consistent.
+        if etype == QEvent.Wheel:
+            if event.modifiers() & Qt.ControlModifier:
+                target = QApplication.widgetAt(QCursor.pos()) or obj
+                if self._main_zoom_owns_widget(target):
+                    delta = 1 if event.angleDelta().y() > 0 else -1
+                    self._zoom_main_delta(delta)
+                    return True
+        elif etype == QEvent.KeyPress:
+            if event.modifiers() & Qt.ControlModifier:
+                target = QApplication.widgetAt(QCursor.pos()) or obj
+                if self._main_zoom_owns_widget(target):
+                    key = event.key()
+                    if key in (Qt.Key_Equal, Qt.Key_Plus):
+                        self._zoom_main_delta(1)
+                        return True
+                    if key == Qt.Key_Minus:
+                        self._zoom_main_delta(-1)
+                        return True
+                    if key == Qt.Key_0:
+                        self._zoom_main_reset()
+                        return True
 
         # ── Row drag-and-drop ────────────────────────────────────────
         if etype == QEvent.MouseButtonPress:
@@ -1159,10 +1216,14 @@ class MonitorWindow(
         self._resizing_columns = False
 
     def changeEvent(self, event: QEvent) -> None:
-        """Reset dock badge when window becomes active."""
+        """Reset dock badge + tooltip font when window becomes active."""
         super().changeEvent(event)
         if event.type() == QEvent.ActivationChange and self.isActiveWindow():
             self._clear_dock_badge()
+            # Restore the tooltip font to the main-window zoom size
+            # (dialogs set it to their size while they're active).
+            self.set_tooltip_font_size(
+                getattr(self, '_main_font_size', 13))
 
     def _auto_refresh(self) -> None:
         """Auto-refresh callback."""
@@ -1174,14 +1235,20 @@ class MonitorWindow(
             logger.exception("Error in auto-refresh")
 
     def _save_prefs(self) -> None:
-        """Save self._prefs to disk, preserving dialog geometries.
+        """Save self._prefs to disk, preserving keys written by other code.
 
-        Dialog done() methods save their geometry directly to disk via
-        save_dialog_geometry(), which bypasses self._prefs.  Before writing
-        self._prefs, merge the latest dialog_geometry from disk so those
+        Dialog done() methods and other components save directly to disk
+        (e.g. dialog_geometry, font sizes, include_completed states).
+        Before writing self._prefs, merge all disk-only keys so those
         saves are not overwritten.
         """
         disk_prefs = load_monitor_prefs()
+        # Preserve any keys that exist on disk but not in self._prefs
+        # (written by dialogs, zoom mixin, etc.)
+        for key, value in disk_prefs.items():
+            if key not in self._prefs:
+                self._prefs[key] = value
+        # Always take the latest dialog_geometry from disk
         disk_geom = disk_prefs.get('dialog_geometry')
         if disk_geom:
             self._prefs['dialog_geometry'] = disk_geom
@@ -1243,7 +1310,7 @@ class MonitorWindow(
         btn_border = t.button_border or t.border_solid
 
         # Comprehensive QSS for modern appearance
-        app.setStyleSheet(f"""
+        self._theme_base_qss = f"""
             /* --- Global font --- */
             * {{
                 font-size: {t.font_size_base}px;
@@ -1727,7 +1794,8 @@ class MonitorWindow(
                 background-color: {t.header_bg};
                 border-bottom: 1px solid {t.border_solid};
             }}
-        """)
+        """
+        self._reapply_theme_stylesheet()
 
         # Clear cell cache to force full rebuild with new colors
         self._cell_cache.clear()
@@ -1754,6 +1822,195 @@ class MonitorWindow(
 
         # Update logo to themed variant
         self._update_logo_pixmap()
+
+        # Re-apply main-window font zoom (theme change replaces our overlay)
+        self._apply_main_font_size()
+
+    # ------------------------------------------------------------------
+    #  Main-window font zoom (Cmd+scroll / Cmd+±/0)
+    # ------------------------------------------------------------------
+
+    _MAIN_FONT_MIN = 9
+    _MAIN_FONT_MAX = 28
+
+    def _zoomed_size(self, offset: int = 0) -> int:
+        """Return zoomed font size with *offset* applied (clamped to >=8px)."""
+        return max(8, self._main_font_size + offset)
+
+    def _zoomed_btn_w(self, base_w: int) -> int:
+        """Return a scaled cell-button width.
+
+        Cell buttons use ``setFixedSize(W, sizeHint().height())`` where the
+        height already scales with font (via sizeHint), but the width is a
+        hard-coded literal.  This helper scales that literal so the button
+        stays roughly square at all zoom levels.
+        """
+        base = current_theme().font_size_base
+        scale = max(0.5, self._main_font_size / base)
+        return max(base_w - 4, int(base_w * scale))
+
+    def _reapply_theme_stylesheet(self) -> None:
+        """Re-apply the app QSS, appending popup and tooltip zoom rules.
+
+        Called from ``_apply_theme``, from ``PopupZoomManager`` when the
+        user adjusts popup font size, and whenever the active window's
+        zoom size changes (via ``set_tooltip_font_size``).  The appended
+        rules stay last so they win specificity ties.
+
+        The tooltip rule is **required**: the theme's ``* { font-size:
+        13px }`` would otherwise override any ``QToolTip.setFont()`` we
+        do on window activation (universal selector + widget stylesheet
+        beats setFont via Qt's cascade).
+        """
+        app = QApplication.instance()
+        if app is None:
+            return
+        base = getattr(self, '_theme_base_qss', '')
+        from leap.monitor.popup_zoom import PopupZoomManager
+        rule = PopupZoomManager.instance().popup_stylesheet_rule()
+        tooltip_pt = getattr(self, '_tooltip_font_size',
+                             self._main_font_size)
+        tooltip_rule = (f'\n/* tooltip zoom */\n'
+                        f'QToolTip {{ font-size: {tooltip_pt}pt; }}\n')
+        app.setStyleSheet(base + rule + tooltip_rule)
+
+    def set_tooltip_font_size(self, pt: int) -> None:
+        """Update the global tooltip font size and re-apply the app QSS.
+
+        Called by ``MonitorWindow.changeEvent`` (main window activate),
+        ``ZoomMixin._zoom_apply_tooltip_font`` (dialog activate / zoom),
+        and Notes' activation/buttons-zoom handlers so tooltips track
+        the currently-active window's size.
+        """
+        if getattr(self, '_tooltip_font_size', None) == pt:
+            return
+        self._tooltip_font_size = pt
+        self._reapply_theme_stylesheet()
+
+    def _apply_main_font_size(self) -> None:
+        """Apply the current main-window font size as a stylesheet overlay.
+
+        Scales button padding + min-height proportionally so buttons
+        grow/shrink with text, and updates toolbar icon sizes so glyphs
+        stay proportional to surrounding text.
+        """
+        size = self._main_font_size
+        base = current_theme().font_size_base
+        scale = max(0.5, size / base)
+
+        # Scaled button metrics (match theme's defaults at scale=1.0:
+        # padding 5 16, min-height 18, combo 5 10, lineedit 6 10).
+        btn_py = max(3, int(5 * scale))
+        btn_px = max(8, int(16 * scale))
+        btn_min_h = max(12, int(18 * scale))
+        combo_py = max(3, int(5 * scale))
+        combo_px = max(6, int(10 * scale))
+        line_py = max(3, int(6 * scale))
+        line_px = max(6, int(10 * scale))
+
+        # Overlay stylesheet on the main window — cascades to all children.
+        self.setStyleSheet(
+            f'QWidget, QLabel, QPushButton, QComboBox, QLineEdit, QCheckBox,'
+            f' QTableWidget, QTableView, QHeaderView, QMenu, QMenuBar,'
+            f' QStatusBar, QTabWidget, QToolButton, QTextEdit, QListView,'
+            f' QListWidget {{ font-size: {size}px; }}'
+            f'\nQPushButton {{ padding: {btn_py}px {btn_px}px;'
+            f' min-height: {btn_min_h}px; }}'
+            f'\nQComboBox {{ padding: {combo_py}px {combo_px}px; }}'
+            f'\nQLineEdit {{ padding: {line_py}px {line_px}px; }}'
+        )
+        # Scale table row height proportionally to font size
+        if hasattr(self, 'table') and self.table is not None:
+            self.table.verticalHeader().setDefaultSectionSize(int(36 * scale))
+
+        # Scale toolbar icons so they don't look tiny next to larger text
+        icon_px = max(12, int(16 * scale))
+        if getattr(self, '_notes_btn', None) is not None:
+            ni = notes_icon(size=icon_px)
+            if ni is not None:
+                self._notes_btn.setIcon(ni)
+                self._notes_btn.setIconSize(QSize(icon_px, icon_px))
+        if getattr(self, '_add_btn', None) is not None:
+            t = current_theme()
+            self._add_btn.setIcon(
+                self._make_plus_icon(t.accent_blue.encode(), size=icon_px))
+            self._add_btn.setIconSize(QSize(icon_px, icon_px))
+
+        # Scale the LEAP text logo proportionally.  The logo container's
+        # fixed height is bumped in step so the pixmap isn't clipped.
+        if getattr(self, '_logo_label', None) is not None:
+            self._update_logo_pixmap()
+        if getattr(self, '_logo_container', None) is not None:
+            self._logo_container.setFixedHeight(max(50, int(50 * scale)))
+
+        # Scale hover tooltips to match the main-window font.  Dialogs
+        # override this via _zoom_apply_tooltip_font when they activate.
+        if self.isActiveWindow() or not QApplication.activeWindow():
+            self.set_tooltip_font_size(self._main_font_size)
+
+    def _zoom_main_delta(self, delta: int) -> None:
+        """Change main font size by *delta* and persist (debounced)."""
+        new_size = max(self._MAIN_FONT_MIN,
+                       min(self._MAIN_FONT_MAX, self._main_font_size + delta))
+        if new_size == self._main_font_size:
+            return
+        self._main_font_size = new_size
+        self._apply_main_font_size()
+        self._rebuild_table_for_zoom()
+        self._schedule_main_font_save()
+
+    def _zoom_main_reset(self) -> None:
+        """Reset main font size to theme default."""
+        default = current_theme().font_size_base
+        if self._main_font_size == default:
+            return
+        if (self._main_zoom_save_timer is not None
+                and self._main_zoom_save_timer.isActive()):
+            self._main_zoom_save_timer.stop()
+        self._main_font_size = default
+        self._apply_main_font_size()
+        self._rebuild_table_for_zoom()
+        self._prefs.pop('main_font_size', None)
+        self._save_prefs()
+
+    def _rebuild_table_for_zoom(self) -> None:
+        """Clear cached cell widgets and rebuild so their inline fonts
+        pick up the new zoom level.  Table cells use setFont/setPointSize
+        directly (see table_builder_mixin), which a parent stylesheet
+        cannot override — a rebuild is the only way to re-apply."""
+        if hasattr(self, '_cell_cache'):
+            self._cell_cache.clear()
+        if hasattr(self, '_update_table'):
+            self._update_table()
+
+    def _schedule_main_font_save(self) -> None:
+        """Debounce writes to disk while the user rapidly scrolls."""
+        if self._main_zoom_save_timer is None:
+            self._main_zoom_save_timer = QTimer(self)
+            self._main_zoom_save_timer.setSingleShot(True)
+            self._main_zoom_save_timer.timeout.connect(self._save_main_font_size)
+        self._main_zoom_save_timer.start(300)
+
+    def _save_main_font_size(self) -> None:
+        """Persist main font size to monitor prefs."""
+        self._prefs['main_font_size'] = self._main_font_size
+        self._save_prefs()
+
+    def _main_zoom_owns_widget(self, widget) -> bool:
+        """Check if *widget* belongs to the main window (not a dialog/popup)."""
+        if widget is None:
+            return False
+        from PyQt5.QtWidgets import QMenu
+        w = widget
+        while w is not None:
+            if isinstance(w, QDialog):
+                return False
+            if isinstance(w, QMenu):
+                return False  # let PopupZoomManager handle QMenu zoom
+            if w is self:
+                return True
+            w = w.parent()
+        return False
 
     # ------------------------------------------------------------------
     #  Global keyboard shortcut
@@ -2011,10 +2268,12 @@ class MonitorWindow(
         hangs), we save state and then os._exit() to guarantee the process
         dies immediately.
         """
-        # Close the notes dialog if open so it saves state before os._exit
-        notes_dlg = getattr(self, '_notes_dialog', None)
-        if notes_dlg is not None:
-            notes_dlg.close()
+        # Reject all open child dialogs so they save state (via done())
+        # before os._exit. reject() triggers done(Rejected) which runs
+        # each dialog's save logic. This covers all dialogs generically.
+        for dlg in self.findChildren(QDialog):
+            if dlg.isVisible():
+                dlg.reject()
 
         # Prevent timers and signal handlers from firing during shutdown
         self._shutting_down = True
@@ -2179,9 +2438,14 @@ def main() -> None:
         pass
 
     def signal_handler(sig: int, frame: Any) -> None:
-        os._exit(0)
+        window.close()
 
     signal.signal(signal.SIGINT, signal_handler)
+
+    # Dock Quit works when no modal dialog is blocking (e.g. Notes).
+    # Modal dialogs (Settings, etc.) block macOS quit — a Qt/macOS
+    # limitation for non-bundled Python apps.
+    app.aboutToQuit.connect(window.close)
 
     # Timer trick — force periodic bytecode execution so Python
     # processes pending signals while Qt's C++ event loop runs.

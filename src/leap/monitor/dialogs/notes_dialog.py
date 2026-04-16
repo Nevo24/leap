@@ -18,17 +18,18 @@ from typing import Optional
 
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter,
     QStackedWidget, QStyle, QTableWidget, QTableWidgetItem, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import (
     QColor, QCursor, QDrag, QImage, QImageReader, QPixmap,
     QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat,
 )
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.dialogs.notes_undo import (
     BatchDeleteCmd, ChecklistAddItemCmd, ChecklistDeleteItemCmd,
     ChecklistReorderCmd, ChecklistToggleCmd,
@@ -37,7 +38,10 @@ from leap.monitor.dialogs.notes_undo import (
     NoteContentChangeCmd, NotesCmdContext, NotesUndoStack,
     RenameFolderCmd, RenameNoteCmd, ReorderCmd,
 )
-from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from leap.monitor.pr_tracking.config import (
+    load_dialog_geometry, load_monitor_prefs, save_dialog_geometry,
+    save_monitor_prefs,
+)
 from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR, QUEUE_IMAGES_DIR
 
@@ -523,17 +527,6 @@ def _set_note_mode(name: str, mode: str) -> None:
     _save_notes_meta(meta)
 
 
-def _get_include_completed(name: str) -> bool:
-    """Return whether 'Include completed' is enabled for a note."""
-    return _load_notes_meta().get(name, {}).get('include_completed', False)
-
-
-def _set_include_completed(name: str, enabled: bool) -> None:
-    meta = _load_notes_meta()
-    meta.setdefault(name, {})['include_completed'] = enabled
-    _save_notes_meta(meta)
-
-
 def _remove_note_meta(name: str) -> None:
     meta = _load_notes_meta()
     if meta.pop(name, None) is not None:
@@ -938,7 +931,7 @@ class _ChecklistItemWidget(QFrame):
         self._del_btn.setFixedSize(20, 20)
         t = current_theme()
         self._del_btn.setStyleSheet(
-            f'QPushButton {{ border: none; color: {t.text_muted}; font-size: {t.font_size_base}px; }}'
+            f'QPushButton {{ border: none; color: {t.text_muted}; }}'
             f'QPushButton:hover {{ color: {t.accent_red}; }}'
         )
         self._del_btn.setVisible(False)
@@ -1077,19 +1070,28 @@ class _ChecklistItemWidget(QFrame):
                 dismiss(False)
                 self._edit.setFocus()
                 return
-            # Arrow up on first line / arrow down on last line → navigate items
+            # Arrow up/down: try moving within visual lines first;
+            # only navigate to adjacent item if the cursor can't move.
             if event.key() == Qt.Key_Up:
                 cur = wrap.textCursor()
-                if cur.block() == wrap.document().firstBlock():
+                pos_before = cur.position()
+                cur.movePosition(QTextCursor.Up)
+                if cur.position() == pos_before:
                     dismiss(True)
                     self.focus_prev.emit(self._index)
                     return
+                wrap.setTextCursor(cur)
+                return
             if event.key() == Qt.Key_Down:
                 cur = wrap.textCursor()
-                if cur.block() == wrap.document().lastBlock():
+                pos_before = cur.position()
+                cur.movePosition(QTextCursor.Down)
+                if cur.position() == pos_before:
                     dismiss(True)
                     self.focus_next.emit(self._index)
                     return
+                wrap.setTextCursor(cur)
+                return
             if event.key() == Qt.Key_Backspace and not wrap.toPlainText():
                 dismiss(True)
                 self.merge_up.emit(self._index)
@@ -1358,6 +1360,7 @@ class _ChecklistWidget(QWidget):
             child = self._layout.takeAt(0)
             w = child.widget()
             if w:
+                w.hide()
                 w.setParent(None)
                 w.deleteLater()
 
@@ -1403,8 +1406,8 @@ class _ChecklistWidget(QWidget):
             sep.setFlat(True)
             t = current_theme()
             sep.setStyleSheet(
-                f'QPushButton {{ text-align: left; color: {t.text_muted}; font-size: {t.font_size_base}px; '
-                f'padding: 8px 4px 4px 4px; border: none; }}'
+                f'QPushButton {{ text-align: left; color: {t.text_muted};'
+                f' padding: 8px 4px 4px 4px; border: none; }}'
                 f'QPushButton:hover {{ color: {t.text_secondary}; }}'
             )
             sep.setCursor(Qt.PointingHandCursor)
@@ -1424,6 +1427,7 @@ class _ChecklistWidget(QWidget):
 
         # Restore focus (deferred so widgets are fully laid out).
         from PyQt5.QtCore import QTimer
+
         if focus_widget is not None:
             w_ref = focus_widget
             at_end = focus_at_end
@@ -1440,6 +1444,23 @@ class _ChecklistWidget(QWidget):
             QTimer.singleShot(0, _focus_add)
         self._focus_after_rebuild = None
         self._focus_add_after_rebuild = False
+
+        # Re-activate the dialog window — on macOS, widget destruction
+        # during _clear_layout can shift focus to the parent window.
+        # Synchronous call handles immediate focus steal; deferred call
+        # catches the steal from deleteLater() on the next event loop.
+        win = self.window()
+        if win:
+            win.activateWindow()
+            win.raise_()
+            def _deferred_activate() -> None:
+                try:
+                    win.activateWindow()
+                    win.raise_()
+                except RuntimeError:
+                    pass
+            QTimer.singleShot(0, _deferred_activate)
+
 
     def _make_item_widget(
         self, index: int, text: str, checked: bool,
@@ -1785,20 +1806,28 @@ class _ChecklistWidget(QWidget):
                 self._dismiss_add_popup(save=True)
                 self._add_field.setFocus()
                 return
-            # Arrow up on first line → navigate to previous item
+            # Arrow up/down: try moving within visual lines first;
+            # only navigate to adjacent item if the cursor can't move.
             if event.key() == Qt.Key_Up:
                 cur = wrap.textCursor()
-                if cur.block() == wrap.document().firstBlock():
+                pos_before = cur.position()
+                cur.movePosition(QTextCursor.Up)
+                if cur.position() == pos_before:
                     self._dismiss_add_popup(save=True)
                     self._on_add_field_arrow_up()
                     return
-            # Arrow down on last line → navigate to next item (completed)
+                wrap.setTextCursor(cur)
+                return
             if event.key() == Qt.Key_Down:
                 cur = wrap.textCursor()
-                if cur.block() == wrap.document().lastBlock():
+                pos_before = cur.position()
+                cur.movePosition(QTextCursor.Down)
+                if cur.position() == pos_before:
                     self._dismiss_add_popup(save=True)
                     self._on_add_field_arrow_down()
                     return
+                wrap.setTextCursor(cur)
+                return
             # Cmd+V / Ctrl+V — paste image
             if (event.key() == Qt.Key_V
                     and event.modifiers() & Qt.ControlModifier):
@@ -1961,15 +1990,19 @@ class _NotesTreeWidget(QTreeWidget):
 # ══════════════════════════════════════════════════════════════════════
 
 
-class _SessionPickerDialog(QDialog):
+class _SessionPickerDialog(ZoomMixin, QDialog):
     """Modal dialog to choose a running Leap session and send mode."""
 
+    _DEFAULT_SIZE = (480, 300)
+
     def __init__(self, sessions: list[dict], aliases: dict,
+                 is_checklist: bool = False,
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Select Session')
-        self.resize(480, 300)
+        self.resize(*self._DEFAULT_SIZE)
         self._result: Optional[tuple[str, bool]] = None
+        self._is_checklist = is_checklist
 
         layout = QVBoxLayout(self)
 
@@ -2004,6 +2037,17 @@ class _SessionPickerDialog(QDialog):
         if sessions:
             self._table.selectRow(0)
 
+        # "Include completed" — only shown for checklist notes
+        self._include_completed = QCheckBox('Include completed checkboxes')
+        self._include_completed.setToolTip(
+            'Include checked items when sending to session')
+        if is_checklist:
+            from leap.monitor.pr_tracking.config import load_monitor_prefs
+            prefs = load_monitor_prefs()
+            self._include_completed.setChecked(
+                prefs.get('run_session_include_completed', False))
+            layout.addWidget(self._include_completed)
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         send_next_btn = QPushButton('Send Next')
@@ -2017,6 +2061,17 @@ class _SessionPickerDialog(QDialog):
         btn_row.addWidget(send_end_btn)
         layout.addLayout(btn_row)
 
+        self._init_zoom(
+            pref_key='session_picker_font_size',
+            content_pref_key='session_picker_text_font_size',
+            content_widgets=[self._table],
+        )
+
+    @property
+    def include_completed(self) -> bool:
+        """Whether the 'Include completed' checkbox is checked."""
+        return self._include_completed.isChecked()
+
     def _accept(self, at_end: bool) -> None:
         row = self._table.currentRow()
         if row < 0 or row >= len(self._tags):
@@ -2027,19 +2082,29 @@ class _SessionPickerDialog(QDialog):
     @staticmethod
     def pick_session(
         parent: Optional[QWidget] = None,
-    ) -> Optional[tuple[str, bool]]:
-        """Show the picker and return (tag, at_end) or None if cancelled."""
+        is_checklist: bool = False,
+    ) -> Optional[tuple[str, bool, bool]]:
+        """Show the picker and return (tag, at_end, include_completed) or None."""
         from leap.monitor.session_manager import get_active_sessions
         sessions = get_active_sessions()
         if not sessions:
             QMessageBox.information(
                 parent, 'Run in Session', 'No active sessions found.')
             return None
-        from leap.monitor.pr_tracking.config import load_monitor_prefs
+        from leap.monitor.pr_tracking.config import (
+            load_monitor_prefs, save_monitor_prefs,
+        )
         aliases = load_monitor_prefs().get('aliases', {})
-        dlg = _SessionPickerDialog(sessions, aliases, parent)
-        if dlg.exec_() == QDialog.Accepted and dlg._result is not None:
-            return dlg._result
+        dlg = _SessionPickerDialog(sessions, aliases, is_checklist, parent)
+        accepted = dlg.exec_() == QDialog.Accepted
+        # Persist checkbox state on any close (OK, Cancel, or X)
+        if is_checklist:
+            prefs = load_monitor_prefs()
+            prefs['run_session_include_completed'] = dlg.include_completed
+            save_monitor_prefs(prefs)
+        if accepted and dlg._result is not None:
+            tag, at_end = dlg._result
+            return (tag, at_end, dlg.include_completed)
         return None
 
 
@@ -2054,11 +2119,12 @@ class NotesDialog(QDialog):
     _MODE_CHECKLIST = 1
     _ROLE_PATH = Qt.UserRole         # relative path (note name or folder path)
     _ROLE_TYPE = Qt.UserRole + 1     # 'note' or 'folder'
+    _DEFAULT_SIZE = (990, 660)       # used by MonitorWindow._reset_window_size
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Notes')
-        self.resize(990, 660)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('notes_dialog')
         if saved:
             self.resize(saved[0], saved[1])
@@ -2081,7 +2147,8 @@ class NotesDialog(QDialog):
         default_pt = current_theme().font_size_base
         self._font_size: int = prefs.get('notes_font_size', default_pt)
         self._sidebar_font_size: int = prefs.get('notes_sidebar_font_size', default_pt)
-        self._zoom_target: str = 'content'  # 'content' or 'sidebar'
+        self._buttons_font_size: int = prefs.get('notes_buttons_font_size', default_pt)
+        self._zoom_target: str = 'content'  # 'content' | 'sidebar' | 'buttons'
         self._undo_stack = NotesUndoStack(limit=50)
         self._cmd_ctx = NotesCmdContext(self)
         self._pending_image_deletes: set[str] = set()
@@ -2178,8 +2245,8 @@ class NotesDialog(QDialog):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         self._title_label = QLabel('')
-        self._title_label.setStyleSheet(
-            f'font-weight: bold; font-size: {current_theme().font_size_large}px;')
+        # Omit font-size so the dialog's buttons stylesheet cascades in.
+        self._title_label.setStyleSheet('font-weight: bold;')
         header_row.addWidget(self._title_label)
         header_row.addStretch()
         right_layout.addLayout(header_row)
@@ -2198,17 +2265,6 @@ class NotesDialog(QDialog):
         toolbar_row.addWidget(self._mode_combo)
 
         toolbar_row.addStretch()
-
-        self._include_completed_cb = QCheckBox('Include completed')
-        self._include_completed_cb.setToolTip(
-            'Include checked items when saving as preset or sending to session')
-        self._include_completed_cb.setVisible(False)
-        self._include_completed_cb.toggled.connect(self._on_include_completed_toggled)
-        toolbar_row.addWidget(self._include_completed_cb)
-        self._cb_spacer = QWidget()
-        self._cb_spacer.setFixedWidth(6)
-        self._cb_spacer.setVisible(False)
-        toolbar_row.addWidget(self._cb_spacer)
 
         self._save_preset_btn = QPushButton('Save as Preset')
         self._save_preset_btn.setToolTip('Save note content as a reusable preset')
@@ -2243,6 +2299,7 @@ class NotesDialog(QDialog):
         # Apply saved font sizes + intercept Cmd+scroll on all viewports
         self._apply_font_size()
         self._apply_sidebar_font_size()
+        self._apply_buttons_font_size()
         self._editor.viewport().installEventFilter(self)
         self._checklist._scroll.viewport().installEventFilter(self)
         self._tree.viewport().installEventFilter(self)
@@ -2263,8 +2320,8 @@ class NotesDialog(QDialog):
             '  |  Cmd+Z/Shift+Z: Undo/Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
-            f'color: {current_theme().text_muted};'
-            f' font-size: {current_theme().font_size_small}px;')
+            f'color: {current_theme().text_muted};')
+        self._bottom_hint = hint
         bottom_row.addWidget(hint)
         bottom_row.addStretch()
         close_btn = QPushButton('Close')
@@ -2535,7 +2592,6 @@ class NotesDialog(QDialog):
         display = name.rsplit('/', 1)[-1] if '/' in name else name
         self._title_label.setText(display)
         self._update_timestamp()
-        self._include_completed_cb.setChecked(_get_include_completed(name))
         self._update_action_visibility(True)
 
     # ── Mode switching ──────────────────────────────────────────────
@@ -3036,16 +3092,6 @@ class NotesDialog(QDialog):
         """Show or hide the action buttons and include-completed checkbox."""
         self._save_preset_btn.setVisible(note_selected)
         self._run_session_btn.setVisible(note_selected)
-        is_checklist = (note_selected
-                        and self._current_mode() == self._MODE_CHECKLIST)
-        self._include_completed_cb.setVisible(is_checklist)
-        self._cb_spacer.setVisible(is_checklist)
-
-    def _on_include_completed_toggled(self, checked: bool) -> None:
-        """Persist the 'Include completed' checkbox state for the current note."""
-        if self._current_name:
-            _set_include_completed(self._current_name, checked)
-
     @staticmethod
     def _resolve_note_images(text: str) -> str:
         """Convert ``![image](hash.png)`` markers to ``@/abs/path`` refs.
@@ -3066,12 +3112,12 @@ class NotesDialog(QDialog):
             return '@' + str(QUEUE_IMAGES_DIR / filename)
         return _IMAGE_MARKER_RE.sub(_replace, text)
 
-    def _get_note_messages(self) -> list[str]:
+    def _get_note_messages(self, include_completed: bool = False) -> list[str]:
         """Extract sendable messages from the current note.
 
         For text notes: returns a single-element list with the full text.
         For checklists: returns one message per qualifying item in original
-        order. Respects the 'Include completed' checkbox.
+        order. When *include_completed* is False, checked items are skipped.
         Image markers are converted to ``@/path`` references (same format
         used by the preset system).
         """
@@ -3079,13 +3125,12 @@ class NotesDialog(QDialog):
             return []
         if self._current_mode() == self._MODE_CHECKLIST:
             items = self._checklist.get_items()
-            include_checked = self._include_completed_cb.isChecked()
             messages: list[str] = []
             for item in items:
                 text = item['text'].strip()
                 if not text:
                     continue
-                if not include_checked and item['checked']:
+                if not include_completed and item['checked']:
                     continue
                 # get_items() converts placeholders back to ![image](…) markers
                 text = self._resolve_note_images(text).strip()
@@ -3099,14 +3144,7 @@ class NotesDialog(QDialog):
 
     def _on_save_as_preset(self) -> None:
         """Save the current note's content as a named preset."""
-        messages = self._get_note_messages()
-        if not messages:
-            hint = (' (or all checklist items are checked)'
-                    if self._current_mode() == self._MODE_CHECKLIST else '')
-            QMessageBox.information(
-                self, 'Save as Preset',
-                f'Nothing to save \u2014 the note is empty{hint}.')
-            return
+        is_checklist = self._current_mode() == self._MODE_CHECKLIST
 
         # Default name: leaf name of the note (without folder path)
         default_name = self._current_name or ''
@@ -3114,22 +3152,52 @@ class NotesDialog(QDialog):
             default_name = default_name.rsplit('/', 1)[-1]
 
         from leap.monitor.pr_tracking.config import (
-            load_saved_presets, save_named_preset,
+            load_monitor_prefs, load_saved_presets, save_monitor_prefs,
+            save_named_preset,
         )
 
+        # Build a small custom dialog with name input + include-completed
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Save as Preset')
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_layout.addWidget(QLabel('Preset name:'))
+        name_edit = QLineEdit(default_name)
+        name_edit.selectAll()
+        dlg_layout.addWidget(name_edit)
+
+        include_cb = QCheckBox('Include completed checkboxes')
+        include_cb.setToolTip(
+            'Include checked items when saving the preset')
+        if is_checklist:
+            prefs = load_monitor_prefs()
+            include_cb.setChecked(
+                prefs.get('save_preset_include_completed', False))
+            dlg_layout.addWidget(include_cb)
+
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(btn_box)
+
+        def _save_cb_state() -> None:
+            if is_checklist:
+                p = load_monitor_prefs()
+                p['save_preset_include_completed'] = include_cb.isChecked()
+                save_monitor_prefs(p)
+
         while True:
-            name, ok = QInputDialog.getText(
-                self, 'Save as Preset', 'Preset name:',
-                QLineEdit.Normal, default_name)
-            if not ok or not name.strip():
+            if dlg.exec_() != QDialog.Accepted:
+                _save_cb_state()
                 return
-            name = name.strip()
+            name = name_edit.text().strip()
+            if not name:
+                return
 
             if len(name) > 70:
                 QMessageBox.warning(
                     self, 'Save as Preset',
                     'Preset name must be 70 characters or fewer.')
-                default_name = name
                 continue
 
             existing = load_saved_presets()
@@ -3139,11 +3207,27 @@ class NotesDialog(QDialog):
                     f'Preset \u201c{name}\u201d already exists. Overwrite?',
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply != QMessageBox.Yes:
-                    default_name = name
                     continue
             break
 
+        _save_cb_state()
+        messages = self._get_note_messages(
+            include_completed=include_cb.isChecked())
+        if not messages:
+            hint = (' (or all checklist items are checked)'
+                    if is_checklist else '')
+            QMessageBox.information(
+                self, 'Save as Preset',
+                f'Nothing to save \u2014 the note is empty{hint}.')
+            return
+
         save_named_preset(name, messages)
+        # Refresh the preset combos on the parent (MonitorWindow)
+        parent = self.parent()
+        if parent and hasattr(parent, '_populate_preset_combo'):
+            parent._populate_preset_combo()
+        if parent and hasattr(parent, '_populate_direct_preset_combo'):
+            parent._populate_direct_preset_combo()
         count = len(messages)
         noun = 'message' if count == 1 else 'messages'
         QMessageBox.information(
@@ -3152,19 +3236,21 @@ class NotesDialog(QDialog):
 
     def _on_run_in_session(self) -> None:
         """Send the current note's content to a running Leap session."""
-        messages = self._get_note_messages()
+        is_checklist = self._current_mode() == self._MODE_CHECKLIST
+        result = _SessionPickerDialog.pick_session(
+            self, is_checklist=is_checklist)
+        if result is None:
+            return
+        tag, at_end, include_completed = result
+
+        messages = self._get_note_messages(include_completed=include_completed)
         if not messages:
             hint = (' (or all checklist items are checked)'
-                    if self._current_mode() == self._MODE_CHECKLIST else '')
+                    if is_checklist else '')
             QMessageBox.information(
                 self, 'Run in Session',
                 f'Nothing to send \u2014 the note is empty{hint}.')
             return
-
-        result = _SessionPickerDialog.pick_session(self)
-        if result is None:
-            return
-        tag, at_end = result
 
         from leap.monitor.leap_sender import (
             prepend_to_leap_queue, send_to_leap_session_raw,
@@ -3236,6 +3322,14 @@ class NotesDialog(QDialog):
                 pass
         self._pending_image_deletes.clear()
 
+    def changeEvent(self, event) -> None:  # type: ignore[override]
+        """Re-apply tooltip font when Notes becomes the active window."""
+        super().changeEvent(event)
+        if (event.type() == QEvent.ActivationChange
+                and self.isActiveWindow()
+                and hasattr(self, '_buttons_font_size')):
+            self._apply_tooltip_font_size(self._buttons_font_size)
+
     def done(self, result: int) -> None:
         """Auto-save and persist geometry on Escape / reject."""
         try:
@@ -3261,9 +3355,31 @@ class NotesDialog(QDialog):
         super().done(result)
 
     def closeEvent(self, event: 'QCloseEvent') -> None:  # type: ignore[override]
-        """Auto-save and close via reject() so the finished signal is emitted."""
-        event.accept()
-        self.reject()
+        """Auto-save, persist geometry, and emit finished for cleanup."""
+        try:
+            self._tree.currentItemChanged.disconnect(self._on_item_changed)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self._mode_combo.currentIndexChanged.disconnect(self._on_mode_changed)
+        except (TypeError, RuntimeError):
+            pass
+        self._save_current()
+        self._finalize_image_cleanup()
+        self._undo_stack.clear()
+        # Flush any pending font-size save
+        if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
+            self._zoom_save_timer.stop()
+            self._save_font_sizes()
+        if self._current_name:
+            meta = _load_notes_meta()
+            meta['_last_note'] = self._current_name
+            _save_notes_meta(meta)
+        save_dialog_geometry('notes_dialog', self.width(), self.height())
+        super().closeEvent(event)
+        # Emit finished so _on_notes_closed cleans up (closeEvent does
+        # not call done(), so finished is not emitted by default).
+        self.finished.emit(self.result())
 
     # ── Font size / zoom ─────────────────────────────────────────────
 
@@ -3272,11 +3388,15 @@ class NotesDialog(QDialog):
 
     def _apply_font_size(self) -> None:
         """Apply the content font size to the text editor and checklist."""
-        from PyQt5.QtGui import QFont
         font = self._editor.font()
         font.setPointSize(self._font_size)
         self._editor.setFont(font)
         self._editor.document().setDefaultFont(font)
+        # Stylesheet is the final authority — setFont/defaultFont can be
+        # overridden by inserted char-formats.  Stylesheet wins.
+        self._editor.setStyleSheet(
+            f'QTextEdit {{ font-size: {self._font_size}pt; }}'
+        )
         self._checklist.set_font_size(self._font_size)
 
     def _apply_sidebar_font_size(self) -> None:
@@ -3289,22 +3409,83 @@ class NotesDialog(QDialog):
         icon_px = int(self._sidebar_font_size * 1.3)
         self._tree.setIconSize(QSize(icon_px, icon_px))
 
+    def _apply_buttons_font_size(self) -> None:
+        """Apply the buttons font size to buttons, combos, labels, and hints.
+
+        Sidebar's stylesheet targets ``QTreeWidget, QLineEdit`` only, and
+        content widgets (``_editor``, checklist container) have their own
+        per-widget stylesheets — so this dialog-level selector only
+        affects buttons/combos/labels that don't carry their own size.
+        """
+        pt = self._buttons_font_size
+        self.setStyleSheet(
+            f'QPushButton, QComboBox, QCheckBox, QLabel'
+            f' {{ font-size: {pt}pt; }}'
+        )
+        # Force the bottom shortcut hint explicitly — its own setStyleSheet
+        # sets 'color' only, but Qt's stylesheet cascade for font-size on
+        # a widget with any instance stylesheet is unreliable.
+        hint = getattr(self, '_bottom_hint', None)
+        if hint is not None:
+            font = hint.font()
+            font.setPointSize(pt)
+            hint.setFont(font)
+        # Update the global tooltip font (Notes is the active window).
+        # Goes through MonitorWindow.set_tooltip_font_size so the app
+        # stylesheet's QToolTip rule is rebuilt (the theme's universal
+        # "* { font-size: 13px }" otherwise overrides QToolTip.setFont).
+        if self.isActiveWindow():
+            self._apply_tooltip_font_size(pt)
+
+    def _apply_tooltip_font_size(self, pt: int) -> None:
+        """Ask MonitorWindow to rebuild the app QSS with this tooltip size."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        for w in app.topLevelWidgets():
+            cb = getattr(w, 'set_tooltip_font_size', None)
+            if callable(cb):
+                cb(pt)
+                return
+
     def _zoom_target_for_widget(self, widget: Optional['QWidget']) -> str:
-        """Determine zoom target based on which widget is under interaction."""
+        """Determine zoom target based on which widget is under interaction.
+
+        sidebar  → tree + search (only)
+        content  → editor / checklist stack
+        buttons  → everything else (toolbar rows, action buttons, bottom
+                   Close, sidebar action buttons like "New Note")
+        """
         if widget is None:
             return self._zoom_target
-        # Walk up the widget tree to see if it's inside the left panel
+        # Walk up the widget tree to classify where the event originated.
         w = widget
         while w is not None:
-            if w is self._left_panel:
+            if w is self._tree or w is self._search:
                 return 'sidebar'
             if w is self._stack:
                 return 'content'
+            if w is self:
+                return 'buttons'
             w = w.parentWidget()
         return self._zoom_target
 
     def _resolve_zoom_target(self) -> str:
-        """Return the zoom target based on current focus."""
+        """Return the zoom target based on mouse position (fall back to focus).
+
+        Using mouse position matches the wheel behaviour and lets the
+        user zoom the "buttons" target from the keyboard — there's no
+        natural way to give keyboard focus to the toolbar button strip,
+        so a focus-only resolver could never reach that target.
+        """
+        widget_under = QApplication.widgetAt(QCursor.pos())
+        if widget_under is not None:
+            # Only honour the cursor if it's actually over this dialog.
+            w = widget_under
+            while w is not None:
+                if w is self:
+                    return self._zoom_target_for_widget(widget_under)
+                w = w.parentWidget()
         return self._zoom_target_for_widget(QApplication.focusWidget())
 
     def _zoom(self, delta: int, target: Optional[str] = None) -> None:
@@ -3320,6 +3501,13 @@ class NotesDialog(QDialog):
                 return
             self._sidebar_font_size = new_size
             self._apply_sidebar_font_size()
+        elif target == 'buttons':
+            new_size = max(self._MIN_FONT_SIZE,
+                           min(self._MAX_FONT_SIZE, self._buttons_font_size + delta))
+            if new_size == self._buttons_font_size:
+                return
+            self._buttons_font_size = new_size
+            self._apply_buttons_font_size()
         else:
             new_size = max(self._MIN_FONT_SIZE,
                            min(self._MAX_FONT_SIZE, self._font_size + delta))
@@ -3337,11 +3525,12 @@ class NotesDialog(QDialog):
         self._zoom_save_timer.start(300)
 
     def _save_font_sizes(self) -> None:
-        """Persist both font sizes to prefs."""
+        """Persist all font sizes to prefs."""
         from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
         prefs = load_monitor_prefs()
         prefs['notes_font_size'] = self._font_size
         prefs['notes_sidebar_font_size'] = self._sidebar_font_size
+        prefs['notes_buttons_font_size'] = self._buttons_font_size
         save_monitor_prefs(prefs)
 
     def _reset_zoom(self) -> None:
@@ -3357,13 +3546,18 @@ class NotesDialog(QDialog):
                 return
             self._sidebar_font_size = default
             self._apply_sidebar_font_size()
+        elif target == 'buttons':
+            if self._buttons_font_size == default:
+                return
+            self._buttons_font_size = default
+            self._apply_buttons_font_size()
         else:
             if self._font_size == default:
                 return
             self._font_size = default
             self._apply_font_size()
 
-        # Save both values — the timer may have been pending for the other target
+        # Save all values — the timer may have been pending for another target
         self._save_font_sizes()
 
     def wheelEvent(self, event: 'QWheelEvent') -> None:  # type: ignore[override]

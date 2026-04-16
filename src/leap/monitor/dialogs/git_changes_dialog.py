@@ -8,9 +8,10 @@ from PyQt5.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QEvent, QSize, Qt
+from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
 from PyQt5.QtGui import QColor, QPainter, QPen, QTextDocument
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.pr_tracking.git_utils import detect_default_branch
 from leap.monitor.themes import current_theme
@@ -83,7 +84,7 @@ class _CommitItemWidget(QWidget):
                     ref_parts.append(f'<span style="color: {t.accent_orange};">{r}</span>')
                 else:
                     ref_parts.append(f'<span style="color: {t.accent_green};">{r}</span>')
-            commit_html += f' <span style="font-size: {t.font_size_small}px;">({", ".join(ref_parts)})</span>'
+            commit_html += f' <span>({", ".join(ref_parts)})</span>'
         commit_label = QLabel(commit_html)
         commit_label.setWordWrap(False)
         commit_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -91,7 +92,7 @@ class _CommitItemWidget(QWidget):
 
         # Line 2: Author
         author_label = QLabel(
-            f'<span style="color: {t.text_secondary}; font-family: {mono}; font-size: {t.font_size_base}px;">'
+            f'<span style="color: {t.text_secondary}; font-family: {mono};">'
             f'Author: {author_name} &lt;{author_email}&gt;</span>'
         )
         author_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -99,7 +100,7 @@ class _CommitItemWidget(QWidget):
 
         # Line 3: Date (absolute + relative)
         date_label = QLabel(
-            f'<span style="color: {t.text_secondary}; font-family: {mono}; font-size: {t.font_size_base}px;">'
+            f'<span style="color: {t.text_secondary}; font-family: {mono};">'
             f'Date:   {date_abs}'
             f'  <span style="color: {t.accent_green};">({date_rel})</span></span>'
         )
@@ -116,8 +117,7 @@ class _CommitItemWidget(QWidget):
         # Line 5+: Changed files
         if files:
             files_html = '<br>'.join(
-                f'<span style="color: {t.accent_blue}; font-family: {mono}; '
-                f'font-size: {t.font_size_small}px;">{f}</span>'
+                f'<span style="color: {t.accent_blue}; font-family: {mono};">{f}</span>'
                 for f in files
             )
             files_label = QLabel(files_html)
@@ -193,10 +193,11 @@ class _CommitItemWidget(QWidget):
         return QSize(max(hint.width(), self._ideal_width), hint.height())
 
 
-class CommitListDialog(QDialog):
+class CommitListDialog(ZoomMixin, QDialog):
     """Dialog showing recent commits for selection."""
 
     _PAGE_SIZE = 50
+    _DEFAULT_SIZE = (780, 500)
 
     def __init__(
         self,
@@ -205,7 +206,7 @@ class CommitListDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle('Select Commit')
-        self.resize(780, 500)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('commit_list')
         if saved:
             self.resize(saved[0], saved[1])
@@ -255,6 +256,21 @@ class CommitListDialog(QDialog):
         layout.addLayout(bottom)
 
         self._load_page()
+        self._init_zoom(
+            pref_key='commit_list_font_size',
+            content_pref_key='commit_list_text_font_size',
+            content_widgets=[self._list],
+        )
+
+    def _apply_zoom_content_font_size(self) -> None:  # type: ignore[override]
+        """Apply content zoom then refresh every list item's sizeHint so
+        the row heights grow/shrink with the new text size."""
+        super()._apply_zoom_content_font_size()
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            w = self._list.itemWidget(it)
+            if w is not None:
+                it.setSizeHint(w.sizeHint())
 
     def _load_page(self) -> None:
         """Load the next page of commits."""
@@ -329,14 +345,16 @@ class CommitListDialog(QDialog):
         self._has_more = count >= self._PAGE_SIZE
         if self._has_more:
             self._add_load_more_item()
+        # Re-apply content font size so newly added rows match current zoom
+        self._zoom_reapply_content()
 
     def _show_error(self, message: str) -> None:
         """Show an error message inside the list widget."""
         t = current_theme()
         label = QLabel(
             f'<span style="color: {t.accent_red};">Failed to load commits</span>'
-            f'<br><span style="color: {t.text_secondary}; font-size: {t.font_size_base}px;">{message}</span>'
-            f'<br><br><span style="color: {t.text_secondary}; font-size: {t.font_size_base}px;">Path: {self._project_path}</span>'
+            f'<br><span style="color: {t.text_secondary};">{message}</span>'
+            f'<br><br><span style="color: {t.text_secondary};">Path: {self._project_path}</span>'
         )
         label.setWordWrap(True)
         label.setContentsMargins(12, 12, 12, 12)
@@ -408,7 +426,7 @@ class CommitListDialog(QDialog):
         return self._selected_commit
 
 
-class GitChangesDialog(QDialog):
+class GitChangesDialog(ZoomMixin, QDialog):
     """Dialog with three options for viewing git changes.
 
     The ``on_run_git`` callback receives ``(diff_args, project_path)`` where
@@ -416,6 +434,8 @@ class GitChangesDialog(QDialog):
     ``['origin/main']``, or ``['sha~1', 'sha']``).  The caller is responsible
     for building the full difftool command and checking for empty diffs.
     """
+
+    _DEFAULT_SIZE = (350, 150)
 
     def __init__(
         self,
@@ -425,7 +445,7 @@ class GitChangesDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle('See Git Changes')
-        self.resize(350, 150)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('git_changes')
         if saved:
             self.resize(saved[0], saved[1])
@@ -455,6 +475,8 @@ class GitChangesDialog(QDialog):
         close_btn = QDialogButtonBox(QDialogButtonBox.Close)
         close_btn.rejected.connect(self.reject)
         layout.addWidget(close_btn)
+
+        self._init_zoom('git_changes_font_size')
 
     def _see_local_changes(self) -> None:
         """Open difftool for uncommitted changes."""

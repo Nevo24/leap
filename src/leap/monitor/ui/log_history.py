@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox, QWidget
 
+from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
 
@@ -53,20 +54,22 @@ def _is_error_message(msg: str) -> bool:
     return any(kw in lower for kw in _ERROR_KEYWORDS)
 
 
-class LogHistoryDialog(QDialog):
+class LogHistoryDialog(ZoomMixin, QDialog):
     """Dialog showing all past status messages with timestamps."""
+
+    _DEFAULT_SIZE = (800, 400)
 
     def __init__(self, log_history: LogHistory, parent: QWidget = None) -> None:
         super().__init__(parent)
         self.setWindowTitle('Log History')
-        self.resize(800, 400)
+        self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('log_history')
         if saved:
             self.resize(saved[0], saved[1])
 
         layout = QVBoxLayout(self)
 
-        text_edit = QTextBrowser()
+        self._text_edit = text_edit = QTextBrowser()
         text_edit.setOpenExternalLinks(True)
 
         entries = log_history.entries()
@@ -103,6 +106,12 @@ class LogHistoryDialog(QDialog):
         btn_box = QDialogButtonBox(QDialogButtonBox.Close)
         btn_box.rejected.connect(self.reject)
         layout.addWidget(btn_box)
+
+        self._init_zoom(
+            pref_key='log_history_font_size',
+            content_pref_key='log_history_text_font_size',
+            content_widgets=[self._text_edit],
+        )
 
     def done(self, result: int) -> None:
         """Save dialog size on close."""
