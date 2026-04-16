@@ -2165,7 +2165,7 @@ class NotesDialog(QDialog):
         bottom_row = QHBoxLayout()
         hint = QLabel(
             'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
-            '  |  Cmd+K: Insert link  |  Cmd+/\u2212/0: Zoom'
+            '  |  Cmd+K: Insert link  |  Cmd+/\u2212/0/Scroll: Zoom'
             '  |  Cmd+Z/Shift+Z: Undo/Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
@@ -3239,11 +3239,13 @@ class NotesDialog(QDialog):
         if self._font_size != default:
             self._font_size = default
             self._apply_font_size()
+            # Cancel any pending debounced save from a prior zoom
+            if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
+                self._zoom_save_timer.stop()
             from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
             prefs = load_monitor_prefs()
             prefs.pop('notes_font_size', None)
             save_monitor_prefs(prefs)
-
 
     def wheelEvent(self, event: 'QWheelEvent') -> None:  # type: ignore[override]
         if event.modifiers() & Qt.ControlModifier:
