@@ -2115,7 +2115,16 @@ class LeapServer:
             # Skip trigger inside bracketed paste to prevent accidental
             # activation from pasted text containing "^^".
             if b == 0x5e:
-                if self._pending_caret and not chunk_has_paste:
+                if chunk_has_paste:
+                    # Inside bracketed paste — emit "^" literally and
+                    # bypass the pending-caret state machine so pasted
+                    # "^^" isn't mangled into a single "^".
+                    out.append(0x5e)
+                    self._terminal_input_buf.append(0x5e)
+                    self._chars_sent_to_cli += 1
+                    i += 1
+                    continue
+                if self._pending_caret:
                     # Second "^" → capture (same chunk).
                     # The first "^" was held (never added to out or
                     # buf), so no stale caret on CLI.
