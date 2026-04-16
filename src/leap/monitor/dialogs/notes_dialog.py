@@ -590,6 +590,10 @@ class _ItemLineEdit(QLineEdit):
         """Set layout direction based on RTL/LTR content detection."""
         _apply_rtl_direction(self, text)
 
+    def _reset_cursor_to_start(self) -> None:
+        """Move cursor so the visual start of the text is shown when not editing."""
+        self.setCursorPosition(0)
+
     def _is_truncated(self) -> bool:
         if self.width() <= 0:
             return False
@@ -625,6 +629,10 @@ class _ItemLineEdit(QLineEdit):
         elif self._preview and self._preview.isVisible():
             self._preview.hide_preview()
         super().mouseMoveEvent(event)
+
+    def focusOutEvent(self, event: 'QFocusEvent') -> None:  # type: ignore[override]
+        super().focusOutEvent(event)
+        self._reset_cursor_to_start()
 
     def leaveEvent(self, event: 'QEvent') -> None:  # type: ignore[override]
         if self._preview and self._preview.isVisible():
@@ -789,6 +797,10 @@ class _ChecklistItemWidget(QFrame):
         self.setStyleSheet(
             f'_ChecklistItemWidget {{ border-bottom: 1px solid {current_theme().border_subtle}; }}'
         )
+
+        # Show the start of the text (not the end) when the item is first laid out.
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._edit._reset_cursor_to_start)
 
     def _apply_checked_style(self, checked: bool) -> None:
         font = self._edit.font()
