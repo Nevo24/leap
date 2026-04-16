@@ -104,18 +104,22 @@ class TestCaptureSwallows:
 
 
 class TestStaleCleanup:
-    """Ctrl+U sent IMMEDIATELY in Enter handler — no waiting for IDLE."""
+    """Stale CLI input cleared in Enter handler via End + Ctrl+U + N backspaces."""
 
-    def test_running_sends_ctrlu(self):
-        """During RUNNING, Ctrl+U only (no Ctrl+E)."""
+    def test_running_sends_full_clear_sequence(self):
+        """During RUNNING: End + Ctrl+U + End + backspaces sequence."""
         srv = make_server(CLIState.RUNNING)
         srv._input_filter_impl(b'hello')
         srv._input_filter_impl(b'^^')
         srv._input_filter_impl(b'\r')
-        srv.pty.send.assert_called_with('\x15')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        # End must be sent at least twice (belt-and-suspenders).
+        assert calls.count('\x1b[F') >= 2, "End escape must be sent twice"
+        assert '\x15' in calls, "Ctrl+U must be sent"
+        assert '\x7f' * 5 in calls, "N backspaces must be sent as fallback"
 
-    def test_idle_sends_ctrle_then_ctrlu(self):
-        """During IDLE, Ctrl+E then Ctrl+U (separate writes)."""
+    def test_idle_sends_end_then_ctrlu(self):
+        """During IDLE, End then Ctrl+U (separate writes)."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
         srv._input_filter_impl(b'hello')
@@ -123,7 +127,7 @@ class TestStaleCleanup:
             srv._input_filter_impl(b'^^')
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        assert '\x05' in calls, "Ctrl+E must be sent"
+        assert '\x1b[F' in calls, "End escape must be sent"
         assert '\x15' in calls, "Ctrl+U must be sent"
 
     def test_idle_sends_ctrlu(self):
@@ -134,17 +138,17 @@ class TestStaleCleanup:
             srv._input_filter_impl(b'^^')
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        assert '\x05' in calls and '\x15' in calls
+        assert '\x1b[F' in calls and '\x15' in calls
 
-    def test_no_stale_no_ctrlu(self):
-        """^^hello (no pre-typing) → no Ctrl+U needed."""
+    def test_no_stale_no_clear(self):
+        """^^hello (no pre-typing) → no clear sequence needed."""
         srv = make_server(CLIState.RUNNING)
         srv._input_filter_impl(b'^^hello\r')
         srv.pty.send.assert_not_called()
 
 
 class TestScenarioX:
-    """Type during RUNNING → ^^ → Enter: stale text cleared by Ctrl+U."""
+    """Type during RUNNING → ^^ → Enter: stale text cleared robustly."""
 
     def test_full_flow(self):
         srv = make_server(CLIState.RUNNING)
@@ -158,12 +162,15 @@ class TestScenarioX:
         assert srv._queue_capture_mode
         assert srv._capture_stale_char_count == 5
 
-        # Enter → Ctrl+U clears stale, queues message
+        # Enter → clear sequence sent, message queued
         srv._input_filter_impl(b'\r')
         assert srv.queue.add.called
         assert srv.queue.add.call_args[0][0] == 'hello'
-        # Ctrl+U was sent to clear stale text (RUNNING → no Ctrl+E)
-        srv.pty.send.assert_called_with('\x15')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        # Full clear sequence: Ctrl+E + Ctrl+U + N backspaces fallback.
+        assert '\x1b[F' in calls, "End escape must be sent"
+        assert '\x15' in calls, "Ctrl+U must be sent"
+        assert '\x7f' * 5 in calls, "N backspaces fallback must be sent"
 
 
 class TestCancelReenter:
@@ -188,7 +195,7 @@ class TestCancelReenter:
         # Enter → Ctrl+E + Ctrl+U
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        assert '\x05' in calls and '\x15' in calls
+        assert '\x1b[F' in calls and '\x15' in calls
 
 
 class TestExceptionSafety:

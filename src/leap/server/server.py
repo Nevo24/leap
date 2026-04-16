@@ -1282,6 +1282,37 @@ class LeapServer:
             text = text[:self._capture_cursor_pos] + text[self._capture_cursor_pos + 1:]
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
+    def _clear_stale_cli_input(self, n: int) -> None:
+        """Clear stale CLI input left on the TUI before ``^^`` entry.
+
+        Sequence (each byte can race with Ink's render loop during
+        streaming and be dropped, so the steps are layered so any
+        single drop is covered by the others):
+
+        1. End (``\\x1b[F``) — cursor to end of line.
+        2. Ctrl+U (``\\x15``) — kill from cursor to start (fast path).
+        3. End again — re-position cursor at end of whatever text
+           remains (covers the case where step 1 was dropped and
+           Ctrl+U only killed the prefix, leaving a suffix at pos 0
+           with cursor also at 0).
+        4. ``n`` backspaces — delete from end backward.  No-op when
+           the line is already empty (common case), so free.
+
+        The End escape is used instead of Ctrl+E to avoid any
+        emacs-style binding ambiguity — Ink's text-input handles it
+        via its keyname system.  ``n`` is the byte count of the
+        prior input, so multi-byte UTF-8 chars produce extra
+        backspaces that Ink safely ignores.
+        """
+        self.pty.send('\x1b[F')  # End: cursor to end
+        time.sleep(0.02)
+        self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
+        time.sleep(0.02)
+        self.pty.send('\x1b[F')  # End again: catch dropped-first-End race
+        time.sleep(0.02)
+        self.pty.send('\x7f' * n)  # backspaces: catch dropped-Ctrl+U race
+        time.sleep(0.03)
+
     def _capture_flush(self, cancel: bool = False) -> None:
         """End capture mode: handle stale CLI input, force TUI redraw."""
         # Handle stale ^ from cross-chunk ^^ entry.
@@ -1758,27 +1789,21 @@ class LeapServer:
                 if self._capture_image_map:
                     msg = self._capture_resolve_images(msg)
                 if msg:
-                    # Clear stale text typed before ^^.  When IDLE:
-                    # Ctrl+C clears immediately (50ms delay so CLI
-                    # processes before deferred resize).  When RUNNING:
-                    # flag for _send_to_cli (fast-poll ~50ms of IDLE).
+                    # Clear stale text typed before ^^.
                     if self._capture_stale_char_count > 0:
-                        # Ctrl+E (end of line) then Ctrl+U (kill to
-                        # start).  Separate writes so Ink processes
-                        # the cursor move before the kill.  During
-                        # RUNNING, skip Ctrl+E (cursor at end from
-                        # typing, and Ctrl+E may interfere).
-                        if self.state.current_state == CLIState.IDLE:
-                            self.pty.send('\x05')  # Ctrl+E: end
-                            time.sleep(0.02)
-                        self.pty.send('\x15')  # Ctrl+U: kill
-                        time.sleep(0.03)
+                        self._clear_stale_cli_input(
+                            self._capture_stale_char_count)
                         self._capture_stale_char_count = 0
                     self._send_clear_queue.append(False)
                     self.queue.add(msg)
                     self._capture_flush()
                 else:
-                    # Empty Enter — clear stale if IDLE, else leave.
+                    # Empty Enter — clear stale text unconditionally.
+                    # This path is reached when the user saved their
+                    # message via ^^ inside capture mode (which empties
+                    # the buffer): their original typed text is already
+                    # in history, so leaving it on the CLI input line
+                    # would just be misleading.
                     if self._capture_stale_char_count > 0:
                         try:
                             import termios
@@ -1786,10 +1811,8 @@ class LeapServer:
                                             termios.TCOFLUSH)
                         except Exception:
                             pass
-                        if self.state.current_state == CLIState.IDLE:
-                            self.pty.send('\x05')  # Ctrl+E: end of line
-                            time.sleep(0.02)
-                            self.pty.send('\x15')  # Ctrl+U: kill line
+                        self._clear_stale_cli_input(
+                            self._capture_stale_char_count)
                         self._capture_stale_char_count = 0
                     self._capture_flush()
                 self._queue_capture_buf.clear()
