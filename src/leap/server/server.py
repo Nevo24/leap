@@ -1169,10 +1169,15 @@ class LeapServer:
         msg = self._capture_text().strip()
         if not msg:
             return
-        # Resolve image placeholders so saved messages carry the actual
-        # @path references and work when recalled in a future session.
+        # Resolve image placeholders in-place so the text-image
+        # interleaving is preserved in history (same approach as
+        # _capture_cancel).  Unlike the queue/Enter path which
+        # prepends all @paths for the CLI send protocol, saved
+        # messages are for user recall and must read the way the
+        # user typed them.
         if self._capture_image_map:
-            msg = self._capture_resolve_images(msg)
+            for placeholder, path in self._capture_image_map.items():
+                msg = msg.replace(placeholder, f'@{path}')
         # Remove duplicate if already at the end
         if self._saved_messages and self._saved_messages[-1] == msg:
             pass
