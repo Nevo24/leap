@@ -716,6 +716,8 @@ class _ItemLineEdit(QLineEdit):
     empty_backspace: pyqtSignal = pyqtSignal()
     expand_requested: pyqtSignal = pyqtSignal()
     image_pasted: pyqtSignal = pyqtSignal(str)  # emits the filename
+    arrow_up: pyqtSignal = pyqtSignal()
+    arrow_down: pyqtSignal = pyqtSignal()
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
@@ -734,23 +736,6 @@ class _ItemLineEdit(QLineEdit):
     def _reset_cursor_to_start(self) -> None:
         """Move cursor so the visual start of the text is shown when not editing."""
         self.setCursorPosition(0)
-
-    def _is_truncated(self) -> bool:
-        if self.width() <= 0:
-            return False
-        return self.fontMetrics().horizontalAdvance(self.text()) > self.width() - 8
-
-    def resizeEvent(self, event: 'QResizeEvent') -> None:  # type: ignore[override]
-        super().resizeEvent(event)
-        self._refresh_tooltip()
-
-    def _refresh_tooltip(self) -> None:
-        if self._is_truncated():
-            self.setToolTip(self.text())
-            self.setProperty('always_tooltip', True)
-        else:
-            self.setToolTip('')
-            self.setProperty('always_tooltip', False)
 
     def mousePressEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
         from PyQt5.QtWidgets import QApplication
@@ -816,6 +801,12 @@ class _ItemLineEdit(QLineEdit):
             return
         if event.key() == Qt.Key_Escape:
             self.clearFocus()
+            return
+        if event.key() == Qt.Key_Up:
+            self.arrow_up.emit()
+            return
+        if event.key() == Qt.Key_Down:
+            self.arrow_down.emit()
             return
         if event.key() == Qt.Key_Backspace and not self.text():
             self.empty_backspace.emit()
@@ -896,6 +887,8 @@ class _ChecklistItemWidget(QFrame):
     new_item_after: pyqtSignal = pyqtSignal(int)
     merge_up: pyqtSignal = pyqtSignal(int)
     drag_started: pyqtSignal = pyqtSignal(int)
+    focus_prev: pyqtSignal = pyqtSignal(int)  # arrow up
+    focus_next: pyqtSignal = pyqtSignal(int)  # arrow down
 
     def __init__(
         self, index: int, text: str, checked: bool, parent: Optional[QWidget] = None,
@@ -932,6 +925,12 @@ class _ChecklistItemWidget(QFrame):
         self._edit.expand_requested.connect(self._show_expand_popup)
         self._edit.empty_backspace.connect(
             lambda: self.merge_up.emit(self._index),
+        )
+        self._edit.arrow_up.connect(
+            lambda: self.focus_prev.emit(self._index),
+        )
+        self._edit.arrow_down.connect(
+            lambda: self.focus_next.emit(self._index),
         )
         row.addWidget(self._edit, 1)
 
@@ -1078,6 +1077,19 @@ class _ChecklistItemWidget(QFrame):
                 dismiss(False)
                 self._edit.setFocus()
                 return
+            # Arrow up on first line / arrow down on last line → navigate items
+            if event.key() == Qt.Key_Up:
+                cur = wrap.textCursor()
+                if cur.block() == wrap.document().firstBlock():
+                    dismiss(True)
+                    self.focus_prev.emit(self._index)
+                    return
+            if event.key() == Qt.Key_Down:
+                cur = wrap.textCursor()
+                if cur.block() == wrap.document().lastBlock():
+                    dismiss(True)
+                    self.focus_next.emit(self._index)
+                    return
             if event.key() == Qt.Key_Backspace and not wrap.toPlainText():
                 dismiss(True)
                 self.merge_up.emit(self._index)
@@ -1379,6 +1391,8 @@ class _ChecklistWidget(QWidget):
         )
         self._add_field.enter_pressed.connect(self._on_add_item)
         self._add_field.expand_requested.connect(self._expand_add_field)
+        self._add_field.arrow_up.connect(self._on_add_field_arrow_up)
+        self._add_field.arrow_down.connect(self._on_add_field_arrow_down)
         self._layout.addWidget(self._add_field)
         self._add_popup: Optional[QTextEdit] = None
 
@@ -1437,6 +1451,8 @@ class _ChecklistWidget(QWidget):
         w.new_item_after.connect(self._on_new_after)
         w.merge_up.connect(self._on_merge_up)
         w.drag_started.connect(self._start_item_drag)
+        w.focus_prev.connect(self._on_focus_prev)
+        w.focus_next.connect(self._on_focus_next)
         w._edit.image_pasted.connect(lambda fn: self._pasted_images.add(fn))
         w._edit._register_image_fn = self._register_image
         w._edit._resolve_placeholder_fn = self._resolve_placeholder
@@ -1611,6 +1627,65 @@ class _ChecklistWidget(QWidget):
             self._undo_stack.record(ChecklistAddItemCmd(
                 note_name=self._cmd_ctx.current_name, item_index=new_idx, item_text=''))
 
+    def _on_focus_prev(self, index: int) -> None:
+        """Arrow up — focus the previous checklist item."""
+        # Collect focusable widgets in layout order
+        widgets = self._focusable_widgets()
+        for i, (w, _) in enumerate(widgets):
+            if isinstance(w, _ChecklistItemWidget) and w._index == index:
+                if i > 0:
+                    prev_w, _ = widgets[i - 1]
+                    if isinstance(prev_w, _ChecklistItemWidget):
+                        prev_w.focus_edit(cursor_at_end=True)
+                    elif isinstance(prev_w, _ItemLineEdit):
+                        prev_w.setFocus()
+                return
+
+    def _on_focus_next(self, index: int) -> None:
+        """Arrow down — focus the next checklist item or add field."""
+        widgets = self._focusable_widgets()
+        for i, (w, _) in enumerate(widgets):
+            if isinstance(w, _ChecklistItemWidget) and w._index == index:
+                if i < len(widgets) - 1:
+                    next_w, _ = widgets[i + 1]
+                    if isinstance(next_w, _ChecklistItemWidget):
+                        next_w.focus_edit(cursor_at_end=False)
+                    elif isinstance(next_w, _ItemLineEdit):
+                        next_w.setFocus()
+                return
+
+    def _on_add_field_arrow_up(self) -> None:
+        """Arrow up from add field — focus the last item above it."""
+        widgets = self._focusable_widgets()
+        for i, (w, _) in enumerate(widgets):
+            if w is self._add_field and i > 0:
+                prev_w, _ = widgets[i - 1]
+                if isinstance(prev_w, _ChecklistItemWidget):
+                    prev_w.focus_edit(cursor_at_end=True)
+                return
+
+    def _on_add_field_arrow_down(self) -> None:
+        """Arrow down from add field — focus the first completed item below."""
+        widgets = self._focusable_widgets()
+        for i, (w, _) in enumerate(widgets):
+            if w is self._add_field and i < len(widgets) - 1:
+                next_w, _ = widgets[i + 1]
+                if isinstance(next_w, _ChecklistItemWidget):
+                    next_w.focus_edit(cursor_at_end=False)
+                return
+
+    def _focusable_widgets(self) -> list[tuple['QWidget', int]]:
+        """Return (widget, layout_index) for all checklist items and add field."""
+        result: list[tuple[QWidget, int]] = []
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item is None:
+                continue
+            w = item.widget()
+            if isinstance(w, (_ChecklistItemWidget, _ItemLineEdit)):
+                result.append((w, i))
+        return result
+
     def _on_merge_up(self, index: int) -> None:
         """Backspace on empty item → delete it and focus the previous one."""
         if index < 0 or index >= len(self._items):
@@ -1710,6 +1785,20 @@ class _ChecklistWidget(QWidget):
                 self._dismiss_add_popup(save=True)
                 self._add_field.setFocus()
                 return
+            # Arrow up on first line → navigate to previous item
+            if event.key() == Qt.Key_Up:
+                cur = wrap.textCursor()
+                if cur.block() == wrap.document().firstBlock():
+                    self._dismiss_add_popup(save=True)
+                    self._on_add_field_arrow_up()
+                    return
+            # Arrow down on last line → navigate to next item (completed)
+            if event.key() == Qt.Key_Down:
+                cur = wrap.textCursor()
+                if cur.block() == wrap.document().lastBlock():
+                    self._dismiss_add_popup(save=True)
+                    self._on_add_field_arrow_down()
+                    return
             # Cmd+V / Ctrl+V — paste image
             if (event.key() == Qt.Key_V
                     and event.modifiers() & Qt.ControlModifier):
@@ -1986,10 +2075,13 @@ class NotesDialog(QDialog):
         self._current_name: Optional[str] = None
         self._saved_text: str = ''
         self._switching_mode: bool = False
-        # Font size — persisted in monitor prefs
+        # Font sizes — persisted separately in monitor prefs
         from leap.monitor.pr_tracking.config import load_monitor_prefs
         prefs = load_monitor_prefs()
-        self._font_size: int = prefs.get('notes_font_size', current_theme().font_size_base)
+        default_pt = current_theme().font_size_base
+        self._font_size: int = prefs.get('notes_font_size', default_pt)
+        self._sidebar_font_size: int = prefs.get('notes_sidebar_font_size', default_pt)
+        self._zoom_target: str = 'content'  # 'content' or 'sidebar'
         self._undo_stack = NotesUndoStack(limit=50)
         self._cmd_ctx = NotesCmdContext(self)
         self._pending_image_deletes: set[str] = set()
@@ -2003,7 +2095,7 @@ class NotesDialog(QDialog):
         splitter.setStyleSheet('QSplitter::handle { background: transparent; }')
 
         # ── Left panel: search + tree + buttons ──
-        left = QWidget()
+        self._left_panel = left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 6, 0)
         left_layout.setSpacing(4)
@@ -2148,10 +2240,12 @@ class NotesDialog(QDialog):
 
         right_layout.addWidget(self._stack, 1)
 
-        # Apply saved font size + intercept Cmd+scroll on editor viewports
+        # Apply saved font sizes + intercept Cmd+scroll on all viewports
         self._apply_font_size()
+        self._apply_sidebar_font_size()
         self._editor.viewport().installEventFilter(self)
         self._checklist._scroll.viewport().installEventFilter(self)
+        self._tree.viewport().installEventFilter(self)
 
         right.setMinimumWidth(375)
         splitter.addWidget(right)
@@ -3158,7 +3252,7 @@ class NotesDialog(QDialog):
         # Flush any pending font-size save
         if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
             self._zoom_save_timer.stop()
-            self._save_font_size()
+            self._save_font_sizes()
         if self._current_name:
             meta = _load_notes_meta()
             meta['_last_note'] = self._current_name
@@ -3167,34 +3261,9 @@ class NotesDialog(QDialog):
         super().done(result)
 
     def closeEvent(self, event: 'QCloseEvent') -> None:  # type: ignore[override]
-        """Auto-save and persist geometry on X-button close."""
-        # Disconnect widget signals BEFORE saving — prevents handlers
-        # from firing during widget destruction (QTreeWidget.clear() in
-        # the destructor emits currentItemChanged, QComboBox destruction
-        # may emit currentIndexChanged), which would call _save_current()
-        # on half-destroyed widgets and corrupt note files.
-        try:
-            self._tree.currentItemChanged.disconnect(self._on_item_changed)
-        except (TypeError, RuntimeError):
-            pass
-        try:
-            self._mode_combo.currentIndexChanged.disconnect(self._on_mode_changed)
-        except (TypeError, RuntimeError):
-            pass
-        self._save_current()
-        self._finalize_image_cleanup()
-        self._undo_stack.clear()
-        # Flush any pending font-size save
-        if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
-            self._zoom_save_timer.stop()
-            self._save_font_size()
-        # Persist last-open note for next session
-        if self._current_name:
-            meta = _load_notes_meta()
-            meta['_last_note'] = self._current_name
-            _save_notes_meta(meta)
-        save_dialog_geometry('notes_dialog', self.width(), self.height())
-        super().closeEvent(event)
+        """Auto-save and close via reject() so the finished signal is emitted."""
+        event.accept()
+        self.reject()
 
     # ── Font size / zoom ─────────────────────────────────────────────
 
@@ -3202,7 +3271,7 @@ class NotesDialog(QDialog):
     _MAX_FONT_SIZE = 28
 
     def _apply_font_size(self) -> None:
-        """Apply the current font size to the text editor and checklist."""
+        """Apply the content font size to the text editor and checklist."""
         from PyQt5.QtGui import QFont
         font = self._editor.font()
         font.setPointSize(self._font_size)
@@ -3210,47 +3279,100 @@ class NotesDialog(QDialog):
         self._editor.document().setDefaultFont(font)
         self._checklist.set_font_size(self._font_size)
 
-    def _zoom(self, delta: int) -> None:
-        """Change font size by delta and persist."""
-        new_size = max(self._MIN_FONT_SIZE,
-                       min(self._MAX_FONT_SIZE, self._font_size + delta))
-        if new_size == self._font_size:
-            return
-        self._font_size = new_size
-        self._apply_font_size()
+    def _apply_sidebar_font_size(self) -> None:
+        """Apply the sidebar font size to the tree and search bar."""
+        self._left_panel.setStyleSheet(
+            f'QTreeWidget, QLineEdit'
+            f' {{ font-size: {self._sidebar_font_size}pt; }}'
+        )
+        # Scale folder icons to match the font size
+        icon_px = int(self._sidebar_font_size * 1.3)
+        self._tree.setIconSize(QSize(icon_px, icon_px))
+
+    def _zoom_target_for_widget(self, widget: Optional['QWidget']) -> str:
+        """Determine zoom target based on which widget is under interaction."""
+        if widget is None:
+            return self._zoom_target
+        # Walk up the widget tree to see if it's inside the left panel
+        w = widget
+        while w is not None:
+            if w is self._left_panel:
+                return 'sidebar'
+            if w is self._stack:
+                return 'content'
+            w = w.parentWidget()
+        return self._zoom_target
+
+    def _resolve_zoom_target(self) -> str:
+        """Return the zoom target based on current focus."""
+        return self._zoom_target_for_widget(QApplication.focusWidget())
+
+    def _zoom(self, delta: int, target: Optional[str] = None) -> None:
+        """Change font size by delta for the given target and persist."""
+        if target is None:
+            target = self._resolve_zoom_target()
+        self._zoom_target = target
+
+        if target == 'sidebar':
+            new_size = max(self._MIN_FONT_SIZE,
+                           min(self._MAX_FONT_SIZE, self._sidebar_font_size + delta))
+            if new_size == self._sidebar_font_size:
+                return
+            self._sidebar_font_size = new_size
+            self._apply_sidebar_font_size()
+        else:
+            new_size = max(self._MIN_FONT_SIZE,
+                           min(self._MAX_FONT_SIZE, self._font_size + delta))
+            if new_size == self._font_size:
+                return
+            self._font_size = new_size
+            self._apply_font_size()
+
         # Debounce disk write — rapid Cmd+scroll fires many events
         if not hasattr(self, '_zoom_save_timer'):
             from PyQt5.QtCore import QTimer
             self._zoom_save_timer = QTimer(self)
             self._zoom_save_timer.setSingleShot(True)
-            self._zoom_save_timer.timeout.connect(self._save_font_size)
+            self._zoom_save_timer.timeout.connect(self._save_font_sizes)
         self._zoom_save_timer.start(300)
 
-    def _save_font_size(self) -> None:
-        """Persist the current font size to prefs."""
+    def _save_font_sizes(self) -> None:
+        """Persist both font sizes to prefs."""
         from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
         prefs = load_monitor_prefs()
         prefs['notes_font_size'] = self._font_size
+        prefs['notes_sidebar_font_size'] = self._sidebar_font_size
         save_monitor_prefs(prefs)
 
     def _reset_zoom(self) -> None:
-        """Reset font size to theme default."""
+        """Reset font size to theme default for the focused area."""
+        target = self._resolve_zoom_target()
         default = current_theme().font_size_base
-        if self._font_size != default:
+        # Cancel any pending debounced save — we'll write both values below
+        if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
+            self._zoom_save_timer.stop()
+
+        if target == 'sidebar':
+            if self._sidebar_font_size == default:
+                return
+            self._sidebar_font_size = default
+            self._apply_sidebar_font_size()
+        else:
+            if self._font_size == default:
+                return
             self._font_size = default
             self._apply_font_size()
-            # Cancel any pending debounced save from a prior zoom
-            if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
-                self._zoom_save_timer.stop()
-            from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
-            prefs = load_monitor_prefs()
-            prefs.pop('notes_font_size', None)
-            save_monitor_prefs(prefs)
+
+        # Save both values — the timer may have been pending for the other target
+        self._save_font_sizes()
 
     def wheelEvent(self, event: 'QWheelEvent') -> None:  # type: ignore[override]
         if event.modifiers() & Qt.ControlModifier:
             delta = 1 if event.angleDelta().y() > 0 else -1
-            self._zoom(delta)
+            # Determine target from the widget under the mouse cursor
+            widget_under = QApplication.widgetAt(QCursor.pos())
+            target = self._zoom_target_for_widget(widget_under)
+            self._zoom(delta, target=target)
             event.accept()
             return
         super().wheelEvent(event)
@@ -3260,14 +3382,16 @@ class NotesDialog(QDialog):
         if obj is self._search and event.type() == _QE.FocusIn:
             if not self.isActiveWindow():
                 QApplication.setActiveWindow(self)
-        # Intercept Cmd+scroll on editor/checklist for zoom
+        # Intercept Cmd+scroll on viewports — route to correct zoom target
         if event.type() == _QE.Wheel:
             import sip
             from PyQt5.QtGui import QWheelEvent
             we = sip.cast(event, QWheelEvent)
             if we.modifiers() & Qt.ControlModifier:
                 delta = 1 if we.angleDelta().y() > 0 else -1
-                self._zoom(delta)
+                # Determine target from which viewport received the scroll
+                target = self._zoom_target_for_widget(obj)
+                self._zoom(delta, target=target)
                 return True
         return super().eventFilter(obj, event)
 

@@ -2011,6 +2011,11 @@ class MonitorWindow(
         hangs), we save state and then os._exit() to guarantee the process
         dies immediately.
         """
+        # Close the notes dialog if open so it saves state before os._exit
+        notes_dlg = getattr(self, '_notes_dialog', None)
+        if notes_dlg is not None:
+            notes_dlg.close()
+
         # Prevent timers and signal handlers from firing during shutdown
         self._shutting_down = True
         self.timer.stop()

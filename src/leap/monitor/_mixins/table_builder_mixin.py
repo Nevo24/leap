@@ -1613,10 +1613,15 @@ class TableBuilderMixin(_Base):
         from leap.monitor.dialogs.notes_dialog import NotesDialog
         dialog = NotesDialog(parent=self)
         self._notes_dialog = dialog
-        try:
-            dialog.exec_()
-        finally:
-            self._notes_dialog = None
+        dialog.finished.connect(self._on_notes_closed)
+        dialog.show()
+
+    def _on_notes_closed(self) -> None:
+        """Clean up after the notes dialog closes."""
+        dlg = self._notes_dialog
+        self._notes_dialog = None
+        if dlg is not None:
+            dlg.deleteLater()
 
     def _show_queue_context_menu(
         self, label: QLabel, pos: 'QPoint', tag: str,
