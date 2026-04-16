@@ -1253,6 +1253,12 @@ class _ChecklistWidget(QWidget):
         self._drop_indicator.setVisible(False)
         self._drop_indicator.setAttribute(Qt.WA_TransparentForMouseEvents)
 
+    def set_font_size(self, pt: int) -> None:
+        """Update font size on all item editors and the add field."""
+        self._container.setStyleSheet(
+            f'QLineEdit, QTextEdit {{ font-size: {pt}pt; }}'
+        )
+
     def set_items(self, items: list[dict]) -> None:
         """Load items and rebuild the UI."""
         # Reset image mapping for new note
@@ -1967,10 +1973,23 @@ class NotesDialog(QDialog):
         saved = load_dialog_geometry('notes_dialog')
         if saved:
             self.resize(saved[0], saved[1])
+        # Ensure the dialog is on-screen (avoids Qt warning when
+        # the saved size pushes the default position off-screen).
+        screen = QApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            geo = self.frameGeometry()
+            if geo.left() < avail.left() or geo.top() < avail.top():
+                geo.moveTopLeft(avail.topLeft())
+                self.move(geo.topLeft())
 
         self._current_name: Optional[str] = None
         self._saved_text: str = ''
         self._switching_mode: bool = False
+        # Font size — persisted in monitor prefs
+        from leap.monitor.pr_tracking.config import load_monitor_prefs
+        prefs = load_monitor_prefs()
+        self._font_size: int = prefs.get('notes_font_size', current_theme().font_size_base)
         self._undo_stack = NotesUndoStack(limit=50)
         self._cmd_ctx = NotesCmdContext(self)
         self._pending_image_deletes: set[str] = set()
@@ -2129,6 +2148,11 @@ class NotesDialog(QDialog):
 
         right_layout.addWidget(self._stack, 1)
 
+        # Apply saved font size + intercept Cmd+scroll on editor viewports
+        self._apply_font_size()
+        self._editor.viewport().installEventFilter(self)
+        self._checklist._scroll.viewport().installEventFilter(self)
+
         right.setMinimumWidth(375)
         splitter.addWidget(right)
         splitter.setCollapsible(1, False)
@@ -2141,7 +2165,8 @@ class NotesDialog(QDialog):
         bottom_row = QHBoxLayout()
         hint = QLabel(
             'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
-            '  |  Cmd+K: Insert link  |  Cmd+Z: Undo  |  Cmd+Shift+Z: Redo'
+            '  |  Cmd+K: Insert link  |  Cmd+/\u2212/0: Zoom'
+            '  |  Cmd+Z/Shift+Z: Undo/Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
             f'color: {current_theme().text_muted};'
@@ -3130,6 +3155,10 @@ class NotesDialog(QDialog):
         self._save_current()
         self._finalize_image_cleanup()
         self._undo_stack.clear()
+        # Flush any pending font-size save
+        if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
+            self._zoom_save_timer.stop()
+            self._save_font_size()
         if self._current_name:
             meta = _load_notes_meta()
             meta['_last_note'] = self._current_name
@@ -3155,6 +3184,10 @@ class NotesDialog(QDialog):
         self._save_current()
         self._finalize_image_cleanup()
         self._undo_stack.clear()
+        # Flush any pending font-size save
+        if hasattr(self, '_zoom_save_timer') and self._zoom_save_timer.isActive():
+            self._zoom_save_timer.stop()
+            self._save_font_size()
         # Persist last-open note for next session
         if self._current_name:
             meta = _load_notes_meta()
@@ -3163,16 +3196,77 @@ class NotesDialog(QDialog):
         save_dialog_geometry('notes_dialog', self.width(), self.height())
         super().closeEvent(event)
 
-    def eventFilter(self, obj: 'QObject', event: 'QEvent') -> bool:  # type: ignore[override]
-        """Re-activate window when the search bar receives focus.
+    # ── Font size / zoom ─────────────────────────────────────────────
 
-        macOS can leave the window inactive after a native drag session,
-        which causes the QLineEdit cursor to not blink/show.
-        """
+    _MIN_FONT_SIZE = 9
+    _MAX_FONT_SIZE = 28
+
+    def _apply_font_size(self) -> None:
+        """Apply the current font size to the text editor and checklist."""
+        from PyQt5.QtGui import QFont
+        font = self._editor.font()
+        font.setPointSize(self._font_size)
+        self._editor.setFont(font)
+        self._editor.document().setDefaultFont(font)
+        self._checklist.set_font_size(self._font_size)
+
+    def _zoom(self, delta: int) -> None:
+        """Change font size by delta and persist."""
+        new_size = max(self._MIN_FONT_SIZE,
+                       min(self._MAX_FONT_SIZE, self._font_size + delta))
+        if new_size == self._font_size:
+            return
+        self._font_size = new_size
+        self._apply_font_size()
+        # Debounce disk write — rapid Cmd+scroll fires many events
+        if not hasattr(self, '_zoom_save_timer'):
+            from PyQt5.QtCore import QTimer
+            self._zoom_save_timer = QTimer(self)
+            self._zoom_save_timer.setSingleShot(True)
+            self._zoom_save_timer.timeout.connect(self._save_font_size)
+        self._zoom_save_timer.start(300)
+
+    def _save_font_size(self) -> None:
+        """Persist the current font size to prefs."""
+        from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
+        prefs = load_monitor_prefs()
+        prefs['notes_font_size'] = self._font_size
+        save_monitor_prefs(prefs)
+
+    def _reset_zoom(self) -> None:
+        """Reset font size to theme default."""
+        default = current_theme().font_size_base
+        if self._font_size != default:
+            self._font_size = default
+            self._apply_font_size()
+            from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
+            prefs = load_monitor_prefs()
+            prefs.pop('notes_font_size', None)
+            save_monitor_prefs(prefs)
+
+
+    def wheelEvent(self, event: 'QWheelEvent') -> None:  # type: ignore[override]
+        if event.modifiers() & Qt.ControlModifier:
+            delta = 1 if event.angleDelta().y() > 0 else -1
+            self._zoom(delta)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def eventFilter(self, obj: 'QObject', event: 'QEvent') -> bool:  # type: ignore[override]
         from PyQt5.QtCore import QEvent as _QE
         if obj is self._search and event.type() == _QE.FocusIn:
             if not self.isActiveWindow():
                 QApplication.setActiveWindow(self)
+        # Intercept Cmd+scroll on editor/checklist for zoom
+        if event.type() == _QE.Wheel:
+            import sip
+            from PyQt5.QtGui import QWheelEvent
+            we = sip.cast(event, QWheelEvent)
+            if we.modifiers() & Qt.ControlModifier:
+                delta = 1 if we.angleDelta().y() > 0 else -1
+                self._zoom(delta)
+                return True
         return super().eventFilter(obj, event)
 
     def _insert_link(self) -> None:
@@ -3313,6 +3407,15 @@ class NotesDialog(QDialog):
                 return
             if event.key() == Qt.Key_K:
                 self._insert_link()
+                return
+            if event.key() in (Qt.Key_Equal, Qt.Key_Plus):
+                self._zoom(1)
+                return
+            if event.key() == Qt.Key_Minus:
+                self._zoom(-1)
+                return
+            if event.key() == Qt.Key_0:
+                self._reset_zoom()
                 return
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not mods:
             if self._tree.hasFocus() and self._tree.currentItem():
