@@ -24,7 +24,10 @@ from PyQt5.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
-from PyQt5.QtGui import QCursor, QDrag, QImage, QImageReader, QPixmap, QTextCursor, QTextImageFormat
+from PyQt5.QtGui import (
+    QColor, QCursor, QDrag, QImage, QImageReader, QPixmap,
+    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat,
+)
 
 from leap.monitor.dialogs.notes_undo import (
     BatchDeleteCmd, ChecklistAddItemCmd, ChecklistDeleteItemCmd,
@@ -44,6 +47,85 @@ _NOTES_META_FILE: Path = NOTES_DIR / '.notes_meta.json'
 _IMAGE_MARKER_RE = re.compile(r'!\[image\]\(([a-f0-9]+\.png)\)')
 _CHECKLIST_PLACEHOLDER_RE = re.compile(r'\[Image #\d+\]')
 _NOTE_IMAGE_MAX_WIDTH = 400
+_URL_RE = re.compile(r'https?://[^\s<>\"\')]+')
+# Any scheme (slack://, mailto:, tel:, etc.)
+_ANY_URL_RE = re.compile(r'[a-zA-Z][a-zA-Z0-9+.-]*://\S+|mailto:\S+')
+# Markdown link: [display text](url) — negative lookbehind excludes ![image](…)
+_LINK_RE = re.compile(r'(?<!!)\[([^\]]+)\]\((\S+://[^\s\)]+)\)')
+
+
+# ── URL highlighting ───────────────────────────────────────────────
+
+
+class _UrlHighlighter(QSyntaxHighlighter):
+    """Highlights bare URLs and [text](url) links with the theme accent blue."""
+
+    def __init__(self, parent: 'QTextDocument') -> None:
+        super().__init__(parent)
+        self._link_fmt = QTextCharFormat()
+        t = current_theme()
+        self._link_fmt.setForeground(QColor(t.accent_blue))
+        self._link_fmt.setFontUnderline(True)
+        self._muted_fmt = QTextCharFormat()
+        self._muted_fmt.setForeground(QColor(t.text_muted))
+
+    def highlightBlock(self, text: str) -> None:
+        # Track which ranges are covered by markdown links
+        link_ranges: list[tuple[int, int]] = []
+        for m in _LINK_RE.finditer(text):
+            # Highlight display text as link
+            self.setFormat(m.start(1), len(m.group(1)), self._link_fmt)
+            # Dim the surrounding syntax: [ ] ( url )
+            self.setFormat(m.start(), 1, self._muted_fmt)        # [
+            self.setFormat(m.end(1), 2, self._muted_fmt)         # ](
+            self.setFormat(m.start(2), len(m.group(2)), self._muted_fmt)  # url
+            self.setFormat(m.end(2), 1, self._muted_fmt)         # )
+            link_ranges.append((m.start(), m.end()))
+        # Highlight bare URLs not inside markdown links
+        for m in _URL_RE.finditer(text):
+            if not any(s <= m.start() and m.end() <= e for s, e in link_ranges):
+                self.setFormat(m.start(), m.end() - m.start(), self._link_fmt)
+
+
+def _url_in_text_at_col(text: str, col: int) -> Optional[str]:
+    """Return the URL at column position in text (markdown link or bare URL)."""
+    # Check markdown links first — click on display text opens the URL
+    for m in _LINK_RE.finditer(text):
+        if m.start() <= col < m.end():
+            return m.group(2)
+    for m in _URL_RE.finditer(text):
+        if m.start() <= col < m.end():
+            return m.group()
+    return None
+
+
+def _url_at_pos(widget: 'QTextEdit', pos: QPoint) -> Optional[str]:
+    """Return the URL at viewport position in a QTextEdit, or None."""
+    cursor = widget.cursorForPosition(pos)
+    return _url_in_text_at_col(cursor.block().text(), cursor.positionInBlock())
+
+
+def _url_at_line_edit_pos(widget: QLineEdit, pos: QPoint) -> Optional[str]:
+    """Return the URL at position in a QLineEdit, or None."""
+    col = widget.cursorPositionAt(pos)
+    return _url_in_text_at_col(widget.text(), col)
+
+
+def _link_char_format(url: str) -> QTextCharFormat:
+    """Return a QTextCharFormat styled as a clickable link."""
+    fmt = QTextCharFormat()
+    t = current_theme()
+    fmt.setForeground(QColor(t.accent_blue))
+    fmt.setFontUnderline(True)
+    fmt.setAnchor(True)
+    fmt.setAnchorHref(url)
+    return fmt
+
+
+def _try_open_url(url: str) -> None:
+    """Open a URL in the default browser."""
+    from PyQt5.QtGui import QDesktopServices
+    QDesktopServices.openUrl(QUrl(url))
 
 
 # ── Note image helpers ──────────────────────────────────────────────
@@ -191,6 +273,20 @@ class _NoteTextEdit(QTextEdit):
         self.setMouseTracking(True)
         self._preview: Optional[_ImagePreviewPopup] = None
         self._pasted_images: set[str] = set()  # all images pasted in this session
+        self._url_hl = _UrlHighlighter(self.document())
+        self._clearing_anchor = False
+        self.cursorPositionChanged.connect(self._clear_anchor_format)
+
+    def _clear_anchor_format(self) -> None:
+        """Prevent anchor formatting from bleeding into newly typed text."""
+        if self._clearing_anchor:
+            return
+        cursor = self.textCursor()
+        if not cursor.hasSelection() and cursor.charFormat().isAnchor():
+            self._clearing_anchor = True
+            cursor.setCharFormat(QTextCharFormat())
+            self.setTextCursor(cursor)
+            self._clearing_anchor = False
 
     def _image_name_at(self, pos: QPoint) -> Optional[str]:
         """Return the image filename at viewport position, or None."""
@@ -202,6 +298,22 @@ class _NoteTextEdit(QTextEdit):
                 return name
         return None
 
+    def _clickable_url_at(self, pos: QPoint) -> Optional[str]:
+        """Return clickable URL at viewport position (anchor href or bare URL)."""
+        cursor = self.cursorForPosition(pos)
+        href = cursor.charFormat().anchorHref()
+        if href:
+            return href
+        return _url_at_pos(self, pos)
+
+    def mousePressEvent(self, event: 'QMouseEvent') -> None:
+        if event.button() == Qt.LeftButton:
+            url = self._clickable_url_at(event.pos())
+            if url:
+                _try_open_url(url)
+                return
+        super().mousePressEvent(event)
+
     def mouseMoveEvent(self, event: 'QMouseEvent') -> None:
         name = self._image_name_at(event.pos())
         if name:
@@ -210,6 +322,10 @@ class _NoteTextEdit(QTextEdit):
             self._preview.show_for_image(name, event.globalPos())
         elif self._preview and self._preview.isVisible():
             self._preview.hide_preview()
+        if self._clickable_url_at(event.pos()):
+            self.viewport().setCursor(Qt.PointingHandCursor)
+        else:
+            self.viewport().setCursor(Qt.IBeamCursor)
         super().mouseMoveEvent(event)
 
     def take_pasted_images(self) -> set[str]:
@@ -224,7 +340,7 @@ class _NoteTextEdit(QTextEdit):
         super().leaveEvent(event)
 
     def insertFromMimeData(self, source: QMimeData) -> None:
-        """Override paste to handle clipboard images."""
+        """Override paste to handle clipboard images and strip rich text."""
         if source.hasImage():
             image = source.imageData()
             if isinstance(image, QImage) and not image.isNull():
@@ -233,6 +349,11 @@ class _NoteTextEdit(QTextEdit):
                     self._pasted_images.add(filename)
                     self._insert_image(filename)
                     return
+        # Force plain-text paste — clipboard HTML (e.g. browser links)
+        # would otherwise leak rich formatting into the editor.
+        if source.hasText():
+            self.insertPlainText(source.text())
+            return
         super().insertFromMimeData(source)
 
     def _insert_image(self, filename: str) -> None:
@@ -256,8 +377,25 @@ class _NoteTextEdit(QTextEdit):
         cursor.insertText('\n')
         self.setTextCursor(cursor)
 
+    @staticmethod
+    def _insert_text_with_links(cursor: QTextCursor, text: str) -> None:
+        """Insert plain text, rendering [text](url) as styled anchor spans."""
+        pos = 0
+        for m in _LINK_RE.finditer(text):
+            # Insert text before this link
+            if m.start() > pos:
+                cursor.insertText(text[pos:m.start()])
+            # Insert link display text with anchor format
+            cursor.insertText(m.group(1), _link_char_format(m.group(2)))
+            # Reset format so subsequent text is not styled as a link
+            cursor.setCharFormat(QTextCharFormat())
+            pos = m.end()
+        # Trailing text
+        if pos < len(text):
+            cursor.insertText(text[pos:])
+
     def set_note_content(self, text: str) -> None:
-        """Load note text, rendering ![image](file.png) markers as inline images."""
+        """Load note text, rendering markers as inline images and links."""
         self.clear()
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.Start)
@@ -266,9 +404,9 @@ class _NoteTextEdit(QTextEdit):
         # parts alternates: [text, filename, text, filename, ...]
         for i, part in enumerate(parts):
             if i % 2 == 0:
-                # Text segment
+                # Text segment — also render [text](url) links
                 if part:
-                    cursor.insertText(part)
+                    self._insert_text_with_links(cursor, part)
             else:
                 # Image filename
                 path = str(NOTE_IMAGES_DIR / part)
@@ -290,7 +428,7 @@ class _NoteTextEdit(QTextEdit):
         self.setTextCursor(cursor)
 
     def get_note_content(self) -> str:
-        """Serialize the document back to text with ![image](file.png) markers."""
+        """Serialize the document back to text with markers for images and links."""
         doc = self.document()
         result: list[str] = []
         block = doc.begin()
@@ -307,6 +445,9 @@ class _NoteTextEdit(QTextEdit):
                         name = img_fmt.name()
                         if name:
                             result.append(f'![image]({name})')
+                    elif fmt.isAnchor() and fmt.anchorHref():
+                        result.append(
+                            f'[{fragment.text()}]({fmt.anchorHref()})')
                     else:
                         result.append(fragment.text())
                 it += 1
@@ -616,6 +757,12 @@ class _ItemLineEdit(QLineEdit):
         win = self.window()
         if win and not win.isActiveWindow():
             QApplication.setActiveWindow(win)
+        # Click on a URL opens it instead of expanding the editor
+        if event.button() == Qt.LeftButton:
+            url = _url_at_line_edit_pos(self, event.pos())
+            if url:
+                _try_open_url(url)
+                return
         super().mousePressEvent(event)
         # Always request expand on click — parent decides whether to swap
         self.expand_requested.emit()
@@ -628,6 +775,10 @@ class _ItemLineEdit(QLineEdit):
             self._preview.show_for_image(name, event.globalPos())
         elif self._preview and self._preview.isVisible():
             self._preview.hide_preview()
+        if _url_at_line_edit_pos(self, event.pos()):
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.setCursor(Qt.IBeamCursor)
         super().mouseMoveEvent(event)
 
     def focusOutEvent(self, event: 'QFocusEvent') -> None:  # type: ignore[override]
@@ -637,6 +788,7 @@ class _ItemLineEdit(QLineEdit):
     def leaveEvent(self, event: 'QEvent') -> None:  # type: ignore[override]
         if self._preview and self._preview.isVisible():
             self._preview.hide_preview()
+        self.setCursor(Qt.IBeamCursor)
         super().leaveEvent(event)
 
     def _image_marker_name_at(self, pos: QPoint) -> Optional[str]:
@@ -882,6 +1034,10 @@ class _ChecklistItemWidget(QFrame):
             f'QTextEdit {{ color: {color}; background: transparent;'
             f' border: 1px solid {t.text_secondary}; }}'
         )
+        # Force plain-text paste — clipboard HTML (e.g. browser links)
+        # would otherwise leak rich formatting into the plain-text editor.
+        wrap.insertFromMimeData = lambda src: wrap.insertPlainText(
+            src.text()) if src.hasText() else None
         wrap.setPlainText(self._edit.text())
 
         self._edit.setVisible(False)
@@ -961,6 +1117,8 @@ class _ChecklistItemWidget(QFrame):
             QTimer.singleShot(0, lambda: dismiss(True))
 
         _setup_textedit_image_hover(wrap, self._edit._resolve_placeholder_fn)
+        _setup_textedit_url_click(wrap)
+        wrap._url_hl = _UrlHighlighter(wrap.document())
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -970,6 +1128,32 @@ class _ChecklistItemWidget(QFrame):
         cursor = wrap.textCursor()
         cursor.movePosition(cursor.End)
         wrap.setTextCursor(cursor)
+
+
+def _setup_textedit_url_click(wrap: QTextEdit) -> None:
+    """Add click-to-open URL and pointer cursor to a QTextEdit."""
+    wrap.setMouseTracking(True)
+    wrap.viewport().setMouseTracking(True)
+    _orig_press = wrap.mousePressEvent
+    _orig_move = wrap.mouseMoveEvent
+
+    def on_press(event: 'QMouseEvent') -> None:
+        if event.button() == Qt.LeftButton:
+            url = _url_at_pos(wrap, event.pos())
+            if url:
+                _try_open_url(url)
+                return
+        _orig_press(event)
+
+    def on_move(event: 'QMouseEvent') -> None:
+        if _url_at_pos(wrap, event.pos()):
+            wrap.viewport().setCursor(Qt.PointingHandCursor)
+        else:
+            wrap.viewport().setCursor(Qt.IBeamCursor)
+        _orig_move(event)
+
+    wrap.mousePressEvent = on_press
+    wrap.mouseMoveEvent = on_move
 
 
 def _setup_textedit_image_hover(
@@ -1496,6 +1680,8 @@ class _ChecklistWidget(QWidget):
             f'QTextEdit {{ color: {t.text_primary}; background: transparent;'
             f' border: 1px solid {t.text_secondary}; padding: 4px; }}'
         )
+        wrap.insertFromMimeData = lambda src: wrap.insertPlainText(
+            src.text()) if src.hasText() else None
         wrap.setPlainText(self._add_field.text())
         wrap.setPlaceholderText('Add item')
 
@@ -1551,6 +1737,8 @@ class _ChecklistWidget(QWidget):
             QTimer.singleShot(0, lambda: self._dismiss_add_popup(save=True))
 
         _setup_textedit_image_hover(wrap, self._resolve_placeholder)
+        _setup_textedit_url_click(wrap)
+        wrap._url_hl = _UrlHighlighter(wrap.document())
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -1953,7 +2141,7 @@ class NotesDialog(QDialog):
         bottom_row = QHBoxLayout()
         hint = QLabel(
             'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
-            '  |  Cmd+Z: Undo  |  Cmd+Shift+Z: Redo'
+            '  |  Cmd+K: Insert link  |  Cmd+Z: Undo  |  Cmd+Shift+Z: Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
             f'color: {current_theme().text_muted};'
@@ -2987,6 +3175,93 @@ class NotesDialog(QDialog):
                 QApplication.setActiveWindow(self)
         return super().eventFilter(obj, event)
 
+    def _insert_link(self) -> None:
+        """Prompt for a URL and insert it at the cursor (Cmd+K)."""
+        focus = QApplication.focusWidget()
+        # Block if cursor/selection is on an image
+        if isinstance(focus, _NoteTextEdit):
+            cursor = focus.textCursor()
+            if cursor.charFormat().isImageFormat():
+                return
+            if cursor.hasSelection():
+                # Walk the selection for image fragments
+                start, end = cursor.selectionStart(), cursor.selectionEnd()
+                check = QTextCursor(focus.document())
+                check.setPosition(start)
+                while check.position() < end:
+                    if check.charFormat().isImageFormat():
+                        return
+                    if not check.movePosition(QTextCursor.NextCharacter):
+                        break
+        # Remember selected text before the dialog (expand popups auto-
+        # dismiss on focus loss, destroying the selection).
+        selected = ''
+        if isinstance(focus, (_NoteTextEdit, QTextEdit)):
+            selected = focus.textCursor().selectedText()
+        elif isinstance(focus, QLineEdit):
+            selected = focus.selectedText()
+
+        # Pre-fill with clipboard text if it looks like a URL
+        clipboard = QApplication.clipboard()
+        clip = clipboard.text().strip() if clipboard else ''
+        prefill = clip if _ANY_URL_RE.fullmatch(clip) else ''
+
+        while True:
+            url, ok = QInputDialog.getText(
+                self, 'Insert Link', 'URL:', QLineEdit.Normal, prefill)
+            if not ok:
+                return
+            url = url.strip()
+            if _ANY_URL_RE.fullmatch(url):
+                break
+            prefill = url
+            QMessageBox.warning(self, 'Invalid URL',
+                                'Please enter a valid URL (e.g. https://…)')
+
+        # The dialog may have caused expand popups to dismiss, so
+        # re-check which widget should receive the link.
+        import sip
+        focus_died = sip.isdeleted(focus)
+        if focus_died:
+            focus = QApplication.focusWidget()
+            # Selection context was lost with the deleted widget — only
+            # insert a bare URL to avoid duplicating the display text.
+            selected = ''
+
+        # Insert into whichever editor widget had focus
+        fmt = _link_char_format(url)
+        if isinstance(focus, _NoteTextEdit):
+            cursor = focus.textCursor()
+            if selected:
+                if cursor.hasSelection():
+                    cursor.removeSelectedText()
+                cursor.insertText(selected, fmt)
+            else:
+                cursor.insertText(url, fmt)
+            # Reset format so text typed after the link is normal
+            cursor.setCharFormat(QTextCharFormat())
+            focus.setTextCursor(cursor)
+        elif isinstance(focus, QTextEdit):
+            # Checklist expand popup
+            cursor = focus.textCursor()
+            if selected:
+                if cursor.hasSelection():
+                    cursor.removeSelectedText()
+                cursor.insertText(f'[{selected}]({url})')
+            else:
+                cursor.insertText(url)
+            focus.setTextCursor(cursor)
+        elif isinstance(focus, QLineEdit):
+            # Checklist QLineEdit
+            if selected:
+                if focus.hasSelectedText():
+                    focus.del_()
+                focus.insert(f'[{selected}]({url})')
+            else:
+                focus.insert(url)
+        if focus and not sip.isdeleted(focus):
+            focus.setFocus()
+
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
         """Handle keyboard shortcuts."""
         # Prevent Enter/Return from closing the dialog (QDialog default)
@@ -3035,6 +3310,9 @@ class NotesDialog(QDialog):
                 QApplication.setActiveWindow(self)
                 self._search.setFocus()
                 self._search.selectAll()
+                return
+            if event.key() == Qt.Key_K:
+                self._insert_link()
                 return
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not mods:
             if self._tree.hasFocus() and self._tree.currentItem():
