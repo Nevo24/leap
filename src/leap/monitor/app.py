@@ -568,7 +568,7 @@ class MonitorWindow(
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 0)  # indeterminate
         self._progress_bar.setFixedHeight(12)
-        self._progress_bar.setMaximumWidth(120)
+        self._progress_bar.setMaximumWidth(180)
         self._progress_bar.setTextVisible(False)
         self._progress_bar.setVisible(False)
         self._busy_count: int = 0

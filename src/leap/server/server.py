@@ -213,6 +213,7 @@ class LeapServer:
         self._chars_sent_to_cli: int = 0  # printable chars actually on CLI's input
         self._capture_pre_input_buf: bytearray = bytearray()  # snapshot for cancel
         self._capture_pre_chars_sent: int = 0  # snapshot for cancel
+        self._capture_pre_input_cursor: int = 0  # cursor snapshot for cancel restore
         self._capture_cancel_pending: bool = False  # bg thread sending text
         self._capture_cursor_pos: int = 0  # character cursor in capture text
         self._capture_show_hint: bool = True  # show hint until first keystroke
@@ -258,12 +259,6 @@ class LeapServer:
         self._paste_buf_snapshot_len: int = 0
         self._paste_cursor_snapshot: int = 0
         self._paste_chars_snapshot: int = 0
-        # True if the user hit ^^ inside capture mode to save the
-        # buffer to history.  On Esc after save (with no further
-        # edits) we clear Claude's CLI instead of restoring the
-        # pre-capture content — the user has "committed" the content
-        # to history and doesn't want it lingering on the CLI.
-        self._capture_saved_once: bool = False
         # Map of ``[Paste #<hash>]`` → full pasted text.  The hash is
         # derived from the content (first 8 hex chars of md5) so the
         # same paste always produces the same placeholder — dedupes
@@ -1263,12 +1258,12 @@ class LeapServer:
         self._capture_show_hint = False
         self._capture_display()  # clear old wrapped lines
         self._capture_prev_lines = 0
-        # Reset initial-text baseline so a subsequent cancel sees
-        # capture_text == initial == "" (no edits since save).
-        self._capture_initial_text = ''
-        # Mark that a save happened so cancel knows to clear
-        # Claude's CLI rather than restore the pre-capture content.
-        self._capture_saved_once = True
+        # NOTE: intentionally do NOT reset _capture_initial_text here.
+        # After save, the buffer is empty but initial still holds the
+        # pre-capture content.  cancel's ``was_edited`` check will see
+        # capture != initial and run the slow path, which clears
+        # Claude's CLI + sends the (empty / newly-typed) content —
+        # exactly what the user wants for save+Esc and save+type+Esc.
         # Show a "Saved!" hint on the capture line
         try:
             payload = (
@@ -1721,18 +1716,67 @@ class LeapServer:
         self._terminal_input_buf.insert(pos, b)
         self._terminal_input_cursor = pos + 1
 
-    def _terminal_buf_backspace(self) -> None:
-        """Delete the byte before the cursor (char-granular for UTF-8)."""
-        if self._terminal_input_cursor <= 0:
+    def _terminal_buf_delete_forward(self) -> None:
+        """Delete the char at the cursor (forward Delete key).
+
+        Atomic over placeholders: if the cursor is at the start of a
+        token, the whole token is removed.
+        """
+        buf = self._terminal_input_buf
+        pos = self._terminal_input_cursor
+        if pos >= len(buf):
             return
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                ph_bytes = ph.encode('utf-8')
+                end = pos + len(ph_bytes)
+                if end <= len(buf) and bytes(buf[pos:end]) == ph_bytes:
+                    del buf[pos:end]
+                    return
+        # Single char delete — find UTF-8 char length.
+        lead = buf[pos]
+        if lead < 0x80:
+            char_len = 1
+        elif lead & 0xE0 == 0xC0:
+            char_len = 2
+        elif lead & 0xF0 == 0xE0:
+            char_len = 3
+        elif lead & 0xF8 == 0xF0:
+            char_len = 4
+        else:
+            char_len = 1
+        del buf[pos:pos + char_len]
+
+    def _terminal_buf_backspace(self) -> None:
+        """Delete the char before the cursor (UTF-8-aware, placeholder-atomic).
+
+        If the cursor sits immediately after a ``[Paste #N]`` or
+        ``[Image #N]`` placeholder, the whole placeholder is deleted
+        as one unit so the token can't be corrupted by a stray
+        backspace.
+        """
+        buf = self._terminal_input_buf
+        pos = self._terminal_input_cursor
+        if pos <= 0:
+            return
+        # Atomic placeholder check — if cursor ends a placeholder,
+        # remove the whole token.
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                ph_bytes = ph.encode('utf-8')
+                start = pos - len(ph_bytes)
+                if start >= 0 and bytes(buf[start:pos]) == ph_bytes:
+                    del buf[start:pos]
+                    self._terminal_input_cursor = start
+                    return
         # Strip trailing UTF-8 continuation bytes before the cursor.
         while (self._terminal_input_cursor > 0
-               and (self._terminal_input_buf[self._terminal_input_cursor - 1]
+               and (buf[self._terminal_input_cursor - 1]
                     & 0xC0) == 0x80):
-            del self._terminal_input_buf[self._terminal_input_cursor - 1]
+            del buf[self._terminal_input_cursor - 1]
             self._terminal_input_cursor -= 1
         if self._terminal_input_cursor > 0:
-            del self._terminal_input_buf[self._terminal_input_cursor - 1]
+            del buf[self._terminal_input_cursor - 1]
             self._terminal_input_cursor -= 1
 
     def _resolve_chunk_for_cancel(
@@ -1855,8 +1899,10 @@ class LeapServer:
             if not safe_text:
                 self._terminal_input_buf = bytearray(
                     self._capture_pre_input_buf)
-                self._terminal_input_cursor = len(
-                    self._terminal_input_buf)
+                self._terminal_input_cursor = min(
+                    self._capture_pre_input_cursor,
+                    len(self._terminal_input_buf),
+                )
                 self._chars_sent_to_cli = self._capture_pre_chars_sent
                 return
             cancel_text = safe_text
@@ -1864,40 +1910,12 @@ class LeapServer:
             # No images — skip re-type when the capture buffer matches
             # the initial state (user didn't edit after ^^).
             if not was_edited:
-                # Exception: if the user saved during this capture
-                # session, they've "committed" the content to history
-                # and want the CLI clean.  Don't restore pre-state;
-                # instead clear Claude's input via the thread below.
-                if self._capture_saved_once:
-                    self._capture_saved_once = False
-                    pre_chars_for_clear = self._capture_pre_chars_sent
-                    self._terminal_input_buf.clear()
-                    self._terminal_input_cursor = 0
-                    self._chars_sent_to_cli = 0
-                    if pre_chars_for_clear > 0:
-                        self._capture_cancel_pending = True
-                        held = not self._queue_sending
-                        if held:
-                            self._queue_sending = True
-
-                        def _clear_after_save() -> None:
-                            try:
-                                self._clear_stale_cli_input(
-                                    pre_chars_for_clear)
-                            except OSError:
-                                pass
-                            finally:
-                                if held:
-                                    self._queue_sending = False
-                                self._capture_cancel_pending = False
-                        threading.Thread(
-                            target=_clear_after_save,
-                            daemon=True).start()
-                    return
                 self._terminal_input_buf = bytearray(
                     self._capture_pre_input_buf)
-                self._terminal_input_cursor = len(
-                    self._terminal_input_buf)
+                self._terminal_input_cursor = min(
+                    self._capture_pre_input_cursor,
+                    len(self._terminal_input_buf),
+                )
                 self._chars_sent_to_cli = self._capture_pre_chars_sent
                 return
             cancel_text = safe_text
@@ -2013,12 +2031,22 @@ class LeapServer:
         # it if the user toggles back out without sending.
         self._capture_pre_input_buf = bytearray(self._terminal_input_buf)
         self._capture_pre_chars_sent = self._chars_sent_to_cli  # for cancel restore
+        # Snapshot the terminal cursor so a no-edit Esc can restore it.
+        self._capture_pre_input_cursor = self._terminal_input_cursor
         self._queue_capture_buf = bytearray(self._terminal_input_buf)
-        self._capture_cursor_pos = len(self._capture_text())
+        # Map the terminal-buf byte cursor onto the decoded
+        # capture-text char cursor so Leap Q opens with the cursor
+        # at the same position Claude was showing.
+        try:
+            prefix = self._terminal_input_buf[
+                :self._terminal_input_cursor]
+            self._capture_cursor_pos = len(
+                prefix.decode('utf-8', errors='replace'))
+        except Exception:
+            self._capture_cursor_pos = len(self._capture_text())
         self._terminal_input_buf.clear()
         self._terminal_input_cursor = 0
         self._queue_capture_mode = True
-        self._capture_saved_once = False
         self._capture_show_hint = True
         self._capture_stale_caret = stale_caret
         # Only count chars actually sent to CLI (not held during RUNNING).
@@ -2038,12 +2066,26 @@ class LeapServer:
         self._saved_msg_index = -1
         self._capture_show_saved_hint = False
         # Inject clipboard images saved by prior Ctrl+V presses.
-        # Each entry carries the char offset from the original paste so
-        # images appear at the right position (not all lumped at the end).
+        # Each entry carries the BYTE offset from ``_terminal_input_buf``
+        # at the time Ctrl+V fired — we convert to CHAR offset in the
+        # decoded capture text so images land at the right position
+        # for multi-byte UTF-8 content.
         # Entries with pos=-1 go at the end.
         if self._pending_paste_images:
             text = self._capture_text()
             text_len = len(text)
+            # Build byte→char mapping from the capture buffer (which is
+            # a copy of terminal_input_buf pre-clear, so positions
+            # still line up with what was recorded at Ctrl+V time).
+            buf_bytes = bytes(self._queue_capture_buf)
+
+            def _byte_to_char(byte_pos: int) -> int:
+                byte_pos = max(0, min(byte_pos, len(buf_bytes)))
+                try:
+                    return len(buf_bytes[:byte_pos].decode(
+                        'utf-8', errors='replace'))
+                except Exception:
+                    return byte_pos
 
             # Split into positioned (pos >= 0) and end-append (pos < 0).
             # Track original index for stable ordering at same position.
@@ -2051,7 +2093,9 @@ class LeapServer:
             at_end: list[str] = []
             for idx, (pos, path) in enumerate(self._pending_paste_images):
                 if pos >= 0:
-                    positioned.append((min(pos, text_len), idx, path))
+                    char_pos = _byte_to_char(pos)
+                    positioned.append(
+                        (min(char_pos, text_len), idx, path))
                 else:
                     at_end.append(path)
 
@@ -2698,6 +2742,8 @@ class LeapServer:
                     elif esc_seq in (b'\x1b[F', b'\x1b[4~'):  # End
                         self._terminal_input_cursor = len(
                             self._terminal_input_buf)
+                    elif esc_seq == b'\x1b[3~':  # Delete (forward)
+                        self._terminal_buf_delete_forward()
                     out.extend(esc_seq)
                 continue
 
@@ -2785,7 +2831,7 @@ class LeapServer:
                     self._pending_caret_timer = None
                 self._pending_caret = False
                 out.append(0x5e)
-                self._terminal_input_buf.append(0x5e)
+                self._terminal_buf_insert(0x5e)
                 self._chars_sent_to_cli += 1
 
             if in_prompt:
@@ -2835,6 +2881,26 @@ class LeapServer:
                     if path:
                         pos = self._terminal_input_cursor
                         self._pending_paste_images.append((pos, path))
+                out.append(b)
+            elif b == 0x15:  # Ctrl+U — kill line from cursor to start
+                # Mirror Claude's kill-line behavior.  Only drops
+                # the chars before the cursor; anything after stays.
+                if self._terminal_input_cursor > 0:
+                    del self._terminal_input_buf[
+                        :self._terminal_input_cursor]
+                    self._chars_sent_to_cli = max(
+                        0,
+                        self._chars_sent_to_cli
+                        - self._terminal_input_cursor,
+                    )
+                    self._terminal_input_cursor = 0
+                out.append(b)
+            elif b == 0x01:  # Ctrl+A — cursor to start of line
+                self._terminal_input_cursor = 0
+                out.append(b)
+            elif b == 0x05:  # Ctrl+E — cursor to end of line
+                self._terminal_input_cursor = len(
+                    self._terminal_input_buf)
                 out.append(b)
             elif 0x20 <= b < 0x7f or b >= 0x80:
                 # Insert at cursor so text typed between placeholders

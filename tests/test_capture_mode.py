@@ -66,7 +66,7 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._paste_chars_snapshot = 0
     srv._paste_text_map = {}
     srv._terminal_input_cursor = 0
-    srv._capture_saved_once = False
+    srv._capture_pre_input_cursor = 0
     srv._pending_caret_timer = None
     srv._last_output_time = 0.0
     srv._suppress_send_until = 0.0
@@ -320,6 +320,31 @@ class TestPasteCollapse:
         )
         # Must not flatten \n to space.
         assert 'line1 line2 line3 line4' not in joined
+
+    def test_terminal_backspace_after_placeholder_removes_whole_token(self):
+        """Backspace in CLI right after a [Paste #N] removes the whole token."""
+        srv = make_server(CLIState.IDLE)
+        # Paste creates placeholder in terminal buf.
+        srv._input_filter_impl(self._BP_START + b'line1\nline2' + self._BP_END)
+        buf_before = bytes(srv._terminal_input_buf)
+        assert b'[Paste #' in buf_before
+        # Backspace at end of the placeholder.
+        srv._input_filter_impl(b'\x7f')
+        # Whole placeholder gone, not just the ']'.
+        assert srv._terminal_input_buf == b''
+        assert srv._terminal_input_cursor == 0
+
+    def test_terminal_delete_key_on_placeholder_removes_whole_token(self):
+        """Forward Delete at start of a [Paste #N] removes the whole token."""
+        srv = make_server(CLIState.IDLE)
+        srv._input_filter_impl(self._BP_START + b'line1\nline2' + self._BP_END)
+        # Cursor at end of placeholder. Home to start.
+        srv._input_filter_impl(b'\x1b[H')
+        assert srv._terminal_input_cursor == 0
+        # Delete key → whole placeholder.
+        srv._input_filter_impl(b'\x1b[3~')
+        assert srv._terminal_input_buf == b''
+        assert srv._terminal_input_cursor == 0
 
     def test_cursor_skips_multibyte_utf8_atomically(self):
         """Left/Right arrow must not land the cursor mid-UTF-8-char."""
