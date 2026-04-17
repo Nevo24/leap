@@ -1265,9 +1265,11 @@ class LeapServer:
             self._saved_msg_index = new_idx
 
         # Load the message at current index, converting @path refs back
-        # to [Image #N] placeholders for a friendly display.
+        # to [Image #N] placeholders and substantial multi-line text
+        # back to [Paste #N] placeholders for a friendly display.
         msg = self._saved_messages[self._saved_msg_index]
         msg = self._capture_unresolve_images(msg)
+        msg = self._capture_unresolve_pastes(msg)
         self._queue_capture_buf = bytearray(msg.encode('utf-8'))
         self._capture_cursor_pos = len(msg)
         self._capture_display(self._capture_text())
@@ -1488,6 +1490,27 @@ class LeapServer:
         # Claude's own collapsed [Pasted text #N] rendering).
         self._chars_sent_to_cli += 1
 
+    def _capture_unresolve_pastes(self, message: str) -> str:
+        """Collapse substantial raw text into a ``[Paste #N]`` placeholder.
+
+        Inverse of :meth:`_capture_resolve_pastes`, used when recalling
+        a saved history message: if the message has newlines or is
+        long, wrap the whole thing into a fresh placeholder stored in
+        ``_paste_text_map`` — so capture display shows a short token
+        instead of a sprawling block, matching what the user saw when
+        they originally pasted.  Short single-line messages pass
+        through unchanged.
+        """
+        is_substantial = (
+            '\n' in message or '\r' in message or len(message) > 200
+        )
+        if not is_substantial:
+            return message
+        self._paste_text_counter += 1
+        placeholder = f'[Paste #{self._paste_text_counter}]'
+        self._paste_text_map[placeholder] = message
+        return placeholder
+
     def _capture_unresolve_images(self, message: str) -> str:
         """Replace ``@path`` image refs with ``[Image #N]`` placeholders.
 
@@ -1534,9 +1557,21 @@ class LeapServer:
         capture_text = self._capture_text()
         pre_text = self._capture_pre_input_buf.decode(
             'utf-8', errors='replace')
-        # Resolve images → @path refs preserving interleaving.
-        resolved_text = (self._capture_resolve_images(capture_text)
-                         if self._capture_image_map else capture_text)
+        # Detect edits using the placeholder-form text (what the user
+        # saw in capture), not the resolved text — otherwise an
+        # unchanged paste-placeholder would look "different" after
+        # expansion to its raw content.
+        was_edited = capture_text != self._capture_initial_text
+        # Resolve images → @path refs preserving interleaving, and
+        # expand [Paste #N] placeholders to raw text so a cancel with
+        # edits restores the real paste content to the CLI (not the
+        # literal placeholder token).
+        resolved_text = capture_text
+        if self._capture_image_map:
+            resolved_text = self._capture_resolve_images(resolved_text)
+        had_pastes = bool(self._paste_text_map)
+        if had_pastes:
+            resolved_text = self._capture_resolve_pastes(resolved_text)
         has_images = bool(self._capture_image_map)
         self._queue_capture_buf.clear()
         self._capture_cursor_pos = 0
@@ -1544,11 +1579,11 @@ class LeapServer:
         self._queue_capture_mode = False
         self._capture_flush(cancel=True)
         self._capture_reset_images()
-        # Transfer text back to the CLI's input line.
-        # When images are present, always send the resolved text so
-        # the user sees the @path on the CLI.  When no images, only
-        # send if the user actually edited the text.
-        safe_text = resolved_text.replace('\n', ' ')
+        # Transfer text back to the CLI's input line.  If pastes were
+        # resolved, keep raw newlines — we'll wrap the re-type in
+        # bracketed paste markers below so Claude treats it as a
+        # paste and doesn't auto-submit on \r.
+        safe_text = resolved_text if had_pastes else resolved_text.replace('\n', ' ')
         if has_images:
             # Images present — send resolved text to CLI.
             # But if resolved text is empty (user deleted all images
@@ -1560,10 +1595,9 @@ class LeapServer:
                 return
             cancel_text = safe_text
         else:
-            # No images — compare to detect edits.
-            initial_text = self._capture_initial_text.replace('\n', ' ')
-            if safe_text == initial_text:
-                # Unchanged — just restore input tracking.
+            # No images — skip re-type when the capture buffer matches
+            # the initial state (user didn't edit after ^^).
+            if not was_edited:
                 self._terminal_input_buf = bytearray(
                     self._capture_pre_input_buf)
                 self._chars_sent_to_cli = self._capture_pre_chars_sent
@@ -1594,7 +1628,15 @@ class LeapServer:
                     self._chars_sent_to_cli = pre_chars
                     return
                 if cancel_text:
-                    self.pty.send(cancel_text)
+                    if had_pastes and '\n' in cancel_text:
+                        # Wrap in bracketed paste markers so Claude
+                        # treats \n as literal paste content, not a
+                        # submit-Enter.  Preserves multi-line paste
+                        # structure when the user cancels with edits.
+                        self.pty.send('\x1b[200~' + cancel_text
+                                      + '\x1b[201~')
+                    else:
+                        self.pty.send(cancel_text)
             except OSError:
                 pass
             finally:
