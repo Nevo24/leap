@@ -1273,12 +1273,15 @@ class LeapServer:
                 return
             self._saved_msg_index = new_idx
 
-        # Load the message at current index, converting @path refs back
-        # to [Image #N] placeholders for a friendly display.  Pastes
-        # are not re-wrapped — the raw multi-line text is shown as-is
-        # since paste boundaries are not preserved in history.
+        # Load the message at current index, converting @path refs
+        # back to [Image #N] placeholders and substantial multi-line
+        # text into a [Paste #N] placeholder so browsing stays
+        # scannable.  Original paste boundaries aren't preserved, so
+        # a saved message containing multiple pastes collapses into a
+        # single placeholder on recall.
         msg = self._saved_messages[self._saved_msg_index]
         msg = self._capture_unresolve_images(msg)
+        msg = self._capture_unresolve_pastes(msg)
         self._queue_capture_buf = bytearray(msg.encode('utf-8'))
         self._capture_cursor_pos = len(msg)
         self._capture_display(self._capture_text())
@@ -1498,6 +1501,28 @@ class LeapServer:
         # Count placeholder as 1 visual token on the CLI (matches
         # Claude's own collapsed [Pasted text #N] rendering).
         self._chars_sent_to_cli += 1
+
+    def _capture_unresolve_pastes(self, message: str) -> str:
+        """Collapse substantial raw text into a ``[Paste #N]`` placeholder.
+
+        Used when recalling a saved history message: if the message
+        has newlines or is long, wrap the whole thing into a fresh
+        placeholder stored in ``_paste_text_map`` — so capture display
+        shows a short token instead of a sprawling block, keeping the
+        browse (↑↓) experience scannable.  Original paste boundaries
+        are not preserved in history, so multi-paste saves collapse
+        into a single placeholder.  Short single-line messages pass
+        through unchanged.
+        """
+        is_substantial = (
+            '\n' in message or '\r' in message or len(message) > 200
+        )
+        if not is_substantial:
+            return message
+        self._paste_text_counter += 1
+        placeholder = f'[Paste #{self._paste_text_counter}]'
+        self._paste_text_map[placeholder] = message
+        return placeholder
 
     def _capture_unresolve_images(self, message: str) -> str:
         """Replace ``@path`` image refs with ``[Image #N]`` placeholders.
