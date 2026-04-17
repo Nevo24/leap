@@ -571,6 +571,14 @@ class LeapServer:
             try:
                 if is_img:
                     self.pty.send_image_message(message)
+                elif '\n' in message or '\r' in message:
+                    # Multi-line content — wrap in bracketed paste
+                    # markers so the CLI treats \n as literal paste
+                    # content, not a submit-Enter per line.  Then send
+                    # a single CR to submit the whole thing.
+                    self.pty.send('\x1b[200~' + message + '\x1b[201~')
+                    time.sleep(0.1)
+                    self.pty.send('\r')
                 else:
                     self.pty.sendline(message)
             finally:
@@ -1201,15 +1209,16 @@ class LeapServer:
         msg = self._capture_text().strip()
         if not msg:
             return
+        # Expand [Paste #N] placeholders FIRST — a recalled paste may
+        # contain [Image #M] tokens inside its raw content, which the
+        # subsequent image resolution must see.
+        if self._paste_text_map:
+            msg = self._capture_resolve_pastes(msg)
         # Resolve image placeholders → @path refs, preserving the
         # text-image interleaving so recalled messages read the way
         # the user typed them.
         if self._capture_image_map:
             msg = self._capture_resolve_images(msg)
-        # Expand [Paste #N] placeholders → raw text so history has
-        # the real content and can be recalled/sent in a fresh session.
-        if self._paste_text_map:
-            msg = self._capture_resolve_pastes(msg)
         # Remove duplicate if already at the end
         if self._saved_messages and self._saved_messages[-1] == msg:
             pass
@@ -1562,16 +1571,16 @@ class LeapServer:
         # unchanged paste-placeholder would look "different" after
         # expansion to its raw content.
         was_edited = capture_text != self._capture_initial_text
-        # Resolve images → @path refs preserving interleaving, and
-        # expand [Paste #N] placeholders to raw text so a cancel with
-        # edits restores the real paste content to the CLI (not the
-        # literal placeholder token).
+        # Resolve placeholders to raw content so cancel-with-edits
+        # restores the real text (not literal placeholder tokens).
+        # Pastes first: a recalled paste may embed image placeholders
+        # that must be exposed for the subsequent image resolution.
         resolved_text = capture_text
-        if self._capture_image_map:
-            resolved_text = self._capture_resolve_images(resolved_text)
         had_pastes = bool(self._paste_text_map)
         if had_pastes:
             resolved_text = self._capture_resolve_pastes(resolved_text)
+        if self._capture_image_map:
+            resolved_text = self._capture_resolve_images(resolved_text)
         has_images = bool(self._capture_image_map)
         self._queue_capture_buf.clear()
         self._capture_cursor_pos = 0
@@ -1896,10 +1905,13 @@ class LeapServer:
                 self._user_has_typed = True
                 self._capture_display()  # clear
                 msg = self._capture_text().strip()
-                if self._capture_image_map:
-                    msg = self._capture_resolve_images(msg)
+                # Pastes first — a recalled paste may embed image
+                # placeholders that the subsequent image resolution
+                # must see.
                 if self._paste_text_map:
                     msg = self._capture_resolve_pastes(msg)
+                if self._capture_image_map:
+                    msg = self._capture_resolve_images(msg)
                 if msg:
                     # Clear stale text typed before ^^.
                     if self._capture_stale_char_count > 0:
