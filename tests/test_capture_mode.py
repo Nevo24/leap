@@ -370,6 +370,44 @@ class TestPasteCancelWithTypedText:
         assert 'hello' in joined, 'typed text must be sent even during RUNNING'
         assert '\x1b[200~' not in joined, 'fast path: no bracketed paste'
 
+    def test_cancel_with_paste_inside_capture_preserves_original(self):
+        """Regression: paste A → ^^ → paste B → Esc must not clobber A.
+
+        Previously this went through the slow clear+re-paste path,
+        which under RUNNING streaming could drop the bracketed-paste
+        start marker for A and turn A's \\n bytes into submit-Enters —
+        A vanished, only B's flattened chars survived. The fast path
+        now wraps only the suffix in bracketed paste markers and
+        leaves Claude's existing attachment for A untouched.
+        """
+        import time
+        srv = make_server(CLIState.RUNNING)
+        srv.pty.process.child_fd = 999
+        content_a = b'aaa\naaa\naaa'
+        content_b = b'bbb\nbbb\nbbb'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content_a + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            # Paste B inside capture.
+            srv._input_filter_impl(self._BP_START + content_b + self._BP_END)
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # No clear sent → no End + Ctrl+U + backspaces sequence.
+        assert '\x15' not in joined, 'fast path must not clear the CLI'
+        # Only B wrapped — A stays on Claude's CLI.
+        assert '\x1b[200~bbb\nbbb\nbbb\x1b[201~' in joined
+        assert content_a.decode() not in joined, (
+            "A's content must not be re-sent (Claude still has it)"
+        )
+
     def test_cancel_with_prepended_text_falls_back_to_slow_path(self):
         """Slow path: prepending before placeholder needs full round-trip."""
         import time
