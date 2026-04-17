@@ -1650,15 +1650,42 @@ class LeapServer:
             self._queue_sending = True
 
         pre_chars = self._capture_pre_chars_sent
+        # Fast path: if the capture buffer is just the initial text
+        # plus a simple appended suffix (no placeholder tampering,
+        # no newlines in the suffix), type only the suffix onto the
+        # CLI.  Claude's input already has the original content; we
+        # don't need to clear + re-paste, which under heavy streaming
+        # can race and drop the bracketed-paste start marker — then
+        # the paste's \n bytes become Enter presses and only the
+        # typed suffix survives on the CLI.
+        initial = self._capture_initial_text
+        fast_path_suffix: Optional[str] = None
+        if (capture_text.startswith(initial)
+                and len(capture_text) > len(initial)
+                and not self._capture_image_map):
+            candidate = capture_text[len(initial):]
+            # Placeholders in the suffix would need resolution — only
+            # take the fast path when the suffix is plain typed text.
+            has_placeholder = any(
+                ph in candidate for ph in cancel_paste_map
+            )
+            if (not has_placeholder
+                    and '\n' not in candidate
+                    and '\r' not in candidate):
+                fast_path_suffix = candidate
 
         def _apply_cancel_text() -> None:
             try:
+                if fast_path_suffix is not None:
+                    # Claude's input already shows the original content.
+                    # Just type the new suffix on top of it.
+                    self.pty.send(fast_path_suffix)
+                    return
+                # Slow path: full clear + re-paste round-trip.
                 # Clear Claude's CLI input regardless of state.  During
                 # RUNNING, Ctrl+U alone can race with Ink's render loop,
                 # so _clear_stale_cli_input adds N backspaces as an
-                # idempotent fallback.  Previously we returned early
-                # during RUNNING, which silently dropped any text the
-                # user typed in capture mode.
+                # idempotent fallback.
                 if pre_chars > 0:
                     self._clear_stale_cli_input(pre_chars)
                     time.sleep(0.1)

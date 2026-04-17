@@ -355,18 +355,46 @@ class TestPasteCancelWithTypedText:
         return calls
 
     def test_cancel_idle_preserves_typed_text(self):
+        """Fast path: append-only edit types just the suffix, no re-paste."""
         calls = self._run_flow(CLIState.IDLE)
-        # Full message with paste wrapper + typed 'hello' at end.
         joined = ''.join(calls)
-        assert '\x1b[200~' in joined, 'bracketed paste start must be sent'
-        assert '\x1b[201~hello' in joined, 'typed text must follow paste end'
+        # Claude already shows the original paste — just type 'hello'.
+        assert 'hello' in joined, 'typed text must be sent'
+        # No clear or re-paste needed (Claude still has the original paste).
+        assert '\x1b[200~' not in joined, 'fast path: no bracketed paste'
 
     def test_cancel_running_preserves_typed_text(self):
         """Regression: during RUNNING, cancel used to silently drop typed text."""
         calls = self._run_flow(CLIState.RUNNING)
         joined = ''.join(calls)
-        assert '\x1b[200~' in joined, 'bracketed paste start must be sent'
-        assert '\x1b[201~hello' in joined, 'typed text must follow paste end'
+        assert 'hello' in joined, 'typed text must be sent even during RUNNING'
+        assert '\x1b[200~' not in joined, 'fast path: no bracketed paste'
+
+    def test_cancel_with_prepended_text_falls_back_to_slow_path(self):
+        """Slow path: prepending before placeholder needs full round-trip."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2\nline3'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            # Move cursor to start, then type 'pre ' (prepended text).
+            srv._input_filter_impl(b'\x1b[H')  # Home
+            srv._input_filter_impl(b'pre ')
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Slow path runs bracketed paste for the placeholder.
+        assert '\x1b[200~line1\nline2\nline3\x1b[201~' in joined
+        assert 'pre ' in joined
 
 
 class TestExceptionSafety:
