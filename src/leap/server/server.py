@@ -1639,6 +1639,15 @@ class LeapServer:
                 return
             cancel_text = safe_text
         self._capture_cancel_pending = True
+        # Hold user keystrokes during the cancel send so they can't
+        # interleave with our clear + bracketed-paste bytes on the
+        # PTY — held bytes replay on the next filter call after the
+        # send completes (see _queue_sending_held).  Only flip the
+        # flag if it wasn't already set (the queue dispatcher uses
+        # the same flag), so we don't clobber its reset.
+        held_queue_sending = not self._queue_sending
+        if held_queue_sending:
+            self._queue_sending = True
 
         pre_chars = self._capture_pre_chars_sent
 
@@ -1669,6 +1678,8 @@ class LeapServer:
             except OSError:
                 pass
             finally:
+                if held_queue_sending:
+                    self._queue_sending = False
                 self._capture_cancel_pending = False
         self._terminal_input_buf = bytearray(
             cancel_text.encode('utf-8'))
