@@ -53,6 +53,11 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._capture_initial_text = ""
     srv._partial_escape = None
     srv._pending_caret_time = 0.0
+    srv._paste_accumulator = None
+    srv._paste_buf_snapshot_len = 0
+    srv._paste_chars_snapshot = 0
+    srv._paste_text_counter = 0
+    srv._paste_text_map = {}
     srv._pending_caret_timer = None
     srv._last_output_time = 0.0
     srv._suppress_send_until = 0.0
@@ -196,6 +201,60 @@ class TestCancelReenter:
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
         assert '\x1b[F' in calls and '\x15' in calls
+
+
+class TestPasteCollapse:
+    """Large bracketed pastes collapse to [Paste #N] in _terminal_input_buf."""
+
+    _BP_START = b'\x1b[200~'
+    _BP_END = b'\x1b[201~'
+
+    def test_multiline_paste_collapses_to_placeholder(self):
+        srv = make_server(CLIState.IDLE)
+        content = b'line1\nline2\nline3'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        # Buf has a placeholder, not raw content.
+        assert srv._terminal_input_buf == b'[Paste #1]'
+        # Map stores the full raw text.
+        assert srv._paste_text_map['[Paste #1]'] == 'line1\nline2\nline3'
+        # Counter tracks the collapsed token as 1 visual char.
+        assert srv._chars_sent_to_cli == 1
+
+    def test_short_paste_stays_raw(self):
+        srv = make_server(CLIState.IDLE)
+        content = b'short url'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        assert srv._terminal_input_buf == content
+        assert srv._paste_text_map == {}
+
+    def test_cr_inside_paste_does_not_trigger_enter(self):
+        srv = make_server(CLIState.IDLE)
+        # Windows-style line endings inside paste must not submit.
+        content = b'line1\r\nline2'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        # Placeholder in buf (substantial due to \r\n).
+        assert srv._terminal_input_buf == b'[Paste #1]'
+        assert srv._paste_text_map['[Paste #1]'] == 'line1\r\nline2'
+        # queue.track_sent must NOT have been called (no spurious Enter).
+        srv.queue.track_sent.assert_not_called()
+
+    def test_capture_after_paste_sees_placeholder(self):
+        srv = make_server(CLIState.RUNNING)
+        content = b'line1\nline2\nline3\nline4'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        srv._input_filter_impl(b'^^')
+        # Capture buf is pre-populated with the placeholder, not raw.
+        assert srv._queue_capture_buf == b'[Paste #1]'
+
+    def test_queue_resolves_paste_to_raw(self):
+        srv = make_server(CLIState.RUNNING)
+        content = b'line1\nline2'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        srv._input_filter_impl(b'^^')
+        srv._input_filter_impl(b'\r')
+        # Queued message is the raw paste content, not the placeholder.
+        assert srv.queue.add.called
+        assert srv.queue.add.call_args[0][0] == 'line1\nline2'
 
 
 class TestExceptionSafety:

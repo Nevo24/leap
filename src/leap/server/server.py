@@ -239,6 +239,18 @@ class LeapServer:
         # as literal text so pasted tracebacks (which contain ^^^^)
         # don't accidentally trigger capture mode.
         self._in_bracketed_paste: bool = False
+        # Bracketed paste capture — large pastes are collapsed into
+        # a [Paste #N] placeholder in _terminal_input_buf so that ^^
+        # capture shows a short token instead of the full sprawl.
+        # The placeholder is resolved back to raw text when the
+        # queued message is sent.  CLIs like Claude Code already do
+        # their own paste collapsing on display; this mirrors that
+        # into our internal view.
+        self._paste_accumulator: Optional[bytearray] = None
+        self._paste_buf_snapshot_len: int = 0
+        self._paste_chars_snapshot: int = 0
+        self._paste_text_counter: int = 0
+        self._paste_text_map: dict[str, str] = {}
         self._last_output_time: float = 0.0  # timestamp of last CLI output
         self._stale_text_pending: bool = False  # Enter handler set; _send_to_cli clears
         self._send_clear_queue: list[bool] = []  # per-message clear flags (FIFO)
@@ -1194,6 +1206,10 @@ class LeapServer:
         # the user typed them.
         if self._capture_image_map:
             msg = self._capture_resolve_images(msg)
+        # Expand [Paste #N] placeholders → raw text so history has
+        # the real content and can be recalled/sent in a fresh session.
+        if self._paste_text_map:
+            msg = self._capture_resolve_pastes(msg)
         # Remove duplicate if already at the end
         if self._saved_messages and self._saved_messages[-1] == msg:
             pass
@@ -1424,6 +1440,53 @@ class LeapServer:
         for placeholder, path in self._capture_image_map.items():
             message = message.replace(placeholder, f'@{path}')
         return message
+
+    def _capture_resolve_pastes(self, message: str) -> str:
+        """Replace ``[Paste #N]`` placeholders with the raw pasted text.
+
+        Collapsed-paste placeholders stored in ``_paste_text_map`` are
+        expanded back to their original multi-line content before the
+        message is queued or saved, so downstream consumers (queue,
+        dispatcher, history) see the full text.  In-place replacement
+        preserves ordering with surrounding text and image refs.
+        """
+        for placeholder, text in self._paste_text_map.items():
+            message = message.replace(placeholder, text)
+        return message
+
+    def _finalize_paste_capture(self) -> None:
+        """Called at ``\\x1b[201~`` — collapse large pastes to a placeholder.
+
+        The raw paste bytes have already been accumulated in
+        ``_paste_accumulator`` and forwarded to the CLI in real time
+        (so Claude's TUI has the full content).  If the paste is
+        substantial (has newlines or is long), truncate the printable
+        bytes we added to ``_terminal_input_buf`` during the paste
+        and replace them with a short ``[Paste #N]`` placeholder —
+        ^^ will then capture the placeholder instead of a sprawling
+        raw-text buffer.  Short pastes are left as raw text.
+        """
+        if self._paste_accumulator is None:
+            return
+        content = bytes(self._paste_accumulator).decode(
+            'utf-8', errors='replace')
+        self._paste_accumulator = None
+        is_substantial = (
+            '\n' in content or '\r' in content or len(content) > 200
+        )
+        if not is_substantial:
+            return  # leave raw text in buf
+        # Truncate buf/counter to pre-paste state, then substitute
+        # a placeholder representing the full paste content.
+        del self._terminal_input_buf[self._paste_buf_snapshot_len:]
+        self._chars_sent_to_cli = self._paste_chars_snapshot
+        self._paste_text_counter += 1
+        placeholder = f'[Paste #{self._paste_text_counter}]'
+        self._paste_text_map[placeholder] = content
+        self._terminal_input_buf.extend(placeholder.encode('utf-8'))
+        # Count placeholder as 1 visual token on the CLI (matches
+        # Claude's own collapsed [Pasted text #N] rendering).
+        self._chars_sent_to_cli += 1
 
     def _capture_unresolve_images(self, message: str) -> str:
         """Replace ``@path`` image refs with ``[Image #N]`` placeholders.
@@ -1793,6 +1856,8 @@ class LeapServer:
                 msg = self._capture_text().strip()
                 if self._capture_image_map:
                     msg = self._capture_resolve_images(msg)
+                if self._paste_text_map:
+                    msg = self._capture_resolve_pastes(msg)
                 if msg:
                     # Clear stale text typed before ^^.
                     if self._capture_stale_char_count > 0:
@@ -2100,11 +2165,24 @@ class LeapServer:
                     # a standalone Escape key press.
                     is_standalone_esc = True
 
+                esc_seq = data[esc_start:i]
                 if self._queue_capture_mode:
                     self._capture_handle_escape(
-                        data[esc_start:i], is_standalone_esc)
+                        esc_seq, is_standalone_esc)
+                elif esc_seq == b'\x1b[200~':
+                    # Bracketed paste start — begin accumulating so we
+                    # can collapse large pastes to a placeholder.
+                    self._paste_accumulator = bytearray()
+                    self._paste_buf_snapshot_len = len(
+                        self._terminal_input_buf)
+                    self._paste_chars_snapshot = self._chars_sent_to_cli
+                    out.extend(esc_seq)
+                elif esc_seq == b'\x1b[201~':
+                    # Bracketed paste end — finalize (maybe collapse).
+                    self._finalize_paste_capture()
+                    out.extend(esc_seq)
                 elif (not in_prompt
-                      and self._is_csi_u_cancel(data[esc_start:i])):
+                      and self._is_csi_u_cancel(esc_seq)):
                     # CSI-u Ctrl+C outside capture — clear input
                     # buf just like the raw 0x03 handler does.
                     self._terminal_input_buf.clear()
@@ -2112,10 +2190,10 @@ class LeapServer:
                     self._preserved_input_buf.clear()
                     self._preserved_chars_sent = 0
                     self._pending_paste_images.clear()
-                    out.extend(data[esc_start:i])
+                    out.extend(esc_seq)
                 elif (not in_prompt
                       and not chunk_has_paste
-                      and self._is_csi_u_paste(data[esc_start:i])):
+                      and self._is_csi_u_paste(esc_seq)):
                     # CSI-u Ctrl+V outside capture — save clipboard
                     # image so the next ^^ picks it up.
                     path = self._save_clipboard_image()
@@ -2123,9 +2201,9 @@ class LeapServer:
                         pos = len(self._terminal_input_buf.decode(
                             'utf-8', errors='replace'))
                         self._pending_paste_images.append((pos, path))
-                    out.extend(data[esc_start:i])
+                    out.extend(esc_seq)
                 else:
-                    out.extend(data[esc_start:i])
+                    out.extend(esc_seq)
                 continue
 
             # --- Queue-capture mode: swallow input, queue on Enter ---
@@ -2199,6 +2277,14 @@ class LeapServer:
 
             # --- Normal handling ---
             if b == 0x0d:  # Enter
+                if self._paste_accumulator is not None:
+                    # Inside bracketed paste — treat as literal newline,
+                    # accumulate for later collapse, don't trigger
+                    # Enter semantics (which would clear buf).
+                    self._paste_accumulator.append(b)
+                    out.append(b)
+                    i += 1
+                    continue
                 self._user_has_typed = True
                 if self._terminal_input_buf:
                     msg = self._terminal_input_buf.decode(
@@ -2250,8 +2336,14 @@ class LeapServer:
                 self._terminal_input_buf.append(b)
                 out.append(b)
                 self._chars_sent_to_cli += 1
+                if self._paste_accumulator is not None:
+                    self._paste_accumulator.append(b)
             else:
                 out.append(b)
+                if self._paste_accumulator is not None and b == 0x0a:
+                    # LF inside paste — accumulate so the saved
+                    # raw content keeps line breaks.
+                    self._paste_accumulator.append(b)
             i += 1
 
         # Deferred display update after paste in capture mode — one
