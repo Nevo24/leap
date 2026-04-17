@@ -249,7 +249,10 @@ class LeapServer:
         self._paste_accumulator: Optional[bytearray] = None
         self._paste_buf_snapshot_len: int = 0
         self._paste_chars_snapshot: int = 0
-        self._paste_text_counter: int = 0
+        # Map of ``[Paste #<hash>]`` → full pasted text.  The hash is
+        # derived from the content (first 8 hex chars of md5) so the
+        # same paste always produces the same placeholder — dedupes
+        # repeats and keeps the ID stable across save/recall cycles.
         self._paste_text_map: dict[str, str] = {}
         self._last_output_time: float = 0.0  # timestamp of last CLI output
         self._stale_text_pending: bool = False  # Enter handler set; _send_to_cli clears
@@ -1494,8 +1497,7 @@ class LeapServer:
         # a placeholder representing the full paste content.
         del self._terminal_input_buf[self._paste_buf_snapshot_len:]
         self._chars_sent_to_cli = self._paste_chars_snapshot
-        self._paste_text_counter += 1
-        placeholder = f'[Paste #{self._paste_text_counter}]'
+        placeholder = self._paste_placeholder_for(content)
         self._paste_text_map[placeholder] = content
         self._terminal_input_buf.extend(placeholder.encode('utf-8'))
         # Count placeholder as 1 visual token on the CLI (matches
@@ -1519,10 +1521,20 @@ class LeapServer:
         )
         if not is_substantial:
             return message
-        self._paste_text_counter += 1
-        placeholder = f'[Paste #{self._paste_text_counter}]'
+        placeholder = self._paste_placeholder_for(message)
         self._paste_text_map[placeholder] = message
         return placeholder
+
+    @staticmethod
+    def _paste_placeholder_for(content: str) -> str:
+        """Stable placeholder for a paste: ``[Paste #<hash8>]``.
+
+        The ID is the first 8 hex chars of md5(content) so the same
+        content always produces the same placeholder — deduplicating
+        repeat pastes and surviving save/recall cycles.
+        """
+        digest = hashlib.md5(content.encode('utf-8')).hexdigest()[:8]
+        return f'[Paste #{digest}]'
 
     def _capture_unresolve_images(self, message: str) -> str:
         """Replace ``@path`` image refs with ``[Image #N]`` placeholders.

@@ -8,6 +8,7 @@ Covers:
 5. Exception safety, cancel/re-enter
 """
 
+import hashlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,6 +16,12 @@ import pytest
 from leap.cli_providers.states import CLIState
 from leap.cli_providers.claude import ClaudeProvider
 from leap.server.server import LeapServer
+
+
+def _paste_ph(content: str) -> str:
+    """Compute expected placeholder for given paste content."""
+    digest = hashlib.md5(content.encode('utf-8')).hexdigest()[:8]
+    return f'[Paste #{digest}]'
 
 
 def make_server(state: str = CLIState.RUNNING) -> LeapServer:
@@ -56,7 +63,6 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._paste_accumulator = None
     srv._paste_buf_snapshot_len = 0
     srv._paste_chars_snapshot = 0
-    srv._paste_text_counter = 0
     srv._paste_text_map = {}
     srv._pending_caret_timer = None
     srv._last_output_time = 0.0
@@ -213,10 +219,10 @@ class TestPasteCollapse:
         srv = make_server(CLIState.IDLE)
         content = b'line1\nline2\nline3'
         srv._input_filter_impl(self._BP_START + content + self._BP_END)
-        # Buf has a placeholder, not raw content.
-        assert srv._terminal_input_buf == b'[Paste #1]'
-        # Map stores the full raw text.
-        assert srv._paste_text_map['[Paste #1]'] == 'line1\nline2\nline3'
+        ph = _paste_ph('line1\nline2\nline3')
+        # Buf has a hash-based placeholder, not raw content.
+        assert srv._terminal_input_buf == ph.encode('utf-8')
+        assert srv._paste_text_map[ph] == 'line1\nline2\nline3'
         # Counter tracks the collapsed token as 1 visual char.
         assert srv._chars_sent_to_cli == 1
 
@@ -232,9 +238,10 @@ class TestPasteCollapse:
         # Windows-style line endings inside paste must not submit.
         content = b'line1\r\nline2'
         srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        ph = _paste_ph('line1\r\nline2')
         # Placeholder in buf (substantial due to \r\n).
-        assert srv._terminal_input_buf == b'[Paste #1]'
-        assert srv._paste_text_map['[Paste #1]'] == 'line1\r\nline2'
+        assert srv._terminal_input_buf == ph.encode('utf-8')
+        assert srv._paste_text_map[ph] == 'line1\r\nline2'
         # queue.track_sent must NOT have been called (no spurious Enter).
         srv.queue.track_sent.assert_not_called()
 
@@ -243,8 +250,22 @@ class TestPasteCollapse:
         content = b'line1\nline2\nline3\nline4'
         srv._input_filter_impl(self._BP_START + content + self._BP_END)
         srv._input_filter_impl(b'^^')
+        ph = _paste_ph('line1\nline2\nline3\nline4')
         # Capture buf is pre-populated with the placeholder, not raw.
-        assert srv._queue_capture_buf == b'[Paste #1]'
+        assert srv._queue_capture_buf == ph.encode('utf-8')
+
+    def test_same_content_produces_same_hash(self):
+        """Pasting the same content twice dedupes to the same placeholder."""
+        srv = make_server(CLIState.IDLE)
+        content = b'same\nmultiline\ncontent'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        ph1 = _paste_ph('same\nmultiline\ncontent')
+        # Second paste of the same content → same placeholder, one map entry.
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        # Buf ends up with both placeholder tokens (same hash).
+        assert srv._terminal_input_buf == (ph1 + ph1).encode('utf-8')
+        # Still only one map entry because the hash is the same.
+        assert list(srv._paste_text_map.keys()) == [ph1]
 
     def test_queue_resolves_paste_to_raw(self):
         srv = make_server(CLIState.RUNNING)
@@ -268,15 +289,32 @@ class TestPasteCollapse:
         assert srv._saved_messages == ['line1\nline2\nline3']
 
     def test_recall_collapses_multiline_to_placeholder(self):
-        """Recalled multi-line saved messages show a [Paste #N] token."""
+        """Recalled multi-line saved messages show a [Paste #<hash>] token."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
         srv._saved_messages = ['line1\nline2\nline3']
         srv._queue_capture_mode = True
         with patch.object(srv, '_capture_display'):
             srv._browse_saved_history(-1)
-        assert srv._queue_capture_buf == b'[Paste #1]'
-        assert srv._paste_text_map['[Paste #1]'] == 'line1\nline2\nline3'
+        ph = _paste_ph('line1\nline2\nline3')
+        assert srv._queue_capture_buf == ph.encode('utf-8')
+        assert srv._paste_text_map[ph] == 'line1\nline2\nline3'
+
+    def test_recall_same_msg_twice_reuses_placeholder(self):
+        """Recalling the same saved msg twice keeps the same [Paste #<hash>]."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        srv._saved_messages = ['same\ncontent\nhere']
+        srv._queue_capture_mode = True
+        with patch.object(srv, '_capture_display'):
+            srv._browse_saved_history(-1)
+            ph_first = srv._queue_capture_buf.decode()
+            # Simulate browsing away and back.
+            srv._saved_msg_index = -1
+            srv._queue_capture_buf.clear()
+            srv._browse_saved_history(-1)
+            ph_second = srv._queue_capture_buf.decode()
+        assert ph_first == ph_second  # stable hash, no counter drift
 
     def test_recall_short_msg_stays_raw(self):
         """Short single-line saved messages are not collapsed."""
