@@ -408,8 +408,8 @@ class TestPasteCancelWithTypedText:
             "A's content must not be re-sent (Claude still has it)"
         )
 
-    def test_cancel_with_prepended_text_falls_back_to_slow_path(self):
-        """Slow path: prepending before placeholder needs full round-trip."""
+    def test_cancel_with_prepended_text_uses_fast_path(self):
+        """Fast path: prepending types Home + payload + End, no clear."""
         import time
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
@@ -430,9 +430,44 @@ class TestPasteCancelWithTypedText:
                     arg = arg.decode('utf-8', errors='replace')
                 calls.append(arg)
         joined = ''.join(calls)
-        # Slow path runs bracketed paste for the placeholder.
-        assert '\x1b[200~line1\nline2\nline3\x1b[201~' in joined
-        assert 'pre ' in joined
+        # Fast path: Home + "pre " + End, no clear, no re-paste of A.
+        assert '\x1b[Hpre \x1b[F' in joined, (
+            'prefix must be typed with Home/End around it'
+        )
+        assert '\x15' not in joined, 'fast path must not Ctrl+U clear'
+        assert content.decode() not in joined, (
+            "original paste content must not be re-sent"
+        )
+
+    def test_cancel_with_prepended_paste_uses_fast_path(self):
+        """Prepending a multi-line paste wraps the prefix in markers."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content_a = b'aaa\naaa\naaa'
+        content_b = b'bbb\nbbb\nbbb'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content_a + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            # Move cursor to start, then paste B inside capture.
+            srv._input_filter_impl(b'\x1b[H')
+            srv._input_filter_impl(self._BP_START + content_b + self._BP_END)
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Home + bracketed paste of B + End. Original A untouched.
+        assert '\x1b[H\x1b[200~bbb\nbbb\nbbb\x1b[201~\x1b[F' in joined
+        assert '\x15' not in joined, 'fast path must not clear'
+        assert content_a.decode() not in joined, (
+            "A's content must stay on Claude's CLI, not be re-sent"
+        )
 
 
 class TestExceptionSafety:

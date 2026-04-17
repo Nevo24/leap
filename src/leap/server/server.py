@@ -1650,44 +1650,60 @@ class LeapServer:
             self._queue_sending = True
 
         pre_chars = self._capture_pre_chars_sent
-        # Fast path: if the capture buffer is just the initial text
-        # plus an appended suffix (no placeholder tampering, no
-        # placeholder in the suffix, no images), send ONLY the
-        # suffix onto the CLI and leave Claude's existing input
-        # untouched.  This avoids the clear + re-paste round-trip,
-        # which under heavy streaming can race and drop bracketed-
-        # paste start markers — then the paste's \n bytes turn into
-        # Enter presses and the original paste disappears.
+        # Fast path: if the capture buffer is the initial text
+        # surrounded by new prefix/suffix chunks (no tampering
+        # *inside* the initial text, no placeholders in the new
+        # chunks, no images), transfer ONLY the added chunks to the
+        # CLI and leave Claude's existing input untouched.  This
+        # avoids the clear + re-paste round-trip, which under heavy
+        # streaming can race and drop bracketed-paste start markers
+        # — then the paste's \n bytes turn into Enter presses and
+        # the original paste disappears.
         #
-        # Plain-text suffix:          send as literal chars.
-        # Multi-line suffix (has \n): wrap ONLY the suffix in
-        #   bracketed paste markers so Claude treats its \n as paste
-        #   content.  Even if the wrap marker races and drops, only
-        #   the suffix is affected — the original paste Claude had
-        #   already rendered is safe.
+        # Strategy per chunk:
+        #   Plain chars           → send as literal chars.
+        #   Has \n or \r          → wrap in bracketed-paste markers
+        #                           so Claude treats \n as paste
+        #                           content, not submit-Enter.
+        # Prefix chunks are sent with Home (\x1b[H) before and End
+        # (\x1b[F) after so Claude inserts them BEFORE its existing
+        # attachment and leaves the cursor at the end.
         initial = self._capture_initial_text
-        fast_path_suffix: Optional[str] = None
-        if (capture_text.startswith(initial)
-                and len(capture_text) > len(initial)
+        fast_path_payload: Optional[str] = None
+        if (initial
+                and initial in capture_text
+                and capture_text != initial
                 and not self._capture_image_map):
-            candidate = capture_text[len(initial):]
+            idx = capture_text.find(initial)
+            before = capture_text[:idx]
+            after = capture_text[idx + len(initial):]
+            new_chunks = before + after
             has_placeholder = any(
-                ph in candidate for ph in cancel_paste_map
+                ph in new_chunks for ph in cancel_paste_map
             )
             if not has_placeholder:
-                if '\n' in candidate or '\r' in candidate:
-                    fast_path_suffix = (
-                        '\x1b[200~' + candidate + '\x1b[201~'
-                    )
-                else:
-                    fast_path_suffix = candidate
+                parts: list[str] = []
+                if before:
+                    payload = before
+                    if '\n' in before or '\r' in before:
+                        payload = '\x1b[200~' + before + '\x1b[201~'
+                    # Home → insert payload before original → End.
+                    parts.append('\x1b[H' + payload + '\x1b[F')
+                if after:
+                    payload = after
+                    if '\n' in after or '\r' in after:
+                        payload = '\x1b[200~' + after + '\x1b[201~'
+                    parts.append(payload)
+                if parts:
+                    fast_path_payload = ''.join(parts)
 
         def _apply_cancel_text() -> None:
             try:
-                if fast_path_suffix is not None:
+                if fast_path_payload is not None:
                     # Claude's input already shows the original content.
-                    # Just type the new suffix on top of it.
-                    self.pty.send(fast_path_suffix)
+                    # Just type the new prefix/suffix chunks around it;
+                    # no clear, no re-paste of the original.
+                    self.pty.send(fast_path_payload)
                     return
                 # Slow path: full clear + re-paste round-trip.
                 # Clear Claude's CLI input regardless of state.  During
