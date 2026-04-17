@@ -62,8 +62,11 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._pending_caret_time = 0.0
     srv._paste_accumulator = None
     srv._paste_buf_snapshot_len = 0
+    srv._paste_cursor_snapshot = 0
     srv._paste_chars_snapshot = 0
     srv._paste_text_map = {}
+    srv._terminal_input_cursor = 0
+    srv._capture_saved_once = False
     srv._pending_caret_timer = None
     srv._last_output_time = 0.0
     srv._suppress_send_until = 0.0
@@ -254,6 +257,116 @@ class TestPasteCollapse:
         # Capture buf is pre-populated with the placeholder, not raw.
         assert srv._queue_capture_buf == ph.encode('utf-8')
 
+    def test_paste_with_control_chars_preserves_them(self):
+        """Content with ^ and \\t inside a paste must round-trip intact."""
+        srv = make_server(CLIState.IDLE)
+        # Paste content contains '^', tab, and newline.
+        content = b'foo^bar\tbaz\nline2'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        ph = _paste_ph('foo^bar\tbaz\nline2')
+        # Placeholder created, raw content in map matches exactly.
+        assert srv._terminal_input_buf == ph.encode('utf-8')
+        assert srv._paste_text_map[ph] == 'foo^bar\tbaz\nline2'
+
+    def test_paste_with_double_caret_preserves_it(self):
+        """Content with '^^' inside a paste must not trigger capture."""
+        srv = make_server(CLIState.IDLE)
+        content = b'prefix^^suffix\nline2'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        # Must not have entered capture mode.
+        assert srv._queue_capture_mode is False
+        ph = _paste_ph('prefix^^suffix\nline2')
+        assert srv._paste_text_map[ph] == 'prefix^^suffix\nline2'
+
+    def test_paste_with_backspace_byte_preserves_it(self):
+        """Pasting content with a raw backspace byte must not erase
+        previously accumulated bytes."""
+        srv = make_server(CLIState.IDLE)
+        # Raw backspace byte (0x7f) inside paste content.
+        content = b'abc\x7fdef\nmore'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END)
+        ph = _paste_ph('abc\x7fdef\nmore')
+        assert srv._paste_text_map[ph] == 'abc\x7fdef\nmore'
+
+    def test_paste_inside_empty_capture_esc_sends_bracketed_paste(self):
+        """^^ on empty CLI → paste big text → Esc must wrap in bracketed
+        paste markers (not flatten \\n→space)."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('termios.tcflush'):
+            # ^^ on an EMPTY CLI.
+            srv._input_filter_impl(b'^^')
+            assert srv._queue_capture_mode is True
+            assert srv._capture_initial_text == ''
+            # Paste multi-line content inside capture.
+            content = b'line1\nline2\nline3\nline4'
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            # Esc to cancel.
+            srv._input_filter_impl(b'\x1b')
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Must be wrapped in bracketed paste so Claude shows a clean
+        # [Pasted text #N] attachment, not flattened.
+        assert '\x1b[200~line1\nline2\nline3\nline4\x1b[201~' in joined, (
+            f'expected bracketed paste wrap, got: {joined!r}'
+        )
+        # Must not flatten \n to space.
+        assert 'line1 line2 line3 line4' not in joined
+
+    def test_cursor_skips_multibyte_utf8_atomically(self):
+        """Left/Right arrow must not land the cursor mid-UTF-8-char."""
+        srv = make_server(CLIState.IDLE)
+        # Hebrew aleph (2 bytes) + ASCII.
+        srv._input_filter_impl('\u05d0'.encode('utf-8'))  # א
+        srv._input_filter_impl(b'hi')
+        # Now buf = b'\xd7\x90hi', cursor at end = 4.
+        assert srv._terminal_input_cursor == 4
+        srv._input_filter_impl(b'\x1b[D')  # Left: over 'i' (1 byte)
+        assert srv._terminal_input_cursor == 3
+        srv._input_filter_impl(b'\x1b[D')  # Left: over 'h' (1 byte)
+        assert srv._terminal_input_cursor == 2
+        srv._input_filter_impl(b'\x1b[D')  # Left: over aleph (2 bytes)
+        assert srv._terminal_input_cursor == 0, (
+            f'must skip multi-byte char atomically, got {srv._terminal_input_cursor}'
+        )
+
+    def test_type_between_two_pastes_preserves_order_in_capture(self):
+        """User's reported flow: paste A, paste B, Left-arrow between them,
+        type 'hello', then ^^.  Capture buf must reflect Claude's actual
+        display order (A, hello, B) — not our byte-arrival order (A, B, hello)."""
+        srv = make_server(CLIState.IDLE)
+        # Paste A.
+        srv._input_filter_impl(
+            self._BP_START + b'aaa\naaa\naaa' + self._BP_END)
+        # Paste B.
+        srv._input_filter_impl(
+            self._BP_START + b'bbb\nbbb\nbbb' + self._BP_END)
+        # Left arrow N times to move cursor before [Paste #B].
+        ph_b_len = len(bytes(srv._terminal_input_buf)) // 2
+        srv._input_filter_impl(b'\x1b[D')  # one Left jumps over placeholder
+        # Type 'hello' (should insert between placeholders).
+        srv._input_filter_impl(b'hello')
+        # Verify order in buf: [Paste #A] hello [Paste #B]
+        buf_str = bytes(srv._terminal_input_buf).decode('utf-8')
+        assert buf_str.count('[Paste #') == 2, (
+            f'expected 2 placeholders, got buf: {buf_str!r}'
+        )
+        # 'hello' is between the two placeholders.
+        idx_hello = buf_str.find('hello')
+        ph1_end = buf_str.find(']') + 1
+        ph2_start = buf_str.rfind('[Paste #')
+        assert ph1_end <= idx_hello < ph2_start, (
+            f'hello must be between the two placeholders, got: {buf_str!r}'
+        )
+
     def test_same_content_produces_same_hash(self):
         """Pasting the same content twice dedupes to the same placeholder."""
         srv = make_server(CLIState.IDLE)
@@ -439,6 +552,68 @@ class TestPasteCancelWithTypedText:
             "original paste content must not be re-sent"
         )
 
+    def test_cancel_with_paste_placeholder_in_suffix_uses_fast_path(self):
+        """Suffix containing [Paste #N] resolves to its bracketed-paste block."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content_a = b'aaa\naaa\naaa'
+        content_b = b'bbb\nbbb'
+        with patch('termios.tcflush'):
+            # Paste A, ^^, move cursor to end, paste B (raw, in-capture).
+            srv._input_filter_impl(self._BP_START + content_a + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(
+                self._BP_START + content_b + self._BP_END)
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Suffix B wrapped; no clear, no re-paste of A.
+        assert '\x1b[200~bbb\nbbb\x1b[201~' in joined
+        assert '\x15' not in joined
+        assert content_a.decode() not in joined
+
+    def test_cancel_with_image_in_suffix_resolves_to_path(self):
+        """Fast path with image in the suffix: resolves [Image #N] → @path."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2'
+        # Pre-populate an image map entry to simulate Ctrl+V in capture.
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            # Manually insert an image placeholder into the capture buf
+            # to simulate Ctrl+V (avoids needing clipboard mocks).
+            srv._capture_image_counter = 1
+            srv._capture_image_map['[Image #1]'] = '/tmp/foo.png'
+            srv._queue_capture_buf.extend(b'[Image #1]')
+            srv._capture_cursor_pos = len(srv._queue_capture_buf)
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Image should be sent as @path, not literal [Image #1].
+        assert '@/tmp/foo.png' in joined, (
+            f'@path must be resolved in fast path, got: {joined!r}'
+        )
+        assert '[Image #1]' not in joined, (
+            'literal placeholder must not leak'
+        )
+
     def test_cancel_with_prepended_paste_uses_fast_path(self):
         """Prepending a multi-line paste wraps the prefix in markers."""
         import time
@@ -468,6 +643,126 @@ class TestPasteCancelWithTypedText:
         assert content_a.decode() not in joined, (
             "A's content must stay on Claude's CLI, not be re-sent"
         )
+
+
+class TestSaveThenEsc:
+    """After ^^-save, Esc should restore pre-capture state."""
+
+    _BP_START = b'\x1b[200~'
+    _BP_END = b'\x1b[201~'
+
+    def test_save_then_esc_clears_cli(self):
+        """paste → ^^ → save → Esc: user committed to history, clear Claude's CLI."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2\nline3'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'^^')  # save
+            time.sleep(0.05)
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Must send the clear sequence (End + Ctrl+U + End + backspace).
+        assert '\x15' in joined, 'Ctrl+U must be sent to clear'
+        # No re-paste of the original content.
+        assert '\x1b[200~' not in joined
+        # Our buf is empty after save+Esc.
+        assert bytes(srv._terminal_input_buf) == b''
+
+    def test_recall_then_type_then_esc_uses_fast_path(self):
+        """Recall + type after save uses the fast path (initial updated)."""
+        import time
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'^^')  # save
+            time.sleep(0.05)
+            srv._input_filter_impl(b'\x1b[A')  # up: recall
+            time.sleep(0.05)
+            srv._input_filter_impl(b'hi')
+            srv._input_filter_impl(b'\x1b')  # Esc
+            time.sleep(0.5)
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        joined = ''.join(calls)
+        # Fast path: just 'hi' sent. No clear, no re-paste of original.
+        assert 'hi' in joined
+        assert '\x15' not in joined, 'must not clear'
+        assert '\x1b[200~' not in joined, 'must not re-paste'
+
+
+class TestAtomicPlaceholderEditing:
+    """Placeholders are edited as atomic tokens — no breakage by char-edits."""
+
+    _BP_START = b'\x1b[200~'
+    _BP_END = b'\x1b[201~'
+
+    def test_backspace_at_end_of_placeholder_removes_whole_token(self):
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            # Cursor is at end of placeholder. Backspace should delete it whole.
+            srv._input_filter_impl(b'\x7f')  # Backspace
+        assert srv._queue_capture_buf == b''
+        assert srv._capture_cursor_pos == 0
+
+    def test_delete_at_start_of_placeholder_removes_whole_token(self):
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\x1b[H')  # Home
+            srv._input_filter_impl(b'\x1b[3~')  # Delete
+        assert srv._queue_capture_buf == b''
+
+    def test_left_arrow_jumps_over_placeholder(self):
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            cursor_before = srv._capture_cursor_pos
+            srv._input_filter_impl(b'\x1b[D')  # Left arrow
+        # One Left jumps past entire placeholder to position 0.
+        assert srv._capture_cursor_pos == 0
+        assert cursor_before > 0
+
+    def test_right_arrow_jumps_over_placeholder(self):
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\x1b[H')  # Home → pos 0
+            assert srv._capture_cursor_pos == 0
+            srv._input_filter_impl(b'\x1b[C')  # Right arrow
+        # One Right jumps past entire placeholder to end.
+        assert srv._capture_cursor_pos == len(srv._queue_capture_buf.decode())
 
 
 class TestExceptionSafety:

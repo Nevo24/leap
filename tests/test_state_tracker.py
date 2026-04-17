@@ -644,10 +644,11 @@ class TestSafetyTimeouts:
     def test_cursor_visible_plus_silence_triggers_idle(
         self, tmp_path: Path,
     ) -> None:
-        """Running with cursor visible + output silence > 2s → idle.
+        """Running with cursor visible + output silence > 5s → idle.
 
         Handles /clear sent from queue (on_send → running, but Stop
-        hook doesn't fire).
+        hook doesn't fire).  Threshold bumped from 2s to 5s to avoid
+        false-idle flicker during long streaming responses.
         """
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
@@ -655,8 +656,8 @@ class TestSafetyTimeouts:
         t[0] = 1.0
         # TUI redraws with cursor visible at the end
         feed_with_visible_cursor(tracker, 'Cleared screen')
-        # Wait > 2s
-        t[0] = 3.5
+        # Wait > 5s of silence
+        t[0] = 7.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_cursor_visible_during_streaming_stays_running(
@@ -1188,13 +1189,13 @@ class TestSlashClear:
         t[0] = 0.5
         feed_with_visible_cursor(tracker, 'Cleared screen')
 
-        # After 2s silence + cursor visible → idle
-        t[0] = 3.0
+        # After 5s silence + cursor visible → idle
+        t[0] = 6.5
         assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_clear_vs_real_message(self, tmp_path: Path) -> None:
         """Real messages resolve via Stop hook.
-        /clear resolves via cursor+silence check (~2s)."""
+        /clear resolves via cursor+silence check (~5s)."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
@@ -1393,9 +1394,9 @@ class TestLateNotificationGuard:
             '- Press Esc to cancel the current operation\n'
             '- Press Enter to confirm',
         )
-        t[0] = 5.0
+        t[0] = 8.0
         tracker._last_output_time = 2.0
-        # cursor visible + 2s silence → should go to IDLE, not
+        # cursor visible + 5s silence → should go to IDLE, not
         # needs_permission (would be a false positive)
         assert tracker.get_state(pty_alive=True) == 'idle'
 
@@ -1556,9 +1557,9 @@ class TestLateNotificationGuard:
             '\u203a 1. Yes\n'
             '  2. No (esc)',
         )
-        t[0] = 5.0
+        t[0] = 8.0
         tracker._last_output_time = 2.0
-        # No signal yet — proactive detection via cursor+silence
+        # No signal yet — proactive detection via cursor+silence (>5s)
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
     def test_stale_snapshot_cleared_on_waiting_to_idle(

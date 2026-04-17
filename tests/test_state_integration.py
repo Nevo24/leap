@@ -129,11 +129,20 @@ class TestPTYSignalFile:
 
     def test_signal_needs_permission(self, pty: PTYFixture) -> None:
         pty.tracker.on_send()
+        # Late-notification guard (a821533) requires dialog patterns
+        # visible on screen before accepting the signal, to reject
+        # late-arriving Notification hooks that fire after the CLI
+        # already finished.
+        pty.tracker.on_output(
+            b'Allow tool?  Enter to select  Esc to cancel\n')
         pty.write_signal('needs_permission')
         assert pty.get_state() == 'needs_permission'
 
     def test_signal_needs_input(self, pty: PTYFixture) -> None:
         pty.tracker.on_send()
+        # See test_signal_needs_permission — dialog patterns required.
+        pty.tracker.on_output(
+            b'Allow tool?  Enter to select  Esc to cancel\n')
         pty.write_signal('needs_input')
         assert pty.get_state() == 'needs_input'
 

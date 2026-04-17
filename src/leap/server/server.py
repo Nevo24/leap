@@ -185,6 +185,14 @@ class LeapServer:
         )
         self.output_capture = OutputCapture(tag, cli_provider=self._provider.name)
         self._terminal_input_buf: bytearray = bytearray()
+        # Byte offset of the insertion cursor within ``_terminal_input_buf``
+        # so we mirror Claude's actual input-line state when the user
+        # moves the cursor (arrows / Home / End) and inserts text in
+        # the middle.  Without tracking this, typing between two
+        # pastes would append at the end of our buf — and ^^ capture
+        # would show the pastes and the text in the wrong order
+        # relative to what Claude displays.
+        self._terminal_input_cursor: int = 0
         # Tracks incomplete escape sequences split across os.read() chunks.
         # None = no partial.  'esc' = bare \x1b at end (need type byte).
         # 'csi' = \x1b[ + optional params at end (need final byte 0x40-0x7e).
@@ -248,7 +256,14 @@ class LeapServer:
         # into our internal view.
         self._paste_accumulator: Optional[bytearray] = None
         self._paste_buf_snapshot_len: int = 0
+        self._paste_cursor_snapshot: int = 0
         self._paste_chars_snapshot: int = 0
+        # True if the user hit ^^ inside capture mode to save the
+        # buffer to history.  On Esc after save (with no further
+        # edits) we clear Claude's CLI instead of restoring the
+        # pre-capture content — the user has "committed" the content
+        # to history and doesn't want it lingering on the CLI.
+        self._capture_saved_once: bool = False
         # Map of ``[Paste #<hash>]`` → full pasted text.  The hash is
         # derived from the content (first 8 hex chars of md5) so the
         # same paste always produces the same placeholder — dedupes
@@ -556,14 +571,18 @@ class LeapServer:
                     self._preserved_chars_sent = self._chars_sent_to_cli
             self._stale_text_pending = False
             self._terminal_input_buf.clear()
+            self._terminal_input_cursor = 0
 
             if needs_clear:
-                # Ctrl+E (end of line) then Ctrl+U (kill to start).
-                # Separate writes so Ink processes cursor move first.
-                self.pty.send('\x05')
-                time.sleep(0.02)
-                self.pty.send('\x15')
-                time.sleep(0.2)
+                # Use the robust clear helper — under RUNNING streaming,
+                # Ctrl+U alone can be dropped by Ink's render loop, so
+                # _clear_stale_cli_input adds End + N backspaces as an
+                # idempotent fallback.  chars_sent might over-count
+                # for pastes (placeholder counts as 1 visual token),
+                # but extra backspaces are no-ops on an empty line.
+                chars = self._preserved_chars_sent or 1
+                self._clear_stale_cli_input(chars)
+                time.sleep(0.1)
 
             # Suppress from here — hides message echo only.
             self._suppress_send_until = float('inf')
@@ -578,8 +597,12 @@ class LeapServer:
                     # Multi-line content — wrap in bracketed paste
                     # markers so the CLI treats \n as literal paste
                     # content, not a submit-Enter per line.  Then send
-                    # a single CR to submit the whole thing.
-                    self.pty.send('\x1b[200~' + message + '\x1b[201~')
+                    # a single CR to submit the whole thing.  Strip
+                    # any embedded paste markers first so nested
+                    # wraps don't confuse Claude's Ink parser.
+                    sanitized = message.replace(
+                        '\x1b[200~', '').replace('\x1b[201~', '')
+                    self.pty.send('\x1b[200~' + sanitized + '\x1b[201~')
                     time.sleep(0.1)
                     self.pty.send('\r')
                 else:
@@ -608,6 +631,7 @@ class LeapServer:
         if not text:
             return
         self._terminal_input_buf = bytearray(text.encode('utf-8'))
+        self._terminal_input_cursor = len(self._terminal_input_buf)
         self._chars_sent_to_cli = chars
         try:
             self.pty.send(text)
@@ -1239,6 +1263,12 @@ class LeapServer:
         self._capture_show_hint = False
         self._capture_display()  # clear old wrapped lines
         self._capture_prev_lines = 0
+        # Reset initial-text baseline so a subsequent cancel sees
+        # capture_text == initial == "" (no edits since save).
+        self._capture_initial_text = ''
+        # Mark that a save happened so cancel knows to clear
+        # Claude's CLI rather than restore the pre-capture content.
+        self._capture_saved_once = True
         # Show a "Saved!" hint on the capture line
         try:
             payload = (
@@ -1287,6 +1317,12 @@ class LeapServer:
         msg = self._capture_unresolve_pastes(msg)
         self._queue_capture_buf = bytearray(msg.encode('utf-8'))
         self._capture_cursor_pos = len(msg)
+        # Update initial text to the recalled content so cancel's
+        # fast-path edit detection (``capture_text vs initial_text``)
+        # compares against what the user sees after recall, not the
+        # stale pre-recall state.  Without this, editing a recalled
+        # message always falls to the slow clear+re-paste round-trip.
+        self._capture_initial_text = self._capture_text()
         self._capture_display(self._capture_text())
 
     @staticmethod
@@ -1317,21 +1353,51 @@ class LeapServer:
         return False
 
     def _capture_backspace(self) -> bool:
-        """Delete character before cursor. Returns False if at start."""
+        """Delete character before cursor. Returns False if at start.
+
+        Treats ``[Paste #N]`` / ``[Image #N]`` placeholders atomically:
+        if the cursor sits immediately after one, the whole token is
+        removed in a single backspace — preventing users from breaking
+        a placeholder by editing inside it.
+        """
         if self._capture_cursor_pos <= 0:
             return False
         self._saved_msg_index = -1  # editing resets history browsing
         text = self._capture_text()
+        ph_end = self._capture_cursor_pos
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                ph_start = ph_end - len(ph)
+                if ph_start >= 0 and text[ph_start:ph_end] == ph:
+                    text = text[:ph_start] + text[ph_end:]
+                    self._queue_capture_buf = bytearray(
+                        text.encode('utf-8'))
+                    self._capture_cursor_pos = ph_start
+                    return True
         text = text[:self._capture_cursor_pos - 1] + text[self._capture_cursor_pos:]
         self._queue_capture_buf = bytearray(text.encode('utf-8'))
         self._capture_cursor_pos -= 1
         return True
 
     def _capture_delete(self) -> None:
-        """Delete character at cursor (forward delete)."""
+        """Delete character at cursor (forward delete).
+
+        Atomic placeholder handling: if the cursor sits at the start
+        of a ``[Paste #N]`` / ``[Image #N]`` token, delete the whole
+        token as one operation.
+        """
         text = self._capture_text()
         if self._capture_cursor_pos < len(text):
             self._saved_msg_index = -1  # editing resets history browsing
+            ph_start = self._capture_cursor_pos
+            for ph_map in (self._paste_text_map, self._capture_image_map):
+                for ph in ph_map:
+                    ph_end = ph_start + len(ph)
+                    if text[ph_start:ph_end] == ph:
+                        text = text[:ph_start] + text[ph_end:]
+                        self._queue_capture_buf = bytearray(
+                            text.encode('utf-8'))
+                        return
             text = text[:self._capture_cursor_pos] + text[self._capture_cursor_pos + 1:]
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
@@ -1488,18 +1554,30 @@ class LeapServer:
         content = bytes(self._paste_accumulator).decode(
             'utf-8', errors='replace')
         self._paste_accumulator = None
+        # Sanitize any stray bracketed-paste markers inside the content
+        # (e.g. user pasted bracketed-paste output from another TUI).
+        # If we re-wrap this content on send, nested markers would
+        # confuse Claude's Ink parser and corrupt the message.
+        content = content.replace('\x1b[200~', '').replace('\x1b[201~', '')
         is_substantial = (
             '\n' in content or '\r' in content or len(content) > 200
         )
         if not is_substantial:
             return  # leave raw text in buf
-        # Truncate buf/counter to pre-paste state, then substitute
-        # a placeholder representing the full paste content.
-        del self._terminal_input_buf[self._paste_buf_snapshot_len:]
+        # Remove the paste bytes we inserted at the cursor during
+        # the paste, then substitute a placeholder at that position.
+        snap_cursor = self._paste_cursor_snapshot
+        cur_cursor = self._terminal_input_cursor
+        if cur_cursor > snap_cursor:
+            del self._terminal_input_buf[snap_cursor:cur_cursor]
+            self._terminal_input_cursor = snap_cursor
         self._chars_sent_to_cli = self._paste_chars_snapshot
         placeholder = self._paste_placeholder_for(content)
         self._paste_text_map[placeholder] = content
-        self._terminal_input_buf.extend(placeholder.encode('utf-8'))
+        ph_bytes = placeholder.encode('utf-8')
+        # Insert placeholder at cursor and advance cursor past it.
+        self._terminal_input_buf[snap_cursor:snap_cursor] = ph_bytes
+        self._terminal_input_cursor = snap_cursor + len(ph_bytes)
         # Count placeholder as 1 visual token on the CLI (matches
         # Claude's own collapsed [Pasted text #N] rendering).
         self._chars_sent_to_cli += 1
@@ -1521,6 +1599,11 @@ class LeapServer:
         )
         if not is_substantial:
             return message
+        # Sanitize any stray bracketed-paste markers — the re-send
+        # will wrap in our own markers and nested pairs would confuse
+        # Claude's Ink parser.
+        message = message.replace(
+            '\x1b[200~', '').replace('\x1b[201~', '')
         placeholder = self._paste_placeholder_for(message)
         self._paste_text_map[placeholder] = message
         return placeholder
@@ -1576,6 +1659,148 @@ class LeapServer:
         self._capture_image_counter = 0
         self._capture_image_map.clear()
 
+    def _terminal_cursor_left(self) -> None:
+        """Move the mirrored CLI cursor one step left, atomic over placeholders.
+
+        Skips back over UTF-8 continuation bytes so cursor never lands
+        in the middle of a multi-byte character.
+        """
+        buf = self._terminal_input_buf
+        pos = self._terminal_input_cursor
+        if pos <= 0:
+            self._terminal_input_cursor = 0
+            return
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                ph_bytes = ph.encode('utf-8')
+                start = pos - len(ph_bytes)
+                if start >= 0 and bytes(buf[start:pos]) == ph_bytes:
+                    self._terminal_input_cursor = start
+                    return
+        # Step back one char — may be multiple bytes for UTF-8.
+        new_pos = pos - 1
+        while new_pos > 0 and (buf[new_pos] & 0xC0) == 0x80:
+            new_pos -= 1
+        self._terminal_input_cursor = new_pos
+
+    def _terminal_cursor_right(self) -> None:
+        """Move the mirrored CLI cursor one step right, atomic over placeholders.
+
+        Skips forward over UTF-8 continuation bytes.
+        """
+        buf = self._terminal_input_buf
+        buf_len = len(buf)
+        pos = self._terminal_input_cursor
+        if pos >= buf_len:
+            self._terminal_input_cursor = buf_len
+            return
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                ph_bytes = ph.encode('utf-8')
+                end = pos + len(ph_bytes)
+                if end <= buf_len and bytes(buf[pos:end]) == ph_bytes:
+                    self._terminal_input_cursor = end
+                    return
+        # Step forward one char — handle UTF-8 lead byte → skip continuations.
+        lead = buf[pos]
+        if lead < 0x80:
+            char_len = 1
+        elif lead & 0xE0 == 0xC0:
+            char_len = 2
+        elif lead & 0xF0 == 0xE0:
+            char_len = 3
+        elif lead & 0xF8 == 0xF0:
+            char_len = 4
+        else:
+            char_len = 1  # invalid lead byte, bail
+        self._terminal_input_cursor = min(buf_len, pos + char_len)
+
+    def _terminal_buf_insert(self, b: int) -> None:
+        """Insert a byte at the mirrored cursor position."""
+        pos = self._terminal_input_cursor
+        self._terminal_input_buf.insert(pos, b)
+        self._terminal_input_cursor = pos + 1
+
+    def _terminal_buf_backspace(self) -> None:
+        """Delete the byte before the cursor (char-granular for UTF-8)."""
+        if self._terminal_input_cursor <= 0:
+            return
+        # Strip trailing UTF-8 continuation bytes before the cursor.
+        while (self._terminal_input_cursor > 0
+               and (self._terminal_input_buf[self._terminal_input_cursor - 1]
+                    & 0xC0) == 0x80):
+            del self._terminal_input_buf[self._terminal_input_cursor - 1]
+            self._terminal_input_cursor -= 1
+        if self._terminal_input_cursor > 0:
+            del self._terminal_input_buf[self._terminal_input_cursor - 1]
+            self._terminal_input_cursor -= 1
+
+    def _resolve_chunk_for_cancel(
+        self,
+        chunk: str,
+        cancel_paste_map: dict,
+        cancel_image_map: Optional[dict] = None,
+    ) -> str:
+        """Render a prefix/suffix chunk as ready-to-send PTY bytes.
+
+        Each ``[Paste #N]`` placeholder is replaced with its own
+        bracketed-paste marker block.  Each ``[Image #N]`` placeholder
+        is replaced with its ``@path`` string.  Plain text runs
+        between placeholders wrap in bracketed-paste markers when
+        they contain ``\\n``/``\\r`` so Claude's Ink treats those
+        bytes as paste content, not submit-Enters.
+
+        ``cancel_image_map`` is a snapshot taken BEFORE the caller
+        resets the live image map — without it the image map would
+        already be empty by the time this helper runs.
+        """
+        if not chunk:
+            return ''
+        image_map = (cancel_image_map
+                     if cancel_image_map is not None
+                     else self._capture_image_map)
+        # Collect all placeholder spans in order of appearance.
+        spans: list[tuple[int, int, str]] = []  # (start, end, payload)
+        for ph, content in cancel_paste_map.items():
+            start = 0
+            while True:
+                i = chunk.find(ph, start)
+                if i < 0:
+                    break
+                spans.append(
+                    (i, i + len(ph),
+                     '\x1b[200~' + content + '\x1b[201~'),
+                )
+                start = i + len(ph)
+        for ph, path in image_map.items():
+            start = 0
+            while True:
+                i = chunk.find(ph, start)
+                if i < 0:
+                    break
+                spans.append((i, i + len(ph), '@' + path))
+                start = i + len(ph)
+        spans.sort(key=lambda s: s[0])
+        # Emit text between spans, wrapping multi-line runs.
+        def _wrap_run(run: str) -> str:
+            # Strip any embedded bracketed-paste markers so a wrap
+            # here doesn't produce nested pairs that confuse Ink.
+            safe = run.replace(
+                '\x1b[200~', '').replace('\x1b[201~', '')
+            if '\n' in safe or '\r' in safe:
+                return '\x1b[200~' + safe + '\x1b[201~'
+            return safe
+        result: list[str] = []
+        cursor = 0
+        for start, end, payload in spans:
+            if start > cursor:
+                result.append(_wrap_run(chunk[cursor:start]))
+            result.append(payload)
+            cursor = end
+        if cursor < len(chunk):
+            result.append(_wrap_run(chunk[cursor:]))
+        return ''.join(result)
+
     def _capture_cancel(self) -> None:
         """Cancel capture mode — transfer text back to CLI input."""
         self._capture_display()
@@ -1606,6 +1831,10 @@ class LeapServer:
             if ph in capture_text
         }
         had_pastes = bool(cancel_paste_map)
+        # Snapshot the image map BEFORE _capture_reset_images clears
+        # it below — the fast path's chunk resolver runs later and
+        # needs to see the mappings that existed at cancel time.
+        cancel_image_map = dict(self._capture_image_map)
         if self._capture_image_map:
             resolved_text = self._capture_resolve_images(resolved_text)
         has_images = bool(self._capture_image_map)
@@ -1626,6 +1855,8 @@ class LeapServer:
             if not safe_text:
                 self._terminal_input_buf = bytearray(
                     self._capture_pre_input_buf)
+                self._terminal_input_cursor = len(
+                    self._terminal_input_buf)
                 self._chars_sent_to_cli = self._capture_pre_chars_sent
                 return
             cancel_text = safe_text
@@ -1633,8 +1864,40 @@ class LeapServer:
             # No images — skip re-type when the capture buffer matches
             # the initial state (user didn't edit after ^^).
             if not was_edited:
+                # Exception: if the user saved during this capture
+                # session, they've "committed" the content to history
+                # and want the CLI clean.  Don't restore pre-state;
+                # instead clear Claude's input via the thread below.
+                if self._capture_saved_once:
+                    self._capture_saved_once = False
+                    pre_chars_for_clear = self._capture_pre_chars_sent
+                    self._terminal_input_buf.clear()
+                    self._terminal_input_cursor = 0
+                    self._chars_sent_to_cli = 0
+                    if pre_chars_for_clear > 0:
+                        self._capture_cancel_pending = True
+                        held = not self._queue_sending
+                        if held:
+                            self._queue_sending = True
+
+                        def _clear_after_save() -> None:
+                            try:
+                                self._clear_stale_cli_input(
+                                    pre_chars_for_clear)
+                            except OSError:
+                                pass
+                            finally:
+                                if held:
+                                    self._queue_sending = False
+                                self._capture_cancel_pending = False
+                        threading.Thread(
+                            target=_clear_after_save,
+                            daemon=True).start()
+                    return
                 self._terminal_input_buf = bytearray(
                     self._capture_pre_input_buf)
+                self._terminal_input_cursor = len(
+                    self._terminal_input_buf)
                 self._chars_sent_to_cli = self._capture_pre_chars_sent
                 return
             cancel_text = safe_text
@@ -1651,51 +1914,45 @@ class LeapServer:
 
         pre_chars = self._capture_pre_chars_sent
         # Fast path: if the capture buffer is the initial text
-        # surrounded by new prefix/suffix chunks (no tampering
-        # *inside* the initial text, no placeholders in the new
-        # chunks, no images), transfer ONLY the added chunks to the
-        # CLI and leave Claude's existing input untouched.  This
-        # avoids the clear + re-paste round-trip, which under heavy
-        # streaming can race and drop bracketed-paste start markers
-        # — then the paste's \n bytes turn into Enter presses and
-        # the original paste disappears.
+        # surrounded by new prefix/suffix chunks (initial text
+        # itself untouched), transfer ONLY the added chunks to the
+        # CLI and leave Claude's existing input untouched.  Avoids
+        # the clear + re-paste round-trip whose bracketed-paste
+        # start markers can race-drop under streaming and cause the
+        # original paste to vanish.
         #
-        # Strategy per chunk:
-        #   Plain chars           → send as literal chars.
-        #   Has \n or \r          → wrap in bracketed-paste markers
-        #                           so Claude treats \n as paste
-        #                           content, not submit-Enter.
-        # Prefix chunks are sent with Home (\x1b[H) before and End
-        # (\x1b[F) after so Claude inserts them BEFORE its existing
-        # attachment and leaves the cursor at the end.
+        # Each chunk is resolved in place:
+        #   [Image #N]   → @path (Claude treats as attachment ref)
+        #   [Paste #N]   → bracketed-paste block wrapping raw content
+        #   plain \n/\r  → the run of plain text between placeholders
+        #                  wraps in bracketed-paste markers so its
+        #                  newlines don't submit-Enter.
+        # Prefix chunks are bracketed by Home (\x1b[H) and End
+        # (\x1b[F) so Claude inserts them before its existing
+        # attachment and leaves cursor at end of line.
         initial = self._capture_initial_text
         fast_path_payload: Optional[str] = None
-        if (initial
-                and initial in capture_text
-                and capture_text != initial
-                and not self._capture_image_map):
-            idx = capture_text.find(initial)
+        if (initial in capture_text
+                and capture_text != initial):
+            # Works even when initial == "" (user entered Leap Q on an
+            # empty CLI): before == "" and after == capture_text, so
+            # the whole content becomes a clean bracketed-paste block
+            # instead of the slow path's \n→space flattening.
+            idx = capture_text.find(initial) if initial else 0
             before = capture_text[:idx]
             after = capture_text[idx + len(initial):]
-            new_chunks = before + after
-            has_placeholder = any(
-                ph in new_chunks for ph in cancel_paste_map
-            )
-            if not has_placeholder:
-                parts: list[str] = []
-                if before:
-                    payload = before
-                    if '\n' in before or '\r' in before:
-                        payload = '\x1b[200~' + before + '\x1b[201~'
-                    # Home → insert payload before original → End.
-                    parts.append('\x1b[H' + payload + '\x1b[F')
-                if after:
-                    payload = after
-                    if '\n' in after or '\r' in after:
-                        payload = '\x1b[200~' + after + '\x1b[201~'
-                    parts.append(payload)
-                if parts:
-                    fast_path_payload = ''.join(parts)
+            before_payload = self._resolve_chunk_for_cancel(
+                before, cancel_paste_map, cancel_image_map)
+            after_payload = self._resolve_chunk_for_cancel(
+                after, cancel_paste_map, cancel_image_map)
+            parts: list[str] = []
+            if before_payload:
+                # Home → insert payload before original → End.
+                parts.append('\x1b[H' + before_payload + '\x1b[F')
+            if after_payload:
+                parts.append(after_payload)
+            if parts:
+                fast_path_payload = ''.join(parts)
 
         def _apply_cancel_text() -> None:
             try:
@@ -1734,6 +1991,7 @@ class LeapServer:
                 self._capture_cancel_pending = False
         self._terminal_input_buf = bytearray(
             cancel_text.encode('utf-8'))
+        self._terminal_input_cursor = len(self._terminal_input_buf)
         self._chars_sent_to_cli = len(cancel_text)
         threading.Thread(
             target=_apply_cancel_text, daemon=True).start()
@@ -1758,7 +2016,9 @@ class LeapServer:
         self._queue_capture_buf = bytearray(self._terminal_input_buf)
         self._capture_cursor_pos = len(self._capture_text())
         self._terminal_input_buf.clear()
+        self._terminal_input_cursor = 0
         self._queue_capture_mode = True
+        self._capture_saved_once = False
         self._capture_show_hint = True
         self._capture_stale_caret = stale_caret
         # Only count chars actually sent to CLI (not held during RUNNING).
@@ -1834,18 +2094,87 @@ class LeapServer:
         self._capture_initial_text = self._capture_text()
         self._capture_display(self._capture_initial_text)
 
+    def _capture_cursor_left(self, pos: int) -> int:
+        """One-step Left that skips over a placeholder as one unit."""
+        if pos <= 0:
+            return 0
+        text = self._capture_text()
+        # If cursor is right after a placeholder, jump to before it.
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                start = pos - len(ph)
+                if start >= 0 and text[start:pos] == ph:
+                    return start
+        return pos - 1
+
+    def _capture_cursor_right(self, pos: int) -> int:
+        """One-step Right that skips over a placeholder as one unit."""
+        text = self._capture_text()
+        if pos >= len(text):
+            return pos
+        # If cursor is at the start of a placeholder, jump past it.
+        for ph_map in (self._paste_text_map, self._capture_image_map):
+            for ph in ph_map:
+                end = pos + len(ph)
+                if text[pos:end] == ph:
+                    return end
+        return pos + 1
+
     def _capture_word_move(self, direction: int) -> None:
-        """Move capture cursor by one word. direction: -1=left, +1=right."""
+        """Move capture cursor by one word. direction: -1=left, +1=right.
+
+        Placeholders (``[Paste #N]``, ``[Image #N]``) are treated as
+        single atomic word-units so Opt+Left/Right never lands the
+        cursor inside a placeholder (which would otherwise happen
+        because placeholders contain a space between ``Paste``/``#``).
+        """
         text = self._capture_text()
         p = self._capture_cursor_pos
+
+        def _placeholder_at(pos: int, rev: bool) -> Optional[int]:
+            """Return opposite end of a placeholder adjacent to pos."""
+            for ph_map in (self._paste_text_map,
+                           self._capture_image_map):
+                for ph in ph_map:
+                    if rev:
+                        start = pos - len(ph)
+                        if start >= 0 and text[start:pos] == ph:
+                            return start
+                    else:
+                        end = pos + len(ph)
+                        if text[pos:end] == ph:
+                            return end
+            return None
+
         if direction < 0:
+            # Skip trailing spaces.
             while p > 0 and text[p - 1] == ' ':
                 p -= 1
-            while p > 0 and text[p - 1] != ' ':
-                p -= 1
+            # Jump over placeholder if one ends here, else skip word.
+            ph_start = _placeholder_at(p, rev=True)
+            if ph_start is not None:
+                p = ph_start
+            else:
+                while p > 0 and text[p - 1] != ' ':
+                    p -= 1
+                    # But don't stop inside a placeholder.
+                    ph_start2 = _placeholder_at(p, rev=True)
+                    if ph_start2 is not None and ph_start2 < p:
+                        p = ph_start2
+                        break
         else:
-            while p < len(text) and text[p] != ' ':
-                p += 1
+            # Jump over placeholder if one starts here, else skip word.
+            ph_end = _placeholder_at(p, rev=False)
+            if ph_end is not None:
+                p = ph_end
+            else:
+                while p < len(text) and text[p] != ' ':
+                    p += 1
+                    ph_end2 = _placeholder_at(p, rev=False)
+                    if ph_end2 is not None:
+                        p = ph_end2
+                        break
+            # Skip trailing spaces.
             while p < len(text) and text[p] == ' ':
                 p += 1
         self._capture_cursor_pos = p
@@ -1869,13 +2198,13 @@ class LeapServer:
             self._capture_cancel()
         elif self._is_csi_u_cancel(seq):
             self._capture_cancel()
-        elif seq == b'\x1b[D':  # Left arrow
-            if self._capture_cursor_pos > 0:
-                self._capture_cursor_pos -= 1
+        elif seq == b'\x1b[D':  # Left arrow — jumps over placeholders
+            self._capture_cursor_pos = self._capture_cursor_left(
+                self._capture_cursor_pos)
             self._capture_display(self._capture_text())
-        elif seq == b'\x1b[C':  # Right arrow
-            if self._capture_cursor_pos < len(self._capture_text()):
-                self._capture_cursor_pos += 1
+        elif seq == b'\x1b[C':  # Right arrow — jumps over placeholders
+            self._capture_cursor_pos = self._capture_cursor_right(
+                self._capture_cursor_pos)
             self._capture_display(self._capture_text())
         elif seq == b'\x1b[1;3D':  # Opt+Left
             self._capture_word_move(-1)
@@ -1918,7 +2247,7 @@ class LeapServer:
             self.pty.send('^')
         except OSError:
             pass
-        self._terminal_input_buf.append(0x5e)
+        self._terminal_buf_insert(0x5e)
         self._chars_sent_to_cli += 1
 
     def _detect_paste(self, data: bytes) -> bool:
@@ -1931,13 +2260,22 @@ class LeapServer:
         """
         _BP_START = b'\x1b[200~'
         _BP_END = b'\x1b[201~'
-        bp_start = data.find(_BP_START)
-        bp_end = data.find(_BP_END)
-        chunk_has_paste = self._in_bracketed_paste or bp_start >= 0
-        if bp_end >= 0:
-            self._in_bracketed_paste = False
-        elif bp_start >= 0:
+        # Use rfind so ``_in_bracketed_paste`` reflects the LAST
+        # marker in the chunk — a chunk with ``start…end…start``
+        # ends inside a new paste (True), and ``end…start…end``
+        # ends outside (False).
+        bp_start = data.rfind(_BP_START)
+        bp_end = data.rfind(_BP_END)
+        chunk_has_paste = (
+            self._in_bracketed_paste
+            or bp_start >= 0
+            or bp_end >= 0
+        )
+        if bp_start > bp_end:
             self._in_bracketed_paste = True
+        elif bp_end > bp_start:
+            self._in_bracketed_paste = False
+        # (both -1 → no markers, leave flag as-is)
         if chunk_has_paste and self._pending_caret:
             # Flush the held "^" — it was a literal, not a capture
             # trigger.  We can't add to `out` here (no access), so
@@ -2026,6 +2364,7 @@ class LeapServer:
                 self._queue_capture_mode = False
                 self._capture_reset_images()
                 self._terminal_input_buf.clear()
+                self._terminal_input_cursor = 0
         elif b == 0x16:  # Ctrl+V — paste clipboard image
             if self._pending_caret:
                 self._pending_caret = False
@@ -2167,7 +2506,7 @@ class LeapServer:
         if self._pending_caret_flush:
             self._pending_caret_flush = False
             out.append(0x5e)
-            self._terminal_input_buf.append(0x5e)
+            self._terminal_buf_insert(0x5e)
             self._chars_sent_to_cli += 1
 
         # Check if the very first byte is "^" and _pending_caret is set
@@ -2197,7 +2536,7 @@ class LeapServer:
                 self._pending_caret_timer = None
             self._pending_caret = False
             out.append(0x5e)
-            self._terminal_input_buf.append(0x5e)
+            self._terminal_buf_insert(0x5e)
             self._chars_sent_to_cli += 1
 
         # If a previous call ended mid-escape, skip continuation bytes.
@@ -2307,10 +2646,18 @@ class LeapServer:
                         esc_seq, is_standalone_esc)
                 elif esc_seq == b'\x1b[200~':
                     # Bracketed paste start — begin accumulating so we
-                    # can collapse large pastes to a placeholder.
+                    # can collapse large pastes to a placeholder.  If
+                    # a previous paste never received its end marker
+                    # (malformed stream), force-finalize it first so
+                    # its accumulated bytes aren't silently dropped
+                    # and _in_bracketed_paste doesn't stay stuck.
+                    if self._paste_accumulator is not None:
+                        self._finalize_paste_capture()
                     self._paste_accumulator = bytearray()
                     self._paste_buf_snapshot_len = len(
                         self._terminal_input_buf)
+                    self._paste_cursor_snapshot = (
+                        self._terminal_input_cursor)
                     self._paste_chars_snapshot = self._chars_sent_to_cli
                     out.extend(esc_seq)
                 elif esc_seq == b'\x1b[201~':
@@ -2322,6 +2669,7 @@ class LeapServer:
                     # CSI-u Ctrl+C outside capture — clear input
                     # buf just like the raw 0x03 handler does.
                     self._terminal_input_buf.clear()
+                    self._terminal_input_cursor = 0
                     self._chars_sent_to_cli = 0
                     self._preserved_input_buf.clear()
                     self._preserved_chars_sent = 0
@@ -2331,14 +2679,25 @@ class LeapServer:
                       and not chunk_has_paste
                       and self._is_csi_u_paste(esc_seq)):
                     # CSI-u Ctrl+V outside capture — save clipboard
-                    # image so the next ^^ picks it up.
+                    # image so the next ^^ picks it up at the right
+                    # position (cursor position, not end-of-buf).
                     path = self._save_clipboard_image()
                     if path:
-                        pos = len(self._terminal_input_buf.decode(
-                            'utf-8', errors='replace'))
-                        self._pending_paste_images.append((pos, path))
+                        self._pending_paste_images.append(
+                            (self._terminal_input_cursor, path))
                     out.extend(esc_seq)
                 else:
+                    # Mirror cursor motion escapes so our
+                    # _terminal_input_buf stays in sync with Claude.
+                    if esc_seq == b'\x1b[D':  # Left
+                        self._terminal_cursor_left()
+                    elif esc_seq == b'\x1b[C':  # Right
+                        self._terminal_cursor_right()
+                    elif esc_seq in (b'\x1b[H', b'\x1b[1~'):  # Home
+                        self._terminal_input_cursor = 0
+                    elif esc_seq in (b'\x1b[F', b'\x1b[4~'):  # End
+                        self._terminal_input_cursor = len(
+                            self._terminal_input_buf)
                     out.extend(esc_seq)
                 continue
 
@@ -2347,6 +2706,29 @@ class LeapServer:
                 i, dirty = self._capture_handle_char(
                     b, data, i, chunk_has_paste)
                 capture_dirty |= dirty
+                continue
+
+            # --- Active bracketed paste: short-circuit all special-key
+            # handlers so the pasted content reaches the accumulator
+            # byte-for-byte.  Without this, characters like ``^``,
+            # backspace, Ctrl+C, and other control bytes inside a
+            # paste trigger their normal semantics (delete, clear buf,
+            # etc.) and the raw content in the accumulator ends up
+            # missing those bytes — the saved/resolved paste no
+            # longer matches what the user actually pasted.
+            if self._paste_accumulator is not None:
+                self._paste_accumulator.append(b)
+                out.append(b)
+                # Track only printable chars in the terminal buf for
+                # later truncation-to-snapshot in _finalize.  Control
+                # chars that Claude renders as invisible (e.g. \t, \r)
+                # don't bump visible-char counters.  Insert at the
+                # mirrored cursor so pastes placed mid-line end up
+                # in the correct position in our buf.
+                if 0x20 <= b < 0x7f or b >= 0x80:
+                    self._terminal_buf_insert(b)
+                    self._chars_sent_to_cli += 1
+                i += 1
                 continue
 
             # "^^" (double caret) → queue capture mode.
@@ -2361,7 +2743,7 @@ class LeapServer:
                     # bypass the pending-caret state machine so pasted
                     # "^^" isn't mangled into a single "^".
                     out.append(0x5e)
-                    self._terminal_input_buf.append(0x5e)
+                    self._terminal_buf_insert(0x5e)
                     self._chars_sent_to_cli += 1
                     i += 1
                     continue
@@ -2412,15 +2794,10 @@ class LeapServer:
                 continue
 
             # --- Normal handling ---
+            # Paste-mode bytes were handled earlier by the
+            # active-paste short-circuit, so any \r here is a real
+            # Enter keypress outside a paste.
             if b == 0x0d:  # Enter
-                if self._paste_accumulator is not None:
-                    # Inside bracketed paste — treat as literal newline,
-                    # accumulate for later collapse, don't trigger
-                    # Enter semantics (which would clear buf).
-                    self._paste_accumulator.append(b)
-                    out.append(b)
-                    i += 1
-                    continue
                 self._user_has_typed = True
                 if self._terminal_input_buf:
                     msg = self._terminal_input_buf.decode(
@@ -2428,6 +2805,7 @@ class LeapServer:
                     if msg:
                         self.queue.track_sent(msg)
                     self._terminal_input_buf.clear()
+                self._terminal_input_cursor = 0
                 self._chars_sent_to_cli = 0
                 # User committed input — discard any preserved text.
                 self._preserved_input_buf.clear()
@@ -2439,22 +2817,13 @@ class LeapServer:
                 self._pending_paste_images.clear()
                 out.append(b)
             elif b == 0x7f:  # Backspace
-                if self._terminal_input_buf:
-                    # Pop a full UTF-8 character (1–4 bytes), not just
-                    # one byte.  The TUI deletes one character per
-                    # backspace, so the buffer must stay in sync.
-                    # First strip continuation bytes (10xxxxxx), then
-                    # the lead byte.
-                    while (self._terminal_input_buf
-                           and self._terminal_input_buf[-1] & 0xC0 == 0x80):
-                        self._terminal_input_buf.pop()
-                    if self._terminal_input_buf:
-                        self._terminal_input_buf.pop()
+                self._terminal_buf_backspace()
                 out.append(b)
                 self._chars_sent_to_cli = max(
                     0, self._chars_sent_to_cli - 1)
             elif b == 0x03:  # Ctrl+C — discard buffer
                 self._terminal_input_buf.clear()
+                self._terminal_input_cursor = 0
                 self._chars_sent_to_cli = 0
                 self._preserved_input_buf.clear()
                 self._preserved_chars_sent = 0
@@ -2464,22 +2833,18 @@ class LeapServer:
                 if not chunk_has_paste:
                     path = self._save_clipboard_image()
                     if path:
-                        pos = len(self._terminal_input_buf.decode(
-                            'utf-8', errors='replace'))
+                        pos = self._terminal_input_cursor
                         self._pending_paste_images.append((pos, path))
                 out.append(b)
             elif 0x20 <= b < 0x7f or b >= 0x80:
-                self._terminal_input_buf.append(b)
+                # Insert at cursor so text typed between placeholders
+                # appears in the right order in our mirror of Claude's
+                # input line.
+                self._terminal_buf_insert(b)
                 out.append(b)
                 self._chars_sent_to_cli += 1
-                if self._paste_accumulator is not None:
-                    self._paste_accumulator.append(b)
             else:
                 out.append(b)
-                if self._paste_accumulator is not None and b == 0x0a:
-                    # LF inside paste — accumulate so the saved
-                    # raw content keeps line breaks.
-                    self._paste_accumulator.append(b)
             i += 1
 
         # Deferred display update after paste in capture mode — one
