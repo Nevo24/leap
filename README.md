@@ -10,6 +10,7 @@ Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any t
 - **Real-time GUI monitoring** — See all sessions, jump across IDEs and projects
 - **PR tracking** — GitLab & GitHub thread detection with `/leap` command support
 - **Slack integration** — Bidirectional messaging between Slack and Leap sessions
+- **Zoom anywhere** — `Cmd+Scroll` or `Cmd+±/0` zooms the area under your mouse independently (text, buttons, sidebar, tooltips, popups).
 
 ## Installation
 

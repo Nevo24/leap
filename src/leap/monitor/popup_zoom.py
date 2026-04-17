@@ -126,25 +126,76 @@ class PopupZoomManager(QObject):
         prefs['popup_font_size'] = self._size
         save_monitor_prefs(prefs)
 
+    def _popup_from(self, obj) -> Optional[QWidget]:
+        """Return the popup widget containing obj, or None."""
+        w = obj if isinstance(obj, QWidget) else None
+        while w is not None:
+            if isinstance(w, _POPUP_TYPES):
+                return w
+            w = w.parent()
+        return None
+
+    def _parent_zoom(self, popup: QWidget, delta: int, reset: bool = False) -> bool:
+        """Route the zoom to the popup's parent window.
+
+        Qt's stylesheet cascade gives the parent window's stylesheet
+        precedence over the app-level popup rule for the popup's
+        subtree — so changing only popup_font_size has no visible
+        effect.  Zooming the parent window instead produces the
+        expected change on the popup *and* the parent (which the
+        user explicitly accepted: "I don't care that this resizing
+        is affecting the window that contains this popups — the
+        user should be able to do it over the popup").
+        """
+        p = popup.parent()
+        while p is not None:
+            # Dialog with ZoomMixin — use its buttons zoom.
+            if hasattr(p, '_zoom_delta') and hasattr(p, '_zoom_reset'):
+                if reset:
+                    p._zoom_reset()
+                else:
+                    p._zoom_delta(delta)
+                return True
+            # Notes uses its own buttons zoom method.
+            if hasattr(p, '_zoom') and hasattr(p, '_reset_zoom'):
+                if reset:
+                    p._reset_zoom()
+                else:
+                    p._zoom(delta, target='buttons')
+                return True
+            # MonitorWindow — use main-font zoom.
+            if (hasattr(p, '_zoom_main_delta')
+                    and hasattr(p, '_zoom_main_reset')):
+                if reset:
+                    p._zoom_main_reset()
+                else:
+                    p._zoom_main_delta(delta)
+                return True
+            p = p.parent()
+        # No parent with zoom found — fall back to our own popup_font_size.
+        if reset:
+            self._reset()
+        else:
+            self._delta(delta)
+        return True
+
     def eventFilter(self, obj, event):
         etype = event.type()
         if etype == QEvent.Wheel:
-            if (event.modifiers() & Qt.ControlModifier
-                    and _is_inside_popup(obj if isinstance(obj, QWidget) else None)):
-                delta = 1 if event.angleDelta().y() > 0 else -1
-                self._delta(delta)
-                return True
+            if event.modifiers() & Qt.ControlModifier:
+                popup = self._popup_from(obj)
+                if popup is not None:
+                    delta = 1 if event.angleDelta().y() > 0 else -1
+                    return self._parent_zoom(popup, delta)
         elif etype == QEvent.KeyPress:
-            if (event.modifiers() & Qt.ControlModifier
-                    and _is_inside_popup(obj if isinstance(obj, QWidget) else None)):
-                key = event.key()
-                if key in (Qt.Key_Equal, Qt.Key_Plus):
-                    self._delta(1)
-                    return True
-                if key == Qt.Key_Minus:
-                    self._delta(-1)
-                    return True
-                if key == Qt.Key_0:
-                    self._reset()
-                    return True
+            if event.modifiers() & Qt.ControlModifier:
+                popup = self._popup_from(obj)
+                if popup is not None:
+                    key = event.key()
+                    if key in (Qt.Key_Equal, Qt.Key_Plus):
+                        return self._parent_zoom(popup, 1)
+                    if key == Qt.Key_Minus:
+                        return self._parent_zoom(popup, -1)
+                    if key == Qt.Key_0:
+                        return self._parent_zoom(popup, 0, reset=True)
         return super().eventFilter(obj, event)
