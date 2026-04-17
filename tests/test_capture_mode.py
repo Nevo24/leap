@@ -267,27 +267,15 @@ class TestPasteCollapse:
         srv._save_capture_message()
         assert srv._saved_messages == ['line1\nline2\nline3']
 
-    def test_recall_collapses_raw_back_to_placeholder(self):
-        """Browsing a saved multi-line msg wraps it into [Paste #N]."""
+    def test_recall_shows_raw_text(self):
+        """Recalled multi-line messages show raw text (no re-wrap)."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
         srv._saved_messages = ['line1\nline2\nline3']
-        srv._queue_capture_mode = True  # pretend we're in capture
-        with patch.object(srv, '_capture_display'):
-            srv._browse_saved_history(-1)
-        # Capture buf shows a placeholder, not the raw text.
-        assert srv._queue_capture_buf == b'[Paste #1]'
-        assert srv._paste_text_map['[Paste #1]'] == 'line1\nline2\nline3'
-
-    def test_recall_short_msg_stays_raw(self):
-        """Short single-line saved messages are not collapsed."""
-        srv = make_server(CLIState.IDLE)
-        srv.pty.process.child_fd = 999
-        srv._saved_messages = ['hello world']
         srv._queue_capture_mode = True
         with patch.object(srv, '_capture_display'):
             srv._browse_saved_history(-1)
-        assert srv._queue_capture_buf == b'hello world'
+        assert srv._queue_capture_buf == b'line1\nline2\nline3'
         assert srv._paste_text_map == {}
 
 
