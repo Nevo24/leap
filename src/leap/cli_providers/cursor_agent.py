@@ -14,7 +14,9 @@ Key differences from Claude Code:
 """
 
 import json
+import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -192,10 +194,6 @@ class CursorAgentProvider(CLIProvider):
 
     def find_cli(self) -> Optional[str]:
         """Find cursor-agent in PATH or common install location."""
-        import os
-        import shutil
-
-        # Check PATH first
         result = shutil.which(self.command)
         if result:
             return result

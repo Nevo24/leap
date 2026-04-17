@@ -8,18 +8,29 @@ import signal
 import subprocess
 from typing import TYPE_CHECKING, Any, Optional
 
+import gitlab
+from github import Github
 from PyQt5.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 
+from leap.monitor.dialogs.github_setup_dialog import (
+    GitHubSetupDialog, _check_github_scopes, _verify_github_server,
+)
+from leap.monitor.dialogs.gitlab_setup_dialog import (
+    GitLabSetupDialog, _check_gitlab_scopes,
+)
+from leap.monitor.navigation import close_terminal_with_title, find_terminal_with_title
 from leap.monitor.pr_tracking.base import SCMProvider
 from leap.monitor.pr_tracking.config import (
     load_github_config, load_gitlab_config, resolve_scm_token,
     save_github_config, save_gitlab_config,
 )
-from leap.monitor.themes import current_theme
 from leap.monitor.pr_tracking.git_utils import (
     SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
 )
+from leap.monitor.pr_tracking.github_provider import GitHubProvider
+from leap.monitor.pr_tracking.gitlab_provider import GitLabProvider
+from leap.monitor.themes import current_theme
 from leap.slack.config import is_slack_installed
 from leap.utils.constants import SCM_POLL_INTERVAL, SLACK_BOT_LOCK, SLACK_DIR, STORAGE_DIR
 
@@ -51,7 +62,6 @@ class SCMConfigMixin(_Base):
             gitlab_config, 'private_token', 'GitLab', save_gitlab_config)
         if gitlab_config and gitlab_token and 'username' in gitlab_config:
             try:
-                from leap.monitor.pr_tracking.gitlab_provider import GitLabProvider
                 self._scm_providers[SCMType.GITLAB.value] = GitLabProvider(
                     gitlab_url=gitlab_config.get('gitlab_url', 'https://gitlab.com'),
                     private_token=gitlab_token,
@@ -70,7 +80,6 @@ class SCMConfigMixin(_Base):
             github_config, 'token', 'GitHub', save_github_config)
         if github_config and github_token and 'username' in github_config:
             try:
-                from leap.monitor.pr_tracking.github_provider import GitHubProvider
                 self._scm_providers[SCMType.GITHUB.value] = GitHubProvider(
                     token=github_token,
                     username=github_config['username'],
@@ -142,8 +151,6 @@ class SCMConfigMixin(_Base):
             return False, 'Token appears to be a GitLab token, not a GitHub token.'
         try:
             if provider_name == 'GitLab':
-                import gitlab
-                from leap.monitor.dialogs.gitlab_setup_dialog import _check_gitlab_scopes
                 gl = gitlab.Gitlab(
                     config.get('gitlab_url', 'https://gitlab.com'),
                     private_token=token, timeout=10)
@@ -156,10 +163,6 @@ class SCMConfigMixin(_Base):
                     logger.debug("GitLab token: %s", w)
                 return True, username
             elif provider_name == 'GitHub':
-                from github import Github
-                from leap.monitor.dialogs.github_setup_dialog import (
-                    _check_github_scopes, _verify_github_server,
-                )
                 base_url = config.get('github_url', '')
                 if base_url:
                     stripped = base_url.lower().rstrip('/')
@@ -278,8 +281,6 @@ class SCMConfigMixin(_Base):
 
     def _open_gitlab_setup(self) -> None:
         """Open the GitLab setup dialog."""
-        from leap.monitor.dialogs.gitlab_setup_dialog import GitLabSetupDialog
-
         dialog = GitLabSetupDialog(self)
         if dialog.exec_():
             # Re-initialize providers after successful save — reset tracking
@@ -296,8 +297,6 @@ class SCMConfigMixin(_Base):
 
     def _open_github_setup(self) -> None:
         """Open the GitHub setup dialog."""
-        from leap.monitor.dialogs.github_setup_dialog import GitHubSetupDialog
-
         dialog = GitHubSetupDialog(self)
         if dialog.exec_():
             # Re-initialize providers after successful save — reset tracking
@@ -484,8 +483,6 @@ class SCMConfigMixin(_Base):
         all matching PIDs, send SIGTERM, then schedule a SIGKILL after a
         short delay (non-blocking via QTimer).
         """
-        from leap.monitor.navigation import close_terminal_with_title
-
         pids: list[int] = []
         for pattern in ['leap-main.sh --slack', 'leap-slack.py']:
             try:
@@ -579,7 +576,6 @@ class SCMConfigMixin(_Base):
 
     def _jump_to_slack_bot_terminal(self) -> None:
         """Focus the terminal running the Slack bot."""
-        from leap.monitor.navigation import find_terminal_with_title
         default_term = self._prefs.get('default_terminal')
         if not find_terminal_with_title('leap slack-bot',
                                         preferred_ide=default_term):

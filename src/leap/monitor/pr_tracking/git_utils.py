@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
+from leap.monitor.pr_tracking.config import load_github_config, load_gitlab_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -151,11 +153,6 @@ def refine_scm_type(host_url: str, scm_type: SCMType) -> SCMType:
     """
     if scm_type != SCMType.UNKNOWN:
         return scm_type
-
-    # Import here to avoid circular import (config imports are lightweight)
-    from leap.monitor.pr_tracking.config import (
-        load_github_config, load_gitlab_config,
-    )
 
     return detect_scm_type(
         host_url,

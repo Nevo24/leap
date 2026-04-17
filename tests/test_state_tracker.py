@@ -6,8 +6,10 @@ from typing import List
 
 import pytest
 
-from leap.server.state_tracker import CLIStateTracker as ClaudeStateTracker
+from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
+from leap.cli_providers.states import CLIState, WAITING_STATES
+from leap.server.state_tracker import CLIStateTracker as ClaudeStateTracker
 from leap.utils.constants import SAFETY_SILENCE_TIMEOUT, SAFETY_WAITING_TIMEOUT
 
 
@@ -512,7 +514,6 @@ class TestConfirmedPatternCrossLine:
     def test_cross_line_text_no_false_positive(self, tmp_path: Path) -> None:
         """'Conversation' on line 1 + 'interrupted' on line 2 should
         NOT form 'Conversationinterrupted' for confirmed pattern."""
-        from leap.cli_providers.codex import CodexProvider
         t = [0.0]
         tracker = make_tracker(tmp_path, t, provider=CodexProvider())
         tracker.on_input(b'x')  # seen user input
@@ -527,7 +528,6 @@ class TestConfirmedPatternCrossLine:
 
     def test_same_line_confirmed_pattern_detected(self, tmp_path: Path) -> None:
         """'Conversation interrupted' on SAME line should be detected."""
-        from leap.cli_providers.codex import CodexProvider
         t = [0.0]
         tracker = make_tracker(tmp_path, t, provider=CodexProvider())
         tracker.on_input(b'x')
@@ -1074,7 +1074,6 @@ class TestClaudeDialogIndicator:
     patterns and numbered menu prompts."""
 
     def test_standard_dialog_detected(self) -> None:
-        from leap.cli_providers.claude import ClaudeProvider
         p = ClaudeProvider()
         # Both patterns present
         assert p.has_dialog_indicator('AllowReadEntertoselectEsctocancel')
@@ -1083,7 +1082,6 @@ class TestClaudeDialogIndicator:
         assert p.has_dialog_indicator('Entertoselectoption')
 
     def test_numbered_menu_detected(self) -> None:
-        from leap.cli_providers.claude import ClaudeProvider
         p = ClaudeProvider()
         # ❯ cursor (U+276F)
         assert p.has_dialog_indicator('\u276f1.Yes2.No(esc)')
@@ -1091,7 +1089,6 @@ class TestClaudeDialogIndicator:
         assert p.has_dialog_indicator('\u203a1.Yes2.No(esc)')
 
     def test_no_dialog_not_detected(self) -> None:
-        from leap.cli_providers.claude import ClaudeProvider
         p = ClaudeProvider()
         assert not p.has_dialog_indicator('Taskcompletehereareresults')
         assert not p.has_dialog_indicator('Processingfiles...')
@@ -1100,7 +1097,6 @@ class TestClaudeDialogIndicator:
         """is_dialog_certain must NOT match response text that happens
         to mention 'Esc to cancel' — only all() of standard patterns
         or a numbered menu cursor qualifies."""
-        from leap.cli_providers.claude import ClaudeProvider
         p = ClaudeProvider()
         # Response text explaining keyboard shortcuts
         response = 'pressEsctocanceltheoperation'
@@ -1108,13 +1104,11 @@ class TestClaudeDialogIndicator:
         assert not p.is_dialog_certain(response)  # strict: rejects
 
     def test_strict_detects_numbered_menu(self) -> None:
-        from leap.cli_providers.claude import ClaudeProvider
         p = ClaudeProvider()
         assert p.is_dialog_certain('\u276f1.Yes2.No(esc)')
         assert p.is_dialog_certain('\u203a1.Yes2.No(esc)')
 
     def test_strict_detects_full_standard_dialog(self) -> None:
-        from leap.cli_providers.claude import ClaudeProvider
         p = ClaudeProvider()
         assert p.is_dialog_certain('AllowReadEntertoselectEsctocancel')
         # Partial (only Esc to cancel) — strict rejects
@@ -1123,12 +1117,10 @@ class TestClaudeDialogIndicator:
 
 class TestCLIStateEnum:
     def test_cli_state_string_comparison(self) -> None:
-        from leap.cli_providers.states import CLIState
         assert CLIState.IDLE == 'idle'
         assert CLIState.RUNNING == 'running'
 
     def test_waiting_states_membership(self) -> None:
-        from leap.cli_providers.states import CLIState, WAITING_STATES
         assert CLIState.NEEDS_PERMISSION in WAITING_STATES
         assert CLIState.NEEDS_INPUT in WAITING_STATES
         assert CLIState.INTERRUPTED in WAITING_STATES

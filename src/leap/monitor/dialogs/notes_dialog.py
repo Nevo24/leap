@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -23,10 +24,10 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QStyle, QTableWidget, QTableWidgetItem, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QUrl, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import (
-    QColor, QCursor, QDrag, QImage, QImageReader, QPixmap,
-    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat,
+    QColor, QCursor, QDesktopServices, QDrag, QImage, QImageReader, QPixmap,
+    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat, QWheelEvent,
 )
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
@@ -38,10 +39,14 @@ from leap.monitor.dialogs.notes_undo import (
     NoteContentChangeCmd, NotesCmdContext, NotesUndoStack,
     RenameFolderCmd, RenameNoteCmd, ReorderCmd,
 )
-from leap.monitor.pr_tracking.config import (
-    load_dialog_geometry, load_monitor_prefs, save_dialog_geometry,
-    save_monitor_prefs,
+from leap.monitor.leap_sender import (
+    prepend_to_leap_queue, send_to_leap_session_raw,
 )
+from leap.monitor.pr_tracking.config import (
+    load_dialog_geometry, load_monitor_prefs, load_saved_presets,
+    save_dialog_geometry, save_monitor_prefs, save_named_preset,
+)
+from leap.monitor.session_manager import get_active_sessions
 from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR, QUEUE_IMAGES_DIR
 
@@ -128,7 +133,6 @@ def _link_char_format(url: str) -> QTextCharFormat:
 
 def _try_open_url(url: str) -> None:
     """Open a URL in the default browser."""
-    from PyQt5.QtGui import QDesktopServices
     QDesktopServices.openUrl(QUrl(url))
 
 
@@ -731,7 +735,6 @@ class _ItemLineEdit(QLineEdit):
         self.setCursorPosition(0)
 
     def mousePressEvent(self, event: 'QMouseEvent') -> None:  # type: ignore[override]
-        from PyQt5.QtWidgets import QApplication
         win = self.window()
         if win and not win.isActiveWindow():
             QApplication.setActiveWindow(win)
@@ -861,7 +864,6 @@ class _DragGrip(QLabel):
             self._drag_start = None
             # Defer the drag so this handler fully returns first
             idx = self._index
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: self.drag_started.emit(idx))
 
     def mouseReleaseEvent(self, event: 'QMouseEvent') -> None:
@@ -946,7 +948,6 @@ class _ChecklistItemWidget(QFrame):
         )
 
         # Show the start of the text (not the end) when the item is first laid out.
-        from PyQt5.QtCore import QTimer
         QTimer.singleShot(0, self._edit._reset_cursor_to_start)
 
     def _apply_checked_style(self, checked: bool) -> None:
@@ -962,7 +963,6 @@ class _ChecklistItemWidget(QFrame):
 
     def focus_edit(self, cursor_at_end: bool = True) -> None:
         """Focus this item's text field and expand into wrapping editor."""
-        from PyQt5.QtWidgets import QApplication
         win = self.window()
         if win:
             QApplication.setActiveWindow(win)
@@ -984,7 +984,6 @@ class _ChecklistItemWidget(QFrame):
         """Dismiss this item's popup if it's open."""
         if self._popup is None:
             return
-        import sip
         wrap = self._popup
         self._popup = None
         if _ChecklistItemWidget._active_expand is self:
@@ -1043,7 +1042,6 @@ class _ChecklistItemWidget(QFrame):
             wrap.setFixedHeight(max(self._edit.height(), int(doc_h) + 4))
 
         def dismiss(save: bool) -> None:
-            import sip
             if self._popup is not wrap:
                 return
             self._popup = None
@@ -1114,12 +1112,10 @@ class _ChecklistItemWidget(QFrame):
                                 placeholder = f'![image]({filename})'
                             wrap.insertPlainText(placeholder)
                             self.text_edited.emit(self._index, wrap.toPlainText().replace('\n', ' '))
-                            from PyQt5.QtCore import QTimer
                             QTimer.singleShot(0, resize_wrap)
                             return
             QTextEdit.keyPressEvent(wrap, event)
             self.text_edited.emit(self._index, wrap.toPlainText().replace('\n', ' '))
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, resize_wrap)
 
         def on_focus_out(event: 'QFocusEvent') -> None:
@@ -1127,7 +1123,6 @@ class _ChecklistItemWidget(QFrame):
                 QTextEdit.focusOutEvent(wrap, event)
             except RuntimeError:
                 return
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: dismiss(True))
 
         _setup_textedit_image_hover(wrap, self._edit._resolve_placeholder_fn)
@@ -1136,7 +1131,6 @@ class _ChecklistItemWidget(QFrame):
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
-        from PyQt5.QtCore import QTimer
         QTimer.singleShot(0, resize_wrap)
         wrap.setFocus()
         cursor = wrap.textCursor()
@@ -1426,8 +1420,6 @@ class _ChecklistWidget(QWidget):
         self._layout.addStretch()
 
         # Restore focus (deferred so widgets are fully laid out).
-        from PyQt5.QtCore import QTimer
-
         if focus_widget is not None:
             w_ref = focus_widget
             at_end = focus_at_end
@@ -1435,7 +1427,6 @@ class _ChecklistWidget(QWidget):
         elif self._focus_add_after_rebuild and self._add_field is not None:
             field = self._add_field
             def _focus_add() -> None:
-                from PyQt5.QtWidgets import QApplication
                 win = field.window()
                 if win:
                     QApplication.setActiveWindow(win)
@@ -1536,27 +1527,26 @@ class _ChecklistWidget(QWidget):
 
     def eventFilter(self, obj: 'QObject', event: 'QEvent') -> bool:
         """Handle drag-over and drop events on the scroll viewport."""
-        from PyQt5.QtCore import QEvent as _QE
         if obj is not self._scroll.viewport():
             return super().eventFilter(obj, event)
 
-        if event.type() == _QE.DragEnter:
+        if event.type() == QEvent.DragEnter:
             if event.mimeData().hasFormat('application/x-leap-checklist-item'):
                 event.acceptProposedAction()
                 return True
 
-        elif event.type() == _QE.DragMove:
+        elif event.type() == QEvent.DragMove:
             if event.mimeData().hasFormat('application/x-leap-checklist-item'):
                 event.acceptProposedAction()
                 target = self._drop_target_index(event.pos().y())
                 self._show_drop_indicator(target)
                 return True
 
-        elif event.type() == _QE.DragLeave:
+        elif event.type() == QEvent.DragLeave:
             self._drop_indicator.setVisible(False)
             return True
 
-        elif event.type() == _QE.Drop:
+        elif event.type() == QEvent.Drop:
             self._drop_indicator.setVisible(False)
             if event.mimeData().hasFormat('application/x-leap-checklist-item'):
                 event.acceptProposedAction()
@@ -1765,7 +1755,6 @@ class _ChecklistWidget(QWidget):
         # Dismiss any stale add popup
         if self._add_popup is not None:
             self._dismiss_add_popup(save=True)
-        import time
         row_layout = self._layout
         edit_idx = row_layout.indexOf(self._add_field)
 
@@ -1845,11 +1834,9 @@ class _ChecklistWidget(QWidget):
                                 self._pasted_images.add(filename)
                             placeholder = self._register_image(filename)
                             wrap.insertPlainText(placeholder)
-                            from PyQt5.QtCore import QTimer
                             QTimer.singleShot(0, resize_wrap)
                             return
             QTextEdit.keyPressEvent(wrap, event)
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, resize_wrap)
 
         def on_focus_out(event: 'QFocusEvent') -> None:
@@ -1857,7 +1844,6 @@ class _ChecklistWidget(QWidget):
                 QTextEdit.focusOutEvent(wrap, event)
             except RuntimeError:
                 return
-            from PyQt5.QtCore import QTimer
             QTimer.singleShot(0, lambda: self._dismiss_add_popup(save=True))
 
         _setup_textedit_image_hover(wrap, self._resolve_placeholder)
@@ -1866,8 +1852,6 @@ class _ChecklistWidget(QWidget):
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
-        from PyQt5.QtCore import QTimer
-        from PyQt5.QtWidgets import QApplication
         QTimer.singleShot(0, resize_wrap)
         win = wrap.window()
         if win:
@@ -1879,7 +1863,6 @@ class _ChecklistWidget(QWidget):
 
     def _dismiss_add_popup(self, save: bool) -> None:
         """Collapse the add-field wrapping editor back to QLineEdit."""
-        import sip
         wrap = self._add_popup
         if wrap is None:
             return
@@ -2042,7 +2025,6 @@ class _SessionPickerDialog(ZoomMixin, QDialog):
         self._include_completed.setToolTip(
             'Include checked items when sending to session')
         if is_checklist:
-            from leap.monitor.pr_tracking.config import load_monitor_prefs
             prefs = load_monitor_prefs()
             self._include_completed.setChecked(
                 prefs.get('run_session_include_completed', False))
@@ -2085,15 +2067,11 @@ class _SessionPickerDialog(ZoomMixin, QDialog):
         is_checklist: bool = False,
     ) -> Optional[tuple[str, bool, bool]]:
         """Show the picker and return (tag, at_end, include_completed) or None."""
-        from leap.monitor.session_manager import get_active_sessions
         sessions = get_active_sessions()
         if not sessions:
             QMessageBox.information(
                 parent, 'Run in Session', 'No active sessions found.')
             return None
-        from leap.monitor.pr_tracking.config import (
-            load_monitor_prefs, save_monitor_prefs,
-        )
         aliases = load_monitor_prefs().get('aliases', {})
         dlg = _SessionPickerDialog(sessions, aliases, is_checklist, parent)
         accepted = dlg.exec_() == QDialog.Accepted
@@ -2142,7 +2120,6 @@ class NotesDialog(QDialog):
         self._saved_text: str = ''
         self._switching_mode: bool = False
         # Font sizes — persisted separately in monitor prefs
-        from leap.monitor.pr_tracking.config import load_monitor_prefs
         prefs = load_monitor_prefs()
         default_pt = current_theme().font_size_base
         self._font_size: int = prefs.get('notes_font_size', default_pt)
@@ -3151,11 +3128,6 @@ class NotesDialog(QDialog):
         if '/' in default_name:
             default_name = default_name.rsplit('/', 1)[-1]
 
-        from leap.monitor.pr_tracking.config import (
-            load_monitor_prefs, load_saved_presets, save_monitor_prefs,
-            save_named_preset,
-        )
-
         # Build a small custom dialog with name input + include-completed
         dlg = QDialog(self)
         dlg.setWindowTitle('Save as Preset')
@@ -3252,9 +3224,6 @@ class NotesDialog(QDialog):
                 f'Nothing to send \u2014 the note is empty{hint}.')
             return
 
-        from leap.monitor.leap_sender import (
-            prepend_to_leap_queue, send_to_leap_session_raw,
-        )
         if at_end:
             results = [send_to_leap_session_raw(tag, msg) for msg in messages]
             sent = sum(results)
@@ -3518,7 +3487,6 @@ class NotesDialog(QDialog):
 
         # Debounce disk write — rapid Cmd+scroll fires many events
         if not hasattr(self, '_zoom_save_timer'):
-            from PyQt5.QtCore import QTimer
             self._zoom_save_timer = QTimer(self)
             self._zoom_save_timer.setSingleShot(True)
             self._zoom_save_timer.timeout.connect(self._save_font_sizes)
@@ -3526,7 +3494,6 @@ class NotesDialog(QDialog):
 
     def _save_font_sizes(self) -> None:
         """Persist all font sizes to prefs."""
-        from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs
         prefs = load_monitor_prefs()
         prefs['notes_font_size'] = self._font_size
         prefs['notes_sidebar_font_size'] = self._sidebar_font_size
@@ -3572,14 +3539,11 @@ class NotesDialog(QDialog):
         super().wheelEvent(event)
 
     def eventFilter(self, obj: 'QObject', event: 'QEvent') -> bool:  # type: ignore[override]
-        from PyQt5.QtCore import QEvent as _QE
-        if obj is self._search and event.type() == _QE.FocusIn:
+        if obj is self._search and event.type() == QEvent.FocusIn:
             if not self.isActiveWindow():
                 QApplication.setActiveWindow(self)
         # Intercept Cmd+scroll on viewports — route to correct zoom target
-        if event.type() == _QE.Wheel:
-            import sip
-            from PyQt5.QtGui import QWheelEvent
+        if event.type() == QEvent.Wheel:
             we = sip.cast(event, QWheelEvent)
             if we.modifiers() & Qt.ControlModifier:
                 delta = 1 if we.angleDelta().y() > 0 else -1
@@ -3634,7 +3598,6 @@ class NotesDialog(QDialog):
 
         # The dialog may have caused expand popups to dismiss, so
         # re-check which widget should receive the link.
-        import sip
         focus_died = sip.isdeleted(focus)
         if focus_died:
             focus = QApplication.focusWidget()

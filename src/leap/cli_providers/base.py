@@ -13,6 +13,7 @@ import shutil
 import sys
 import time
 from abc import ABC, abstractmethod
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -184,8 +185,6 @@ class CLIProvider(ABC):
         Returns:
             The last assistant message text, or None if not found.
         """
-        import time as _time
-        from datetime import datetime, timezone
         sessions_dir = self.transcript_sessions_dir
         if sessions_dir is None or not sessions_dir.exists():
             return None
@@ -193,7 +192,7 @@ class CLIProvider(ABC):
             transcript = self._find_active_transcript(sessions_dir)
             if transcript is None:
                 return None
-            if _time.time() - transcript.stat().st_mtime > 30:
+            if time.time() - transcript.stat().st_mtime > 30:
                 return None
             file_size = transcript.stat().st_size
             chunk_size = 32768
@@ -232,8 +231,6 @@ class CLIProvider(ABC):
         Much faster than rglob — only lists files in today's date dir.
         Falls back to yesterday if today's dir doesn't exist yet.
         """
-        import time as _time
-        from datetime import date, timedelta
         today = date.today()
         for d in (today, today - timedelta(days=1)):
             day_dir = sessions_dir / d.strftime('%Y/%m/%d')

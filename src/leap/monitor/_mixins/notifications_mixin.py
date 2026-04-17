@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from PyQt5.QtWidgets import QMessageBox
+
 from leap.monitor.pr_tracking.base import UserNotification
 from leap.monitor.pr_tracking.config import (
     get_dock_enabled, load_github_config, load_gitlab_config,
@@ -52,8 +54,6 @@ class NotificationsMixin(_Base):
         Stops polling, shows a blocking popup, then disables notifications
         for the failing provider and restarts polling.
         """
-        from PyQt5.QtWidgets import QMessageBox
-
         provider_name = scm_type.title()  # "github" -> "Github"
         if scm_type not in (SCMType.GITHUB.value, SCMType.GITLAB.value):
             return

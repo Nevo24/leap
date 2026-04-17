@@ -10,6 +10,11 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+try:
+    from slack_sdk import WebClient
+except ImportError:  # optional dependency
+    WebClient = None  # type: ignore[assignment,misc]
+
 from leap.utils.constants import SLACK_DIR, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -89,8 +94,9 @@ def resolve_team_id() -> str:
     if not bot_token:
         return ''
 
+    if WebClient is None:
+        return ''
     try:
-        from slack_sdk import WebClient
         client = WebClient(token=bot_token)
         resp = client.auth_test()
         team_id = resp.get('team_id', '')

@@ -137,7 +137,6 @@ class ServerLauncher:
         # crashing the IDE (e.g. JetBrains "Could not determine current working directory").
         if project_path and not Path(project_path).is_dir():
             logger.warning("Project path does not exist: %s", project_path)
-            from PyQt5.QtWidgets import QMessageBox
             reply = QMessageBox.warning(
                 self._w,
                 'Project Directory Missing',

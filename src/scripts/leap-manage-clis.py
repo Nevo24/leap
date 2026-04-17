@@ -8,6 +8,7 @@ Provides a menu to:
   4. Rename CLIs (custom display names shown everywhere)
 """
 
+import re
 import sys
 import termios
 import tty
@@ -21,6 +22,7 @@ if str(_SRC_DIR) not in sys.path:
 
 from leap.cli_providers.registry import (
     _BUILTIN_PROVIDERS,
+    _load_cli_order,
     get_display_name,
     get_provider,
     list_providers,
@@ -651,8 +653,6 @@ def render_base_picker(bases: list[tuple[str, str]], cursor: int) -> int:
 
 def create_custom_cli() -> None:
     """Interactive flow to create a custom CLI."""
-    import re
-
     # Step 1: pick base CLI
     bases = [
         (name, get_display_name(name))
@@ -848,7 +848,6 @@ def delete_custom_cli() -> None:
             if cid in all_env:
                 del all_env[cid]
                 save_cli_env(all_env)
-            from leap.cli_providers.registry import _load_cli_order
             order = _load_cli_order()
             if cid in order:
                 order.remove(cid)

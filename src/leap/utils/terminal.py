@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from leap.utils.constants import TERM_TITLE_PREFIX, TERM_TITLE_SUFFIX
+from leap.utils.ide_detection import detect_ide
 
 # VS Code extension watches this file for rename requests
 _VSCODE_REQUEST_FILE = Path.home() / '.leap-terminal-request'
@@ -81,7 +82,6 @@ def _resolve_jetbrains_cli() -> str:
         _jetbrains_cli_path = ''
         return ''
 
-    from leap.utils.ide_detection import detect_ide
     ide = detect_ide()
 
     cli_name = _JETBRAINS_CLI_MAP.get(ide, '')

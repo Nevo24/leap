@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
@@ -487,7 +488,6 @@ class SettingsDialog(ZoomMixin, QDialog):
         as ``<name>  Use ...`` while user-defined tools appear as
         ``<name>.cmd <command>`` — we extract the name before ``.cmd``.
         """
-        import subprocess
         try:
             result = subprocess.run(
                 ['git', 'difftool', '--tool-help'],
@@ -708,7 +708,6 @@ class _ShortcutEdit(QLineEdit):
         self.setPlaceholderText('Click to set shortcut')
 
     def keyPressEvent(self, event: Any) -> None:
-        from PyQt5.QtCore import Qt
         key = event.key()
         if key in (Qt.Key_unknown, Qt.Key_Control, Qt.Key_Shift,
                    Qt.Key_Alt, Qt.Key_Meta):

@@ -7,10 +7,14 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QIcon, QPixmap
 
 from leap.monitor.session_manager import read_client_pid
+from leap.monitor.themes import current_theme
 from leap.utils.constants import SOCKET_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def load_shell_env() -> None:
@@ -87,15 +91,11 @@ def _find_notes_icon_path() -> Optional[Path]:
     return None
 
 
-def notes_icon(size: int = 16) -> Optional['QIcon']:
+def notes_icon(size: int = 16) -> Optional[QIcon]:
     """Return a theme-tinted notes icon, or None if the asset is missing."""
     icon_path = _find_notes_icon_path()
     if not icon_path:
         return None
-
-    from PyQt5.QtGui import QColor, QIcon, QPainter, QPixmap
-    from PyQt5.QtCore import Qt
-    from leap.monitor.themes import current_theme
 
     src = QPixmap(str(icon_path))
     if src.isNull():

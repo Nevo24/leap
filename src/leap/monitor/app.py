@@ -4,6 +4,7 @@ Leap Monitor GUI application.
 PyQt5-based GUI for viewing and managing active Leap sessions.
 """
 
+import faulthandler
 import logging
 import os
 from pathlib import Path
@@ -12,18 +13,27 @@ import sys
 import time
 from typing import Any, Optional
 
+import objc
+from AppKit import (
+    NSAppearance, NSApplication, NSEvent, NSFullSizeContentViewWindowMask,
+    NSImage, NSKeyDownMask, NSWindow, NSWindowStyleMaskFullSizeContentView,
+)
+from Foundation import NSDate, NSRunLoop
 from PyQt5.QtWidgets import (
     QAction, QApplication, QComboBox, QDialog, QFrame, QGridLayout, QMainWindow, QMenu,
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout, QTableWidget,
-    QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QScrollBar, QShortcut, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
+    QTableWidget, QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QTimer, Qt
 from PyQt5.QtGui import (
-    QColor, QCursor, QDrag, QIcon, QImage, QCloseEvent, QPalette, QPixmap,
-    QResizeEvent,
+    QColor, QCursor, QDrag, QIcon, QImage, QCloseEvent, QKeySequence,
+    QPainter, QPainterPath, QPalette, QPen, QPixmap, QResizeEvent, QWindow,
 )
+from PyQt5.QtSvg import QSvgRenderer
 
+from leap.monitor.dialogs.settings_dialog import detect_default_difftool
+from leap.monitor.popup_zoom import PopupZoomManager
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
 from leap.monitor.pr_tracking.config import (
     load_monitor_prefs, load_notification_seen,
@@ -44,14 +54,15 @@ from leap.monitor.ui.table_helpers import (
     QUICK_MSG_PRESET_LABEL, QUICK_MSG_PRESET_TOOLTIP,
     PersistentTooltipStyle, SeparatorDelegate, SeparatorHeaderView, TooltipApp,
 )
-from leap.monitor.ui.ui_widgets import PulsingLabel, IndicatorLabel
+from leap.monitor.ui.ui_widgets import PulsingLabel, ShimmerBar, IndicatorLabel
+from leap.utils.constants import ICON_CACHE_DIR, STORAGE_DIR
 
 from leap.slack.config import is_slack_installed
 from leap.monitor._mixins.actions_menu_mixin import ActionsMenuMixin
 from leap.monitor._mixins.scm_config_mixin import SCMConfigMixin
 from leap.monitor._mixins.session_mixin import SessionMixin
 from leap.monitor._mixins.pr_tracking_mixin import PRTrackingMixin
-from leap.monitor._mixins.pr_display_mixin import PRDisplayMixin
+from leap.monitor._mixins.pr_display_mixin import PRDisplayMixin, _setup_modern_notifications
 from leap.monitor._mixins.notifications_mixin import NotificationsMixin
 from leap.monitor._mixins.table_builder_mixin import TableBuilderMixin
 
@@ -118,7 +129,6 @@ class MonitorWindow(
         self._checking_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
         if 'default_diff_tool' not in self._prefs:
-            from leap.monitor.dialogs.settings_dialog import detect_default_difftool
             self._prefs['default_diff_tool'] = detect_default_difftool()
             self._save_prefs()
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
@@ -199,15 +209,12 @@ class MonitorWindow(
         # Cmd+Q to quit — works even when modal dialogs are open.
         # macOS Dock Quit is unreliable for non-bundled Python apps,
         # so this ensures the user always has a way to quit.
-        from PyQt5.QtWidgets import QShortcut
-        from PyQt5.QtGui import QKeySequence
         quit_shortcut = QShortcut(QKeySequence.Quit, self)
         quit_shortcut.setContext(Qt.ApplicationShortcut)
         quit_shortcut.activated.connect(self.close)
 
         # Set up modern notification API (UNUserNotificationCenter) for
         # banner action buttons and click handling
-        from leap.monitor._mixins.pr_display_mixin import _setup_modern_notifications
         _setup_modern_notifications(self)
 
     def _init_ui(self) -> None:
@@ -240,7 +247,6 @@ class MonitorWindow(
         main_widget.setLayout(layout)
 
         # Accent stripe — animated gradient bar at the very top (brand identity)
-        from leap.monitor.ui.ui_widgets import ShimmerBar
         self._accent_bar = ShimmerBar()
         self._accent_bar.setFixedHeight(3)
         layout.addWidget(self._accent_bar)
@@ -585,8 +591,6 @@ class MonitorWindow(
     def _apply_window_effects(self) -> None:
         """Apply macOS-specific visual effects (titlebar blending)."""
         try:
-            from AppKit import NSApplication, NSWindow
-            from PyQt5.QtGui import QWindow
             # Make the window titlebar transparent and blend with content
             ns_window = None
             win_handle = self.windowHandle()
@@ -609,10 +613,6 @@ class MonitorWindow(
                 # Transparent titlebar that blends with content
                 ns_window.setTitlebarAppearsTransparent_(True)
                 # Use full-size content view so content extends behind titlebar
-                from AppKit import (
-                    NSFullSizeContentViewWindowMask,
-                    NSWindowStyleMaskFullSizeContentView,
-                )
                 mask = ns_window.styleMask()
                 ns_window.setStyleMask_(mask | NSWindowStyleMaskFullSizeContentView)
         except Exception:
@@ -655,7 +655,6 @@ class MonitorWindow(
     @staticmethod
     def _make_plus_icon(color: bytes = b'#ffffff', size: int = 16) -> QIcon:
         """Render a plus (+) icon as SVG at the given size and color."""
-        from PyQt5.QtSvg import QSvgRenderer
         svg = (
             b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
             b'<line x1="8" y1="2" x2="8" y2="14" stroke="' + color +
@@ -667,8 +666,7 @@ class MonitorWindow(
         renderer = QSvgRenderer(svg)
         pm = QPixmap(size, size)
         pm.fill(Qt.transparent)
-        from PyQt5.QtGui import QPainter as _P
-        p = _P(pm)
+        p = QPainter(pm)
         renderer.render(p)
         p.end()
         return QIcon(pm)
@@ -676,7 +674,6 @@ class MonitorWindow(
     @staticmethod
     def _wipe_icon_cache() -> None:
         """Remove all cached icon PNGs so stale theme variants don't accumulate."""
-        from leap.utils.constants import ICON_CACHE_DIR, STORAGE_DIR
         # Clean up legacy icons from .storage/ root (pre-icon_cache migration)
         for f in STORAGE_DIR.glob('chevron_*.png'):
             f.unlink(missing_ok=True)
@@ -695,14 +692,12 @@ class MonitorWindow(
 
         A separate file is generated per color+direction so theme switches work.
         """
-        from leap.utils.constants import ICON_CACHE_DIR
         safe_name = color_hex.lstrip('#')
         direction = 'up' if up else 'down'
         path = ICON_CACHE_DIR / f'chevron_{direction}_{safe_name}.png'
         if not path.exists():
             pm = QPixmap(12, 12)
             pm.fill(Qt.transparent)
-            from PyQt5.QtGui import QPainter, QPen, QPainterPath
             painter = QPainter(pm)
             painter.setRenderHint(QPainter.Antialiasing)
             pen = QPen(QColor(color_hex))
@@ -731,12 +726,10 @@ class MonitorWindow(
         Returns the file path as a string.  The icon is cached in
         ``.storage/icon_cache/`` and regenerated each launch.
         """
-        from leap.utils.constants import ICON_CACHE_DIR
         path = ICON_CACHE_DIR / 'checkmark.png'
         if not path.exists():
             pm = QPixmap(18, 18)
             pm.fill(Qt.transparent)
-            from PyQt5.QtGui import QPainter, QPen
             painter = QPainter(pm)
             painter.setRenderHint(QPainter.Antialiasing)
             pen = QPen(QColor('#ffffff'))
@@ -745,7 +738,6 @@ class MonitorWindow(
             pen.setJoinStyle(Qt.RoundJoin)
             painter.setPen(pen)
             # Draw checkmark path: ✓
-            from PyQt5.QtGui import QPainterPath
             check_path = QPainterPath()
             check_path.moveTo(3.5, 9.5)
             check_path.lineTo(7, 13.5)
@@ -758,12 +750,10 @@ class MonitorWindow(
     @staticmethod
     def _ensure_radio_icon() -> str:
         """Generate a white dot PNG for radio button indicators."""
-        from leap.utils.constants import ICON_CACHE_DIR
         path = ICON_CACHE_DIR / 'radio_dot.png'
         if not path.exists():
             pm = QPixmap(18, 18)
             pm.fill(Qt.transparent)
-            from PyQt5.QtGui import QPainter
             painter = QPainter(pm)
             painter.setRenderHint(QPainter.Antialiasing)
             painter.setBrush(QColor('#ffffff'))
@@ -1071,7 +1061,6 @@ class MonitorWindow(
 
     def _is_in_table(self, widget: object) -> bool:
         """Check if a widget is inside the session table (excludes scrollbars)."""
-        from PyQt5.QtWidgets import QScrollBar
         w = widget
         while w is not None:
             if isinstance(w, QScrollBar):
@@ -1268,7 +1257,6 @@ class MonitorWindow(
 
         # Set macOS appearance (dark/light) — must come before palette
         try:
-            from AppKit import NSAppearance, NSApplication
             appearance_name = (
                 'NSAppearanceNameDarkAqua' if t.is_dark
                 else 'NSAppearanceNameAqua'
@@ -1866,7 +1854,6 @@ class MonitorWindow(
         if app is None:
             return
         base = getattr(self, '_theme_base_qss', '')
-        from leap.monitor.popup_zoom import PopupZoomManager
         rule = PopupZoomManager.instance().popup_stylesheet_rule()
         tooltip_pt = getattr(self, '_tooltip_font_size',
                              self._main_font_size)
@@ -2000,7 +1987,6 @@ class MonitorWindow(
         """Check if *widget* belongs to the main window (not a dialog/popup)."""
         if widget is None:
             return False
-        from PyQt5.QtWidgets import QMenu
         w = widget
         while w is not None:
             if isinstance(w, QDialog):
@@ -2024,13 +2010,7 @@ class MonitorWindow(
         if not shortcut_str:
             return
 
-        try:
-            from AppKit import NSEvent, NSKeyDownMask
-        except ImportError:
-            logger.debug("AppKit not available — global shortcut disabled")
-            return
-
-        seq = __import__('PyQt5.QtGui', fromlist=['QKeySequence']).QKeySequence(shortcut_str)
+        seq = QKeySequence(shortcut_str)
         if seq.isEmpty():
             return
 
@@ -2085,7 +2065,6 @@ class MonitorWindow(
                 _MOD_MASK = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
                 ev_flags = event.modifierFlags() & _MOD_MASK
                 if event.keyCode() == expected_keycode and ev_flags == ns_flags:
-                    from PyQt5.QtCore import QTimer
                     QTimer.singleShot(0, self._on_global_shortcut_triggered)
             except Exception:
                 pass
@@ -2101,10 +2080,6 @@ class MonitorWindow(
 
     def _unregister_global_shortcut(self) -> None:
         """Remove any active NSEvent monitors."""
-        try:
-            from AppKit import NSEvent
-        except ImportError:
-            return
         if self._global_event_monitor is not None:
             NSEvent.removeMonitor_(self._global_event_monitor)
             self._global_event_monitor = None
@@ -2115,7 +2090,6 @@ class MonitorWindow(
     def _on_global_shortcut_triggered(self) -> None:
         """Bring the monitor window to the foreground."""
         try:
-            from AppKit import NSApplication
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         except Exception:
             pass
@@ -2132,7 +2106,6 @@ class MonitorWindow(
 
         Returns ``None`` if the shortcut cannot be mapped.
         """
-        from PyQt5.QtGui import QKeySequence
         seq = QKeySequence(shortcut_str)
         if seq.isEmpty():
             return None
@@ -2171,11 +2144,6 @@ class MonitorWindow(
     def _register_notes_shortcut(self) -> None:
         """Register NSEvent monitors for the notes shortcuts from prefs."""
         self._unregister_notes_shortcut()
-
-        try:
-            from AppKit import NSEvent, NSKeyDownMask
-        except ImportError:
-            return
 
         _MOD_MASK = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
 
@@ -2221,10 +2189,6 @@ class MonitorWindow(
 
     def _unregister_notes_shortcut(self) -> None:
         """Remove any active notes NSEvent monitors."""
-        try:
-            from AppKit import NSEvent
-        except ImportError:
-            return
         if self._notes_focused_monitor is not None:
             NSEvent.removeMonitor_(self._notes_focused_monitor)
             self._notes_focused_monitor = None
@@ -2239,7 +2203,6 @@ class MonitorWindow(
     def _on_notes_shortcut_global(self) -> None:
         """Bring Leap to front and open notes."""
         try:
-            from AppKit import NSApplication
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         except Exception:
             pass
@@ -2319,9 +2282,6 @@ def _request_notification_permission() -> None:
     dialog.
     """
     try:
-        import objc
-        from Foundation import NSRunLoop, NSDate
-
         objc.loadBundle(
             'UserNotifications', globals(),
             '/System/Library/Frameworks/UserNotifications.framework',
@@ -2368,7 +2328,6 @@ def main() -> None:
     if '--request-permissions' in sys.argv:
         _request_notification_permission()
 
-    import faulthandler
     faulthandler.enable()
     load_shell_env()
     app = TooltipApp(sys.argv)
@@ -2383,7 +2342,6 @@ def main() -> None:
     # Set macOS appearance based on theme (dark/light)
     t = current_theme()
     try:
-        from AppKit import NSAppearance, NSApplication
         appearance_name = (
             'NSAppearanceNameDarkAqua' if t.is_dark
             else 'NSAppearanceNameAqua'
@@ -2399,7 +2357,6 @@ def main() -> None:
     if icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
         try:
-            from AppKit import NSApplication, NSImage
             ns_image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
             if ns_image:
                 NSApplication.sharedApplication().setApplicationIconImage_(ns_image)

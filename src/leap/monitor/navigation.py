@@ -5,6 +5,7 @@ Handles navigating to terminal tabs in various IDEs.
 """
 
 import glob
+import json
 import logging
 import os
 import shutil
@@ -15,6 +16,19 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+
+import AppKit
+from ApplicationServices import (
+    AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+    AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+    AXUIElementPerformAction, kAXErrorSuccess,
+)
+from CoreFoundation import kCFBooleanTrue
+from Quartz import (
+    CGEventCreateKeyboardEvent, CGEventPost, CGEventSetFlags,
+    kCGEventFlagMaskCommand, kCGEventFlagMaskControl,
+    kCGEventFlagMaskShift, kCGHIDEventTap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -778,13 +792,12 @@ def _find_wezterm_cli() -> Optional[str]:
 def _wezterm_list_panes(cli: str) -> list[dict[str, Any]]:
     """Return the list of panes from ``wezterm cli list --format json``."""
     try:
-        import json as _json
         result = subprocess.run(
             [cli, 'cli', 'list', '--format', 'json'],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
-            return _json.loads(result.stdout)
+            return json.loads(result.stdout)
     except (subprocess.SubprocessError, OSError, ValueError):
         pass
     return []
@@ -887,12 +900,6 @@ def _get_app_pid(bundle_id: str) -> Optional[int]:
     py2app bundle.
     """
     try:
-        import AppKit
-    except ImportError:
-        logger.debug("AppKit ImportError in _get_app_pid")
-        return None
-
-    try:
         workspace = AppKit.NSWorkspace.sharedWorkspace()
         for app in workspace.runningApplications():
             if app.bundleIdentifier() == bundle_id:
@@ -909,23 +916,15 @@ def _check_accessibility_trusted() -> bool:
     This handles the case where the .app was rebuilt (changing its ad-hoc
     code signature) and the old Accessibility entry is now stale.
     """
-    try:
-        from ApplicationServices import AXIsProcessTrusted
-        from CoreFoundation import kCFBooleanTrue
-    except ImportError:
-        logger.debug("Cannot import ApplicationServices or CoreFoundation")
-        return False
-
     trusted = AXIsProcessTrusted()
     if trusted:
         return True
 
     # Not trusted — trigger the system prompt so the user can re-authorize.
     try:
-        from ApplicationServices import AXIsProcessTrustedWithOptions
         options = {"AXTrustedCheckOptionPrompt": kCFBooleanTrue}
         AXIsProcessTrustedWithOptions(options)
-    except (ImportError, Exception):
+    except Exception:
         pass
 
     logger.warning("Accessibility permission not granted for this process. "
@@ -940,7 +939,6 @@ def _ensure_app_focused(ns_app: Any) -> bool:
     ``activateWithOptions_`` is asynchronous — this helper polls
     ``isActive`` so that subsequent CGEvent keystrokes hit the right app.
     """
-    import AppKit
     ns_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
     for _ in range(20):
         if ns_app.isActive():
@@ -953,19 +951,6 @@ def _send_keystroke(
     keycode: int, cmd: bool = False, shift: bool = False, ctrl: bool = False,
 ) -> bool:
     """Send a keystroke to the frontmost application using CGEvent."""
-    try:
-        from Quartz import (
-            CGEventCreateKeyboardEvent,
-            CGEventSetFlags,
-            CGEventPost,
-            kCGHIDEventTap,
-            kCGEventFlagMaskCommand,
-            kCGEventFlagMaskShift,
-            kCGEventFlagMaskControl,
-        )
-    except ImportError:
-        return False
-
     flags = 0
     if cmd:
         flags |= kCGEventFlagMaskCommand
@@ -999,17 +984,6 @@ def _navigate_warp(title_pattern: str) -> bool:
     """
     pid = _get_app_pid(_WARP_BUNDLE_ID)
     if pid is None:
-        return False
-
-    try:
-        import AppKit
-        from ApplicationServices import (
-            AXUIElementCreateApplication,
-            AXUIElementCopyAttributeValue,
-            AXUIElementPerformAction,
-            kAXErrorSuccess,
-        )
-    except ImportError:
         return False
 
     if not _check_accessibility_trusted():
@@ -1058,10 +1032,9 @@ def _navigate_warp(title_pattern: str) -> bool:
 
     # Phase 2 activated Warp to cycle tabs — switch back to the monitor
     try:
-        import AppKit
         AppKit.NSRunningApplication.currentApplication().activateWithOptions_(
             AppKit.NSApplicationActivateIgnoringOtherApps)
-    except (ImportError, Exception):
+    except Exception:
         pass
     return False
 
@@ -1152,16 +1125,6 @@ def _type_command_in_warp(pid: int, command: str) -> bool:
     session.  Waits for Warp's window to appear, dismisses the
     "New terminal session" overlay, then pastes and executes the command.
     """
-    try:
-        import AppKit
-        from ApplicationServices import (
-            AXUIElementCreateApplication,
-            AXUIElementCopyAttributeValue,
-            kAXErrorSuccess,
-        )
-    except ImportError:
-        return False
-
     ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     if not ns_app:
         return False
@@ -1229,16 +1192,6 @@ def _open_warp_tab_with_keystroke(pid: int, command: str) -> bool:
     handle timing variations in overlay appearance.
     Requires Accessibility permission.
     """
-    try:
-        import AppKit
-        from ApplicationServices import (
-            AXUIElementCreateApplication,
-            AXUIElementCopyAttributeValue,
-            kAXErrorSuccess,
-        )
-    except ImportError:
-        return False
-
     ns_app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
     if not ns_app:
         return False

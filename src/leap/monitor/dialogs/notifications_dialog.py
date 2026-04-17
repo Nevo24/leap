@@ -4,6 +4,8 @@ import os
 from functools import partial
 from typing import Any, Optional
 
+from AppKit import NSBeep, NSSound
+from Foundation import NSURL
 from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtGui import QCursor, QFont
 from PyQt5.QtWidgets import (
@@ -392,13 +394,10 @@ def _play_sound(sound_name: str) -> None:
     if sound_name == 'None':
         return
     try:
-        from AppKit import NSSound
         if sound_name == 'Default':
-            from AppKit import NSBeep
             NSBeep()
         elif os.path.isabs(sound_name):
             # Custom file path
-            from Foundation import NSURL
             url = NSURL.fileURLWithPath_(sound_name)
             sound = NSSound.alloc().initWithContentsOfURL_byReference_(url, True)
             if sound:

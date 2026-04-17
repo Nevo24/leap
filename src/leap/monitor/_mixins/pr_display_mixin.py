@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
+import objc
+from AppKit import NSApplication, NSImage
+from Foundation import NSDictionary, NSObject, NSSet, NSUserNotification, NSUserNotificationCenter
 from PyQt5 import sip
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QLabel
 
+from leap.monitor.dialogs.notifications_dialog import _play_sound
+from leap.monitor.monitor_utils import find_icon
 from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import get_dock_enabled, get_notification_prefs
 from leap.monitor.themes import current_theme
 from leap.monitor.ui.dock_badge import NotificationEvent, NotificationType
 from leap.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
-from leap.monitor.monitor_utils import find_icon
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +55,6 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
     if _un_ready:
         return  # Already set up
     try:
-        import objc
-        from Foundation import NSObject, NSSet
-
         objc.loadBundle(
             'UserNotifications', globals(),
             '/System/Library/Frameworks/UserNotifications.framework',
@@ -100,7 +103,6 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
         # macOS calls delegate methods on an arbitrary thread, but Qt GUI
         # operations must run on the main thread.  We use QTimer.singleShot
         # with 0ms to safely marshal the work onto the Qt event loop.
-        from PyQt5.QtCore import QTimer
 
         class _LeapUNDelegate(NSObject):
             monitor_ref = None
@@ -127,7 +129,6 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
                         def _activate(_m: object = mon) -> None:
                             if _m._shutting_down:
                                 return
-                            from AppKit import NSApplication
                             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
                             _m.activateWindow()
                             _m.raise_()
@@ -453,7 +454,6 @@ class PRDisplayMixin(_Base):
     @staticmethod
     def _play_notification_sound(sound_name: str) -> None:
         """Play a notification sound without sending a banner."""
-        from leap.monitor.dialogs.notifications_dialog import _play_sound
         _play_sound(sound_name)
 
 
@@ -467,9 +467,6 @@ def _send_modern_notification(
 ) -> None:
     """Send a notification via UNUserNotificationCenter."""
     try:
-        import objc
-        from Foundation import NSDictionary
-
         UNMutableNotificationContent = objc.lookUpClass('UNMutableNotificationContent')
         UNNotificationRequest = objc.lookUpClass('UNNotificationRequest')
         UNNotificationSound = objc.lookUpClass('UNNotificationSound')
@@ -489,10 +486,8 @@ def _send_modern_notification(
 
         # Sound
         if sound_name and sound_name != 'None':
-            import os
             if os.path.isabs(sound_name):
                 # Custom file — play separately, no system sound on the notification
-                from leap.monitor.dialogs.notifications_dialog import _play_sound
                 _play_sound(sound_name)
             elif sound_name == 'Default':
                 content.setSound_(UNNotificationSound.defaultSound())
@@ -517,10 +512,6 @@ def _send_modern_notification(
 def _send_legacy_notification(subtitle: str, body: str, sound_name: str) -> None:
     """Send a notification via the deprecated NSUserNotification (fallback)."""
     try:
-        import os
-        from AppKit import NSImage
-        from Foundation import NSUserNotification, NSUserNotificationCenter
-
         notif = NSUserNotification.alloc().init()
         notif.setTitle_('Leap')
         if subtitle:
@@ -542,7 +533,6 @@ def _send_legacy_notification(subtitle: str, body: str, sound_name: str) -> None
                 notif.setValue_forKey_(False, '_identityImageHasBorder')
         NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(notif)
         if sound_name and os.path.isabs(sound_name):
-            from leap.monitor.dialogs.notifications_dialog import _play_sound
             _play_sound(sound_name)
     except Exception:
         pass  # PyObjC not available or notification failed

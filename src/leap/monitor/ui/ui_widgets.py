@@ -10,6 +10,7 @@ from PyQt5.QtGui import (
     QColor, QCursor, QLinearGradient, QMouseEvent, QPainter,
 )
 
+from leap.monitor.popup_zoom import PopupZoomManager
 from leap.monitor.themes import current_theme
 
 
@@ -113,7 +114,6 @@ class IndicatorPopup(QLabel):
         # shows the right size even if the app-level popup rule isn't
         # reaching top-level tool-tip windows on some platforms.
         try:
-            from leap.monitor.popup_zoom import PopupZoomManager
             pt = PopupZoomManager.instance().font_size
             f = self.font()
             f.setPointSize(pt)

@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Optional
 
+import gitlab
 from PyQt5.QtWidgets import QWidget
 
 from leap.monitor.pr_tracking.base import ConnectionTestResult
@@ -57,7 +58,6 @@ class GitLabSetupDialog(SCMSetupDialog):
                 warnings=[],
             )
         try:
-            import gitlab
             gl = gitlab.Gitlab(url, private_token=token, timeout=15)
             gl.auth()
             username = gl.user.username

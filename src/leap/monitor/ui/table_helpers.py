@@ -8,15 +8,16 @@ from typing import Any, Optional
 
 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
-    QLabel, QPushButton, QProxyStyle, QStyle, QStyledItemDelegate,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QFrame, QGridLayout,
+    QHBoxLayout, QHeaderView, QLabel, QProxyStyle, QPushButton, QStyle,
+    QStyledItemDelegate, QTableWidget, QToolTip, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt, QTimer
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter, QPen
+from PyQt5.QtGui import QColor, QCursor, QIcon, QPixmap, QPainter, QPen
 from PyQt5.QtSvg import QSvgRenderer
 
 from leap.monitor.themes import current_theme
+from leap.monitor.ui.ui_widgets import ElidedLabel
 
 
 _OPEN_EXTERNAL_SVG = (
@@ -149,7 +150,6 @@ class HoverIconButton(QPushButton):
     def _check_hover(self) -> None:
         if QApplication.activePopupWidget():
             return  # menu is open — stay red
-        from PyQt5.QtGui import QCursor
         local_pos = self.mapFromGlobal(QCursor.pos())
         if not self.rect().contains(local_pos):
             self._reset()
@@ -474,12 +474,11 @@ class TooltipApp(QApplication):
         # a nested tooltip event on a just-deleted cell widget).
         if sip.isdeleted(widget):
             return
-        from PyQt5.QtWidgets import QToolTip as _QToolTip
         try:
             if rect is not None:
-                _QToolTip.showText(global_pos, text, widget, rect, duration)
+                QToolTip.showText(global_pos, text, widget, rect, duration)
             else:
-                _QToolTip.showText(global_pos, text, widget)
+                QToolTip.showText(global_pos, text, widget)
         except RuntimeError:
             pass
 
@@ -493,7 +492,6 @@ class TooltipApp(QApplication):
         if not widget:
             return False
 
-        from PyQt5.QtWidgets import QAbstractItemView
         parent = widget.parent()
         if sip.isdeleted(parent) if parent is not None else False:
             return True
@@ -504,7 +502,6 @@ class TooltipApp(QApplication):
             if logical >= 0:
                 table = parent.parent()
                 if table is not None and not sip.isdeleted(table):
-                    from PyQt5.QtWidgets import QTableWidget
                     if isinstance(table, QTableWidget):
                         header_item = table.horizontalHeaderItem(logical)
                         if header_item:
@@ -620,7 +617,6 @@ class TooltipApp(QApplication):
                     if text_w > widget.width():
                         final_tip = tip
                         if self.tooltips_enabled:
-                            from PyQt5.QtWidgets import QTableWidget
                             if isinstance(table_view, QTableWidget):
                                 cell_w = table_view.cellWidget(
                                     index.row(), index.column())
@@ -638,7 +634,6 @@ class TooltipApp(QApplication):
             # Fall through to normal widget tooltip handling
 
         # Always show full-name tooltip on truncated preset combo items
-        from PyQt5.QtWidgets import QComboBox
         combo = widget if isinstance(widget, QComboBox) else None
         if combo is None and isinstance(parent, QComboBox):
             combo = parent
@@ -659,8 +654,7 @@ class TooltipApp(QApplication):
             return True
 
         # ElidedLabel: show tooltip when truncated even if tooltips are off
-        from leap.monitor.ui.ui_widgets import ElidedLabel as _ElidedLabel
-        if isinstance(widget, _ElidedLabel) and widget.toolTip():
+        if isinstance(widget, ElidedLabel) and widget.toolTip():
             if widget.is_truncated() or self.tooltips_enabled or widget.property('always_tooltip'):
                 self._show_tip(
                     event.globalPos(), widget.toolTip(), widget,

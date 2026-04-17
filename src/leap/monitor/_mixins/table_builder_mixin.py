@@ -16,18 +16,28 @@ from PyQt5.QtWidgets import (
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import QPoint, Qt
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtGui import QColor, QCursor, QFont, QPalette
 
+from leap.monitor.dialogs.notes_dialog import NotesDialog
+from leap.monitor.dialogs.queue_edit_dialog import QueueEditDialog
+from leap.monitor.dialogs.scm_template_dialog import PresetEditorDialog
+from leap.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR, SettingsDialog
+from leap.monitor.leap_sender import prepend_to_leap_queue, send_to_leap_session_raw
 from leap.monitor.pr_tracking.base import PRState
 from leap.monitor.pr_tracking.config import (
     get_dock_enabled, get_notification_prefs, load_leap_direct_preset,
     load_saved_presets, load_selected_direct_preset_name,
-    load_selected_preset_name,
+    load_selected_preset_name, save_pinned_sessions,
     save_selected_direct_preset_name, save_selected_preset_name,
 )
 from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.monitor.session_manager import get_active_sessions
+from leap.monitor.ui.image_text_edit import SendMessageDialog
+from leap.slack.config import (
+    is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
+)
+from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
@@ -1565,9 +1575,6 @@ class TableBuilderMixin(_Base):
 
     def _open_settings(self) -> None:
         """Open the settings dialog."""
-        from leap.monitor.dialogs.settings_dialog import SettingsDialog, DEFAULT_REPOS_DIR
-        from leap.utils.constants import load_settings, save_settings
-
         server_settings = load_settings()
         dialog = SettingsDialog(
             current_terminal=self._prefs.get('default_terminal', 'Terminal.app'),
@@ -1620,7 +1627,6 @@ class TableBuilderMixin(_Base):
         if existing is not None:
             existing.close()
             return
-        from leap.monitor.dialogs.notes_dialog import NotesDialog
         dialog = NotesDialog(parent=self)
         self._notes_dialog = dialog
         dialog.finished.connect(self._on_notes_closed)
@@ -1767,9 +1773,6 @@ class TableBuilderMixin(_Base):
 
     def _set_auto_send_mode(self, tag: str, mode: str) -> None:
         """Send set_auto_send_mode to the Leap server."""
-        from leap.utils.constants import SOCKET_DIR
-        from leap.monitor.pr_tracking.config import save_pinned_sessions
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'set_auto_send_mode', 'mode': mode},
@@ -1793,9 +1796,6 @@ class TableBuilderMixin(_Base):
 
     def _edit_queue_messages(self, tag: str) -> None:
         """Open the queue edit dialog for a session."""
-        from leap.utils.constants import SOCKET_DIR
-        from leap.monitor.dialogs.queue_edit_dialog import QueueEditDialog
-
         # Race condition guard: queue may have drained since menu was opened
         queue_size = 0
         for s in self.sessions:
@@ -1817,8 +1817,6 @@ class TableBuilderMixin(_Base):
 
     def _clear_queue(self, tag: str) -> None:
         """Clear all queued messages for a session without sending them."""
-        from leap.utils.constants import SOCKET_DIR
-
         # Race condition guard: queue may have drained since menu was opened
         queue_size = 0
         for s in self.sessions:
@@ -1868,8 +1866,6 @@ class TableBuilderMixin(_Base):
 
     def _send_interrupt(self, tag: str) -> None:
         """Send interrupt (Ctrl+C) to a running Leap session."""
-        from leap.utils.constants import SOCKET_DIR
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'interrupt'},
@@ -1884,8 +1880,6 @@ class TableBuilderMixin(_Base):
         self, widget: QWidget, tag: str,
     ) -> None:
         """Show permission options menu for needs_permission/needs_input."""
-        from leap.utils.constants import SOCKET_DIR
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'get_prompt'},
@@ -1930,8 +1924,6 @@ class TableBuilderMixin(_Base):
 
     def _select_permission_option(self, tag: str, option_num: int) -> None:
         """Send a numbered option selection to a Leap session."""
-        from leap.utils.constants import SOCKET_DIR
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'select_option', 'message': str(option_num)},
@@ -1945,8 +1937,6 @@ class TableBuilderMixin(_Base):
 
     def _show_custom_answer_dialog(self, tag: str) -> None:
         """Show text input dialog for the 'Type something' permission option."""
-        from leap.utils.constants import SOCKET_DIR
-
         text, ok = QInputDialog.getMultiLineText(
             self, 'Custom Answer', f'Type your answer ({tag}):', '')
         if not ok or not text.strip():
@@ -2016,8 +2006,6 @@ class TableBuilderMixin(_Base):
 
     def _send_continue(self, tag: str) -> None:
         """Send 'continue' directly to the Leap server (bypasses queue)."""
-        from leap.utils.constants import SOCKET_DIR
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'direct', 'message': 'continue'},
@@ -2030,8 +2018,6 @@ class TableBuilderMixin(_Base):
 
     def _force_send_next(self, tag: str) -> None:
         """Force-send the next queued message to the Leap server."""
-        from leap.utils.constants import SOCKET_DIR
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'force_send'},
@@ -2046,9 +2032,6 @@ class TableBuilderMixin(_Base):
 
     def _send_immediate_message(self, tag: str, at_end: bool = True) -> None:
         """Open a dialog to type and queue a message for the session."""
-        from leap.monitor.leap_sender import prepend_to_leap_queue, send_to_leap_session_raw
-        from leap.monitor.ui.image_text_edit import SendMessageDialog
-
         label = 'Message to queue at end:' if at_end else 'Message to queue next:'
         text, ok = SendMessageDialog.get_message(
             self, 'Send Message', f'{label} ({tag})')
@@ -2070,8 +2053,6 @@ class TableBuilderMixin(_Base):
         Messages are inserted before any existing queued messages so they
         are processed next.
         """
-        from leap.monitor.leap_sender import prepend_to_leap_queue
-
         messages = load_leap_direct_preset()
         if not messages:
             self._show_status('No message bundle selected')
@@ -2083,8 +2064,6 @@ class TableBuilderMixin(_Base):
 
     def _quick_send_at_end(self, tag: str) -> None:
         """Append all message bundle messages to the end of the queue."""
-        from leap.monitor.leap_sender import send_to_leap_session_raw
-
         messages = load_leap_direct_preset()
         if not messages:
             self._show_status('No message bundle selected')
@@ -2097,8 +2076,6 @@ class TableBuilderMixin(_Base):
 
     def _open_preset_editor(self) -> None:
         """Open the preset editor dialog."""
-        from leap.monitor.dialogs.scm_template_dialog import PresetEditorDialog
-
         dialog = PresetEditorDialog(self)
         dialog.exec_()
         self._populate_preset_combo()
@@ -2298,7 +2275,6 @@ class TableBuilderMixin(_Base):
 
     def _is_slack_installed(self) -> bool:
         """Check if the Slack app config file exists."""
-        from leap.slack.config import is_slack_installed
         return is_slack_installed()
 
     def _show_slack_bot_not_running(self) -> None:
@@ -2332,8 +2308,6 @@ class TableBuilderMixin(_Base):
 
     def _toggle_slack(self, tag: str, enabled: bool) -> None:
         """Send set_slack to the Leap server to enable/disable Slack."""
-        from leap.utils.constants import SOCKET_DIR
-
         socket_path = SOCKET_DIR / f"{tag}.sock"
         response = send_socket_request(
             socket_path, {'type': 'set_slack', 'enabled': enabled},
@@ -2352,10 +2326,6 @@ class TableBuilderMixin(_Base):
         Prefers the native Slack app via ``slack://channel`` deep link.
         Falls back to the web client URL when the app is not installed.
         """
-        from leap.slack.config import (
-            load_slack_config, load_slack_sessions, resolve_team_id,
-        )
-
         config = load_slack_config()
         channel_id = config.get('dm_channel_id', '')
 
@@ -2401,8 +2371,6 @@ class TableBuilderMixin(_Base):
 
     def _check_row_hover(self) -> None:
         """Poll cursor position to track which table row is hovered."""
-        from PyQt5.QtGui import QCursor
-
         # Keep hover locked while a context menu is open
         if QApplication.activePopupWidget():
             return

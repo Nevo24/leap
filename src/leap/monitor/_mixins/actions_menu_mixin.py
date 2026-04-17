@@ -5,11 +5,15 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import tempfile
 from typing import TYPE_CHECKING, Optional
 
 from PyQt5.QtWidgets import QFileDialog, QMenu, QMessageBox
 from PyQt5.QtGui import QCursor
 
+from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
+from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
+from leap.monitor.navigation import open_terminal_with_command
 from leap.monitor.scm_polling import BackgroundCallWorker
 
 logger = logging.getLogger(__name__)
@@ -148,8 +152,6 @@ class ActionsMenuMixin(_Base):
         """Open the default terminal and cd to the project path."""
         default_terminal = self._prefs.get('default_terminal', '')
 
-        from leap.monitor.navigation import open_terminal_with_command
-
         _path = project_path
         _term = default_terminal
 
@@ -202,8 +204,6 @@ class ActionsMenuMixin(_Base):
 
     def _show_branch_picker(self, project_path: str) -> None:
         """Open branch picker, then run difftool for the selected branch."""
-        from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
-
         dialog = BranchPickerDialog(project_path, parent=self)
         if dialog.exec_():
             ref = dialog.selected_branch()
@@ -212,8 +212,6 @@ class ActionsMenuMixin(_Base):
 
     def _show_commit_picker(self, project_path: str) -> None:
         """Open commit list, then run difftool for the selected commit."""
-        from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
-
         dialog = CommitListDialog(project_path, parent=self)
         if dialog.exec_():
             sha = dialog.selected_commit()
@@ -269,7 +267,6 @@ class ActionsMenuMixin(_Base):
             # git difftool --extcmd doesn't use shell expansion, so we
             # create a tiny wrapper script that calls the binary.
             # Electron apps (Cursor) use --diff flag; JetBrains uses diff subcommand.
-            import tempfile
             bin_basename = diff_tool.rsplit("/", 1)[-1]
             # Electron apps (Cursor) use `--wait --diff` (like VS Code);
             # JetBrains uses `diff` subcommand (no --wait needed, blocks by default).

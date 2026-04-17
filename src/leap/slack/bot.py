@@ -11,8 +11,11 @@ Usage:
 
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
+import time
 from typing import Any, Optional
 
 try:
@@ -214,10 +217,6 @@ def _ensure_singleton() -> None:
     This avoids stale lock issues entirely — the newest instance
     always takes over.
     """
-    import signal
-    import subprocess
-    import time as _time
-
     my_pid = os.getpid()
     try:
         result = subprocess.run(
@@ -240,13 +239,13 @@ def _ensure_singleton() -> None:
                     os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-            _time.sleep(0.3)
+            time.sleep(0.3)
             for pid in old_pids:
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            _time.sleep(0.2)
+            time.sleep(0.2)
             print(f"Killed previous Slack bot (PID {', '.join(str(p) for p in old_pids)})")
     except (subprocess.TimeoutExpired, OSError):
         pass

@@ -6,6 +6,10 @@ Thin dispatcher that routes to the appropriate component based on arguments.
 
 import sys
 
+from leap.client import LeapClient
+from leap.server import LeapServer
+from leap.utils.constants import SOCKET_DIR
+
 
 def main() -> None:
     """
@@ -23,19 +27,13 @@ def main() -> None:
 
     tag = sys.argv[1]
 
-    # Check if server is running
-    from leap.utils.constants import SOCKET_DIR
     socket_path = SOCKET_DIR / f"{tag}.sock"
 
     if not socket_path.exists():
-        # Start server
-        from leap.server import LeapServer
         flags = [arg for arg in sys.argv[2:] if arg.startswith('--')]
         server = LeapServer(tag, flags=flags)
         server.run()
     else:
-        # Start client
-        from leap.client import LeapClient
         client = LeapClient(tag)
         client.run()
 

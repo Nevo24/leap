@@ -5,17 +5,31 @@ Orchestrates PTY handling, socket server, and queue management.
 """
 
 import atexit
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
 import sys
+import termios
 import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Any, Optional
+
+try:
+    from AppKit import (
+        NSBitmapImageRep,
+        NSPasteboard,
+        NSPasteboardTypePNG,
+        NSPasteboardTypeTIFF,
+        NSPNGFileType,
+    )
+    HAS_APPKIT = True
+except ImportError:  # non-macOS or pyobjc missing
+    HAS_APPKIT = False
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_display_name, get_provider
@@ -1245,7 +1259,6 @@ class LeapServer:
     @staticmethod
     def _is_csi_u_cancel(seq: bytes) -> bool:
         """Check if a CSI sequence is Ctrl+C in kitty/xterm encoding."""
-        from leap.server.state_tracker import CLIStateTracker
         return CLIStateTracker._is_csi_u_interrupt(seq)
 
     @staticmethod
@@ -1359,11 +1372,7 @@ class LeapServer:
         Uses PyObjC (AppKit) directly — no subprocess, so terminal raw
         mode settings are not corrupted.
         """
-        import hashlib
-        from leap.utils.constants import QUEUE_IMAGES_DIR
-        try:
-            from AppKit import NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeTIFF
-        except ImportError:
+        if not HAS_APPKIT:
             return None
         pb = NSPasteboard.generalPasteboard()
         png_data = pb.dataForType_(NSPasteboardTypePNG)
@@ -1372,11 +1381,9 @@ class LeapServer:
             if tiff_data is None:
                 return None
             try:
-                from AppKit import NSBitmapImageRep
                 rep = NSBitmapImageRep.imageRepWithData_(tiff_data)
                 if rep is None:
                     return None
-                from AppKit import NSPNGFileType
                 png_data = rep.representationUsingType_properties_(NSPNGFileType, None)
                 if png_data is None:
                     return None
@@ -1566,7 +1573,6 @@ class LeapServer:
         # tcflush to discard any stale text still in the PTY buffer.
         if self._capture_stale_char_count > 0:
             try:
-                import termios
                 termios.tcflush(self.pty.process.child_fd,
                                 termios.TCOFLUSH)
             except Exception:
@@ -1805,7 +1811,6 @@ class LeapServer:
                     # would just be misleading.
                     if self._capture_stale_char_count > 0:
                         try:
-                            import termios
                             termios.tcflush(self.pty.process.child_fd,
                                             termios.TCOFLUSH)
                         except Exception:

@@ -4,6 +4,7 @@ import logging
 from typing import Any, Optional
 
 import requests as _requests
+from github import Github
 from PyQt5.QtWidgets import QWidget
 
 from leap.monitor.pr_tracking.base import ConnectionTestResult
@@ -77,7 +78,6 @@ class GitHubSetupDialog(SCMSetupDialog):
             )
 
         try:
-            from github import Github
             if use_url:
                 gh = Github(login_or_token=token, base_url=use_url, timeout=15)
             else:
