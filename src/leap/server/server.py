@@ -1640,28 +1640,19 @@ class LeapServer:
             cancel_text = safe_text
         self._capture_cancel_pending = True
 
-        pre_buf = self._capture_pre_input_buf
         pre_chars = self._capture_pre_chars_sent
 
         def _apply_cancel_text() -> None:
             try:
-                if self.state.current_state == CLIState.IDLE:
-                    # Always Ctrl+E+U even if pre_text is empty —
-                    # the capture overlay writes directly to the
-                    # terminal and the CLI's diff-renderer won't
-                    # clean up the ghost text without an explicit
-                    # input-line refresh.
-                    self.pty.send('\x05')  # Ctrl+E: end of line
-                    time.sleep(0.02)
-                    self.pty.send('\x15')  # Ctrl+U: kill line
-                    time.sleep(0.15)
-                elif pre_text:
-                    # CLI is busy and has pre-text; can't clear —
-                    # restore the input buf AND char count to match
-                    # what's actually on CLI (lesson from b65bc04).
-                    self._terminal_input_buf = bytearray(pre_buf)
-                    self._chars_sent_to_cli = pre_chars
-                    return
+                # Clear Claude's CLI input regardless of state.  During
+                # RUNNING, Ctrl+U alone can race with Ink's render loop,
+                # so _clear_stale_cli_input adds N backspaces as an
+                # idempotent fallback.  Previously we returned early
+                # during RUNNING, which silently dropped any text the
+                # user typed in capture mode.
+                if pre_chars > 0:
+                    self._clear_stale_cli_input(pre_chars)
+                    time.sleep(0.1)
                 if cancel_text:
                     text_to_send = cancel_text
                     if had_pastes:

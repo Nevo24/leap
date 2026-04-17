@@ -328,6 +328,47 @@ class TestPasteCollapse:
         assert srv._paste_text_map == {}
 
 
+class TestPasteCancelWithTypedText:
+    """Paste → ^^ → type 'hello' → Esc: the typed 'hello' must reach the CLI."""
+
+    _BP_START = b'\x1b[200~'
+    _BP_END = b'\x1b[201~'
+
+    def _run_flow(self, state):
+        import time
+        srv = make_server(state)
+        srv.pty.process.child_fd = 999
+        content = b'line1\nline2\nline3\nline4\nline5'
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(self._BP_START + content + self._BP_END)
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'hello')
+            srv._input_filter_impl(b'\x1b')  # Esc → cancel
+            time.sleep(0.4)  # wait for cancel thread
+        calls = []
+        for c in srv.pty.send.call_args_list:
+            if c[0]:
+                arg = c[0][0]
+                if isinstance(arg, bytes):
+                    arg = arg.decode('utf-8', errors='replace')
+                calls.append(arg)
+        return calls
+
+    def test_cancel_idle_preserves_typed_text(self):
+        calls = self._run_flow(CLIState.IDLE)
+        # Full message with paste wrapper + typed 'hello' at end.
+        joined = ''.join(calls)
+        assert '\x1b[200~' in joined, 'bracketed paste start must be sent'
+        assert '\x1b[201~hello' in joined, 'typed text must follow paste end'
+
+    def test_cancel_running_preserves_typed_text(self):
+        """Regression: during RUNNING, cancel used to silently drop typed text."""
+        calls = self._run_flow(CLIState.RUNNING)
+        joined = ''.join(calls)
+        assert '\x1b[200~' in joined, 'bracketed paste start must be sent'
+        assert '\x1b[201~hello' in joined, 'typed text must follow paste end'
+
+
 class TestExceptionSafety:
 
     def test_capture_returns_empty(self):
