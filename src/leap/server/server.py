@@ -1587,14 +1587,25 @@ class LeapServer:
         # unchanged paste-placeholder would look "different" after
         # expansion to its raw content.
         was_edited = capture_text != self._capture_initial_text
-        # Resolve placeholders to raw content so cancel-with-edits
-        # restores the real text (not literal placeholder tokens).
-        # Pastes first: a recalled paste may embed image placeholders
-        # that must be exposed for the subsequent image resolution.
+        # For cancel we resolve images (→ @path) but leave
+        # [Paste #N] placeholders intact.  At send time below, each
+        # placeholder is replaced by its OWN bracketed-paste marker
+        # block so every paste re-appears as a separate collapsed
+        # label on Claude's side, with typed text between them
+        # appearing as literal chars.  (Wrapping the whole re-type
+        # in a single pair of markers — as we used to — caused
+        # typed text like "hello" to vanish into the paste label.)
         resolved_text = capture_text
-        had_pastes = bool(self._paste_text_map)
-        if had_pastes:
-            resolved_text = self._capture_resolve_pastes(resolved_text)
+        # Snapshot paste map entries that are actually referenced by
+        # the current capture text.  We need these even though we
+        # reset the image map below — the expansion happens inside
+        # the background thread, after _capture_reset_images runs.
+        cancel_paste_map = {
+            ph: text
+            for ph, text in self._paste_text_map.items()
+            if ph in capture_text
+        }
+        had_pastes = bool(cancel_paste_map)
         if self._capture_image_map:
             resolved_text = self._capture_resolve_images(resolved_text)
         has_images = bool(self._capture_image_map)
@@ -1604,11 +1615,10 @@ class LeapServer:
         self._queue_capture_mode = False
         self._capture_flush(cancel=True)
         self._capture_reset_images()
-        # Transfer text back to the CLI's input line.  If pastes were
-        # resolved, keep raw newlines — we'll wrap the re-type in
-        # bracketed paste markers below so Claude treats it as a
-        # paste and doesn't auto-submit on \r.
-        safe_text = resolved_text if had_pastes else resolved_text.replace('\n', ' ')
+        # Typed text between placeholders must not contain \n (would
+        # auto-submit); pastes' \n is safe because it lives inside
+        # the placeholder and gets wrapped in paste markers below.
+        safe_text = resolved_text.replace('\n', ' ')
         if has_images:
             # Images present — send resolved text to CLI.
             # But if resolved text is empty (user deleted all images
@@ -1653,15 +1663,18 @@ class LeapServer:
                     self._chars_sent_to_cli = pre_chars
                     return
                 if cancel_text:
-                    if had_pastes and '\n' in cancel_text:
-                        # Wrap in bracketed paste markers so Claude
-                        # treats \n as literal paste content, not a
-                        # submit-Enter.  Preserves multi-line paste
-                        # structure when the user cancels with edits.
-                        self.pty.send('\x1b[200~' + cancel_text
-                                      + '\x1b[201~')
-                    else:
-                        self.pty.send(cancel_text)
+                    text_to_send = cancel_text
+                    if had_pastes:
+                        # Replace each [Paste #N] individually with
+                        # its own bracketed-paste marker block so
+                        # Claude re-collapses each paste as its own
+                        # label and preserves typed text in between.
+                        for ph, paste_content in cancel_paste_map.items():
+                            text_to_send = text_to_send.replace(
+                                ph,
+                                '\x1b[200~' + paste_content + '\x1b[201~',
+                            )
+                    self.pty.send(text_to_send)
             except OSError:
                 pass
             finally:
