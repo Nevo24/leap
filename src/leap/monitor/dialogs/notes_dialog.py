@@ -2105,15 +2105,8 @@ class NotesDialog(QDialog):
         saved = load_dialog_geometry('notes_dialog')
         if saved:
             self.resize(saved[0], saved[1])
-        # Ensure the dialog is on-screen (avoids Qt warning when
-        # the saved size pushes the default position off-screen).
-        screen = QApplication.primaryScreen()
-        if screen:
-            avail = screen.availableGeometry()
-            geo = self.frameGeometry()
-            if geo.left() < avail.left() or geo.top() < avail.top():
-                geo.moveTopLeft(avail.topLeft())
-                self.move(geo.topLeft())
+        # Position left to Qt — it auto-centers modal dialogs on the
+        # parent window, matching every other dialog in the project.
 
         self._current_name: Optional[str] = None
         self._saved_text: str = ''
