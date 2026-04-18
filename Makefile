@@ -229,17 +229,26 @@ install-monitor: .env ensure-storage write-install-metadata
 	if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
 		open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
 	fi
-	@echo ""
-	@echo "  $(YELLOW)Notifications$(NC) — Required for system notifications"
-	@echo "  A macOS permission dialog will appear — click Allow to enable."
-	@read -p "  Request notification permission? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
-	if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-		if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
-			echo "  Leap Monitor is already running — skipping permission request."; \
-			echo "  Grant notifications in System Settings > Notifications > Leap Monitor."; \
-		elif ! open -W -a "Leap Monitor" --args --request-permissions 2>/dev/null; then \
-			echo "  $(YELLOW)Could not launch Leap Monitor for permission request.$(NC)"; \
-			echo "  You can grant notification permission later in System Settings."; \
+	@NOTIF_KNOWN=$$(python3 -c "import plistlib,pathlib; \
+		p=pathlib.Path.home()/'Library/Preferences/com.apple.ncprefs.plist'; \
+		data=plistlib.load(open(p,'rb')) if p.exists() else {}; \
+		print('yes' if any(a.get('bundle-id')=='com.leap.monitor' for a in data.get('apps',[])) else 'no')" 2>/dev/null || echo "no"); \
+	if [ "$$NOTIF_KNOWN" = "yes" ]; then \
+		echo ""; \
+		echo "  $(YELLOW)Notifications$(NC) — already configured, skipping prompt."; \
+	else \
+		echo ""; \
+		echo "  $(YELLOW)Notifications$(NC) — Required for system notifications"; \
+		echo "  A macOS permission dialog will appear — click Allow to enable."; \
+		read -p "  Request notification permission? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
+		if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
+			if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
+				echo "  Leap Monitor is already running — skipping permission request."; \
+				echo "  Grant notifications in System Settings > Notifications > Leap Monitor."; \
+			elif ! open -W -a "Leap Monitor" --args --request-permissions 2>/dev/null; then \
+				echo "  $(YELLOW)Could not launch Leap Monitor for permission request.$(NC)"; \
+				echo "  You can grant notification permission later in System Settings."; \
+			fi; \
 		fi; \
 	fi
 
