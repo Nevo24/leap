@@ -20,7 +20,7 @@ from AppKit import (
 )
 from Foundation import NSDate, NSRunLoop
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QDialog, QFrame, QMainWindow, QMenu,
+    QAction, QApplication, QComboBox, QDialog, QFrame, QMainWindow, QMenu,
     QScrollBar, QShortcut, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
     QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
@@ -36,8 +36,9 @@ from leap.monitor.dialogs.settings_dialog import detect_default_difftool
 from leap.monitor.popup_zoom import PopupZoomManager
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
 from leap.monitor.pr_tracking.config import (
-    load_monitor_prefs, load_notification_seen,
-    load_pinned_sessions, save_monitor_prefs,
+    load_auto_fetch_preset_name, load_monitor_prefs, load_notification_seen,
+    load_pinned_sessions, load_saved_presets, save_auto_fetch_preset_name,
+    save_monitor_prefs,
 )
 from leap.monitor.themes import THEMES, current_theme, set_theme
 from leap.monitor.scm_polling import (
@@ -65,6 +66,38 @@ from leap.monitor._mixins.notifications_mixin import NotificationsMixin
 from leap.monitor._mixins.table_builder_mixin import TableBuilderMixin
 
 logger = logging.getLogger(__name__)
+
+
+def _pin_checkbox_min_width(check: QCheckBox) -> None:
+    """Pin a QCheckBox's minimum width so its label can never be clipped.
+
+    Computes the width from the text's fontMetrics plus generous room
+    for the checkbox indicator and Qt padding. sizeHint() alone comes up
+    a few pixels short on macOS when the label contains apostrophes or
+    slashes ("Auto '/leap' fetch"), which caused visible truncation
+    when the window was resized narrow.
+    """
+    fm = check.fontMetrics()
+    text_width = fm.horizontalAdvance(check.text())
+    # ~22px for the checkbox indicator + ~10px padding on each side.
+    check.setMinimumWidth(text_width + 44)
+
+
+class _RefreshableComboBox(QComboBox):
+    """QComboBox that repopulates itself each time the popup opens.
+
+    Used for controls whose options can change outside the combo's
+    lifecycle (e.g. presets edited in a separate dialog). Avoids the
+    need for signal plumbing between the editor and every live combo.
+    """
+
+    def __init__(self, refresh_fn: Any, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._refresh_fn = refresh_fn
+
+    def showPopup(self) -> None:
+        self._refresh_fn()
+        super().showPopup()
 
 
 class MonitorWindow(
@@ -458,7 +491,21 @@ class MonitorWindow(
             'Count bot comments as responses when detecting unresponded comments')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
+        _pin_checkbox_min_width(self.bots_check)
         bottom_inner.addWidget(self.bots_check, 0, Qt.AlignVCenter)
+
+        # Checkbox + preset combo live in their own sub-layout so the
+        # combo reads as part of the checkbox control, closer than the
+        # 16px outer bottom_inner spacing but with enough breathing room
+        # that the checkbox label doesn't bump into the combo's border
+        # on macOS (QCheckBox doesn't add right-padding beyond the text
+        # bounding box). The combo is hidden when the checkbox is
+        # unchecked, and its popup self-refreshes on open so preset
+        # edits made elsewhere show up next time the user opens it.
+        auto_leap_group = QWidget()
+        auto_leap_layout = QHBoxLayout(auto_leap_group)
+        auto_leap_layout.setContentsMargins(0, 0, 0, 0)
+        auto_leap_layout.setSpacing(10)
 
         self.auto_leap_check = QCheckBox("Auto '/leap' fetch")
         self.auto_leap_check.setToolTip(
@@ -466,7 +513,24 @@ class MonitorWindow(
         )
         self.auto_leap_check.setChecked(self._prefs.get('auto_fetch_leap', True))
         self.auto_leap_check.stateChanged.connect(self._toggle_auto_fetch_leap)
-        bottom_inner.addWidget(self.auto_leap_check, 0, Qt.AlignVCenter)
+        _pin_checkbox_min_width(self.auto_leap_check)
+        auto_leap_layout.addWidget(self.auto_leap_check, 0, Qt.AlignVCenter)
+
+        self.auto_leap_preset_combo = _RefreshableComboBox(
+            self._populate_auto_leap_preset_combo)
+        self.auto_leap_preset_combo.setToolTip(
+            "Preset prepended to auto-fetched /leap comments. Separate "
+            "from the 'Context preset' in the Send Comments dialog."
+        )
+        self.auto_leap_preset_combo.setMinimumWidth(140)
+        self.auto_leap_preset_combo.currentIndexChanged.connect(
+            self._on_auto_leap_preset_changed)
+        self._populate_auto_leap_preset_combo()
+        self.auto_leap_preset_combo.setVisible(
+            self.auto_leap_check.isChecked())
+        auto_leap_layout.addWidget(self.auto_leap_preset_combo, 0, Qt.AlignVCenter)
+
+        bottom_inner.addWidget(auto_leap_group, 0, Qt.AlignVCenter)
 
 
 
@@ -1177,6 +1241,41 @@ class MonitorWindow(
             self._refresh_data()
         except Exception:
             logger.exception("Error in auto-refresh")
+
+    _AUTO_LEAP_PRESET_NONE = '(None)'
+
+    def _populate_auto_leap_preset_combo(self) -> None:
+        """Fill the auto-fetch preset combo with single-message presets.
+
+        Mirrors SendCommentsDialog._populate_ctx_combo's filter
+        (``len(messages) <= 1``) and self-heal (clear stale selection
+        if the saved preset vanished or grew multi-message) — so a
+        preset edited elsewhere doesn't leave the combo in a ghost state.
+        """
+        combo = self.auto_leap_preset_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(self._AUTO_LEAP_PRESET_NONE)
+        names: list[str] = []
+        for name, messages in sorted(load_saved_presets().items()):
+            if len(messages) <= 1:
+                names.append(name)
+                combo.addItem(name)
+
+        selected = load_auto_fetch_preset_name()
+        if selected and selected in names:
+            combo.setCurrentIndex(names.index(selected) + 1)
+        else:
+            combo.setCurrentIndex(0)
+            if selected:
+                save_auto_fetch_preset_name('')
+        combo.blockSignals(False)
+
+    def _on_auto_leap_preset_changed(self, _idx: int) -> None:
+        """Persist the auto-fetch preset selection."""
+        text = self.auto_leap_preset_combo.currentText()
+        save_auto_fetch_preset_name(
+            '' if text == self._AUTO_LEAP_PRESET_NONE else text)
 
     def _save_prefs(self) -> None:
         """Save self._prefs to disk, preserving keys written by other code.

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import gitlab
 from github import Github
+from PyQt5 import sip
 from PyQt5.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 
@@ -279,11 +280,21 @@ class SCMConfigMixin(_Base):
             intervals.append(github_config.get('poll_interval', SCM_POLL_INTERVAL))
         return min(intervals) if intervals else SCM_POLL_INTERVAL
 
+    @staticmethod
+    def _scm_dialog_status_msg(name: str, dialog: Any) -> str:
+        """Pick the status-bar wording based on which dialog action accept()ed."""
+        if getattr(dialog, 'disconnected', False):
+            return f'{name} disconnected'
+        if getattr(dialog, 'connected', False):
+            return f'{name} connected'
+        return f'{name} settings saved'
+
     def _open_gitlab_setup(self) -> None:
         """Open the GitLab setup dialog."""
         dialog = GitLabSetupDialog(self)
         if dialog.exec_():
-            # Re-initialize providers after successful save — reset tracking
+            # Re-initialize providers after any disk write (Save / Connect /
+            # Disconnect) so in-memory state matches what's now on disk.
             self._scm_poll_timer.stop()
             self._scm_providers.pop(SCMType.GITLAB.value, None)
             self._pr_statuses.clear()
@@ -293,13 +304,14 @@ class SCMConfigMixin(_Base):
             self._init_scm_providers()
             self._auto_track_pr_pinned()
             self._maybe_start_notification_poll()
-            self._show_status('GitLab connection updated')
+            self._show_status(self._scm_dialog_status_msg('GitLab', dialog))
 
     def _open_github_setup(self) -> None:
         """Open the GitHub setup dialog."""
         dialog = GitHubSetupDialog(self)
         if dialog.exec_():
-            # Re-initialize providers after successful save — reset tracking
+            # Re-initialize providers after any disk write (Save / Connect /
+            # Disconnect) so in-memory state matches what's now on disk.
             self._scm_poll_timer.stop()
             self._scm_providers.pop(SCMType.GITHUB.value, None)
             self._pr_statuses.clear()
@@ -309,7 +321,7 @@ class SCMConfigMixin(_Base):
             self._init_scm_providers()
             self._auto_track_pr_pinned()
             self._maybe_start_notification_poll()
-            self._show_status('GitHub connection updated')
+            self._show_status(self._scm_dialog_status_msg('GitHub', dialog))
 
     def _toggle_include_bots(self, state: int) -> None:
         """Toggle bot comment inclusion and persist."""
@@ -324,8 +336,25 @@ class SCMConfigMixin(_Base):
 
     def _toggle_auto_fetch_leap(self, state: int) -> None:
         """Toggle auto /leap command fetching and persist."""
-        self._prefs['auto_fetch_leap'] = state == Qt.Checked
+        enabled = state == Qt.Checked
+        self._prefs['auto_fetch_leap'] = enabled
         self._save_prefs()
+        # Preset combo is only relevant while auto-fetch is on.
+        combo = getattr(self, 'auto_leap_preset_combo', None)
+        if combo is not None:
+            if enabled:
+                # Refresh before showing in case presets were edited while hidden.
+                self._populate_auto_leap_preset_combo()
+            combo.setVisible(enabled)
+        # Propagate to already-built PR status widgets so SendCommentsDialog
+        # sees the fresh value when opened. Without this, the dialog would
+        # receive a stale auto_fetch_leap captured at table-build time and
+        # either hide/show the filter section incorrectly.
+        pr_widgets = getattr(self, '_pr_widgets', None)
+        if pr_widgets:
+            for widget in pr_widgets.values():
+                if widget and not sip.isdeleted(widget):
+                    widget.set_auto_fetch_leap(enabled)
 
     # ------------------------------------------------------------------
     #  Slack bot management

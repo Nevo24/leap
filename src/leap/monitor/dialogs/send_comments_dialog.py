@@ -61,38 +61,36 @@ class SendCommentsDialog(ZoomMixin, QDialog):
         layout.setSpacing(6)
 
         # -- Which comments ---------------------------------------------
-        which_label = QLabel('Which comments to send:')
-        which_label.setStyleSheet('font-weight: bold;')
-        layout.addWidget(which_label)
-
+        # When auto-fetch for '/leap' tags is ON, those comments are
+        # already queued automatically, so there's no meaningful filter
+        # choice left. Hide the whole section; the effective filter is
+        # always 'all'.
         self._filter_all = QRadioButton('All unresponded comments')
         self._filter_all.setToolTip(
             'Every comment the SCM reports as unresponded.')
         self._filter_leap = QRadioButton("Only comments with a '/leap' tag")
-        leap_tip = (
+        self._filter_leap.setToolTip(
             "Only comments that contain an unacknowledged '/leap' tag."
         )
-        if auto_fetch_leap:
-            leap_tip += (
-                "\n\nDisabled — auto-fetch for '/leap' tags is on, so these "
-                'are already queued automatically.'
-            )
-            self._filter_leap.setEnabled(False)
-        self._filter_leap.setToolTip(leap_tip)
 
         filter_group = QButtonGroup(self)
         filter_group.addButton(self._filter_all)
         filter_group.addButton(self._filter_leap)
-        if saved['filter'] == 'leap' and self._filter_leap.isEnabled():
+        if not auto_fetch_leap and saved['filter'] == 'leap':
             self._filter_leap.setChecked(True)
         else:
             self._filter_all.setChecked(True)
 
-        layout.addWidget(self._filter_all)
-        layout.addWidget(self._filter_leap)
+        if not auto_fetch_leap:
+            which_label = QLabel('Which comments to send:')
+            which_label.setStyleSheet('font-weight: bold;')
+            layout.addWidget(which_label)
+            layout.addWidget(self._filter_all)
+            layout.addWidget(self._filter_leap)
 
         # -- How to send ------------------------------------------------
-        layout.addSpacing(10)
+        if not auto_fetch_leap:
+            layout.addSpacing(10)
         how_label = QLabel('How to send:')
         how_label.setStyleSheet('font-weight: bold;')
         layout.addWidget(how_label)

@@ -89,7 +89,7 @@ src/
     │   │   ├── git_changes_dialog.py  # Git diff viewer (local, commit, vs main)
     │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, new change indicator, cleanup)
     │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
-    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle)
+    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle; Save / Connect-Disconnect / Cancel buttons)
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   ├── scm_template_dialog.py # Preset editor dialog (PR context + message bundles)
@@ -167,7 +167,8 @@ assets/
 | `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
 | `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste + Next/To-End queue-position toggle |
 | `SendPresetDialog` | `monitor/ui/image_text_edit.py` | Picker for a message-bundle preset + Next/To-End queue-position toggle |
-| `SendCommentsDialog` | `monitor/dialogs/send_comments_dialog.py` | PR-comments picker: filter (all / /leap-tagged), mode (each / combined), context preset |
+| `SendCommentsDialog` | `monitor/dialogs/send_comments_dialog.py` | PR-comments picker: filter (all / /leap-tagged — hidden entirely when `auto_fetch_leap` is on), mode (each / combined), context preset |
+| `SCMSetupDialog` | `monitor/dialogs/scm_setup_dialog.py` | Base class. Three actions: **Save** (persist fields, preserves `username`), **Connect/Disconnect** (toggle button — Connect validates+saves everything incl. `username`; Disconnect clears only `username`), **Cancel** (no writes) |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (9 built-in themes) |
@@ -197,6 +198,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`, `aliases`) |
 | Notification seen state | `.storage/notification_seen.json` |
 | PR context preset selection | `.storage/leap_selected_preset` |
+| Auto-fetch /leap preset selection | `.storage/leap_auto_fetch_preset` |
 | Message bundle preset selection | `.storage/leap_selected_direct_preset` |
 | Preset definitions | `.storage/leap_presets.json` |
 | Queue images | `.storage/queue_images/<hash>.png` (MD5-deduped, cleaned on server startup) |
@@ -317,11 +319,13 @@ Polling flow: `_scm_poll_timer` → `_start_scm_poll()` → `SCMPollerWorker` (Q
 
 ### Sending PR Comments to Leap
 
-Left-click the PR status label (when any comment is unresponded) for a 2-item menu: **Go to first comment** (opens the comment in the browser) and **Send comment/s to session** (opens `SendCommentsDialog`). The dialog exposes two binary choices — filter (`all` / `leap`-tag-only) and mode (`each` message / `combined`) — plus a single-message "PR context preset" combo that's persisted via `save_selected_preset_name()` in `.storage/leap_selected_preset` (same file that `leap_sender.send_to_leap_session` reads to prepend context to every outgoing comment). Picks persist via `send_comments_filter` / `send_comments_mode` in `monitor_prefs.json`. On dispatch, `IndicatorLabel._open_send_comments_dialog()` does a pre-flight dead-server check (clear popup, no worker launched) and routes to one of four `_send_*_to_leap()` handlers by `(filter, mode)` pair. All four share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge comments on SCM side after send.
+Left-click the PR status label (when any comment is unresponded) for a 2-item menu: **Go to first comment** (opens the comment in the browser) and **Send comment/s to session** (opens `SendCommentsDialog`). The dialog exposes two binary choices — filter (`all` / `leap`-tag-only) and mode (`each` message / `combined`) — plus a single-message "PR context preset" combo that's persisted via `save_selected_preset_name()` in `.storage/leap_selected_preset` (same file that `leap_sender.send_to_leap_session` reads to prepend context to every outgoing comment). When `auto_fetch_leap` is on, the whole "Which comments to send" section is omitted from the dialog — the filter is effectively forced to `all` since `/leap`-tagged comments are already auto-queued. Picks persist via `send_comments_filter` / `send_comments_mode` in `monitor_prefs.json`. On dispatch, `IndicatorLabel._open_send_comments_dialog()` does a pre-flight dead-server check (clear popup, no worker launched) and routes to one of four `_send_*_to_leap()` handlers by `(filter, mode)` pair. All four share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge comments on SCM side after send.
 
 ### /leap Auto-Fetch
 
-"Auto '/leap' fetch" checkbox: when ON, `SCMPollerWorker` auto-scans for `/leap` tags each poll cycle. A `/leap` comment does **not** count as a user response — only the bot ack (`[Leap bot] on it!`) marks a comment as handled. When auto-fetch is on, the `/leap`-filter radio in `SendCommentsDialog` is disabled (those comments are already queued automatically). Setting persisted as `auto_fetch_leap` in monitor prefs.
+"Auto '/leap' fetch" checkbox: when ON, `SCMPollerWorker` auto-scans for `/leap` tags each poll cycle. A `/leap` comment does **not** count as a user response — only the bot ack (`[Leap bot] on it!`) marks a comment as handled. When auto-fetch is on, the `SendCommentsDialog` hides its entire "Which comments to send" section (those comments are already queued automatically). Setting persisted as `auto_fetch_leap` in monitor prefs.
+
+**Auto-fetch preset**: a separate preset combobox sits next to the checkbox in the main window (visible only while the checkbox is on). Its selection — persisted in `.storage/leap_auto_fetch_preset` — is loaded by `load_auto_fetch_leap_preset()` and passed through `send_to_leap_session(tag, msg, preset=…)` in `scm_polling._handle_leap_commands`. This is **independent** of `.storage/leap_selected_preset` which is used by manual sends from `SendCommentsDialog`. The combo's popup refreshes itself on open (`_RefreshableComboBox.showPopup`) so preset edits made elsewhere show up next time the user opens the dropdown; it also self-heals a stale saved selection if the preset was deleted or grew to multi-message.
 
 ### Environment Variable Token Mode
 

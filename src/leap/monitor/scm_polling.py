@@ -11,6 +11,7 @@ from leap.utils.constants import SCM_MAX_CONCURRENT_POLLS
 from leap.monitor.pr_tracking.base import (
     ConnectionTestResult, PRState, PRStatus, SCMProvider, UserNotification,
 )
+from leap.monitor.pr_tracking.config import load_auto_fetch_leap_preset
 from leap.monitor.pr_tracking.leap_command import format_leap_message
 from leap.monitor.pr_tracking.git_utils import (
     get_git_remote_info, refine_scm_type,
@@ -216,7 +217,14 @@ class SCMPollerWorker(QThread):
         return status, leap_commands
 
     def _handle_leap_commands(self, commands: list[tuple[Any, SCMProvider]]) -> None:
-        """Process /leap commands entirely in the background thread."""
+        """Process /leap commands entirely in the background thread.
+
+        Auto-fetched /leap comments use their own preset (selected via the
+        combobox next to the "Auto '/leap' fetch" checkbox), which is
+        independent of the preset used by manual sends in
+        SendCommentsDialog. Resolved once per poll cycle.
+        """
+        auto_preset = load_auto_fetch_leap_preset()
         for cmd, provider in commands:
             try:
                 # Match sessions by SCM project path
@@ -238,7 +246,7 @@ class SCMPollerWorker(QThread):
                 if matching_tags:
                     tag = matching_tags[0]
                     message = format_leap_message(cmd)
-                    sent = send_to_leap_session(tag, message)
+                    sent = send_to_leap_session(tag, message, preset=auto_preset)
                     if sent:
                         logger.debug("/leap from PR !%s sent to session '%s'",
                                      cmd.pr_iid, tag)

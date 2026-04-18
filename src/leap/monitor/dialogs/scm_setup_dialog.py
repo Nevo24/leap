@@ -20,10 +20,26 @@ from leap.monitor.themes import current_theme
 class SCMSetupDialog(ZoomMixin, QDialog):
     """Base dialog for configuring SCM provider connections.
 
+    Three distinct actions:
+
+    - **Save**: writes URL, token, token_mode, poll interval and
+      notifications to disk. Does not touch ``username`` — i.e. Save
+      never changes the connected/disconnected state. Its purpose is
+      "remember what I typed across dialog opens".
+    - **Connect / Disconnect** (same button, label depends on state):
+      - Connect (when disconnected): validates the token with the
+        current form values; on success writes everything including
+        ``username``. Next open, this button shows Disconnect.
+      - Disconnect (when connected): clears ``username`` only. Keeps
+        URL, token and other fields on disk so reconnecting is a
+        one-click affair.
+    - **Cancel**: closes the dialog without writing anything.
+
     Subclasses must implement:
         - _window_title() -> str
         - _url_label() -> str
         - _url_placeholder() -> str
+        - _url_default() -> str
         - _token_label() -> str
         - _token_placeholder() -> str
         - _do_test_connection(url, token) -> ConnectionTestResult
@@ -43,6 +59,15 @@ class SCMSetupDialog(ZoomMixin, QDialog):
             self.resize(saved[0], saved[1])
         self._verified_username: Optional[str] = None
         self._test_worker: Optional[TestConnectionWorker] = None
+        self._pending_values: dict[str, Any] = {}
+        self._was_connected = bool(
+            (self._load_config() or {}).get('username')
+        )
+        # Outcome flags read by the parent to pick a status-bar message.
+        # At most one of these is True after accept(); both False means
+        # plain Save (fields persisted, no connection state change).
+        self.disconnected = False
+        self.connected = False
         self._init_ui()
         self._load_existing()
         self._init_zoom(f'{self._geometry_key}_font_size')
@@ -90,6 +115,11 @@ class SCMSetupDialog(ZoomMixin, QDialog):
     @abstractmethod
     def _config_token_key(self) -> str:
         """Return the config dict key for the token field."""
+
+    def _provider_display_name(self) -> str:
+        """Human-readable provider name for confirmation text (e.g. 'GitLab')."""
+        title = self._window_title()
+        return title.replace('Connect', '').strip() or title
 
     def _notif_tooltip(self) -> str:
         """Return tooltip text for the notification tracking checkbox."""
@@ -162,25 +192,24 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         self.status_label = QLabel('')
         layout.addWidget(self.status_label)
 
-        # Warnings label (shown when token has limited permissions)
-        self.warnings_label = QLabel('')
-        self.warnings_label.setWordWrap(True)
-        self.warnings_label.setStyleSheet(f'color: {current_theme().accent_orange};')
-        self.warnings_label.setVisible(False)
-        layout.addWidget(self.warnings_label)
-
-        # Buttons
+        # Buttons: [Connect|Disconnect]  [stretch]  [Save] [Cancel]
+        # Left slot is a single button whose label and style flip based on
+        # the saved ``username`` state. Save sits with Cancel on the right
+        # so the user reads it as "commit my edits" alongside "discard".
         btn_layout = QHBoxLayout()
 
-        self.test_btn = QPushButton('Test Connection')
-        self.test_btn.clicked.connect(self._test_connection)
-        btn_layout.addWidget(self.test_btn)
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.clicked.connect(self._on_toggle_clicked)
+        btn_layout.addWidget(self.toggle_btn)
 
         btn_layout.addStretch()
 
         self.save_btn = QPushButton('Save')
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self._save)
+        self.save_btn.setToolTip(
+            'Save the current field values to disk. Does not test the '
+            'connection and does not change the connected state.'
+        )
+        self.save_btn.clicked.connect(self._save_fields)
         btn_layout.addWidget(self.save_btn)
 
         cancel_btn = QPushButton('Cancel')
@@ -188,6 +217,75 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         btn_layout.addWidget(cancel_btn)
 
         layout.addLayout(btn_layout)
+
+        self._apply_toggle_btn_state()
+
+    @staticmethod
+    def _disconnect_btn_style() -> str:
+        """Red-bordered style for the Disconnect state. Mirrors the
+        'connected' button style geometry (padding, min-height) for
+        consistent vertical alignment on macOS Qt."""
+        t = current_theme()
+        btn_bg = t.button_bg or t.window_bg
+        return (
+            f'QPushButton {{ color: {t.accent_red};'
+            f' background-color: {btn_bg};'
+            f' border: 1px solid {t.accent_red};'
+            f' padding: 5px 16px;'
+            f' min-height: 18px; }}'
+            f'QPushButton:hover {{ background-color: {t.accent_red};'
+            f' color: {t.window_bg};'
+            f' border-color: {t.accent_red}; }}'
+            f'QPushButton:disabled {{ color: {t.text_muted};'
+            f' border-color: {t.text_muted}; }}'
+        )
+
+    def _apply_toggle_btn_state(self) -> None:
+        """Update the left button's label/style/tooltip for the current state."""
+        name = self._provider_display_name()
+        if self._was_connected:
+            self.toggle_btn.setText('Disconnect')
+            self.toggle_btn.setStyleSheet(self._disconnect_btn_style())
+            self.toggle_btn.setToolTip(
+                f'Clear the saved {name} login. The token and other '
+                'fields stay on disk.'
+            )
+        else:
+            self.toggle_btn.setText('Connect')
+            self.toggle_btn.setStyleSheet('')
+            self.toggle_btn.setToolTip(
+                f'Validate the token with {name} and save everything on '
+                'success. Use Save on its own if you just want to remember '
+                'the field values without logging in.'
+            )
+
+    def _on_toggle_clicked(self) -> None:
+        """Route clicks to Connect or Disconnect based on current state."""
+        if self._was_connected:
+            self._disconnect()
+        else:
+            self._connect()
+
+    def _disconnect(self) -> None:
+        """Clear the saved username. Keeps token/URL/prefs intact."""
+        name = self._provider_display_name()
+        reply = QMessageBox.question(
+            self,
+            f'Disconnect {name}?',
+            f'Stop using your {name} credentials?\n\n'
+            f'The token, URL and other settings stay saved — only the '
+            f'connection is cleared. Click Connect later to log in again '
+            f'with the same values, or edit the fields first.',
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        config = self._load_config() or {}
+        config.pop('username', None)
+        self._save_config(config)
+        self.disconnected = True
+        self.accept()
 
     def _on_token_mode_changed(self, direct_checked: bool) -> None:
         """Toggle token input between direct and env var mode."""
@@ -251,26 +349,64 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         self.notif_check.setChecked(config.get('enable_notifications', False))
         if config.get('username'):
             self._verified_username = config['username']
-            self.save_btn.setEnabled(True)
             self.status_label.setText(f'Connected as: {self._verified_username}')
             self.status_label.setStyleSheet(f'color: {current_theme().accent_green};')
 
-    def _test_connection(self) -> None:
-        url = self.url_input.text().strip() or self._url_default()
+    def _form_values(self) -> Optional[dict[str, Any]]:
+        """Collect validated form values into a partial config dict.
+
+        Returns ``None`` (and shows an error on the status label) if the
+        token field is empty or token-mode validation fails. The returned
+        dict contains every field *except* ``username`` — callers decide
+        whether to add it (Connect) or preserve the on-disk value (Save).
+        """
         raw_token = self.token_input.text().strip()
         if not raw_token:
             if self._token_envvar_radio.isChecked():
-                self.status_label.setText('Please enter an environment variable name.')
+                msg = 'Please enter an environment variable name.'
             else:
-                self.status_label.setText('Please enter a token.')
+                msg = 'Please enter a token.'
+            self.status_label.setText(msg)
             self.status_label.setStyleSheet(f'color: {current_theme().accent_red};')
-            return
-
+            return None
         if not self._validate_token_mode():
+            return None
+        url = self.url_input.text().strip() or self._url_default()
+        token_mode = 'env_var' if self._token_envvar_radio.isChecked() else 'direct'
+        return {
+            self._config_url_key(): url,
+            self._config_token_key(): raw_token,
+            'token_mode': token_mode,
+            'poll_interval': self.poll_input.value(),
+            'enable_notifications': self.notif_check.isChecked(),
+        }
+
+    def _save_fields(self) -> None:
+        """Persist the current form values without touching connection state.
+
+        Preserves the existing ``username`` on disk so Save never flips
+        the connected/disconnected state. Closes the dialog on success.
+        """
+        values = self._form_values()
+        if values is None:
+            return
+        existing = self._load_config() or {}
+        if existing.get('username'):
+            values['username'] = existing['username']
+        self._save_config(values)
+        self.accept()
+
+    def _connect(self) -> None:
+        """Validate the token in the background, then save + log in on success."""
+        values = self._form_values()
+        if values is None:
             return
 
-        # Resolve env var if in env var mode
-        if self._token_envvar_radio.isChecked():
+        # Resolve env var if in env var mode — we need the actual token
+        # value for the test call, but the form value we store is the
+        # env-var name (for env_var mode) or the token itself (direct).
+        raw_token = values[self._config_token_key()]
+        if values['token_mode'] == 'env_var':
             token = os.environ.get(raw_token)
             if not token:
                 self.status_label.setText(
@@ -280,55 +416,44 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         else:
             token = raw_token
 
-        self.status_label.setText('Testing...')
+        self.status_label.setText('Connecting...')
         self.status_label.setStyleSheet(f'color: {current_theme().text_muted};')
-        self.test_btn.setEnabled(False)
+        self.toggle_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
 
+        self._pending_values = values
         self._test_worker = TestConnectionWorker(self)
-        self._test_worker.configure(self._do_test_connection, url, token)
-        self._test_worker.result_ready.connect(self._on_test_result)
+        self._test_worker.configure(
+            self._do_test_connection, values[self._config_url_key()], token)
+        self._test_worker.result_ready.connect(self._on_connect_result)
         self._test_worker.finished.connect(self._test_worker.deleteLater)
         self._test_worker.start()
 
-    def _on_test_result(self, result: ConnectionTestResult) -> None:
-        """Handle background connection test result."""
-        self.test_btn.setEnabled(True)
-        if result.success:
-            self._verified_username = result.username
-            self.status_label.setText(f'Connected as: {result.username}')
-            self.status_label.setStyleSheet(f'color: {current_theme().accent_green};')
-            self.save_btn.setEnabled(True)
-            if result.warnings:
-                self.warnings_label.setText('\n'.join(result.warnings))
-                self.warnings_label.setVisible(True)
-            else:
-                self.warnings_label.setVisible(False)
-        else:
+    def _on_connect_result(self, result: ConnectionTestResult) -> None:
+        """Handle background connection test result from Connect."""
+        self.toggle_btn.setEnabled(True)
+        self.save_btn.setEnabled(True)
+
+        if not result.success:
             self._verified_username = None
             self.status_label.setText(f'Failed: {result.username}')
             self.status_label.setStyleSheet(f'color: {current_theme().accent_red};')
-            self.save_btn.setEnabled(False)
-            self.warnings_label.setVisible(False)
-
-    def _save(self) -> None:
-        url = self.url_input.text().strip() or self._url_default()
-        token = self.token_input.text().strip()
-        if not self._validate_token_mode():
-            return
-        if not self._verified_username:
-            QMessageBox.warning(self, 'Error', 'Test the connection first.')
             return
 
-        token_mode = 'env_var' if self._token_envvar_radio.isChecked() else 'direct'
-        config = {
-            self._config_url_key(): url,
-            self._config_token_key(): token,
-            'token_mode': token_mode,
-            'username': self._verified_username,
-            'poll_interval': self.poll_input.value(),
-            'enable_notifications': self.notif_check.isChecked(),
-        }
-        self._save_config(config)
+        self._verified_username = result.username
+        values = self._pending_values
+        values['username'] = self._verified_username
+        self._save_config(values)
+        self.connected = True
+
+        # Surface scope/permission warnings before closing — the dialog is
+        # about to disappear, so an inline warning would be invisible.
+        if result.warnings:
+            QMessageBox.warning(
+                self,
+                'Connected with warnings',
+                f'Connected as: {result.username}\n\n' + '\n'.join(result.warnings),
+            )
         self.accept()
 
     def done(self, result: int) -> None:

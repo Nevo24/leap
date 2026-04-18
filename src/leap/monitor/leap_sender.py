@@ -1,6 +1,7 @@
 """Lightweight socket sender for queuing messages to Leap sessions."""
 
 import logging
+from typing import Optional
 
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
@@ -39,20 +40,24 @@ def _send_to_socket(
     return result.get('status') in success_statuses
 
 
-def send_to_leap_session(tag: str, message: str) -> bool:
+def send_to_leap_session(tag: str, message: str,
+                         preset: Optional[str] = None) -> bool:
     """Send a queued message to a Leap session via Unix socket.
-
-    The selected preset (from leap_selected_preset) is prepended to the
-    message if set.
 
     Args:
         tag: Session tag name.
         message: Message to queue.
+        preset: Preset text to prepend, or ``None`` to fall back to the
+            manually-selected preset (``leap_selected_preset``). Pass the
+            empty string to suppress prepending entirely. Auto-fetched
+            /leap commands pass ``load_auto_fetch_leap_preset()`` so they
+            use their own preset, independent of the dialog's.
 
     Returns:
         True on success, False on failure.
     """
-    preset = load_leap_preset()
+    if preset is None:
+        preset = load_leap_preset()
     if preset:
         message = preset + '\n' + message
 

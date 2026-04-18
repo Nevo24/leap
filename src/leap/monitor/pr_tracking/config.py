@@ -14,6 +14,7 @@ PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
 NOTIFICATION_SEEN_FILE = STORAGE_DIR / "notification_seen.json"
 LEAP_PRESET_FILE = STORAGE_DIR / "leap_selected_preset"
 LEAP_DIRECT_PRESET_FILE = STORAGE_DIR / "leap_selected_direct_preset"
+LEAP_AUTO_FETCH_PRESET_FILE = STORAGE_DIR / "leap_auto_fetch_preset"
 LEAP_PRESETS_FILE = STORAGE_DIR / "leap_presets.json"
 
 # Backward-compat: old file names for migration
@@ -396,6 +397,56 @@ def save_selected_direct_preset_name(name: str) -> None:
         except OSError:
             pass
         raise
+
+
+def load_auto_fetch_preset_name() -> str:
+    """Load the name of the preset used for auto-fetched /leap comments.
+
+    This is independent of ``load_selected_preset_name`` (which is used for
+    manual comment sends via SendCommentsDialog). When "Auto '/leap' fetch"
+    is on, the main window exposes a separate combobox that writes here.
+
+    Returns:
+        The preset name, or empty string if none selected.
+    """
+    if not LEAP_AUTO_FETCH_PRESET_FILE.exists():
+        return ''
+    try:
+        return LEAP_AUTO_FETCH_PRESET_FILE.read_text(encoding='utf-8').strip()
+    except OSError:
+        return ''
+
+
+def save_auto_fetch_preset_name(name: str) -> None:
+    """Save the preset name used for auto-fetched /leap comments."""
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(STORAGE_DIR), suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(name)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(LEAP_AUTO_FETCH_PRESET_FILE))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def load_auto_fetch_leap_preset() -> str:
+    """Resolve the auto-fetch preset name to its message text.
+
+    Returns:
+        The preset string, or empty string if no preset selected or not found.
+    """
+    name = load_auto_fetch_preset_name()
+    if not name:
+        return ''
+    presets = load_saved_presets()
+    messages = presets.get(name, [])
+    return messages[0] if messages else ''
 
 
 def load_leap_preset() -> str:
