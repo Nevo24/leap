@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
-from PyQt5.QtCore import QEvent, QSize, Qt, QTimer
+from PyQt5.QtCore import QEvent, QSize, Qt
 from PyQt5.QtGui import QColor, QPainter, QPen, QTextDocument
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin

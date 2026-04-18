@@ -22,14 +22,12 @@ from leap.monitor.themes import current_theme
 from leap.monitor.ui.image_text_edit import ImageTextEdit
 
 from leap.monitor.pr_tracking.config import (
-    delete_named_preset, load_dialog_geometry, load_saved_presets,
-    load_selected_direct_preset_name, load_selected_preset_name,
-    save_dialog_geometry, save_named_preset,
-    save_selected_direct_preset_name, save_selected_preset_name,
+    delete_named_preset, load_dialog_geometry, load_preset_editor_last_name,
+    load_saved_presets, save_dialog_geometry, save_named_preset,
+    save_preset_editor_last_name,
 )
 from leap.monitor.ui.table_helpers import (
-    APPLY_PR_BTN, APPLY_QUICK_MSG_BTN, PR_PRESET_HINT,
-    QUICK_MSG_PRESET_HINT,
+    PR_PRESET_HINT, QUICK_MSG_PRESET_HINT,
 )
 
 
@@ -194,7 +192,7 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         hint_quick.setStyleSheet(f'color: {current_theme().text_muted}; margin-bottom: 4px;')
         dlg_layout.addWidget(hint_quick)
 
-        # Preset row: combo + New + Save + Save As... + Delete
+        # Preset row: combo + Save + Save As... + Delete
         preset_layout = QHBoxLayout()
 
         self._combo = QComboBox()
@@ -202,11 +200,9 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         self._combo.setMinimumWidth(160)
         preset_layout.addWidget(self._combo, 1)
 
-        new_btn = QPushButton('New')
         self._save_btn = QPushButton('Save')
         save_as_btn = QPushButton('Save As...')
         self._delete_btn = QPushButton('Delete')
-        preset_layout.addWidget(new_btn)
         preset_layout.addWidget(self._save_btn)
         preset_layout.addWidget(save_as_btn)
         preset_layout.addWidget(self._delete_btn)
@@ -233,27 +229,31 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         self._scroll.viewport().setAcceptDrops(True)
         self._scroll.viewport().installEventFilter(self)
 
-        # Load the currently selected preset (if any)
-        selected_name = load_selected_preset_name()
-        if selected_name:
-            presets = load_saved_presets()
-            if selected_name in presets:
-                self._messages = list(presets[selected_name])
-                if not self._messages:
-                    self._messages = ['']
+        # Load the preset the editor was last focused on (if it still exists)
+        last_name = load_preset_editor_last_name()
+        presets = load_saved_presets()
+        if last_name and last_name in presets:
+            self._messages = list(presets[last_name])
+            if not self._messages:
+                self._messages = ['']
+            selected_name = last_name
+        else:
+            selected_name = ''
+            if last_name:
+                # Saved selection no longer exists — clear it so we don't
+                # keep trying to restore a phantom preset.
+                save_preset_editor_last_name('')
         self._current_name = selected_name
 
         self._rebuild_cards()
 
-        # Bottom buttons: two Apply & Close buttons + Cancel
+        # Bottom buttons: New + Cancel at bottom-left
         btn_layout = QHBoxLayout()
-        btn_layout.addStretch()
-        apply_pr_btn = QPushButton(APPLY_PR_BTN)
-        apply_direct_btn = QPushButton(APPLY_QUICK_MSG_BTN)
+        new_btn = QPushButton('New')
         cancel_btn = QPushButton('Cancel')
-        btn_layout.addWidget(apply_pr_btn)
-        btn_layout.addWidget(apply_direct_btn)
+        btn_layout.addWidget(new_btn)
         btn_layout.addWidget(cancel_btn)
+        btn_layout.addStretch()
         dlg_layout.addLayout(btn_layout)
 
         # Connect signals
@@ -262,18 +262,17 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         self._save_btn.clicked.connect(self._on_save)
         save_as_btn.clicked.connect(self._on_save_as)
         self._delete_btn.clicked.connect(self._on_delete)
-        apply_pr_btn.clicked.connect(self._on_apply_pr)
-        apply_direct_btn.clicked.connect(self._on_apply_direct)
         cancel_btn.clicked.connect(self.reject)
 
         self._refresh_combo(selected_name)
 
         # If no preset was selected but combo has items, sync _current_name
-        # with what the combo is visually showing so Apply works correctly.
+        # with what the combo is visually showing so Save/Delete target
+        # the right preset when the user hits them immediately.
         if not self._current_name and self._combo.count() > 0:
             fallback = self._combo.currentText()
             if fallback:
-                self._current_name = fallback
+                self._set_current_name(fallback)
                 presets = load_saved_presets()
                 self._messages = list(presets.get(fallback, ['']))
                 if not self._messages:
@@ -470,6 +469,11 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         self._save_btn.setEnabled(has_preset)
         self._delete_btn.setEnabled(has_preset)
 
+    def _set_current_name(self, name: str) -> None:
+        """Update ``_current_name`` and persist it so the editor reopens here."""
+        self._current_name = name
+        save_preset_editor_last_name(name)
+
     def _refresh_combo(self, select_name: str = '') -> None:
         self._refreshing = True
         self._combo.clear()
@@ -502,7 +506,7 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         if not self._messages:
             self._messages = ['']
         self._rebuild_cards()
-        self._current_name = name
+        self._set_current_name(name)
         self._unsaved = False
         self._update_button_states()
 
@@ -538,7 +542,7 @@ class PresetEditorDialog(ZoomMixin, QDialog):
                     continue
             break
         save_named_preset(name, list(self._messages))
-        self._current_name = name
+        self._set_current_name(name)
         self._unsaved = False
         self._refresh_combo(name)
 
@@ -575,7 +579,7 @@ class PresetEditorDialog(ZoomMixin, QDialog):
                     continue
             break
         save_named_preset(name, [''])
-        self._current_name = name
+        self._set_current_name(name)
         self._unsaved = True
         self._messages = ['']
         self._rebuild_cards()
@@ -613,7 +617,7 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         )
         if reply == QMessageBox.Yes:
             delete_named_preset(name)
-            self._current_name = ''
+            self._set_current_name('')
             self._unsaved = False
             self._refresh_combo()
             # Auto-load the first remaining preset
@@ -623,7 +627,7 @@ class PresetEditorDialog(ZoomMixin, QDialog):
                 self._messages = list(presets.get(fallback, ['']))
                 if not self._messages:
                     self._messages = ['']
-                self._current_name = fallback
+                self._set_current_name(fallback)
             else:
                 self._messages = ['']
             self._rebuild_cards()
@@ -646,24 +650,6 @@ class PresetEditorDialog(ZoomMixin, QDialog):
                     save_named_preset(name, list(self._messages))
         return True
 
-    def _on_apply_pr(self) -> None:
-        """Apply the current preset to the PR thread context combo and close.
-
-        Rejects multi-message presets — PR thread context must be single-message.
-        """
-        if len(self._messages) > 1 and any(m.strip() for m in self._messages[1:]):
-            QMessageBox.warning(
-                self, 'Multi-Message Preset',
-                'PR thread context must be a single-message preset.\n\n'
-                'This preset has multiple messages. Only single-message '
-                'presets can be used as PR thread context.',
-            )
-            return
-        if not self._maybe_save_unsaved():
-            return
-        save_selected_preset_name(self._current_name)
-        self.accept()
-
     def reject(self) -> None:
         """Intercept Cancel / X-button to check for unsaved changes."""
         if not self._maybe_save_unsaved():
@@ -674,10 +660,3 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         """Save dialog size on close."""
         save_dialog_geometry('preset_editor', self.width(), self.height())
         super().done(result)
-
-    def _on_apply_direct(self) -> None:
-        """Apply the current preset to the Message bundle combo and close."""
-        if not self._maybe_save_unsaved():
-            return
-        save_selected_direct_preset_name(self._current_name)
-        self.accept()

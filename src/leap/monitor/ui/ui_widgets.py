@@ -4,12 +4,15 @@ import math
 import webbrowser
 from typing import Optional
 
-from PyQt5.QtWidgets import QAction, QApplication, QLabel, QMenu, QWidget
+from PyQt5.QtWidgets import (
+    QAction, QApplication, QLabel, QMenu, QMessageBox, QWidget,
+)
 from PyQt5.QtCore import QPoint, QTimer, Qt
 from PyQt5.QtGui import (
     QColor, QCursor, QLinearGradient, QMouseEvent, QPainter,
 )
 
+from leap.monitor.dialogs.send_comments_dialog import SendCommentsDialog
 from leap.monitor.popup_zoom import PopupZoomManager
 from leap.monitor.themes import current_theme
 
@@ -330,46 +333,68 @@ class PulsingLabel(QLabel):
         if getattr(app, 'tooltips_enabled', False):
             menu.setToolTipsVisible(True)
 
-        go_action = QAction('Go to first thread', menu)
-        go_action.setToolTip('Open the first unresponded PR thread in your browser')
+        go_action = QAction('Go to first comment', menu)
+        go_action.setToolTip('Open the first unresponded PR comment in your browser')
         go_action.triggered.connect(lambda: webbrowser.open(url))
         menu.addAction(go_action)
 
-        send_action = QAction('Send each thread to Leap (one per queue message)', menu)
-        send_action.setToolTip(
-            'Queue each unresponded thread as a separate message\n'
-            'so the CLI handles them one at a time')
-        send_action.triggered.connect(lambda: send_to_leap() if send_to_leap else None)
-        send_action.setEnabled(bool(server_running and has_unresponded and send_to_leap))
-        menu.addAction(send_action)
-
-        combined_action = QAction('Send all threads to Leap (combined into one message)', menu)
-        combined_action.setToolTip(
-            'Concatenate all unresponded threads into a single\n'
-            'message so the CLI sees them all at once')
-        combined_action.triggered.connect(lambda: send_combined() if send_combined else None)
-        combined_action.setEnabled(bool(server_running and has_unresponded and send_combined))
-        menu.addAction(combined_action)
-
         menu.addSeparator()
 
-        leap_each_action = QAction("Send each '/leap' thread to Leap (one per queue message)", menu)
-        leap_each_action.setToolTip(
-            "Only threads with an unacknowledged '/leap' comment —\n"
-            'queue each as a separate message')
-        leap_each_action.triggered.connect(lambda: send_leap_threads() if send_leap_threads else None)
-        leap_each_action.setEnabled(bool(server_running and not auto_fetch_leap and has_unresponded and send_leap_threads))
-        menu.addAction(leap_each_action)
-
-        leap_combined_action = QAction("Send all '/leap' threads to Leap (combined into one message)", menu)
-        leap_combined_action.setToolTip(
-            "Only threads with an unacknowledged '/leap' comment —\n"
-            'concatenate into a single message')
-        leap_combined_action.triggered.connect(lambda: send_leap_combined() if send_leap_combined else None)
-        leap_combined_action.setEnabled(bool(server_running and not auto_fetch_leap and has_unresponded and send_leap_combined))
-        menu.addAction(leap_combined_action)
+        send_action = QAction('Send comment/s to session', menu)
+        send_action.setToolTip(
+            'Pick which PR comments to queue and how to bundle them')
+        send_action.setEnabled(has_unresponded)
+        send_action.triggered.connect(
+            lambda: self._open_send_comments_dialog(
+                top_level, auto_fetch_leap, server_running,
+                send_to_leap, send_combined,
+                send_leap_threads, send_leap_combined,
+            )
+        )
+        menu.addAction(send_action)
 
         menu.exec_(self.mapToGlobal(pos))
+
+    def _open_send_comments_dialog(
+        self,
+        parent: QWidget,
+        auto_fetch_leap: bool,
+        server_running: bool,
+        send_to_leap: Optional[callable],
+        send_combined: Optional[callable],
+        send_leap_threads: Optional[callable],
+        send_leap_combined: Optional[callable],
+    ) -> None:
+        """Open the picker dialog and dispatch to the matching callback.
+
+        If the Leap server for this session isn't running we bail out with
+        a clear popup — otherwise the worker would fail later with a
+        cryptic "Failed to send …" message.
+        """
+        if not server_running:
+            QMessageBox.information(
+                parent, 'Leap server not running',
+                "The Leap server for this session isn't running, so "
+                "there's nothing to queue comments into.\n\n"
+                'Start the server, then try Send comment/s again.'
+            )
+            return
+        filt, mode, accepted = SendCommentsDialog.choose(
+            parent, auto_fetch_leap=auto_fetch_leap,
+        )
+        if not accepted:
+            return
+        # Dispatch on the (filter, mode) pair, falling back gracefully if
+        # a callback hasn't been wired yet.
+        table = {
+            ('all', 'each'): send_to_leap,
+            ('all', 'combined'): send_combined,
+            ('leap', 'each'): send_leap_threads,
+            ('leap', 'combined'): send_leap_combined,
+        }
+        handler = table.get((filt, mode))
+        if handler:
+            handler()
 
     def _animate(self) -> None:
         try:

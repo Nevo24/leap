@@ -48,10 +48,10 @@ are built dynamically (e.g. message cards that rebuild on save).
 from typing import Callable, Optional, Sequence, Union
 
 from PyQt5.QtCore import QEvent, QTimer, Qt
-from PyQt5.QtGui import QCursor, QFont
+from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import (
     QApplication, QFileDialog, QInputDialog, QMenu, QMessageBox,
-    QToolTip, QWidget,
+    QWidget,
 )
 
 from leap.monitor.pr_tracking.config import load_monitor_prefs, save_monitor_prefs

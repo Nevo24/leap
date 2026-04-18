@@ -96,12 +96,13 @@ src/
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
+    │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)
     │   │   └── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
     │   │   ├── dock_badge.py    # Dock icon badge overlay + notification event detection
-    │   │   ├── image_text_edit.py # ImageTextEdit (clipboard image paste) + SendMessageDialog
+    │   │   ├── image_text_edit.py # ImageTextEdit (clipboard image paste) + SendMessageDialog + SendPresetDialog
     │   │   ├── log_history.py   # Log history (in-memory + dialog)
     │   │   └── table_helpers.py # Qt helper widgets (separators, tooltip overrides, ColorPickerPopup)
     │   │
@@ -164,7 +165,9 @@ assets/
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
 | `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session |
 | `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
-| `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste (replaces QInputDialog) |
+| `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste + Next/To-End queue-position toggle |
+| `SendPresetDialog` | `monitor/ui/image_text_edit.py` | Picker for a message-bundle preset + Next/To-End queue-position toggle |
+| `SendCommentsDialog` | `monitor/dialogs/send_comments_dialog.py` | PR-comments picker: filter (all / /leap-tagged), mode (each / combined), context preset |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (9 built-in themes) |
@@ -312,13 +315,13 @@ The monitor polls GitLab/GitHub for PR status updates and user notifications. Ke
 
 Polling flow: `_scm_poll_timer` → `_start_scm_poll()` → `SCMPollerWorker` (QThread) → `get_pr_status()` per session → `_on_scm_results()` → `_update_pr_column()`.
 
-### Sending Threads to Leap
+### Sending PR Comments to Leap
 
-Right-click PR status label for send modes: individual threads, combined into one message, or filtered to `/leap` commands only. Both share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge threads on SCM side after send.
+Left-click the PR status label (when any comment is unresponded) for a 2-item menu: **Go to first comment** (opens the comment in the browser) and **Send comment/s to session** (opens `SendCommentsDialog`). The dialog exposes two binary choices — filter (`all` / `leap`-tag-only) and mode (`each` message / `combined`) — plus a single-message "PR context preset" combo that's persisted via `save_selected_preset_name()` in `.storage/leap_selected_preset` (same file that `leap_sender.send_to_leap_session` reads to prepend context to every outgoing comment). Picks persist via `send_comments_filter` / `send_comments_mode` in `monitor_prefs.json`. On dispatch, `IndicatorLabel._open_send_comments_dialog()` does a pre-flight dead-server check (clear popup, no worker launched) and routes to one of four `_send_*_to_leap()` handlers by `(filter, mode)` pair. All four share `CollectThreadsWorker` (Phase 1), then diverge: `SendThreadsWorker` (one-by-one) or `SendThreadsCombinedWorker` (concatenated). All modes acknowledge comments on SCM side after send.
 
 ### /leap Auto-Fetch
 
-"Auto '/leap' fetch" checkbox: when ON, `SCMPollerWorker` auto-scans for `/leap` commands each poll cycle. A `/leap` comment does **not** count as a user response — only the bot ack (`[Leap bot] on it!`) marks a thread as handled. Setting persisted as `auto_fetch_leap` in monitor prefs.
+"Auto '/leap' fetch" checkbox: when ON, `SCMPollerWorker` auto-scans for `/leap` tags each poll cycle. A `/leap` comment does **not** count as a user response — only the bot ack (`[Leap bot] on it!`) marks a comment as handled. When auto-fetch is on, the `/leap`-filter radio in `SendCommentsDialog` is disabled (those comments are already queued automatically). Setting persisted as `auto_fetch_leap` in monitor prefs.
 
 ### Environment Variable Token Mode
 

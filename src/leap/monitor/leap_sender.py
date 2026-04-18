@@ -1,7 +1,6 @@
 """Lightweight socket sender for queuing messages to Leap sessions."""
 
 import logging
-from typing import Optional
 
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request

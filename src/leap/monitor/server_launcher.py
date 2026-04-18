@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote
 
 from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 from leap.monitor.pr_tracking.config import save_pinned_sessions
 from leap.monitor.pr_tracking.git_utils import detect_default_branch

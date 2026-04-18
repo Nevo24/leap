@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Optional
 
-from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name, get_provider
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name
 from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR, SLACK_BOT_LOCK,

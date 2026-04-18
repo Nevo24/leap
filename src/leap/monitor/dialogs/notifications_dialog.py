@@ -36,8 +36,8 @@ _BROWSE_SENTINEL = 'Browse...'
 
 # Display labels for each notification type
 _TYPE_LABELS = {
-    'pr_unresponded': 'New unresponded threads',
-    'pr_all_responded': 'All threads responded',
+    'pr_unresponded': 'New unresponded comments',
+    'pr_all_responded': 'All comments responded',
     'pr_approved': 'PR approved',
     'session_completed': 'Session finished processing',
     'session_needs_permission': 'Session needs permission',

@@ -12,9 +12,8 @@ from leap.monitor.pr_tracking.base import (
     ConnectionTestResult, PRState, PRStatus, SCMProvider, UserNotification,
 )
 from leap.monitor.pr_tracking.leap_command import format_leap_message
-from leap.monitor.pr_tracking.config import load_gitlab_config
 from leap.monitor.pr_tracking.git_utils import (
-    SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
+    get_git_remote_info, refine_scm_type,
 )
 from leap.monitor.leap_sender import send_to_leap_session
 from leap.monitor.session_manager import get_active_sessions
@@ -342,7 +341,7 @@ class CollectThreadsWorker(QThread):
             self.collected.emit(commands, matching_tags)
         except Exception:
             logger.exception("Error in CollectThreadsWorker")
-            self.error.emit("Failed to collect threads.")
+            self.error.emit("Failed to collect comments.")
 
 
 class _BaseSendWorker(QThread):
@@ -405,7 +404,7 @@ class SendThreadsWorker(_BaseSendWorker):
                 self.ack_failed.emit()
         except Exception:
             logger.exception("Error in SendThreadsWorker")
-            self.error.emit("Failed to send threads.")
+            self.error.emit("Failed to send comments.")
 
 
 class SendThreadsCombinedWorker(_BaseSendWorker):

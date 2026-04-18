@@ -7,7 +7,6 @@ Slack-enabled Leap sessions every 2 seconds.
 
 import json
 import logging
-import os
 import re
 import subprocess
 import threading

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from github import Github, GithubException
+from github import Github
 
 from leap.monitor.pr_tracking.base import PRDetails, PRState, PRStatus, SCMProvider, UserNotification
 from leap.monitor.pr_tracking.leap_command import CqCommand

@@ -6,7 +6,6 @@ Discovers and tracks active Leap sessions.
 
 import fcntl
 import json
-import os
 import re
 import subprocess
 from pathlib import Path

@@ -10,8 +10,6 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-import pexpect
-
 from leap.cli_providers.base import CLIProvider
 
 

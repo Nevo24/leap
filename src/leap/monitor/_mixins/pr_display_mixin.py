@@ -283,7 +283,7 @@ class PRDisplayMixin(_Base):
             widget.set_pr_url(status.pr_url)
             widget.set_indicator_help(
                 f'PR !{status.pr_iid}: {status.pr_title}\n'
-                f'All threads responded.{approval_line}'
+                f'All comments responded.{approval_line}'
             )
 
         elif status.state == PRState.UNRESPONDED:
@@ -298,7 +298,9 @@ class PRDisplayMixin(_Base):
             widget.set_pr_url(url)
             widget.set_indicator_help(
                 f'PR !{status.pr_iid}: {status.pr_title}\n'
-                f'{status.unresponded_count} unresponded thread(s).{approval_line}'
+                f'{status.unresponded_count} unresponded '
+                f"{'comment' if status.unresponded_count == 1 else 'comments'}."
+                f'{approval_line}'
             )
 
     @staticmethod
@@ -393,9 +395,11 @@ class PRDisplayMixin(_Base):
                 pr_ref += f" '{title}'"
 
         if event.type == NotificationType.PR_UNRESPONDED:
-            return (tag, f"{pr_ref} has {event.unresponded_count} unresponded thread(s)")
+            n = event.unresponded_count
+            noun = 'comment' if n == 1 else 'comments'
+            return (tag, f"{pr_ref} has {n} unresponded {noun}")
         elif event.type == NotificationType.PR_ALL_RESPONDED:
-            return (tag, f"{pr_ref} — all threads responded")
+            return (tag, f"{pr_ref} — all comments responded")
         elif event.type == NotificationType.PR_APPROVED:
             if event.approved_by:
                 names = ', '.join(event.approved_by)

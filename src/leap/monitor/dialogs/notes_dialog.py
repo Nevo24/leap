@@ -8,7 +8,6 @@ Notes auto-save on switch, close, and Cmd+S.
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import unicodedata
@@ -26,7 +25,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import (
-    QColor, QCursor, QDesktopServices, QDrag, QImage, QImageReader, QPixmap,
+    QColor, QCursor, QDesktopServices, QDrag, QImage, QPixmap,
     QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat, QWheelEvent,
 )
 
@@ -3194,12 +3193,6 @@ class NotesDialog(QDialog):
             return
 
         save_named_preset(name, messages)
-        # Refresh the preset combos on the parent (MonitorWindow)
-        parent = self.parent()
-        if parent and hasattr(parent, '_populate_preset_combo'):
-            parent._populate_preset_combo()
-        if parent and hasattr(parent, '_populate_direct_preset_combo'):
-            parent._populate_direct_preset_combo()
         count = len(messages)
         noun = 'message' if count == 1 else 'messages'
         QMessageBox.information(

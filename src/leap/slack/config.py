@@ -8,7 +8,7 @@ in ``.storage/slack/``.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 try:
     from slack_sdk import WebClient

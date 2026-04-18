@@ -2,7 +2,6 @@
 
 import logging
 import subprocess
-from typing import Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (

@@ -4,9 +4,7 @@ Input handling for Leap client.
 Handles prompt_toolkit or readline-based input with history.
 """
 
-import atexit
 import readline
-import sys
 from pathlib import Path
 from typing import Callable, Optional
 

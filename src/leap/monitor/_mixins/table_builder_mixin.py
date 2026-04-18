@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QHBoxLayout, QInputDialog, QLabel,
+    QApplication, QHBoxLayout, QInputDialog, QLabel,
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import QPoint, Qt
@@ -25,15 +25,12 @@ from leap.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR, SettingsDial
 from leap.monitor.leap_sender import prepend_to_leap_queue, send_to_leap_session_raw
 from leap.monitor.pr_tracking.base import PRState
 from leap.monitor.pr_tracking.config import (
-    get_dock_enabled, get_notification_prefs, load_leap_direct_preset,
-    load_saved_presets, load_selected_direct_preset_name,
-    load_selected_preset_name, save_pinned_sessions,
-    save_selected_direct_preset_name, save_selected_preset_name,
+    get_dock_enabled, get_notification_prefs,
+    load_saved_presets, save_pinned_sessions,
 )
-from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name, get_provider
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name
 from leap.cli_providers.states import AutoSendMode, CLIState
-from leap.monitor.session_manager import get_active_sessions
-from leap.monitor.ui.image_text_edit import SendMessageDialog
+from leap.monitor.ui.image_text_edit import SendMessageDialog, SendPresetDialog
 from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
 )
@@ -43,8 +40,6 @@ from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.table_helpers import (
-    MAX_COMBO_DISPLAY, PR_PRESET_TOOLTIP,
-    QUICK_MSG_SEND_AT_END, QUICK_MSG_SEND_NEXT, QUICK_MSG_PRESET_TOOLTIP,
     ColorPickerPopup, HoverIconButton,
     CELL_BTN_H, active_btn_style, close_btn_style, inactive_btn_style, menu_btn_style,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _PALETTE_SVG, _SEND_SVG,
@@ -1653,6 +1648,29 @@ class TableBuilderMixin(_Base):
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
 
+        # Determine current queue size for enabling/disabling actions
+        queue_size = 0
+        for s in self.sessions:
+            if s['tag'] == tag:
+                queue_size = s.get('queue_size', 0)
+                break
+
+        edit_action = menu.addAction('Edit queue messages')
+        edit_action.setToolTip('Open a dialog to view and edit queued messages')
+        edit_action.setEnabled(queue_size > 0)
+        edit_action.triggered.connect(
+            lambda _checked, t=tag: self._edit_queue_messages(t)
+        )
+
+        clear_action = menu.addAction('Clear queue')
+        clear_action.setToolTip('Delete all queued messages without sending them')
+        clear_action.setEnabled(queue_size > 0)
+        clear_action.triggered.connect(
+            lambda _checked, t=tag: self._clear_queue(t)
+        )
+
+        menu.addSeparator()
+
         pause_action = menu.addAction('Pause on input (default)')
         pause_action.setCheckable(True)
         pause_action.setChecked(current_mode == AutoSendMode.PAUSE)
@@ -1682,29 +1700,6 @@ class TableBuilderMixin(_Base):
             '\u25c7 Interrupted — waits (needs manual resume)')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.ALWAYS)
-        )
-
-        menu.addSeparator()
-
-        # Determine current queue size for enabling/disabling actions
-        queue_size = 0
-        for s in self.sessions:
-            if s['tag'] == tag:
-                queue_size = s.get('queue_size', 0)
-                break
-
-        edit_action = menu.addAction('Edit queue messages')
-        edit_action.setToolTip('Open a dialog to view and edit queued messages')
-        edit_action.setEnabled(queue_size > 0)
-        edit_action.triggered.connect(
-            lambda _checked, t=tag: self._edit_queue_messages(t)
-        )
-
-        clear_action = menu.addAction('Clear queue')
-        clear_action.setToolTip('Delete all queued messages without sending them')
-        clear_action.setEnabled(queue_size > 0)
-        clear_action.triggered.connect(
-            lambda _checked, t=tag: self._clear_queue(t)
         )
 
         menu.exec_(label.mapToGlobal(pos))
@@ -1738,36 +1733,21 @@ class TableBuilderMixin(_Base):
 
         menu.addSeparator()
 
-        msg_next_action = menu.addAction('Send message next')
-        msg_next_action.setToolTip(
-            'Type a message and insert it at the front\n'
-            'of the queue (sent before other queued messages)')
-        msg_next_action.triggered.connect(
-            lambda _checked, t=tag: self._send_immediate_message(t, at_end=False)
+        msg_action = menu.addAction('Send message')
+        msg_action.setToolTip(
+            'Type a message and choose whether to queue it\n'
+            'at the front or end of the queue')
+        msg_action.triggered.connect(
+            lambda _checked, t=tag: self._send_immediate_message(t)
         )
 
-        msg_end_action = menu.addAction('Send message to end')
-        msg_end_action.setToolTip(
-            'Type a message and add it to the end of the queue')
-        msg_end_action.triggered.connect(
-            lambda _checked, t=tag: self._send_immediate_message(t, at_end=True)
+        preset_action = menu.addAction('Send preset')
+        preset_action.setToolTip(
+            'Pick a saved message-bundle preset and choose whether\n'
+            'to queue it at the front or end of the queue')
+        preset_action.triggered.connect(
+            lambda _checked, t=tag: self._send_preset_message(t)
         )
-
-        menu.addSeparator()
-
-        next_action = QAction(QUICK_MSG_SEND_NEXT, self)
-        next_action.setToolTip(
-            'Send the active message-bundle preset\n'
-            'and insert it at the front of the queue')
-        next_action.triggered.connect(lambda: self._quick_send_next(tag))
-        menu.addAction(next_action)
-
-        end_action = QAction(QUICK_MSG_SEND_AT_END, self)
-        end_action.setToolTip(
-            'Send the active message-bundle preset\n'
-            'and add it to the end of the queue')
-        end_action.triggered.connect(lambda: self._quick_send_at_end(tag))
-        menu.addAction(end_action)
 
         menu.exec_(btn.mapToGlobal(pos))
 
@@ -2030,181 +2010,66 @@ class TableBuilderMixin(_Base):
         else:
             self._show_status(f'Failed to force-send for {tag}')
 
-    def _send_immediate_message(self, tag: str, at_end: bool = True) -> None:
-        """Open a dialog to type and queue a message for the session."""
-        label = 'Message to queue at end:' if at_end else 'Message to queue next:'
-        text, ok = SendMessageDialog.get_message(
-            self, 'Send Message', f'{label} ({tag})')
-        if ok and text.strip():
-            if at_end:
-                ok = send_to_leap_session_raw(tag, text.strip())
-            else:
-                ok = prepend_to_leap_queue(tag, [text.strip()])
-            if ok:
-                pos = 'end' if at_end else 'next'
-                self._show_status(f'Message queued ({pos}) for {tag}')
-                self._refresh_data()
-            else:
-                self._show_status(f'Failed to queue message for {tag}')
+    def _send_immediate_message(self, tag: str) -> None:
+        """Open a dialog to type and queue a message for the session.
 
-    def _quick_send_next(self, tag: str) -> None:
-        """Prepend all message bundle messages to the front of the queue.
-
-        Messages are inserted before any existing queued messages so they
-        are processed next.
+        The Next/To-End toggle in ``SendMessageDialog`` determines whether
+        the message is prepended to the front of the queue or appended to
+        the end.  The toggle's last value is persisted across dialogs.
         """
-        messages = load_leap_direct_preset()
-        if not messages:
-            self._show_status('No message bundle selected')
+        text, at_end, accepted = SendMessageDialog.get_message(
+            self, 'Send message', f'Message for "{tag}":')
+        if not accepted or not text.strip():
             return
-        if prepend_to_leap_queue(tag, messages):
-            self._show_status(f'Bundle queued next for {tag}')
+        if at_end:
+            sent = send_to_leap_session_raw(tag, text.strip())
         else:
-            self._show_status(f'Bundle send failed for {tag}')
+            sent = prepend_to_leap_queue(tag, [text.strip()])
+        pos = 'end' if at_end else 'next'
+        if sent:
+            self._show_status(f'Message queued ({pos}) for {tag}')
+            self._refresh_data()
+        else:
+            self._show_status(f'Failed to queue message for {tag}')
 
-    def _quick_send_at_end(self, tag: str) -> None:
-        """Append all message bundle messages to the end of the queue."""
-        messages = load_leap_direct_preset()
-        if not messages:
-            self._show_status('No message bundle selected')
+    def _send_preset_message(self, tag: str) -> None:
+        """Open the preset picker dialog and queue the chosen preset.
+
+        The Next/To-End toggle decides whether the bundle is prepended or
+        appended.  The picker's combo lets the user pick any saved preset
+        on the fly.
+        """
+        preset_name, at_end, accepted = SendPresetDialog.choose(self, tag)
+        if not accepted or not preset_name:
             return
-        ok = all(send_to_leap_session_raw(tag, m) for m in messages)
-        if ok:
-            self._show_status(f'Bundle queued for {tag}')
+        messages = [
+            m for m in load_saved_presets().get(preset_name, []) if m.strip()
+        ]
+        if not messages:
+            self._show_status(f'Preset "{preset_name}" is empty')
+            return
+        if at_end:
+            sent = all(send_to_leap_session_raw(tag, m) for m in messages)
         else:
-            self._show_status(f'Bundle send failed for {tag}')
+            sent = prepend_to_leap_queue(tag, messages)
+        pos = 'end' if at_end else 'next'
+        if sent:
+            self._show_status(f'Preset queued ({pos}) for {tag}')
+            self._refresh_data()
+        else:
+            self._show_status(f'Preset send failed for {tag}')
 
     def _open_preset_editor(self) -> None:
-        """Open the preset editor dialog."""
+        """Open the preset editor dialog.
+
+        The editor only creates/edits/saves presets in ``leap_presets.json``.
+        Which preset is active is decided separately inside
+        ``SendPresetDialog`` and ``SendCommentsDialog``, both of which read
+        ``leap_presets.json`` fresh on open, so no refresh is needed when
+        this dialog closes.
+        """
         dialog = PresetEditorDialog(self)
         dialog.exec_()
-        self._populate_preset_combo()
-        self._populate_direct_preset_combo()
-
-    # -- Preset combo helpers (shared logic for PR and direct combos) ------
-
-    @staticmethod
-    def _populate_combo(
-        combo: 'QComboBox',
-        load_selected_fn: 'Callable[[], str]',
-        default_tooltip: str,
-    ) -> None:
-        """Populate a preset combo from saved presets.
-
-        Args:
-            combo: The QComboBox to populate.
-            load_selected_fn: Function returning the currently selected name.
-            default_tooltip: Tooltip when no truncated name is active.
-        """
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem('(None)')
-        for name in sorted(load_saved_presets().keys()):
-            if len(name) > MAX_COMBO_DISPLAY:
-                combo.addItem(name[:MAX_COMBO_DISPLAY] + '\u2026')
-                combo.setItemData(combo.count() - 1, name, Qt.UserRole)
-            else:
-                combo.addItem(name)
-        selected = load_selected_fn()
-        if selected and len(selected) > MAX_COMBO_DISPLAY:
-            display = selected[:MAX_COMBO_DISPLAY] + '\u2026'
-            idx = combo.findText(display)
-        else:
-            idx = combo.findText(selected) if selected else 0
-        combo.setCurrentIndex(idx if idx >= 0 else 0)
-        combo.blockSignals(False)
-        TableBuilderMixin._update_combo_tooltip(combo, default_tooltip)
-
-    @staticmethod
-    def _on_combo_changed(
-        combo: 'QComboBox',
-        save_fn: 'Callable[[str], None]',
-        default_tooltip: str,
-    ) -> None:
-        """Handle a preset combo selection change.
-
-        Args:
-            combo: The QComboBox that changed.
-            save_fn: Function to persist the selected name.
-            default_tooltip: Tooltip when no truncated name is active.
-        """
-        text = combo.currentText()
-        if text == '(None)':
-            save_fn('')
-            TableBuilderMixin._update_combo_tooltip(combo, default_tooltip)
-            return
-        idx = combo.currentIndex()
-        full_name = combo.itemData(idx, Qt.UserRole)
-        save_fn(full_name if full_name else text)
-        TableBuilderMixin._update_combo_tooltip(combo, default_tooltip)
-
-    @staticmethod
-    def _update_combo_tooltip(combo: 'QComboBox', default_tooltip: str) -> None:
-        """Set combo tooltip to the full name when truncated, else default."""
-        idx = combo.currentIndex()
-        full_name = combo.itemData(idx, Qt.UserRole) if idx >= 0 else None
-        combo.setToolTip(full_name if full_name else default_tooltip)
-
-    # -- Public combo wrappers (called by app and signals) ----------------
-
-    def _populate_preset_combo(self) -> None:
-        """Reload preset combo items from saved presets and selection."""
-        self._populate_combo(
-            self.preset_combo, load_selected_preset_name,
-            PR_PRESET_TOOLTIP,
-        )
-
-    def _on_preset_combo_changed(self) -> None:
-        """Handle PR thread context combo selection change.
-
-        Rejects multi-message presets with a popup and reverts to the
-        previous selection, since PR thread context must be single-message.
-        """
-        text = self.preset_combo.currentText()
-        idx = self.preset_combo.currentIndex()
-        if text != '(None)':
-            full_name = self.preset_combo.itemData(idx, Qt.UserRole)
-            name = full_name if full_name else text
-            messages = load_saved_presets().get(name, [])
-            if len(messages) > 1:
-                QMessageBox.warning(
-                    self, 'Multi-Message Preset',
-                    f"'{name}' has {len(messages)} messages.\n\n"
-                    'PR thread context must be a single-message preset. '
-                    'Use the Message bundle combo for multi-message presets.',
-                )
-                # Revert to previous selection
-                self.preset_combo.blockSignals(True)
-                prev = load_selected_preset_name()
-                if prev:
-                    prev_idx = self.preset_combo.findText(prev)
-                    if prev_idx < 0 and len(prev) > MAX_COMBO_DISPLAY:
-                        prev_idx = self.preset_combo.findText(
-                            prev[:MAX_COMBO_DISPLAY] + '\u2026')
-                    self.preset_combo.setCurrentIndex(
-                        prev_idx if prev_idx >= 0 else 0)
-                else:
-                    self.preset_combo.setCurrentIndex(0)
-                self.preset_combo.blockSignals(False)
-                return
-        self._on_combo_changed(
-            self.preset_combo, save_selected_preset_name,
-            PR_PRESET_TOOLTIP,
-        )
-
-    def _populate_direct_preset_combo(self) -> None:
-        """Reload direct preset combo items from saved presets and selection."""
-        self._populate_combo(
-            self.direct_preset_combo, load_selected_direct_preset_name,
-            QUICK_MSG_PRESET_TOOLTIP,
-        )
-
-    def _on_direct_preset_combo_changed(self) -> None:
-        """Handle direct preset combo selection change."""
-        self._on_combo_changed(
-            self.direct_preset_combo, save_selected_direct_preset_name,
-            QUICK_MSG_PRESET_TOOLTIP,
-        )
 
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """Handle cell click — dismiss fire indicator on Status column."""

@@ -8,8 +8,8 @@ from typing import Any, Optional
 
 import sip
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFrame, QGridLayout,
-    QHBoxLayout, QHeaderView, QLabel, QProxyStyle, QPushButton, QStyle,
+    QAbstractItemView, QApplication, QFrame, QGridLayout,
+    QHeaderView, QProxyStyle, QPushButton, QStyle,
     QStyledItemDelegate, QTableWidget, QToolTip, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt, QTimer
@@ -226,29 +226,15 @@ class ColorPickerPopup(QFrame):
         self.close()
 
 
-# Preset UI strings (single source of truth for labels, tooltips, hints).
-PR_PRESET_LABEL = 'PR thread context:'
-PR_PRESET_TOOLTIP = 'Context attached to every PR thread message sent to Leap (single-message only)'
+# Preset UI hint strings used by the preset editor dialog.
 PR_PRESET_HINT = (
-    'PR thread context: This preset is attached to every PR thread message sent to Leap. '
-    'Only single-message presets can be used.'
+    'PR context preset: a single-message preset prepended to every PR comment '
+    'sent to Leap. Only single-message presets can be used.'
 )
-
-QUICK_MSG_PRESET_LABEL = 'Message bundle:'
-QUICK_MSG_PRESET_TOOLTIP = 'Preset messages sent via Queue column send button'
 QUICK_MSG_PRESET_HINT = (
     'Message bundle: These preset messages are sent as standalone messages '
     '(via the send button in the Queue column).'
 )
-
-QUICK_MSG_SEND_NEXT = 'Send message-bundle next'
-QUICK_MSG_SEND_AT_END = 'Send message-bundle to end'
-
-APPLY_PR_BTN = 'Apply to PR Thread Context && Close'
-APPLY_QUICK_MSG_BTN = 'Apply to Message Bundle && Close'
-
-# Max characters shown in preset combo items before truncation with ellipsis
-MAX_COMBO_DISPLAY = 40
 
 # Theme-aware stylesheet functions for cell buttons
 
@@ -632,23 +618,6 @@ class TooltipApp(QApplication):
                             )
                         return True
             # Fall through to normal widget tooltip handling
-
-        # Always show full-name tooltip on truncated preset combo items
-        combo = widget if isinstance(widget, QComboBox) else None
-        if combo is None and isinstance(parent, QComboBox):
-            combo = parent
-        if combo is not None and combo.objectName() in (
-            'preset_combo', 'direct_preset_combo',
-        ):
-            idx = combo.currentIndex()
-            full_name = combo.itemData(idx, Qt.UserRole)
-            if full_name:
-                self._show_tip(
-                    event.globalPos(), full_name, combo,
-                    combo.rect(),
-                )
-                return True
-            # Not truncated — fall through to normal tooltips_enabled check
 
         if sip.isdeleted(widget):
             return True

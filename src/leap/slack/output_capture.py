@@ -9,7 +9,7 @@ it to produce ``.last_response`` files that the Slack bot polls.
 
 import json
 import time
-from typing import Any, Optional
+from typing import Any
 
 from leap.cli_providers.states import CLIState
 from leap.utils.constants import SLACK_DIR, SOCKET_DIR, atomic_json_write

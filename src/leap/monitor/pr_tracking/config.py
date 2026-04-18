@@ -245,6 +245,77 @@ def save_monitor_prefs(prefs: dict[str, Any]) -> None:
     atomic_json_write(MONITOR_PREFS_FILE, prefs)
 
 
+def load_send_position() -> str:
+    """Load the shared "send position" toggle (``'next'`` or ``'end'``).
+
+    Used by the Send message and Send preset dialogs so the user's last
+    choice is remembered across dialogs and sessions.  Defaults to
+    ``'end'`` (append to queue).
+    """
+    prefs = load_monitor_prefs()
+    value = prefs.get('send_position', 'end')
+    return 'next' if value == 'next' else 'end'
+
+
+def save_send_position(position: str) -> None:
+    """Persist the shared "send position" toggle."""
+    if position not in ('next', 'end'):
+        return
+    prefs = load_monitor_prefs()
+    prefs['send_position'] = position
+    save_monitor_prefs(prefs)
+
+
+def load_send_comments_prefs() -> dict[str, str]:
+    """Return saved picks for the "Send comments to session" dialog.
+
+    Keys::
+
+        filter : 'all'      — every unresponded comment
+                 'leap'     — only comments with an unacked '/leap' tag
+        mode   : 'each'     — one queue message per comment
+                 'combined' — all comments concatenated into a single message
+
+    Defaults are ``'all'`` and ``'each'``.
+    """
+    prefs = load_monitor_prefs()
+    filt = prefs.get('send_comments_filter', 'all')
+    mode = prefs.get('send_comments_mode', 'each')
+    return {
+        'filter': 'leap' if filt == 'leap' else 'all',
+        'mode': 'combined' if mode == 'combined' else 'each',
+    }
+
+
+def save_send_comments_prefs(filter_: str, mode: str) -> None:
+    """Persist both picks for the "Send comments to session" dialog."""
+    if filter_ not in ('all', 'leap') or mode not in ('each', 'combined'):
+        return
+    prefs = load_monitor_prefs()
+    prefs['send_comments_filter'] = filter_
+    prefs['send_comments_mode'] = mode
+    save_monitor_prefs(prefs)
+
+
+def load_preset_editor_last_name() -> str:
+    """Return the preset name the editor was last focused on.
+
+    Independent from the "active" PR-context / bundle selections used by
+    the send dialogs, so editing one preset doesn't reassign which
+    preset is live for sends.
+    """
+    prefs = load_monitor_prefs()
+    value = prefs.get('preset_editor_last_name', '')
+    return value if isinstance(value, str) else ''
+
+
+def save_preset_editor_last_name(name: str) -> None:
+    """Persist the preset name the editor is focused on."""
+    prefs = load_monitor_prefs()
+    prefs['preset_editor_last_name'] = name or ''
+    save_monitor_prefs(prefs)
+
+
 def _migrate_old_preset_files() -> None:
     """Migrate old context/template files to new preset names (one-time)."""
     # Stage 1: context → template (legacy)
@@ -327,27 +398,14 @@ def save_selected_direct_preset_name(name: str) -> None:
         raise
 
 
-def load_leap_direct_preset() -> list[str]:
-    """Load the messages of the currently selected direct message preset.
-
-    Returns:
-        List of non-empty message strings, or empty list if no preset selected
-        or not found.
-    """
-    name = load_selected_direct_preset_name()
-    if not name:
-        return []
-    presets = load_saved_presets()
-    messages = presets.get(name, [])
-    return [m for m in messages if m.strip()]
-
-
 def load_leap_preset() -> str:
     """Load the text of the currently selected PR preset.
 
     Resolves the selected preset name to its first message from
-    leap_presets.json.  PR presets are enforced to be single-message
-    by the combo validation, so only the first element is returned.
+    leap_presets.json.  PR context presets are filtered to single-message
+    entries by ``SendCommentsDialog``, which also self-heals the saved
+    slot if the target grew to multi-message, so only the first element
+    is returned here.
 
     Returns:
         The preset string, or empty string if no preset selected or not found.

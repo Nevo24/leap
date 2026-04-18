@@ -15,8 +15,7 @@ from leap.utils.constants import is_valid_tag
 from leap.monitor.dialogs.add_local_dialog import AddLocalDialog
 from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import (
-    load_github_config, load_gitlab_config, load_pinned_sessions,
-    save_pinned_sessions,
+    load_github_config, load_gitlab_config, save_pinned_sessions,
 )
 from leap.monitor.pr_tracking.git_utils import (
     ParsedProjectUrl, SCMType, detect_default_branch, get_git_remote_info,
@@ -467,7 +466,7 @@ class PRTrackingMixin(_Base):
         if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
-                'Already sending threads — please wait.'
+                'Already sending comments — please wait.'
             )
             return
 
@@ -507,9 +506,9 @@ class PRTrackingMixin(_Base):
             self._set_busy(False)
             QApplication.restoreOverrideCursor()
             QMessageBox.information(
-                self, 'No Threads',
-                "No threads with '/leap' comment found." if self._leap_only_collect
-                else 'No unresponded threads found.'
+                self, 'No comments',
+                "No comments with a '/leap' tag found." if self._leap_only_collect
+                else 'No unresponded comments found.'
             )
             return
 
@@ -561,17 +560,21 @@ class PRTrackingMixin(_Base):
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
         if sent_count > 0:
-            self._show_status(f"Sent {sent_count} thread(s) to '{matched_tag}'")
+            noun = 'comment' if sent_count == 1 else 'comments'
+            self._show_status(f"Sent {sent_count} {noun} to '{matched_tag}'")
             QMessageBox.information(
-                self, 'Threads Sent',
-                f"Sent {sent_count} thread(s) to session '{matched_tag}'."
+                self, 'Comments sent',
+                f"Sent {sent_count} {noun} to session '{matched_tag}'."
             )
             self._start_scm_poll()
         else:
-            QMessageBox.information(
-                self, 'No Threads',
-                "No threads with '/leap' comment found." if self._leap_only_collect
-                else 'No unresponded threads found.'
+            # finished(0, tag) reaches us only when commands were collected
+            # but every socket send returned False (typically: server died
+            # mid-loop).  "No unresponded comments" would be misleading.
+            QMessageBox.warning(
+                self, 'Send failed',
+                f"Couldn't queue any comments to session '{matched_tag}'.\n\n"
+                'The session server may have stopped — check it and try again.'
             )
 
     def _on_send_threads_error(self, message: str) -> None:
@@ -584,7 +587,7 @@ class PRTrackingMixin(_Base):
                 setattr(self, attr, None)
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
-        self._show_status(f"Thread send error: {message}")
+        self._show_status(f"Comment send error: {message}")
         QMessageBox.warning(self, 'Error', message)
 
     def _on_leap_ack_failed(self) -> None:
@@ -603,13 +606,13 @@ class PRTrackingMixin(_Base):
 
         QMessageBox.warning(
             self, '/leap Acknowledgment Failed',
-            'Failed to post "[Leap bot] on it!" reply to the PR thread.\n\n'
-            'Without this reply, the same /leap command will be re-detected '
+            'Failed to post "[Leap bot] on it!" reply to the PR comment.\n\n'
+            "Without this reply, the same '/leap' tag will be re-detected "
             'each poll cycle, causing duplicate sends.\n\n'
-            'Auto /leap fetch has been disabled to prevent this.\n\n'
+            "Auto '/leap' fetch has been disabled to prevent this.\n\n"
             'Common cause: the SCM token lacks the "api" scope '
             '(GitLab) or sufficient permissions (GitHub).\n'
-            'Update your token, then re-enable "Auto \'/leap\' fetch".'
+            "Update your token, then re-enable \"Auto '/leap' fetch\"."
         )
 
         self._show_status("/leap auto-fetch disabled (acknowledgment failed)")
@@ -629,7 +632,7 @@ class PRTrackingMixin(_Base):
         if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
-                'Already sending threads — please wait.'
+                'Already sending comments — please wait.'
             )
             return
 
@@ -662,17 +665,20 @@ class PRTrackingMixin(_Base):
         self._set_busy(False)
         QApplication.restoreOverrideCursor()
         if thread_count > 0:
-            self._show_status(f"Sent {thread_count} thread(s) combined to '{matched_tag}'")
+            noun = 'comment' if thread_count == 1 else 'comments'
+            self._show_status(
+                f"Sent {thread_count} {noun} combined to '{matched_tag}'")
             QMessageBox.information(
-                self, 'Threads Sent',
-                f"Sent {thread_count} thread(s) as one message to session '{matched_tag}'."
+                self, 'Comments sent',
+                f"Sent {thread_count} {noun} as one message to session "
+                f"'{matched_tag}'."
             )
             self._start_scm_poll()
         else:
             QMessageBox.information(
-                self, 'No Threads',
-                "No threads with '/leap' comment found." if self._leap_only_collect
-                else 'No unresponded threads found.'
+                self, 'No comments',
+                "No comments with a '/leap' tag found." if self._leap_only_collect
+                else 'No unresponded comments found.'
             )
 
     def _send_leap_threads_to_leap(self, tag: str) -> None:
@@ -691,7 +697,7 @@ class PRTrackingMixin(_Base):
         if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
-                'Already sending threads — please wait.'
+                'Already sending comments — please wait.'
             )
             return
 

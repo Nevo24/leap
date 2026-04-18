@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR
+from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR  # NOTE_IMAGES_DIR is re-exported; tests monkey-patch it here
 
 if TYPE_CHECKING:
     from leap.monitor.dialogs.notes_dialog import NotesDialog

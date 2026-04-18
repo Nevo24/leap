@@ -15,20 +15,20 @@ from typing import Any, Optional
 
 import objc
 from AppKit import (
-    NSAppearance, NSApplication, NSEvent, NSFullSizeContentViewWindowMask,
-    NSImage, NSKeyDownMask, NSWindow, NSWindowStyleMaskFullSizeContentView,
+    NSAppearance, NSApplication, NSEvent,
+    NSImage, NSKeyDownMask, NSWindowStyleMaskFullSizeContentView,
 )
 from Foundation import NSDate, NSRunLoop
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QDialog, QFrame, QGridLayout, QMainWindow, QMenu,
+    QAction, QApplication, QDialog, QFrame, QMainWindow, QMenu,
     QScrollBar, QShortcut, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
-    QTableWidget, QTableWidgetItem, QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QTimer, Qt
 from PyQt5.QtGui import (
-    QColor, QCursor, QDrag, QIcon, QImage, QCloseEvent, QKeySequence,
-    QPainter, QPainterPath, QPalette, QPen, QPixmap, QResizeEvent, QWindow,
+    QColor, QCursor, QDrag, QIcon, QCloseEvent, QKeySequence,
+    QPainter, QPainterPath, QPalette, QPen, QPixmap, QResizeEvent,
 )
 from PyQt5.QtSvg import QSvgRenderer
 
@@ -50,8 +50,6 @@ from leap.monitor.server_launcher import ServerLauncher
 from leap.monitor.ui.dock_badge import DockBadge
 from leap.monitor.ui.log_history import LogHistory, LogHistoryDialog
 from leap.monitor.ui.table_helpers import (
-    PR_PRESET_LABEL, PR_PRESET_TOOLTIP,
-    QUICK_MSG_PRESET_LABEL, QUICK_MSG_PRESET_TOOLTIP,
     PersistentTooltipStyle, SeparatorDelegate, SeparatorHeaderView, TooltipApp,
 )
 from leap.monitor.ui.ui_widgets import PulsingLabel, ShimmerBar, IndicatorLabel
@@ -404,6 +402,12 @@ class MonitorWindow(
         self._notes_btn.clicked.connect(self._open_notes)
         buttons_layout.addWidget(self._notes_btn)
 
+        self._presets_btn = QPushButton('\u270e  Presets')
+        self._presets_btn.setObjectName('_leapGhostBtn')
+        self._presets_btn.setToolTip('Edit presets')
+        self._presets_btn.clicked.connect(self._open_preset_editor)
+        buttons_layout.addWidget(self._presets_btn)
+
         buttons_layout.addStretch()
 
         reset_cols_btn = QPushButton('Reset Window Sizes')
@@ -414,56 +418,6 @@ class MonitorWindow(
         stacked.addWidget(buttons_widget)
 
         layout.addWidget(logo_container)
-
-        # ═══════════════════════════════════════════════════════════════
-        #  PRESETS PANEL — inside a subtle card
-        # ═══════════════════════════════════════════════════════════════
-        preset_card = QFrame()
-        preset_card.setObjectName('_leapCard')
-        preset_card_layout = QHBoxLayout(preset_card)
-        preset_card_layout.setContentsMargins(16, 10, 16, 10)
-        preset_card_layout.addStretch()
-
-        edit_preset_btn = QPushButton('\u270e  Presets')
-        edit_preset_btn.setToolTip('Edit presets')
-        edit_preset_btn.clicked.connect(self._open_preset_editor)
-        preset_card_layout.addWidget(edit_preset_btn)
-
-        preset_grid = QGridLayout()
-        preset_grid.setHorizontalSpacing(10)
-        preset_grid.setVerticalSpacing(6)
-
-        pr_label = QLabel(PR_PRESET_LABEL)
-        pr_label.setObjectName('_leapDimLabel')
-        preset_grid.addWidget(pr_label, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
-
-        self.preset_combo = QComboBox()
-        self.preset_combo.setObjectName('preset_combo')
-        self.preset_combo.setMinimumWidth(220)
-        self.preset_combo.setMaximumWidth(340)
-        self.preset_combo.setToolTip(PR_PRESET_TOOLTIP)
-        self._populate_preset_combo()
-        self.preset_combo.currentIndexChanged.connect(
-            self._on_preset_combo_changed)
-        preset_grid.addWidget(self.preset_combo, 0, 1)
-
-        direct_label = QLabel(QUICK_MSG_PRESET_LABEL)
-        direct_label.setObjectName('_leapDimLabel')
-        preset_grid.addWidget(direct_label, 1, 0, Qt.AlignRight | Qt.AlignVCenter)
-
-        self.direct_preset_combo = QComboBox()
-        self.direct_preset_combo.setObjectName('direct_preset_combo')
-        self.direct_preset_combo.setMinimumWidth(220)
-        self.direct_preset_combo.setMaximumWidth(340)
-        self.direct_preset_combo.setToolTip(QUICK_MSG_PRESET_TOOLTIP)
-        self._populate_direct_preset_combo()
-        self.direct_preset_combo.currentIndexChanged.connect(
-            self._on_direct_preset_combo_changed)
-        preset_grid.addWidget(self.direct_preset_combo, 1, 1)
-
-        preset_card_layout.addLayout(preset_grid)
-        preset_card_layout.addStretch()
-        layout.addWidget(preset_card)
 
         # ═══════════════════════════════════════════════════════════════
         #  TABLE TOOLBAR — "+ Add Session" prominent on the left
@@ -500,14 +454,15 @@ class MonitorWindow(
         bottom_inner.setSpacing(16)
 
         self.bots_check = QCheckBox('Include git bots')
-        self.bots_check.setToolTip('Count bot comments as responses in PR thread detection')
+        self.bots_check.setToolTip(
+            'Count bot comments as responses when detecting unresponded comments')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
         bottom_inner.addWidget(self.bots_check, 0, Qt.AlignVCenter)
 
         self.auto_leap_check = QCheckBox("Auto '/leap' fetch")
         self.auto_leap_check.setToolTip(
-            'Automatically send /leap-tagged PR threads to Leap sessions each poll cycle'
+            "Automatically send /leap-tagged PR comments to Leap sessions each poll cycle"
         )
         self.auto_leap_check.setChecked(self._prefs.get('auto_fetch_leap', True))
         self.auto_leap_check.stateChanged.connect(self._toggle_auto_fetch_leap)
@@ -1698,13 +1653,7 @@ class MonitorWindow(
                 border-bottom: 1px solid {t.border_solid};
             }}
 
-            /* --- Dim labels (preset labels, section hints) --- */
-            #_leapDimLabel {{
-                color: {t.text_muted};
-                font-size: {t.font_size_small}px;
-            }}
-
-            /* --- Ghost buttons (toolbar: Settings, Notes, Reset) --- */
+            /* --- Ghost buttons (toolbar: Settings, Notes, Presets, Reset) --- */
             #_leapGhostBtn {{
                 color: {t.text_secondary};
                 background: transparent;

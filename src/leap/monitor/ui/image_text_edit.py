@@ -13,13 +13,18 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit,
-    QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel,
+    QPushButton, QRadioButton, QTextEdit, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QMimeData, QPoint, Qt
 from PyQt5.QtGui import QImage, QPixmap, QTextCursor
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
+from leap.monitor.pr_tracking.config import (
+    load_dialog_geometry, load_saved_presets, load_selected_direct_preset_name,
+    load_send_position, save_dialog_geometry,
+    save_selected_direct_preset_name, save_send_position,
+)
 from leap.monitor.themes import current_theme
 from leap.utils.constants import QUEUE_IMAGES_DIR
 
@@ -184,6 +189,8 @@ class ImageTextEdit(QTextEdit):
                 dialog.accept()
                 return
         key = event.key()
+        # Atomic placeholder editing — only when no modifier/selection
+        # tricks are involved.
         mods = event.modifiers()
         selection_active = self.textCursor().hasSelection()
         if not selection_active and mods in (Qt.NoModifier, Qt.KeypadModifier):
@@ -324,14 +331,57 @@ class ImageTextEdit(QTextEdit):
         self._image_placeholders.clear()
 
 
+def _build_send_position_toggle(
+    parent: QWidget,
+) -> tuple[QHBoxLayout, QButtonGroup, QRadioButton, QRadioButton]:
+    """Build a shared Next/To-End radio toggle for send dialogs.
+
+    The currently-selected position is loaded from monitor prefs and
+    persisted automatically whenever the user flips the toggle, so the
+    choice is remembered across all dialogs and sessions.
+    """
+    row = QHBoxLayout()
+    label = QLabel('Send:')
+    row.addWidget(label)
+
+    next_radio = QRadioButton('Next (front of queue)')
+    next_radio.setToolTip(
+        'Insert at the front of the queue,\n'
+        'so it is processed before other queued messages.')
+    end_radio = QRadioButton('To end of queue')
+    end_radio.setToolTip(
+        'Append to the end of the queue.')
+
+    group = QButtonGroup(parent)
+    group.addButton(next_radio)
+    group.addButton(end_radio)
+
+    if load_send_position() == 'next':
+        next_radio.setChecked(True)
+    else:
+        end_radio.setChecked(True)
+
+    def _persist(_checked: bool) -> None:
+        save_send_position('next' if next_radio.isChecked() else 'end')
+
+    next_radio.toggled.connect(_persist)
+    end_radio.toggled.connect(_persist)
+
+    row.addWidget(next_radio)
+    row.addWidget(end_radio)
+    row.addStretch()
+    return row, group, next_radio, end_radio
+
+
 class SendMessageDialog(ZoomMixin, QDialog):
     """Custom send-message dialog with image paste support.
 
     Replaces ``QInputDialog.getMultiLineText()`` for monitor message
-    composition, adding clipboard image paste support.
+    composition, adding clipboard image paste support and a Next/To-End
+    queue-position toggle (persisted across dialogs).
     """
 
-    _DEFAULT_SIZE = (480, 250)
+    _DEFAULT_SIZE = (480, 280)
 
     def __init__(
         self,
@@ -354,6 +404,10 @@ class SendMessageDialog(ZoomMixin, QDialog):
         self._editor.setPlainText(initial_text)
         self._editor.setPlaceholderText('Type a message... (paste images with Cmd+V)')
         layout.addWidget(self._editor, 1)
+
+        toggle_row, _group, self._next_radio, _end_radio = (
+            _build_send_position_toggle(self))
+        layout.addLayout(toggle_row)
 
         hint = QLabel('Tip: paste an image from clipboard to attach it\n'
                       'Tip: cmd+Enter to send')
@@ -381,17 +435,111 @@ class SendMessageDialog(ZoomMixin, QDialog):
         """Return the composed message with placeholders resolved."""
         return self._editor.resolved_text()
 
+    def at_end(self) -> bool:
+        """Return True if the user chose to append to the queue."""
+        return not self._next_radio.isChecked()
+
     @staticmethod
     def get_message(
         parent: Optional[QWidget],
         title: str,
         label: str,
         initial_text: str = '',
-    ) -> tuple[str, bool]:
-        """Show the dialog and return (text, accepted).
-
-        Drop-in replacement for ``QInputDialog.getMultiLineText()``.
-        """
+    ) -> tuple[str, bool, bool]:
+        """Show the dialog and return (text, at_end, accepted)."""
         dlg = SendMessageDialog(parent, title, label, initial_text)
         accepted = dlg.exec_() == QDialog.Accepted
-        return dlg.get_text(), accepted
+        return dlg.get_text(), dlg.at_end(), accepted
+
+
+class SendPresetDialog(ZoomMixin, QDialog):
+    """Popup for choosing a message-bundle preset and queue position.
+
+    Presents a combo of saved presets (pre-selected to the last-used
+    preset from ``.storage/leap_selected_direct_preset``) plus the shared
+    Next/To-End toggle. Picking a preset here updates that file, so the
+    next open of either send dialog remembers the choice.
+    """
+
+    _DEFAULT_SIZE = (420, 180)
+
+    def __init__(
+        self,
+        parent: Optional[QWidget],
+        tag: str,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle('Send preset')
+        self.resize(*self._DEFAULT_SIZE)
+        saved_geom = load_dialog_geometry('send_preset')
+        if saved_geom:
+            self.resize(saved_geom[0], saved_geom[1])
+
+        layout = QVBoxLayout(self)
+
+        lbl = QLabel(f'Choose a message-bundle preset to send to "{tag}":')
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+
+        self._combo = QComboBox()
+        self._preset_names: list[str] = sorted(load_saved_presets().keys())
+        if not self._preset_names:
+            self._combo.addItem('(No presets saved)')
+            self._combo.setEnabled(False)
+        else:
+            for name in self._preset_names:
+                self._combo.addItem(name)
+            selected = load_selected_direct_preset_name()
+            if selected in self._preset_names:
+                self._combo.setCurrentIndex(self._preset_names.index(selected))
+            # Persist-on-change — connected after the initial index set so
+            # opening the dialog doesn't spuriously rewrite the file.
+            self._combo.currentTextChanged.connect(self._on_preset_changed)
+        layout.addWidget(self._combo)
+
+        toggle_row, _group, self._next_radio, _end_radio = (
+            _build_send_position_toggle(self))
+        layout.addLayout(toggle_row)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        self._ok_btn = QPushButton('Send')
+        self._ok_btn.setDefault(True)
+        self._ok_btn.setEnabled(bool(self._preset_names))
+        self._ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(self._ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        self._init_zoom(pref_key='send_preset_font_size')
+
+    def _on_preset_changed(self, name: str) -> None:
+        """Persist the active preset globally whenever the combo changes."""
+        if name and name in self._preset_names:
+            save_selected_direct_preset_name(name)
+
+    def done(self, result: int) -> None:
+        """Persist dialog size on close (accept / reject / X button)."""
+        save_dialog_geometry('send_preset', self.width(), self.height())
+        super().done(result)
+
+    def selected_preset(self) -> str:
+        """Return the chosen preset name (empty if none available)."""
+        if not self._preset_names:
+            return ''
+        return self._combo.currentText()
+
+    def at_end(self) -> bool:
+        """Return True if the user chose to append to the queue."""
+        return not self._next_radio.isChecked()
+
+    @staticmethod
+    def choose(
+        parent: Optional[QWidget], tag: str,
+    ) -> tuple[str, bool, bool]:
+        """Show the dialog and return (preset_name, at_end, accepted)."""
+        dlg = SendPresetDialog(parent, tag)
+        accepted = dlg.exec_() == QDialog.Accepted
+        return dlg.selected_preset(), dlg.at_end(), accepted

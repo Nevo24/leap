@@ -26,7 +26,7 @@ from leap.monitor.pr_tracking.config import (
     save_github_config, save_gitlab_config,
 )
 from leap.monitor.pr_tracking.git_utils import (
-    SCMType, detect_scm_type, get_git_remote_info, refine_scm_type,
+    SCMType, get_git_remote_info, refine_scm_type,
 )
 from leap.monitor.pr_tracking.github_provider import GitHubProvider
 from leap.monitor.pr_tracking.gitlab_provider import GitLabProvider

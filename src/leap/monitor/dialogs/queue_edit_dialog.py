@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+    QDialog, QHBoxLayout, QListWidget, QListWidgetItem,
     QMessageBox, QPushButton, QSplitter, QVBoxLayout,
 )
 from PyQt5.QtCore import QEvent, Qt, QTimer
