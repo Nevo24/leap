@@ -167,7 +167,13 @@ class ImageTextEdit(QTextEdit):
         super().leaveEvent(event)
 
     def keyPressEvent(self, event: 'QKeyEvent') -> None:
-        """Accept Cmd+Enter / Cmd+Return as submit shortcut."""
+        """Accept Cmd+Enter / Cmd+Return as submit shortcut.
+
+        Also treats ``[Image #N]`` placeholders as atomic tokens for
+        Backspace, Delete, Left and Right — so char-level edits can't
+        break a placeholder (which would leak a literal bracketed
+        string into the sent message).
+        """
         if (event.modifiers() & Qt.ControlModifier
                 and event.key() in (Qt.Key_Return, Qt.Key_Enter)):
             if self._submit_callback:
@@ -177,7 +183,87 @@ class ImageTextEdit(QTextEdit):
             if isinstance(dialog, QDialog):
                 dialog.accept()
                 return
+        key = event.key()
+        mods = event.modifiers()
+        selection_active = self.textCursor().hasSelection()
+        if not selection_active and mods in (Qt.NoModifier, Qt.KeypadModifier):
+            if key == Qt.Key_Backspace:
+                if self._try_delete_placeholder_backward():
+                    return
+            elif key == Qt.Key_Delete:
+                if self._try_delete_placeholder_forward():
+                    return
+            elif key == Qt.Key_Left:
+                if self._try_skip_placeholder(backward=True):
+                    return
+            elif key == Qt.Key_Right:
+                if self._try_skip_placeholder(backward=False):
+                    return
         super().keyPressEvent(event)
+
+    def _placeholder_span_before(
+        self,
+    ) -> Optional[tuple[int, int]]:
+        """Return (start_in_block, end_in_block) of the placeholder
+        ending at the cursor, or None if the cursor isn't right after one."""
+        cursor = self.textCursor()
+        block_text = cursor.block().text()
+        col = cursor.positionInBlock()
+        for m in _PLACEHOLDER_RE.finditer(block_text):
+            if m.end() == col and m.group() in self._image_placeholders:
+                return m.start(), m.end()
+        return None
+
+    def _placeholder_span_after(
+        self,
+    ) -> Optional[tuple[int, int]]:
+        """Return (start_in_block, end_in_block) of the placeholder
+        starting at the cursor, or None if the cursor isn't right before one."""
+        cursor = self.textCursor()
+        block_text = cursor.block().text()
+        col = cursor.positionInBlock()
+        for m in _PLACEHOLDER_RE.finditer(block_text):
+            if m.start() == col and m.group() in self._image_placeholders:
+                return m.start(), m.end()
+        return None
+
+    def _try_delete_placeholder_backward(self) -> bool:
+        span = self._placeholder_span_before()
+        if span is None:
+            return False
+        start, end = span
+        cursor = self.textCursor()
+        block_pos = cursor.block().position()
+        cursor.setPosition(block_pos + start)
+        cursor.setPosition(block_pos + end, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        self.setTextCursor(cursor)
+        return True
+
+    def _try_delete_placeholder_forward(self) -> bool:
+        span = self._placeholder_span_after()
+        if span is None:
+            return False
+        start, end = span
+        cursor = self.textCursor()
+        block_pos = cursor.block().position()
+        cursor.setPosition(block_pos + start)
+        cursor.setPosition(block_pos + end, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        self.setTextCursor(cursor)
+        return True
+
+    def _try_skip_placeholder(self, backward: bool) -> bool:
+        span = (self._placeholder_span_before() if backward
+                else self._placeholder_span_after())
+        if span is None:
+            return False
+        start, end = span
+        cursor = self.textCursor()
+        block_pos = cursor.block().position()
+        cursor.setPosition(block_pos + (start if backward else end))
+        self.setTextCursor(cursor)
+        return True
 
     def insertFromMimeData(self, source: QMimeData) -> None:
         """Override paste to detect images in the clipboard."""
