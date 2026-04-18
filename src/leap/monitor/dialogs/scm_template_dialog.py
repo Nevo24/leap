@@ -198,11 +198,19 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         self._combo = QComboBox()
         self._combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self._combo.setMinimumWidth(160)
+        self._combo.setToolTip(
+            'Pick a saved preset to load its messages into the editor.')
         preset_layout.addWidget(self._combo, 1)
 
         self._save_btn = QPushButton('Save')
+        self._save_btn.setToolTip(
+            'Overwrite the selected preset with the current messages.')
         save_as_btn = QPushButton('Save As...')
+        save_as_btn.setToolTip(
+            'Save the current messages under a new preset name.')
         self._delete_btn = QPushButton('Delete')
+        self._delete_btn.setToolTip(
+            'Delete the selected preset. Not undoable.')
         preset_layout.addWidget(self._save_btn)
         preset_layout.addWidget(save_as_btn)
         preset_layout.addWidget(self._delete_btn)
@@ -250,6 +258,8 @@ class PresetEditorDialog(ZoomMixin, QDialog):
         # Bottom buttons: New + Cancel at bottom-left
         btn_layout = QHBoxLayout()
         new_btn = QPushButton('New')
+        new_btn.setToolTip(
+            'Clear the editor to start a new preset from scratch.')
         cancel_btn = QPushButton('Cancel')
         btn_layout.addWidget(new_btn)
         btn_layout.addWidget(cancel_btn)
@@ -354,6 +364,9 @@ class PresetEditorDialog(ZoomMixin, QDialog):
 
         # "+ Add Message" button
         self._add_btn = QPushButton('+ Add Message')
+        self._add_btn.setToolTip(
+            'Add another message to this preset. Presets with more than '
+            'one message are treated as message bundles.')
         t = current_theme()
         self._add_btn.setStyleSheet(
             f'QPushButton {{ color: {t.text_muted}; border: 1px dashed {t.border_solid};'

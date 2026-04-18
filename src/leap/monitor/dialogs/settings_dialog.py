@@ -282,6 +282,12 @@ class SettingsDialog(ZoomMixin, QDialog):
 
         # Show tooltips
         self._tooltips_check = QCheckBox('Show hover explanations')
+        # This tooltip is deliberately NOT toggled off by _apply_tooltips —
+        # otherwise, after disabling, the user would have no hover hint
+        # telling them how to re-enable them.
+        self._tooltips_check.setToolTip(
+            'Show hover tooltips on buttons and cells throughout the '
+            'monitor. Uncheck for a quieter UI.')
         self._original_tooltips = show_tooltips
         self._tooltips_check.setChecked(show_tooltips)
         self._tooltips_check.toggled.connect(self._apply_tooltips)

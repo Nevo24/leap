@@ -32,13 +32,23 @@ class AddLocalDialog(ZoomMixin, QDialog):
         self._path_edit.setPlaceholderText('/path/to/project')
         path_layout.addWidget(self._path_edit)
         browse_btn = QPushButton('Browse...')
+        browse_btn.setToolTip('Pick a directory with the file chooser')
         browse_btn.clicked.connect(self._browse)
         path_layout.addWidget(browse_btn)
         layout.addLayout(path_layout)
 
         # Mode radio buttons
         self._clone_radio = QRadioButton('Clone to repos dir (clone from remote)')
+        self._clone_radio.setToolTip(
+            'Read the git remote of the chosen directory and clone a fresh '
+            'copy into the repos directory configured in Settings. Keeps '
+            'your original workspace untouched.'
+        )
         self._open_radio = QRadioButton('Open directly (use this directory as-is)')
+        self._open_radio.setToolTip(
+            'Run the session directly inside the chosen directory — no '
+            'clone. Changes will apply to your existing workspace.'
+        )
         self._clone_radio.setChecked(True)
         layout.addWidget(self._clone_radio)
         layout.addWidget(self._open_radio)

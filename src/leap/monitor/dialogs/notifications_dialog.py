@@ -86,12 +86,20 @@ class NotificationsDialog(ZoomMixin, QDialog):
         grid.addWidget(QLabel(''), 0, 0)
         dock_header = QLabel('Dock Badge')
         dock_header.setAlignment(Qt.AlignCenter)
+        dock_header.setToolTip(
+            'Increment the app dock icon badge count when this event fires.')
         grid.addWidget(dock_header, 0, 1)
         banner_header = QLabel('Banner')
         banner_header.setAlignment(Qt.AlignCenter)
+        banner_header.setToolTip(
+            'Show a macOS notification banner when this event fires '
+            '(requires notification permissions).')
         grid.addWidget(banner_header, 0, 2)
         sound_header = QLabel('Sound')
         sound_header.setAlignment(Qt.AlignCenter)
+        sound_header.setToolTip(
+            'Sound played when this event fires. Right-click an item in the '
+            'dropdown to pick a custom sound file.')
         grid.addWidget(sound_header, 0, 3)
 
         self._checks: dict[str, dict[str, QCheckBox]] = {}

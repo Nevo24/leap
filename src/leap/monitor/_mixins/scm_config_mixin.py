@@ -222,21 +222,31 @@ class SCMConfigMixin(_Base):
         )
 
     def _update_scm_buttons(self) -> None:
-        """Update SCM button text/style based on connection state."""
+        """Update SCM button text/style/tooltip based on connection state."""
         connected_style = self._connected_btn_style()
         if SCMType.GITLAB.value in self._scm_providers:
             self.gitlab_btn.setText('GitLab Connected')
             self.gitlab_btn.setStyleSheet(connected_style)
+            self.gitlab_btn.setToolTip(
+                'Open GitLab settings (edit fields, or disconnect)')
         else:
             self.gitlab_btn.setText('Connect GitLab')
             self.gitlab_btn.setStyleSheet('')
+            self.gitlab_btn.setToolTip(
+                'Open the GitLab setup dialog to log in with a personal '
+                'access token and enable PR tracking')
 
         if SCMType.GITHUB.value in self._scm_providers:
             self.github_btn.setText('GitHub Connected')
             self.github_btn.setStyleSheet(connected_style)
+            self.github_btn.setToolTip(
+                'Open GitHub settings (edit fields, or disconnect)')
         else:
             self.github_btn.setText('Connect GitHub')
             self.github_btn.setStyleSheet('')
+            self.github_btn.setToolTip(
+                'Open the GitHub setup dialog to log in with a personal '
+                'access token and enable PR tracking')
 
     def _get_provider_for_session(self, session: dict[str, Any]) -> Optional[SCMProvider]:
         """Get the appropriate SCM provider for a session based on its git remote.

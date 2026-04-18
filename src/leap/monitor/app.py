@@ -445,7 +445,8 @@ class MonitorWindow(
 
         reset_cols_btn = QPushButton('Reset Window Sizes')
         reset_cols_btn.setObjectName('_leapGhostBtn')
-        reset_cols_btn.setToolTip('Reset all window and column sizes to defaults')
+        reset_cols_btn.setToolTip(
+            'Reset window, column and dialog sizes to their defaults')
         reset_cols_btn.clicked.connect(self._reset_window_size)
         buttons_layout.addWidget(reset_cols_btn)
         stacked.addWidget(buttons_widget)
@@ -488,7 +489,10 @@ class MonitorWindow(
 
         self.bots_check = QCheckBox('Include git bots')
         self.bots_check.setToolTip(
-            'Count bot comments as responses when detecting unresponded comments')
+            'Treat bot-authored comments as real comments when detecting '
+            'unresponded PR threads. When unchecked, bot comments are '
+            'ignored (a thread that only has bot comments appears as '
+            'no-activity).')
         self.bots_check.setChecked(self._prefs.get('include_bots', False))
         self.bots_check.stateChanged.connect(self._toggle_include_bots)
         _pin_checkbox_min_width(self.bots_check)
@@ -544,13 +548,13 @@ class MonitorWindow(
         btn_group_layout.setContentsMargins(0, 0, 0, 0)
         btn_group_layout.setSpacing(8)
 
+        # Label, style and tooltip for these buttons are set dynamically in
+        # _update_scm_buttons() based on the current connection state.
         self.gitlab_btn = QPushButton('Connect GitLab')
-        self.gitlab_btn.setToolTip('Configure GitLab connection for PR tracking')
         self.gitlab_btn.clicked.connect(self._open_gitlab_setup)
         btn_group_layout.addWidget(self.gitlab_btn)
 
         self.github_btn = QPushButton('Connect GitHub')
-        self.github_btn.setToolTip('Configure GitHub connection for PR tracking')
         self.github_btn.clicked.connect(self._open_github_setup)
         btn_group_layout.addWidget(self.github_btn)
 

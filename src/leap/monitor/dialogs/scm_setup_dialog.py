@@ -131,6 +131,11 @@ class SCMSetupDialog(ZoomMixin, QDialog):
 
         # URL — hidden by default behind "Self-hosted" toggle
         self._url_check = QCheckBox('Self-hosted (custom URL)')
+        self._url_check.setToolTip(
+            'Check this if you connect to a self-hosted server (e.g. your '
+            'company GitLab or GitHub Enterprise) rather than gitlab.com / '
+            'github.com. Reveals a URL field to enter the server address.'
+        )
         self._url_check.toggled.connect(self._toggle_url_visible)
         layout.addWidget(self._url_check)
 

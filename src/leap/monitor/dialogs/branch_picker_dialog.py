@@ -36,7 +36,11 @@ class BranchPickerDialog(ZoomMixin, QDialog):
         # Remote / Local toggle
         toggle_layout = QHBoxLayout()
         self._remote_radio = QRadioButton('Remote')
+        self._remote_radio.setToolTip(
+            'List branches that exist on the remote (origin/...).')
         self._local_radio = QRadioButton('Local')
+        self._local_radio.setToolTip(
+            'List branches that exist in your local clone only.')
         self._remote_radio.setChecked(True)
         self._remote_radio.toggled.connect(self._on_toggle)
         toggle_layout.addWidget(self._remote_radio)
@@ -49,6 +53,10 @@ class BranchPickerDialog(ZoomMixin, QDialog):
         branch_layout.addWidget(QLabel('Branch:'))
         self._combo = QComboBox()
         self._combo.setEditable(True)
+        self._combo.setToolTip(
+            'Pick a branch or start typing to filter. The chosen branch '
+            'is compared against HEAD with git difftool.'
+        )
         branch_layout.addWidget(self._combo, 1)
         layout.addLayout(branch_layout)
 

@@ -82,6 +82,8 @@ class QueueEditDialog(ZoomMixin, QDialog):
         btn_layout = QHBoxLayout()
         self._save_btn = QPushButton('Save')
         self._save_btn.setEnabled(False)
+        self._save_btn.setToolTip(
+            'Save edits to the selected queued message (Cmd+Enter)')
         self._save_btn.clicked.connect(self._save_current)
         btn_layout.addWidget(self._save_btn)
 
