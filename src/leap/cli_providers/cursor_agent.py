@@ -159,12 +159,15 @@ class CursorAgentProvider(CLIProvider):
     def extract_session_id(self, hook_data: dict) -> Optional[str]:
         """Cursor Agent stores chats under
         ``~/.cursor/chats/<project-hash>/<chat-uuid>/`` and accepts the
-        chat UUID via ``--resume <chatId>``.  Hook payloads observed
-        so far include workspace roots + status; we look for common id
-        fields (``chatId`` / ``chat_id`` / ``session_id``) and fall
-        back to extracting the UUID from a transcript path if present.
+        chat UUID via ``--resume <chatId>``.
+
+        Per Cursor's official docs the ``stop`` hook stdin payload
+        carries the chat UUID as ``conversation_id``; older builds may
+        also send ``chatId`` / ``chat_id`` / ``session_id``.  We check
+        all of them, then fall back to parsing the UUID out of any
+        transcript path under ``~/.cursor/chats/<project>/<uuid>/``.
         """
-        for key in ('chatId', 'chat_id', 'session_id'):
+        for key in ('conversation_id', 'chatId', 'chat_id', 'session_id'):
             sid = hook_data.get(key) or ''
             if sid:
                 return sid

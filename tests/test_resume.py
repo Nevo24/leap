@@ -98,7 +98,13 @@ class TestCursorAgentProviderResume:
         p = get_provider("cursor-agent")
         assert p.supports_resume is True
 
-    def test_extract_session_id_from_direct_field(self):
+    def test_extract_session_id_from_conversation_id(self):
+        # Cursor's official stop-hook payload uses `conversation_id`.
+        p = get_provider("cursor-agent")
+        sid = p.extract_session_id({"conversation_id": "cursor-conv-uuid"})
+        assert sid == "cursor-conv-uuid"
+
+    def test_extract_session_id_from_chatid_fallback(self):
         p = get_provider("cursor-agent")
         sid = p.extract_session_id({"chatId": "cursor-chat-uuid"})
         assert sid == "cursor-chat-uuid"
@@ -116,13 +122,38 @@ class TestCursorAgentProviderResume:
 
 
 class TestGeminiProviderResume:
-    def test_resume_opted_out(self):
-        # Gemini's --resume takes "latest" or an index — no stable id to
-        # record, so the provider intentionally stays opted out until
-        # upstream adds a stable-id mode.
+    def test_supports_resume(self):
         p = get_provider("gemini")
-        assert p.supports_resume is False
-        assert p.resume_args("abc") == []
+        assert p.supports_resume is True
+
+    def test_extract_session_id_from_direct_field(self):
+        p = get_provider("gemini")
+        assert p.extract_session_id({"sessionId": "gemini-uuid"}) == "gemini-uuid"
+        assert p.extract_session_id({"session_id": "alt-uuid"}) == "alt-uuid"
+
+    def test_extract_session_id_from_session_file(self, tmp_path):
+        # Gemini writes the full UUID as a top-level `sessionId` field
+        # in the per-session JSON file.
+        p = get_provider("gemini")
+        session_file = tmp_path / ".gemini/tmp/proj/chats/session-2026-04-19T16-09-5ec95d33.json"
+        session_file.parent.mkdir(parents=True)
+        session_file.write_text(json.dumps({
+            "sessionId": "5ec95d33-d405-4b82-9be5-8080824363b5",
+            "projectHash": "abc",
+            "messages": [],
+        }))
+        sid = p.extract_session_id({"transcript_path": str(session_file)})
+        assert sid == "5ec95d33-d405-4b82-9be5-8080824363b5"
+
+    def test_extract_session_id_ignores_non_gemini_path(self, tmp_path):
+        p = get_provider("gemini")
+        f = tmp_path / "unrelated.json"
+        f.write_text(json.dumps({"sessionId": "nope"}))
+        assert p.extract_session_id({"transcript_path": str(f)}) is None
+
+    def test_resume_args_is_space_form(self):
+        p = get_provider("gemini")
+        assert p.resume_args("abc") == ["--resume", "abc"]
 
 
 # --------------------------------------------------------------------------

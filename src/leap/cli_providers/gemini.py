@@ -106,20 +106,61 @@ class GeminiProvider(CLIProvider):
     def supports_image_attachments(self) -> bool:
         return True
 
-    # -- Resume support (intentionally disabled) -------------------------
-
-    # Gemini's `--resume` only accepts the literal ``"latest"`` or a
-    # numeric index into the per-project session list.  Indexes shift
-    # as new sessions are created, so there's no way to store a stable
-    # identifier that points back at a specific recorded session —
-    # today's ``--resume 3`` may refer to a different session tomorrow.
+    # -- Resume support --------------------------------------------------
     #
-    # Until Gemini supports resuming by a stable name or UUID, we keep
-    # ``supports_resume = False`` (inherited from the base class) so
-    # Gemini sessions simply don't appear in the ``leap --resume``
-    # picker.  If Gemini ever gains a stable-id resume mode, implement
-    # ``extract_session_id`` + ``resume_args`` here and override
-    # ``supports_resume``.
+    # Despite what ``gemini --help`` advertises ("Use 'latest' for most
+    # recent or index number"), Gemini's ``--resume`` also accepts a
+    # full session UUID — per Google's docs and the community docs site.
+    # Session files at ``~/.gemini/tmp/<project_hash>/chats/session-<date>-<short>.json``
+    # store the full UUID in a top-level ``sessionId`` field, so we read
+    # it from there when the hook fires.
+
+    @property
+    def supports_resume(self) -> bool:
+        return True
+
+    def extract_session_id(self, hook_data: dict) -> Optional[str]:
+        """Read Gemini's session UUID from the hook payload.
+
+        The hook payload's direct ``session_id`` / ``sessionId`` fields
+        come first (if upstream adds them later); otherwise we open the
+        ``transcript_path`` session JSON and pull the top-level
+        ``sessionId`` field that Gemini writes at session start.
+        """
+        for key in ('session_id', 'sessionId'):
+            sid = hook_data.get(key) or ''
+            if sid:
+                return sid
+        path = hook_data.get('transcript_path', '') or ''
+        if not path or '.gemini/' not in path:
+            return None
+        try:
+            with open(path, 'r') as f:
+                # Session files are either a single JSON object or JSONL;
+                # a top-of-file read of up to 4 KiB is enough to find the
+                # sessionId without pulling in the whole history.
+                head = f.read(4096)
+            try:
+                data = json.loads(head)
+                if isinstance(data, dict):
+                    sid = data.get('sessionId') or data.get('session_id')
+                    if sid:
+                        return sid
+            except json.JSONDecodeError:
+                # JSONL? Try first line.
+                first = head.splitlines()[0] if head else ''
+                if first:
+                    entry = json.loads(first)
+                    if isinstance(entry, dict):
+                        return entry.get('sessionId') or entry.get('session_id') or None
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        return None
+
+    def resume_args(self, session_id: str) -> list[str]:
+        # Gemini's flag takes a value as a second token; Leap's server
+        # argv forwarder keeps that value (no ``--``-only filter).
+        return ['--resume', session_id]
 
     # -- Hook configuration ----------------------------------------------
 
