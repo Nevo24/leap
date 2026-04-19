@@ -48,9 +48,13 @@ if str(_SRC_DIR) not in sys.path:
 
 try:
     from leap.cli_providers.registry import get_display_name
+    from leap.utils.resume_store import TagRow, SessionRecord, load_tag_rows
 except ImportError:
     def get_display_name(name: str) -> str:  # type: ignore[no-redef]
         return name
+    TagRow = None  # type: ignore
+    SessionRecord = None  # type: ignore
+    load_tag_rows = None  # type: ignore
 
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -61,67 +65,19 @@ GREEN = "\033[32m"
 RESET = "\033[0m"
 
 
-def _load_tag_entries() -> list[dict]:
-    """Collect every valid (on-disk) session per ``(tag, cli)`` pair.
+def _load_tag_entries() -> list:
+    """Return picker rows via the shared :mod:`leap.utils.resume_store`.
 
-    Scans ``.storage/cli_sessions/<cli>/*.json`` across every CLI subdir
-    (Claude, Codex, any custom providers).  Returns rows shaped
-    ``{tag, cli, sessions, last_seen}`` — each row is a distinct
-    ``(tag, cli)`` pair so a tag that happened to run under two CLIs
-    shows up twice (once per CLI).  ``sessions`` is newest-first.
+    The store hands us fully-filtered :class:`TagRow` values (stale
+    transcripts already dropped, newest-first).  We keep this thin
+    wrapper instead of calling ``load_tag_rows`` directly so the
+    import-failure fallback (when leap isn't on ``sys.path`` for
+    whatever reason) degrades to an empty list instead of an import
+    error.
     """
-    if not SESSIONS_ROOT.is_dir():
+    if load_tag_rows is None:
         return []
-    rows: list[dict] = []
-    for cli_dir in SESSIONS_ROOT.iterdir():
-        if not cli_dir.is_dir():
-            continue
-        cli = cli_dir.name
-        for path in cli_dir.glob("*.json"):
-            tag = path.stem
-            try:
-                entries = json.loads(path.read_text())
-            except (json.JSONDecodeError, OSError):
-                continue
-            if not isinstance(entries, list):
-                continue
-            sessions: list[dict] = []
-            for entry in reversed(entries):  # newest-first
-                if not isinstance(entry, dict):
-                    continue
-                transcript_path = entry.get("transcript_path", "")
-                session_id = entry.get("session_id", "")
-                if not session_id:
-                    continue
-                if transcript_path:
-                    try:
-                        size = os.path.getsize(transcript_path)
-                    except OSError:
-                        continue  # transcript file gone — drop
-                else:
-                    # Some CLIs may record without a transcript_path
-                    # (e.g. a future CLI that only stores ids).  Keep
-                    # the entry but mark size unknown.
-                    size = 0
-                sessions.append({
-                    "session_id": session_id,
-                    "transcript_path": transcript_path,
-                    "cwd": entry.get("cwd", "") or (
-                        os.path.dirname(transcript_path) if transcript_path else ""
-                    ),
-                    "last_seen": float(entry.get("last_seen") or 0),
-                    "size": size,
-                })
-            if not sessions:
-                continue
-            rows.append({
-                "tag": tag,
-                "cli": cli,
-                "sessions": sessions,
-                "last_seen": sessions[0]["last_seen"],
-            })
-    rows.sort(key=lambda r: r["last_seen"], reverse=True)
-    return rows
+    return load_tag_rows(STORAGE_DIR)
 
 
 def _format_size(n: int) -> str:
@@ -262,7 +218,7 @@ def _cli_label(cli: str) -> str:
     return f"[{label}]"
 
 
-def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
+def _render_tags(rows: list, idx: int, first: bool) -> None:
     """Render the top-level tag picker.
 
     Each row is a ``(tag, cli)`` pair prefixed with a ``[cli]`` badge so
@@ -278,19 +234,18 @@ def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
     sys.stderr.write(f"  {BOLD}Select a Leap session to resume:{RESET}\n")
     for i, row in enumerate(rows):
         marker = "❯" if i == idx else " "
-        tag = row["tag"]
-        label = _cli_label(row["cli"])
-        newest = row["sessions"][0]
-        age = _format_age(newest["last_seen"])
-        cwd_display = _shorten_cwd(newest["cwd"])
-        n = len(row["sessions"])
+        label = _cli_label(row.cli)
+        newest = row.sessions[0]
+        age = _format_age(newest.last_seen)
+        cwd_display = _shorten_cwd(newest.cwd)
+        n = len(row.sessions)
         if n > 1:
             meta = f"{n} sessions · {age} · {cwd_display}"
             first_meta_token = f"{n} sessions · "
         else:
-            meta = f"{age} · {newest['session_id'][:8]} · {cwd_display}"
+            meta = f"{age} · {newest.session_id[:8]} · {cwd_display}"
             first_meta_token = f"{age} · "
-        plain = _truncate(f"  {marker} {label} {tag}  {meta}", term_cols)
+        plain = _truncate(f"  {marker} {label} {row.tag}  {meta}", term_cols)
         split = plain.find(first_meta_token)
         if split < 0:
             split = len(plain)
@@ -300,7 +255,7 @@ def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
     sys.stderr.flush()
 
 
-def _render_sessions(tag: str, cli: str, sessions: list[dict], idx: int, first: bool) -> None:
+def _render_sessions(tag: str, cli: str, sessions: list, idx: int, first: bool) -> None:
     """Render the per-tag session sub-picker."""
     term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
     if not first:
@@ -310,10 +265,10 @@ def _render_sessions(tag: str, cli: str, sessions: list[dict], idx: int, first: 
     sys.stderr.write(f"{BOLD}{header}{RESET}\n")
     for i, s in enumerate(sessions):
         marker = "❯" if i == idx else " "
-        short_id = s["session_id"][:8]
-        age = _format_age(s["last_seen"])
-        size = _format_size(s["size"])
-        cwd_display = _shorten_cwd(s["cwd"])
+        short_id = s.session_id[:8]
+        age = _format_age(s.last_seen)
+        size = _format_size(s.size)
+        cwd_display = _shorten_cwd(s.cwd)
         plain = _truncate(f"  {marker} {short_id}  {age} · {size} · {cwd_display}", term_cols)
         split = plain.find(f"{age} · ")
         if split < 0:
@@ -324,7 +279,7 @@ def _render_sessions(tag: str, cli: str, sessions: list[dict], idx: int, first: 
     sys.stderr.flush()
 
 
-def _pick_tag(rows: list[dict]) -> Optional[dict]:
+def _pick_tag(rows: list):
     idx = 0
     _render_tags(rows, idx, first=True)
     while True:
@@ -345,8 +300,8 @@ def _pick_tag(rows: list[dict]) -> Optional[dict]:
 _ABORT = object()
 
 
-def _pick_session(tag: str, cli: str, sessions: list[dict]):
-    """Return a chosen session dict, ``None`` to go back, or ``_ABORT`` to exit."""
+def _pick_session(tag: str, cli: str, sessions: list):
+    """Return a :class:`SessionRecord`, ``None`` to go back, or ``_ABORT``."""
     idx = 0
     _render_sessions(tag, cli, sessions, idx, first=True)
     while True:
@@ -381,8 +336,8 @@ def main() -> int:
 
     # Outer loop so Esc from the session sub-picker can bounce back to
     # the tag picker without restarting `main`.
-    chosen_tag: Optional[dict] = None
-    chosen_session: Optional[dict] = None
+    chosen_tag = None
+    chosen_session = None
     try:
         while True:
             tag_row = _pick_tag(rows)
@@ -390,11 +345,11 @@ def main() -> int:
             if tag_row is None:
                 sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
                 return 130
-            sessions = tag_row["sessions"]
+            sessions = tag_row.sessions
             if len(sessions) == 1:
                 chosen_tag, chosen_session = tag_row, sessions[0]
                 break
-            result = _pick_session(tag_row["tag"], tag_row["cli"], sessions)
+            result = _pick_session(tag_row.tag, tag_row.cli, sessions)
             sys.stderr.write(f"\033[{len(sessions) + 2}A\033[J")
             if result is _ABORT:
                 sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
@@ -407,10 +362,10 @@ def main() -> int:
         sys.stderr.write("\n")
         return 130
 
-    tag = chosen_tag["tag"]
-    cli = chosen_tag["cli"]
-    session_id = chosen_session["session_id"]
-    target_cwd = chosen_session["cwd"]
+    tag = chosen_tag.tag
+    cli = chosen_tag.cli
+    session_id = chosen_session.session_id
+    target_cwd = chosen_session.cwd
 
     if _server_alive(tag):
         sys.stderr.write(

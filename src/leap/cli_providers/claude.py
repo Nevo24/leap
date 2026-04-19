@@ -138,6 +138,48 @@ class ClaudeProvider(CLIProvider):
         # its own picker instead of resuming directly.
         return [f'--resume={session_id}']
 
+    # -- Last assistant message (Slack) ----------------------------------
+
+    def extract_last_assistant_message(self, hook_data: dict) -> str:
+        """Claude doesn't pass the assistant text in the hook payload —
+        tail the transcript JSONL and pull the most recent
+        ``type=="assistant"`` entry's concatenated text parts.
+        Bounded to the last 32 KiB so very long transcripts stay cheap.
+        """
+        path = hook_data.get('transcript_path', '') or ''
+        if not path or '.claude/projects/' not in path:
+            return ''
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return ''
+        try:
+            chunk = 32768
+            with open(path, 'rb') as f:
+                f.seek(max(0, size - chunk))
+                tail = f.read()
+        except OSError:
+            return ''
+        for raw in reversed(tail.split(b'\n')):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if entry.get('type') != 'assistant':
+                continue
+            parts = [
+                c.get('text', '')
+                for c in entry.get('message', {}).get('content', [])
+                if c.get('type') == 'text'
+            ]
+            joined = '\n'.join(p for p in parts if p)
+            if joined:
+                return joined
+        return ''
+
     # -- Hook configuration ----------------------------------------------
 
     @property

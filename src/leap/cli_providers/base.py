@@ -409,6 +409,20 @@ class CLIProvider(ABC):
         """
         return []
 
+    # -- Hook payload extraction -----------------------------------------
+
+    def extract_last_assistant_message(self, hook_data: dict) -> str:
+        """Return the last assistant-generated text from a hook payload.
+
+        Most CLIs (Codex, Cursor, Gemini) pass the string directly as
+        ``hook_data['last_assistant_message']``.  Claude Code writes its
+        output to a JSONL transcript and expects consumers to tail it —
+        :class:`ClaudeProvider` overrides this to do that.  Consumed by
+        the Slack integration to preview the last reply.
+        """
+        msg = hook_data.get('last_assistant_message', '')
+        return msg if isinstance(msg, str) else ''
+
     # -- CLI-specific input behaviors ------------------------------------
 
     def send_message(
