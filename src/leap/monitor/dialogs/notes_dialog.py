@@ -2228,7 +2228,7 @@ class NotesDialog(QDialog):
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(['Text', 'Checklist'])
         self._mode_combo.setFixedWidth(100)
-        self._mode_combo.setEnabled(False)
+        self._mode_combo.setVisible(False)
         self._mode_combo.setToolTip('Switch between plain text and checklist mode')
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         toolbar_row.addWidget(self._mode_combo)
@@ -2517,7 +2517,7 @@ class NotesDialog(QDialog):
             self._saved_text = ''
             self._editor.clear()
             self._editor.setEnabled(False)
-            self._mode_combo.setEnabled(False)
+            self._mode_combo.setVisible(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText('')
             self._update_action_visibility(False)
@@ -2529,7 +2529,7 @@ class NotesDialog(QDialog):
             self._saved_text = ''
             self._editor.clear()
             self._editor.setEnabled(False)
-            self._mode_combo.setEnabled(False)
+            self._mode_combo.setVisible(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText(current.text(0))
             self._update_action_visibility(False)
@@ -2557,7 +2557,7 @@ class NotesDialog(QDialog):
             self._stack.setCurrentIndex(self._MODE_TEXT)
         self._switching_mode = False
 
-        self._mode_combo.setEnabled(True)
+        self._mode_combo.setVisible(True)
         display = name.rsplit('/', 1)[-1] if '/' in name else name
         self._title_label.setText(display)
         self._update_timestamp()
