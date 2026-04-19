@@ -426,14 +426,18 @@ class TableBuilderMixin(_Base):
                     f' background-color: {btn_hover}; }}'
                 )
             elif role == 'close':
+                # Match close_btn_style() exactly (font-size + padding) so
+                # the X glyph sits in the same spot whether or not the row
+                # is colored. Only the fg color and hover behavior differ
+                # from the uncolored default.
                 muted_fg = ensure_contrast(t.text_muted, row_color)
                 btn.setStyleSheet(
                     f'QPushButton {{ color: {muted_fg};'
-                    f' font-size: {self._zoomed_size(2)}px;'
+                    f' font-size: {self._zoomed_size()}px;'
                     f' background-color: {btn_bg};'
                     f' border: 1px solid {btn_border};'
                     f' border-radius: {r_radius}px;'
-                    f' padding: 0px 6px; }}'
+                    f' padding: 0px 6px 1px 6px; }}'
                     f'QPushButton:hover {{ color: {t.accent_red};'
                     f' border-color: {t.accent_red}; }}'
                 )
