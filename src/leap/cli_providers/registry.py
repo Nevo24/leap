@@ -102,6 +102,12 @@ class CustomCLIProvider(CLIProvider):
         self, tag: Optional[str], signal_dir: Optional[Path],
     ) -> dict[str, str]:
         env = self._base.get_spawn_env(tag, signal_dir)
+        # Base's get_spawn_env sets ``LEAP_CLI_PROVIDER`` using its own
+        # ``self.name`` — which is the *base* identifier, not this custom
+        # CLI's id.  Overwrite so the hook records under
+        # ``.storage/cli_sessions/<custom_id>/`` and the picker shows
+        # the custom display name instead of the base's.
+        env['LEAP_CLI_PROVIDER'] = self._custom_id
         for k, v in self._env_vars.items():
             env[k] = os.path.expanduser(os.path.expandvars(v))
         return env
