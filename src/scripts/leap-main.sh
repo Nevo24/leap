@@ -100,9 +100,7 @@ USAGE:
     leap --help, -h                   Show this help
     leap --update                     Update Leap to latest version
     leap --manage-clis                Manage CLI providers (order, flags, visibility, custom CLIs)
-    leap --resume                     Pick a previous Leap session and resume it in the same CLI
-                                      (supported for any CLI provider with leap-resume implemented —
-                                      e.g. Claude Code, OpenAI Codex)
+    leap --resume                     Pick a previous Leap session and resume it in its original CLI
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
         echo "    leap --slack                      Start the Slack bot daemon"

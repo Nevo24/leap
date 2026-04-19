@@ -3,7 +3,7 @@ Abstract base class for CLI providers.
 
 Each provider defines the patterns, timings, and behaviors specific to
 a CLI tool (Claude Code, Codex, Cursor Agent, Gemini CLI, etc.) so that the PTY handler, state
-tracker, and server can work with any supported CLI.
+tracker, and server can work with any registered CLI.
 """
 
 import json

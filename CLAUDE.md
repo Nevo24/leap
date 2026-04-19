@@ -210,7 +210,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Slack config | `.storage/slack/config.json` |
 | Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |
-| CLI session tracking | `.storage/cli_sessions/<cli>/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook-process.py`; drives `leap --resume`. One subdir per provider — `claude/`, `codex/`, and any custom CLI that implements the Leap Resume interface) |
+| CLI session tracking | `.storage/cli_sessions/<cli>/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook-process.py`; drives `leap --resume`. One subdir per provider — `claude/`, `codex/`, `cursor-agent/`, `gemini/`, plus any custom CLI that implements the Leap Resume interface) |
 
 ## Server Queue Shortcut
 
