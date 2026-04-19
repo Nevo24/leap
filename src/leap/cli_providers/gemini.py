@@ -106,6 +106,21 @@ class GeminiProvider(CLIProvider):
     def supports_image_attachments(self) -> bool:
         return True
 
+    # -- Resume support (intentionally disabled) -------------------------
+
+    # Gemini's `--resume` only accepts the literal ``"latest"`` or a
+    # numeric index into the per-project session list.  Indexes shift
+    # as new sessions are created, so there's no way to store a stable
+    # identifier that points back at a specific recorded session —
+    # today's ``--resume 3`` may refer to a different session tomorrow.
+    #
+    # Until Gemini supports resuming by a stable name or UUID, we keep
+    # ``supports_resume = False`` (inherited from the base class) so
+    # Gemini sessions simply don't appear in the ``leap --resume``
+    # picker.  If Gemini ever gains a stable-id resume mode, implement
+    # ``extract_session_id`` + ``resume_args`` here and override
+    # ``supports_resume``.
+
     # -- Hook configuration ----------------------------------------------
 
     @property

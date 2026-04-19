@@ -138,6 +138,45 @@ class CursorAgentProvider(CLIProvider):
 
     # -- Hook configuration ----------------------------------------------
 
+    # -- Resume support --------------------------------------------------
+
+    @property
+    def supports_resume(self) -> bool:
+        return True
+
+    def extract_session_id(self, hook_data: dict) -> Optional[str]:
+        """Cursor Agent stores chats under
+        ``~/.cursor/chats/<project-hash>/<chat-uuid>/`` and accepts the
+        chat UUID via ``--resume <chatId>``.  Hook payloads observed
+        so far include workspace roots + status; we look for common id
+        fields (``chatId`` / ``chat_id`` / ``session_id``) and fall
+        back to extracting the UUID from a transcript path if present.
+        """
+        for key in ('chatId', 'chat_id', 'session_id'):
+            sid = hook_data.get(key) or ''
+            if sid:
+                return sid
+        path = hook_data.get('transcript_path', '') or ''
+        if path and '.cursor/' in path:
+            # expected: .../chats/<project>/<chat-uuid>/... or
+            # .../chats/<project>/<chat-uuid>.jsonl
+            parts = Path(path).parts
+            for i, p in enumerate(parts):
+                if p == 'chats' and i + 2 < len(parts):
+                    candidate = parts[i + 2]
+                    if candidate.endswith('.jsonl'):
+                        candidate = candidate[:-6]
+                    return candidate or None
+        return None
+
+    def resume_args(self, session_id: str) -> list[str]:
+        # Cursor Agent: `cursor-agent --resume <chatId>` (space form).
+        # The flag/value pair flows through the server since the new
+        # argv forwarder no longer drops non-`--` tokens.
+        return ['--resume', session_id]
+
+    # -- Hook configuration ----------------------------------------------
+
     @property
     def hook_config_dir(self) -> Path:
         return CURSOR_CONFIG_DIR
