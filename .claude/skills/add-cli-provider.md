@@ -167,6 +167,7 @@ Override these only if the CLI differs from the defaults:
 | `supports_image_attachments` | `False` | Set `True` if CLI supports inline image files |
 | `requires_binary_for_hooks` | `False` | Set `True` if hooks should only configure when CLI is installed |
 | `valid_signal_states` | `SIGNAL_STATES` | Override if the CLI writes different states to signal files |
+| `supports_resume` | `False` | Set `True` when you wire up the **Leap Resume** feature (see below) |
 
 #### Optional Methods (Have Defaults)
 
@@ -178,8 +179,63 @@ Override these only if the CLI differs from the defaults:
 | `select_option()` | Returns error | Implement for numbered menus, y/n prompts, etc. |
 | `send_custom_answer()` | Returns error | Implement for free-text input in dialogs |
 | `find_cli()` | Searches PATH for `self.command` | Custom binary location logic |
-| `get_spawn_env()` | Sets `LEAP_TAG`, `LEAP_SIGNAL_DIR` | Additional env vars needed by the CLI |
+| `get_spawn_env()` | Sets `LEAP_TAG`, `LEAP_SIGNAL_DIR`, `LEAP_PYTHON`, `LEAP_CLI_PROVIDER` | Additional env vars needed by the CLI |
 | `parse_signal_file()` | Parses JSON `{"state": "..."}` | Different signal file format |
+| `extract_session_id()` | Returns `None` (no resume) | Implement for **Leap Resume** — pull the session id out of the hook payload |
+| `resume_args()` | Returns `[]` | Implement for **Leap Resume** — return the argv tokens that resume the given session id |
+
+### Leap Resume feature (`leap --resume`)
+
+If this CLI supports resuming a previous conversation, implement the three
+resume hooks so the tag shows up in the `leap --resume` picker (prefixed
+with a `[<display_name>]` badge). All three must be set together:
+
+1. **`supports_resume`** → `True`
+2. **`extract_session_id(hook_data: dict) -> Optional[str]`**
+   Given the JSON the CLI sends to `leap-hook.sh` on Stop / Notification
+   events, return the stable session identifier (UUID / chat id / whatever
+   your CLI uses). Return `None` when the payload isn't one of this CLI's
+   sessions — the session recorder will then skip it.
+
+   Examples: Claude derives it from `transcript_path` basename; Codex
+   reads the `session_id` field directly (and falls back to the first
+   JSONL line's `payload.id`).
+
+3. **`resume_args(session_id: str) -> list[str]`**
+   Return the argv tokens that, when prepended to the CLI invocation,
+   resume the session. The server **prepends** these so positional
+   subcommand forms stay in the right spot. Examples:
+
+   ```python
+   # Claude: flag-value form, `=` is required so the single token
+   # survives leap-server.py's argv pipeline intact
+   return [f'--resume={session_id}']
+
+   # Codex: positional subcommand
+   return ['resume', session_id]
+
+   # Cursor Agent (hypothetical): bare flag-value
+   return ['--resume', session_id]
+   ```
+
+**Data flow** — no extra code is needed beyond these three methods:
+
+- The hook (`leap-hook-process.py`) reads `LEAP_CLI_PROVIDER` (set by
+  `get_spawn_env`) and calls your provider's `extract_session_id` with the
+  raw hook payload. Matching sessions land in
+  `.storage/cli_sessions/<name>/<tag>.json`.
+- The picker scans `.storage/cli_sessions/*/` and shows each tag as
+  `[<display_name>] <tag>`. Custom CLIs appear automatically as long as
+  they're registered.
+- On selection, `leap-resume.py` sets `LEAP_RESUME_SESSION_ID`,
+  `LEAP_RESUME_CLI` and `LEAP_CLI`, execs `leap-main.sh`, and
+  `leap-server.py` consults your provider's `resume_args` before the
+  PTY spawn.
+
+If the session is tied to a specific working directory (Claude stores
+transcripts under a cwd-derived slug), record `cwd` in the hook payload
+— the picker `chdir`s there before launch so resume can find the
+transcript.
 
 ### 2. Register the Provider
 
@@ -424,6 +480,7 @@ class TestMyCliProvider:
 - [ ] `configure_hooks()` installs hooks correctly
 - [ ] `hook_config_dir` points to correct location
 - [ ] `requires_binary_for_hooks` set correctly
+- [ ] **Leap Resume** feature wired (if the CLI supports resume): `supports_resume`, `extract_session_id`, `resume_args` — or explicitly decide to skip
 
 ### Shell & Makefile
 - [ ] Shell launcher script created (`src/scripts/<name>-leap-main.sh`)

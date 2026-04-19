@@ -835,10 +835,10 @@ uninstall:
 		fi; \
 	fi
 	@echo "$(PROMPT_PREFIX) Removing hook files..."
-	@rm -f "$$HOME/.claude/hooks/leap-hook.sh" "$$HOME/.claude/hooks/claudeq-hook.sh" 2>/dev/null || true
-	@rm -f "$$HOME/.codex/leap-hook.sh" "$$HOME/.codex/claudeq-hook.sh" 2>/dev/null || true
-	@rm -f "$$HOME/.cursor/leap-hook.sh" 2>/dev/null || true
-	@rm -f "$$HOME/.gemini/leap-hook.sh" 2>/dev/null || true
+	@rm -f "$$HOME/.claude/hooks/leap-hook.sh" "$$HOME/.claude/hooks/leap-hook-process.py" "$$HOME/.claude/hooks/claudeq-hook.sh" 2>/dev/null || true
+	@rm -f "$$HOME/.codex/leap-hook.sh" "$$HOME/.codex/leap-hook-process.py" "$$HOME/.codex/claudeq-hook.sh" 2>/dev/null || true
+	@rm -f "$$HOME/.cursor/leap-hook.sh" "$$HOME/.cursor/leap-hook-process.py" 2>/dev/null || true
+	@rm -f "$$HOME/.gemini/leap-hook.sh" "$$HOME/.gemini/leap-hook-process.py" 2>/dev/null || true
 	@echo "$(GREEN)✓ Removed hook files$(NC)"
 	@echo ""
 	@echo "$(GREEN)✓ Leap fully uninstalled!$(NC)"

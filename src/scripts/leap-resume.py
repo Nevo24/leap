@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Interactive picker for `leap --resume`.
 
-Scans `.storage/cli_sessions/claude/*.json` for Leap tags that have at
-least one recorded Claude Code session whose transcript `.jsonl` still
-exists on disk (stale sessions are skipped).  Shows an arrow-key picker
-and, on selection, re-execs `leap-main.sh <tag>` after
+Scans every ``.storage/cli_sessions/<cli>/*.json`` for Leap tags that
+still have at least one recorded session whose transcript exists on
+disk.  Each ``(tag, cli)`` pair is shown as a separate row in the
+picker — tags with multiple live sessions open a sub-picker — and the
+selection hand-off is CLI-agnostic:
 
-  1. `chdir`-ing into the session's original cwd (Claude stores
-     sessions under `~/.claude/projects/<slug-of-cwd>/<uuid>.jsonl`,
-     so `--resume <uuid>` only resolves when cwd matches), and
-  2. exporting `LEAP_CLAUDE_RESUME_ID=<uuid>` + `LEAP_CLI=claude`
-     which `leap-main.sh` translates into `claude --resume <uuid>`.
+  1. `chdir` into the session's original cwd (CLIs like Claude Code
+     store transcripts under a cwd-derived slug, so resume only works
+     when cwd matches).
+  2. Export ``LEAP_RESUME_SESSION_ID``, ``LEAP_RESUME_CLI`` and
+     ``LEAP_CLI`` before execing ``leap-main.sh <tag>``.  The server
+     then calls the provider's ``resume_args(session_id)`` and prepends
+     the right argv — ``--resume=<uuid>`` for Claude, ``resume <uuid>``
+     for Codex, whatever a custom CLI implements.
 
 Runs from any directory — the storage location is resolved from the
 Leap project root recorded at install time, not from `cwd`.
@@ -32,9 +36,21 @@ from typing import Optional
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent.parent
 STORAGE_DIR = PROJECT_DIR / ".storage"
-SESSIONS_DIR = STORAGE_DIR / "cli_sessions" / "claude"
+SESSIONS_ROOT = STORAGE_DIR / "cli_sessions"
 SOCKET_DIR = STORAGE_DIR / "sockets"
 LEAP_MAIN = SCRIPT_DIR / "leap-main.sh"
+
+# Make the ``leap`` package importable so we can ask providers for their
+# display names.  Same pattern as leap-hook-process.py.
+_SRC_DIR = SCRIPT_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+try:
+    from leap.cli_providers.registry import get_display_name
+except ImportError:
+    def get_display_name(name: str) -> str:  # type: ignore[no-redef]
+        return name
 
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -46,51 +62,64 @@ RESET = "\033[0m"
 
 
 def _load_tag_entries() -> list[dict]:
-    """Collect every valid (on-disk) session per tag, newest-first.
+    """Collect every valid (on-disk) session per ``(tag, cli)`` pair.
 
-    Returns rows shaped ``{tag, sessions, last_seen}`` where ``sessions``
-    is the list of resumable session entries for the tag in newest-first
-    order.  A "valid" session is one whose transcript ``.jsonl`` still
-    exists — `os.path.getsize` both confirms that and gives us the
-    transcript size for the sub-picker display.
+    Scans ``.storage/cli_sessions/<cli>/*.json`` across every CLI subdir
+    (Claude, Codex, any custom providers).  Returns rows shaped
+    ``{tag, cli, sessions, last_seen}`` — each row is a distinct
+    ``(tag, cli)`` pair so a tag that happened to run under two CLIs
+    shows up twice (once per CLI).  ``sessions`` is newest-first.
     """
-    if not SESSIONS_DIR.is_dir():
+    if not SESSIONS_ROOT.is_dir():
         return []
     rows: list[dict] = []
-    for path in SESSIONS_DIR.glob("*.json"):
-        tag = path.stem
-        try:
-            entries = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+    for cli_dir in SESSIONS_ROOT.iterdir():
+        if not cli_dir.is_dir():
             continue
-        if not isinstance(entries, list):
-            continue
-        sessions: list[dict] = []
-        for entry in reversed(entries):  # newest-first
-            if not isinstance(entry, dict):
-                continue
-            transcript_path = entry.get("transcript_path", "")
-            session_id = entry.get("session_id", "")
-            if not (transcript_path and session_id):
-                continue
+        cli = cli_dir.name
+        for path in cli_dir.glob("*.json"):
+            tag = path.stem
             try:
-                size = os.path.getsize(transcript_path)
-            except OSError:
-                continue  # transcript file gone
-            sessions.append({
-                "session_id": session_id,
-                "transcript_path": transcript_path,
-                "cwd": entry.get("cwd", "") or os.path.dirname(transcript_path),
-                "last_seen": float(entry.get("last_seen") or 0),
-                "size": size,
+                entries = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(entries, list):
+                continue
+            sessions: list[dict] = []
+            for entry in reversed(entries):  # newest-first
+                if not isinstance(entry, dict):
+                    continue
+                transcript_path = entry.get("transcript_path", "")
+                session_id = entry.get("session_id", "")
+                if not session_id:
+                    continue
+                if transcript_path:
+                    try:
+                        size = os.path.getsize(transcript_path)
+                    except OSError:
+                        continue  # transcript file gone — drop
+                else:
+                    # Some CLIs may record without a transcript_path
+                    # (e.g. a future CLI that only stores ids).  Keep
+                    # the entry but mark size unknown.
+                    size = 0
+                sessions.append({
+                    "session_id": session_id,
+                    "transcript_path": transcript_path,
+                    "cwd": entry.get("cwd", "") or (
+                        os.path.dirname(transcript_path) if transcript_path else ""
+                    ),
+                    "last_seen": float(entry.get("last_seen") or 0),
+                    "size": size,
+                })
+            if not sessions:
+                continue
+            rows.append({
+                "tag": tag,
+                "cli": cli,
+                "sessions": sessions,
+                "last_seen": sessions[0]["last_seen"],
             })
-        if not sessions:
-            continue
-        rows.append({
-            "tag": tag,
-            "sessions": sessions,
-            "last_seen": sessions[0]["last_seen"],
-        })
     rows.sort(key=lambda r: r["last_seen"], reverse=True)
     return rows
 
@@ -217,9 +246,27 @@ def _write_row(plain: str, is_selected: bool, split_at: int) -> None:
         sys.stderr.write(f"{head}{DIM}{tail}{RESET}\n")
 
 
+def _cli_label(cli: str) -> str:
+    """``[cli]`` badge shown at the start of each tag row.
+
+    Uses the provider's ``display_name`` when available (so custom CLIs
+    show their registered name too); falls back to the raw registry key
+    for unknown/removed providers so we never hide a resumable session.
+    """
+    label = get_display_name(cli)
+    # Short, bracketed form — e.g. ``[Claude Code]`` → just ``[claude]``
+    # would drop useful detail, so keep the display name as-is but trim
+    # it if it happens to be very long.
+    if len(label) > 18:
+        label = label[:17] + "…"
+    return f"[{label}]"
+
+
 def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
     """Render the top-level tag picker.
 
+    Each row is a ``(tag, cli)`` pair prefixed with a ``[cli]`` badge so
+    users can tell at a glance which CLI owns each recorded session.
     Tags with more than one recorded session show ``N sessions`` in the
     meta column instead of the UUID — the UUID becomes meaningful only
     in the sub-picker where each session is listed individually.
@@ -232,6 +279,7 @@ def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
     for i, row in enumerate(rows):
         marker = "❯" if i == idx else " "
         tag = row["tag"]
+        label = _cli_label(row["cli"])
         newest = row["sessions"][0]
         age = _format_age(newest["last_seen"])
         cwd_display = _shorten_cwd(newest["cwd"])
@@ -242,7 +290,7 @@ def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
         else:
             meta = f"{age} · {newest['session_id'][:8]} · {cwd_display}"
             first_meta_token = f"{age} · "
-        plain = _truncate(f"  {marker} {tag}  {meta}", term_cols)
+        plain = _truncate(f"  {marker} {label} {tag}  {meta}", term_cols)
         split = plain.find(first_meta_token)
         if split < 0:
             split = len(plain)
@@ -252,13 +300,13 @@ def _render_tags(rows: list[dict], idx: int, first: bool) -> None:
     sys.stderr.flush()
 
 
-def _render_sessions(tag: str, sessions: list[dict], idx: int, first: bool) -> None:
+def _render_sessions(tag: str, cli: str, sessions: list[dict], idx: int, first: bool) -> None:
     """Render the per-tag session sub-picker."""
     term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
     if not first:
         sys.stderr.write(f"\033[{len(sessions) + 2}A")
     sys.stderr.write("\033[J")
-    header = _truncate(f"  Sessions for '{tag}':", term_cols)
+    header = _truncate(f"  Sessions for {_cli_label(cli)} '{tag}':", term_cols)
     sys.stderr.write(f"{BOLD}{header}{RESET}\n")
     for i, s in enumerate(sessions):
         marker = "❯" if i == idx else " "
@@ -297,18 +345,18 @@ def _pick_tag(rows: list[dict]) -> Optional[dict]:
 _ABORT = object()
 
 
-def _pick_session(tag: str, sessions: list[dict]):
+def _pick_session(tag: str, cli: str, sessions: list[dict]):
     """Return a chosen session dict, ``None`` to go back, or ``_ABORT`` to exit."""
     idx = 0
-    _render_sessions(tag, sessions, idx, first=True)
+    _render_sessions(tag, cli, sessions, idx, first=True)
     while True:
         key = _get_key()
         if key == 'up':
             idx = (idx - 1) % len(sessions)
-            _render_sessions(tag, sessions, idx, first=False)
+            _render_sessions(tag, cli, sessions, idx, first=False)
         elif key == 'down':
             idx = (idx + 1) % len(sessions)
-            _render_sessions(tag, sessions, idx, first=False)
+            _render_sessions(tag, cli, sessions, idx, first=False)
         elif key == 'enter':
             return sessions[idx]
         elif key == 'escape':
@@ -346,7 +394,7 @@ def main() -> int:
             if len(sessions) == 1:
                 chosen_tag, chosen_session = tag_row, sessions[0]
                 break
-            result = _pick_session(tag_row["tag"], sessions)
+            result = _pick_session(tag_row["tag"], tag_row["cli"], sessions)
             sys.stderr.write(f"\033[{len(sessions) + 2}A\033[J")
             if result is _ABORT:
                 sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
@@ -360,6 +408,7 @@ def main() -> int:
         return 130
 
     tag = chosen_tag["tag"]
+    cli = chosen_tag["cli"]
     session_id = chosen_session["session_id"]
     target_cwd = chosen_session["cwd"]
 
@@ -367,33 +416,41 @@ def main() -> int:
         sys.stderr.write(
             f"  {RED}A Leap server is already running for '{tag}'.{RESET}\n"
             f"  {DIM}Stop it first (exit the server terminal) and re-run "
-            f"`leap --resume` to attach a fresh Claude session.{RESET}\n"
+            f"`leap --resume` to attach a fresh session.{RESET}\n"
         )
         return 1
 
-    if not os.path.isdir(target_cwd):
+    if target_cwd and not os.path.isdir(target_cwd):
         sys.stderr.write(
             f"  {RED}Session's original directory no longer exists: {target_cwd}{RESET}\n"
-            f"  {DIM}Claude stores transcripts per-cwd, so resume cannot locate the session.{RESET}\n"
+            f"  {DIM}Some CLIs (Claude Code) store transcripts per-cwd, so resume "
+            f"cannot locate the session.{RESET}\n"
         )
         return 1
 
     sys.stderr.write(
-        f"  {GREEN}Resuming{RESET} {BOLD}{tag}{RESET} "
-        f"{DIM}(session {session_id[:8]} in {target_cwd}){RESET}\n"
+        f"  {GREEN}Resuming{RESET} {_cli_label(cli)} {BOLD}{tag}{RESET} "
+        f"{DIM}(session {session_id[:8]}"
+        f"{' in ' + target_cwd if target_cwd else ''}){RESET}\n"
     )
     sys.stderr.flush()
 
+    # Hand the session id + CLI to the server via env vars.  leap-main.sh
+    # is CLI-agnostic — it just propagates LEAP_RESUME_* through.  The
+    # server reads them, calls ``provider.resume_args(session_id)``, and
+    # prepends the right argv tokens before spawning the CLI.
     env = dict(os.environ)
-    env["LEAP_CLAUDE_RESUME_ID"] = session_id
-    env["LEAP_CLI"] = "claude"
-    try:
-        os.chdir(target_cwd)
-    except OSError as e:
-        sys.stderr.write(
-            f"  {RED}Could not enter session's directory {target_cwd}: {e}{RESET}\n"
-        )
-        return 1
+    env["LEAP_RESUME_SESSION_ID"] = session_id
+    env["LEAP_RESUME_CLI"] = cli
+    env["LEAP_CLI"] = cli
+    if target_cwd:
+        try:
+            os.chdir(target_cwd)
+        except OSError as e:
+            sys.stderr.write(
+                f"  {RED}Could not enter session's directory {target_cwd}: {e}{RESET}\n"
+            )
+            return 1
     # Exec leap-main.sh directly via its shebang — avoids a PATH lookup
     # for `bash` and preserves argv[0] = the real script path.
     os.execvpe(str(LEAP_MAIN), [str(LEAP_MAIN), tag], env)

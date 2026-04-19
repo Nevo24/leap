@@ -364,7 +364,50 @@ class CLIProvider(ABC):
         # Pass the current Python interpreter path so hook scripts can use
         # the venv Python instead of relying on a bare `python3` in PATH.
         env['LEAP_PYTHON'] = sys.executable
+        # Tell the hook which provider is firing so recording is routed to
+        # the right `.storage/cli_sessions/<cli>/` subdir without the hook
+        # needing to probe every provider's transcript-path signature.
+        env['LEAP_CLI_PROVIDER'] = self.name
         return env
+
+    # -- Resume support (leap --resume) ----------------------------------
+
+    @property
+    def supports_resume(self) -> bool:
+        """Whether this CLI supports resuming via `leap --resume`.
+
+        Default ``False``.  Override and return ``True`` after implementing
+        :meth:`extract_session_id` and :meth:`resume_args`.
+        """
+        return False
+
+    def extract_session_id(self, hook_data: dict) -> Optional[str]:
+        """Return the CLI's session id from a hook payload, or ``None``.
+
+        ``hook_data`` is the JSON the CLI sent to leap-hook.sh on stdin
+        (Stop/Notification events).  Different CLIs surface the id
+        differently — e.g. Claude encodes it in the ``transcript_path``
+        filename, Codex passes it directly as ``session_id``.  Return
+        ``None`` when the payload isn't one of this CLI's sessions so the
+        hook knows to skip recording.
+        """
+        return None
+
+    def resume_args(self, session_id: str) -> list[str]:
+        """CLI argv tokens to resume the given session.
+
+        These are **prepended** to the user's CLI flags before the server
+        spawns the binary, so positional subcommand forms (Codex's
+        ``resume <id>``) stay in the right spot.  Return empty list to
+        opt out.  Example implementations::
+
+            # Claude: ``claude --resume=<id>``
+            return [f'--resume={session_id}']
+
+            # Codex: ``codex resume <id>``
+            return ['resume', session_id]
+        """
+        return []
 
     # -- CLI-specific input behaviors ------------------------------------
 

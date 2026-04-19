@@ -47,6 +47,15 @@ def _install_and_configure(provider_name: str, source_hook: str) -> bool:
     shutil.copy2(source_hook, dest)
     os.chmod(str(dest), 0o755)
 
+    # The shell hook delegates to `leap-hook-process.py`; copy it
+    # alongside so the hook keeps working from the CLI's isolated
+    # config dir without needing to reach back into the Leap repo.
+    processor_source = Path(source_hook).with_name("leap-hook-process.py")
+    if processor_source.is_file():
+        processor_dest = hook_dir / "leap-hook-process.py"
+        shutil.copy2(processor_source, processor_dest)
+        os.chmod(str(processor_dest), 0o755)
+
     provider.configure_hooks(str(dest))
     return True
 

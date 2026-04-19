@@ -143,6 +143,42 @@ class CodexProvider(CLIProvider):
         # but not via @path inline syntax.
         return False
 
+    # -- Resume support --------------------------------------------------
+
+    @property
+    def supports_resume(self) -> bool:
+        return True
+
+    def extract_session_id(self, hook_data: dict) -> Optional[str]:
+        """Codex passes ``session_id`` directly in the hook payload.
+
+        Fallback: peek at the first JSONL line of ``transcript_path`` and
+        read ``payload.id`` from the ``session_meta`` record, for robustness
+        in case older Codex versions omit ``session_id``.
+        """
+        sid = hook_data.get('session_id', '') or ''
+        if sid:
+            return sid
+        path = hook_data.get('transcript_path', '') or ''
+        if not path or '.codex/sessions/' not in path:
+            return None
+        try:
+            with open(path, 'r') as f:
+                first = f.readline()
+            if not first.strip():
+                return None
+            entry = json.loads(first)
+            if entry.get('type') != 'session_meta':
+                return None
+            return entry.get('payload', {}).get('id') or None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def resume_args(self, session_id: str) -> list[str]:
+        # Codex resume is a subcommand, not a flag: `codex resume <uuid>`.
+        # Prepend these two tokens so they stay in front of any user flags.
+        return ['resume', session_id]
+
     # -- Hook configuration ----------------------------------------------
 
     @property
@@ -156,11 +192,15 @@ class CodexProvider(CLIProvider):
     def configure_hooks(self, hook_script_path: str) -> None:
         """Install hooks into ~/.codex/hooks.json.
 
-        Codex supports SessionStart and Stop events.  We configure a Stop
-        hook that writes the idle state to the signal file.
+        **Schema note (Codex 0.121+):** events must be nested under a
+        top-level ``"hooks"`` key — ``{"hooks": {"Stop": [...]}}``.  The
+        flat form ``{"Stop": [...]}`` is silently ignored (no error, no
+        log, hooks simply never fire).  We also tolerate legacy flat
+        configs written by older Leap versions by lifting them into the
+        nested shape.
 
         Also ensures the hooks feature flag is enabled in config.toml —
-        without this, Codex ignores hooks.json entirely.
+        without it, Codex ignores hooks.json entirely.
 
         The hook receives a JSON payload on stdin with:
         - session_id, transcript_path, cwd, hook_event_name, model,
@@ -169,13 +209,23 @@ class CodexProvider(CLIProvider):
         # Ensure hooks feature flag is enabled
         self._ensure_hooks_feature_flag()
 
-        hooks_data: dict[str, Any] = {}
+        raw: dict[str, Any] = {}
         if CODEX_HOOKS_FILE.exists():
             try:
                 with open(CODEX_HOOKS_FILE, "r") as f:
-                    hooks_data = json.load(f)
+                    raw = json.load(f)
             except (json.JSONDecodeError, OSError):
                 pass
+
+        # Normalise legacy flat configs (`{"Stop": [...]}`) into the
+        # modern nested shape so we never re-write a file in the broken
+        # form.  Any top-level key that's a known event name moves in.
+        _EVENT_KEYS = {"Stop", "SessionStart", "PreToolUse", "PostToolUse",
+                       "UserPromptSubmit", "Notification"}
+        events: dict[str, Any] = raw.get("hooks") if isinstance(raw.get("hooks"), dict) else {}
+        for k in list(raw.keys()):
+            if k in _EVENT_KEYS:
+                events.setdefault(k, raw.pop(k))
 
         def make_entry(state: str) -> dict[str, Any]:
             return {
@@ -199,14 +249,15 @@ class CodexProvider(CLIProvider):
             return cleaned
 
         # Stop hook → writes "idle" state
-        if "Stop" not in hooks_data:
-            hooks_data["Stop"] = []
-        hooks_data["Stop"] = upsert(hooks_data["Stop"], [make_entry("idle")])
+        events.setdefault("Stop", [])
+        events["Stop"] = upsert(events["Stop"], [make_entry("idle")])
+
+        raw["hooks"] = events
 
         # Write hooks file
         CODEX_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(CODEX_HOOKS_FILE, "w") as f:
-            json.dump(hooks_data, f, indent=2)
+            json.dump(raw, f, indent=2)
             f.write("\n")
 
     @staticmethod

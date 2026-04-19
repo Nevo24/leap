@@ -100,7 +100,9 @@ USAGE:
     leap --help, -h                   Show this help
     leap --update                     Update Leap to latest version
     leap --manage-clis                Manage CLI providers (order, flags, visibility, custom CLIs)
-    leap --resume                     Pick a previous Leap session and resume its Claude CLI session
+    leap --resume                     Pick a previous Leap session and resume it in the same CLI
+                                      (supported for any CLI provider with leap-resume implemented —
+                                      e.g. Claude Code, OpenAI Codex)
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
         echo "    leap --slack                      Start the Slack bot daemon"
@@ -382,20 +384,12 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 HISTORY_FILE.write_text('\n'.join(history) + '\n')
 " 2>/dev/null
 
-# If leap-resume.py set LEAP_CLAUDE_RESUME_ID, inject `--resume=<id>` into
-# the CLI flags so claude picks up the previous session.  Must use the `=`
-# form (single token) — leap-server.py's flag filter drops any arg that
-# doesn't start with `--`, so `--resume <id>` would lose the UUID and
-# trigger claude's native picker instead of a direct resume.
-# Only applied when the CLI actually is Claude; silently ignored for other
-# providers (the env var is scoped to the claude-resume flow).
-if [ -n "$LEAP_CLAUDE_RESUME_ID" ]; then
-    RESUME_CLI="${CLI_FROM_ARG:-${LEAP_CLI:-claude}}"
-    if [ "$RESUME_CLI" = "claude" ]; then
-        FLAGS+=("--resume=$LEAP_CLAUDE_RESUME_ID")
-    fi
-    unset LEAP_CLAUDE_RESUME_ID
-fi
+# Resume hand-off: when leap-resume.py sets LEAP_RESUME_SESSION_ID +
+# LEAP_RESUME_CLI, we just let them pass through to leap-server.py in
+# the environment — the server consults the matching CLIProvider
+# (claude: `--resume=<id>`, codex: `resume <id>`, …) and prepends the
+# right argv tokens before spawning the binary.  No provider-specific
+# knowledge lives in this script.
 
 # Start server
 # Set terminal tab name (OSC for native terminals; VS Code rename is done from Python)

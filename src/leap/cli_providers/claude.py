@@ -5,6 +5,7 @@ Implements the CLIProvider interface for Anthropic's Claude Code CLI.
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -109,6 +110,33 @@ class ClaudeProvider(CLIProvider):
     @property
     def supports_image_attachments(self) -> bool:
         return True
+
+    # -- Resume support --------------------------------------------------
+
+    @property
+    def supports_resume(self) -> bool:
+        return True
+
+    def extract_session_id(self, hook_data: dict) -> Optional[str]:
+        """Claude Code's session id is the basename of ``transcript_path``
+        (``~/.claude/projects/<slug>/<uuid>.jsonl``).  The ``.claude/projects/``
+        substring check guards against cross-contamination if a different
+        CLI's hook runs with Claude set as the ``LEAP_CLI_PROVIDER``.
+        """
+        path = hook_data.get('transcript_path', '') or ''
+        if not path or '.claude/projects/' not in path:
+            return None
+        name = os.path.basename(path)
+        if name.endswith('.jsonl'):
+            name = name[:-6]
+        return name or None
+
+    def resume_args(self, session_id: str) -> list[str]:
+        # Must be the single-token `=` form — leap-server.py's flag filter
+        # drops any argv element that doesn't start with `--`, so the
+        # space-separated form would lose the UUID and make claude open
+        # its own picker instead of resuming directly.
+        return [f'--resume={session_id}']
 
     # -- Hook configuration ----------------------------------------------
 

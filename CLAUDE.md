@@ -20,7 +20,8 @@ leap                             # Interactive: choose CLI + session name
 src/
 ├── scripts/                     # Entry point scripts
 │   ├── leap-main.sh          # Main launcher (called by 'leap' command)
-│   ├── leap-resume.py        # `leap --resume` picker — lists Leap tags that have a recorded Claude CLI session, resumes the chosen one via `claude --resume <uuid>`
+│   ├── leap-resume.py        # `leap --resume` picker — CLI-agnostic; each row is shown as `[cli] tag` and resumes via the provider's `resume_args(id)`
+│   ├── leap-hook-process.py  # Hook processor invoked by `leap-hook.sh`; shared across all CLIs. Handles stdin parsing, session recording via `provider.extract_session_id()`, and last-assistant-message extraction for Slack
 │   ├── leap-cleanup.sh       # Dead session cleanup
 │   ├── leap-server.py        # Thin launcher → LeapServer
 │   ├── leap-client.py        # Thin launcher → LeapClient
@@ -209,7 +210,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Slack config | `.storage/slack/config.json` |
 | Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |
-| Claude session tracking | `.storage/cli_sessions/claude/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook.sh`; drives `leap --resume`) |
+| CLI session tracking | `.storage/cli_sessions/<cli>/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook-process.py`; drives `leap --resume`. One subdir per provider — `claude/`, `codex/`, and any custom CLI that implements the Leap Resume interface) |
 
 ## Server Queue Shortcut
 

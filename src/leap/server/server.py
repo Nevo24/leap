@@ -3085,6 +3085,12 @@ class LeapServer:
                 'tag': self.tag,
                 'signal_dir': str(SOCKET_DIR),
                 'python': sys.executable,
+                # The hook needs to know which provider fired it so it can
+                # route session-id recording to `.storage/cli_sessions/<cli>/`.
+                # Codex (and potentially others) strips env vars from hook
+                # subprocesses, so the hook's env-var fallback here is the
+                # only way to recover LEAP_CLI_PROVIDER.
+                'cli_provider': self.pty.provider.name,
             })
         except OSError:
             pass
@@ -3129,7 +3135,7 @@ def main() -> None:
     # Extract --cli option (consumed by Leap, not passed to the CLI)
     cli_name = None
     remaining_args = sys.argv[2:]
-    filtered_args: list[str] = []
+    flags: list[str] = []
     i = 0
     while i < len(remaining_args):
         if remaining_args[i] == '--cli' and i + 1 < len(remaining_args):
@@ -3139,10 +3145,27 @@ def main() -> None:
             cli_name = remaining_args[i].split('=', 1)[1]
             i += 1
         else:
-            filtered_args.append(remaining_args[i])
+            # Forward every other token to the CLI, not just `--*` prefixed
+            # ones — `--flag value` pairs and subcommand forms (e.g. Codex
+            # `resume <uuid>`) need the value to come through intact.
+            flags.append(remaining_args[i])
             i += 1
 
-    flags = [arg for arg in filtered_args if arg.startswith('--')]
+    # `leap --resume` hands us a session id + CLI via env vars.  Ask the
+    # provider for its resume-argv (prepended so positional subcommand
+    # forms like Codex `resume <id>` stay in the front) and then strip
+    # those env vars so they don't leak into the CLI process.
+    resume_id = os.environ.pop('LEAP_RESUME_SESSION_ID', '')
+    resume_cli = os.environ.pop('LEAP_RESUME_CLI', '')
+    if resume_id and resume_cli and (not cli_name or cli_name == resume_cli):
+        try:
+            provider = get_provider(resume_cli)
+        except ValueError:
+            provider = None
+        if provider is not None and provider.supports_resume:
+            flags = provider.resume_args(resume_id) + flags
+            if not cli_name:
+                cli_name = resume_cli
 
     server = LeapServer(tag, flags=flags, cli=cli_name)
     server.run()
