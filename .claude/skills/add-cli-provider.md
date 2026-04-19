@@ -251,9 +251,12 @@ transcript.
   the feature.
 - Some CLIs (Codex) strip env vars when spawning hook subprocesses.
   `leap-hook.sh` already walks the PPID chain looking for a
-  `/tmp/leap_cli_pid_<pid>.json` mapping — that mapping is written
-  with `cli_provider` so the fallback still identifies the CLI.  You
-  get this for free by using `get_spawn_env` (base class) without
+  `<project>/.storage/pid_maps/<pid>.json` mapping — that mapping is
+  written with `cli_provider` so the fallback still identifies the CLI.
+  The project path itself is recovered from `$LEAP_PROJECT_DIR` or,
+  if that's also been stripped, by regex-reading the install-time
+  `export LEAP_PROJECT_DIR="…"` line out of `~/.zshrc` / `~/.bashrc`.
+  You get this for free by using `get_spawn_env` (base class) without
   overriding it.
 
 ### 2. Register the Provider

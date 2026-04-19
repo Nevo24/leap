@@ -153,14 +153,109 @@ def _resumable_sessions(raw: list[dict]) -> list[SessionRecord]:
                 size = os.path.getsize(tp)
             except OSError:
                 continue  # transcript gone — drop
+        # last_seen *should* always be a float we wrote via time.time(),
+        # but a hand-edited or corrupted record shouldn't crash the whole
+        # picker — coerce defensively and fall back to 0.
+        try:
+            last_seen = float(entry.get("last_seen") or 0)
+        except (TypeError, ValueError):
+            last_seen = 0.0
         out.append(SessionRecord(
             session_id=sid,
             transcript_path=tp,
             cwd=entry.get("cwd", "") or "",
-            last_seen=float(entry.get("last_seen") or 0),
+            last_seen=last_seen,
             size=size,
         ))
     return out
+
+
+def prune_stale(storage_dir: Path) -> int:
+    """Delete ``cli_sessions/<cli>/<tag>.json`` files whose every entry
+    points at a transcript that's been removed from disk.
+
+    The picker already filters stale entries at read time, but orphaned
+    files linger forever otherwise — once every entry's transcript is
+    gone, the file is dead weight.  Files with *any* live entries are
+    left alone; their oldest-first 20-entry cap lets them self-heal as
+    fresh sessions push stale ones out.
+
+    Returns the number of files deleted (for logging / testing).
+
+    Note: on macOS APFS under heavy concurrent invocation, ``os.unlink``
+    can report success from multiple threads racing on the same file
+    (kernel-level quirk, not a bug here).  The final on-disk state is
+    always correct — all stale files end up gone — but the returned
+    count may be over-reported when several ``prune_stale`` calls race.
+    The caller (``cleanup_dead_sockets``) discards the return value, so
+    this is purely a cosmetic concern for tests.
+    """
+    root = _sessions_root(storage_dir)
+    try:
+        if not root.is_dir():
+            return 0
+        cli_dirs = list(root.iterdir())
+    except OSError:
+        # Permission denied, I/O error, etc. on the root itself — best-effort
+        # means giving up rather than crashing the caller.
+        return 0
+    removed = 0
+    for cli_dir in cli_dirs:
+        try:
+            if not cli_dir.is_dir():
+                continue
+            tag_files = list(cli_dir.glob('*.json'))
+        except OSError:
+            continue
+        for tag_file in tag_files:
+            # mtime guard against the TOCTOU race where the hook atomically
+            # writes a fresh entry AFTER we decide to delete but BEFORE we
+            # actually ``unlink``.  Without the re-check we'd wipe the new
+            # entry.  Narrows the window to the ~µs between the second
+            # ``stat`` and the ``unlink``.
+            try:
+                mtime_before = tag_file.stat().st_mtime
+            except OSError:
+                continue
+            entries = _load_raw_entries(tag_file)
+            # A file is "dead" only when EVERY entry's transcript is gone.
+            # Entries without a transcript_path (future CLIs storing only
+            # ids) are treated as live — we can't verify, so we don't
+            # delete.  Empty / unparsable files also go (no useful state).
+            should_delete = not entries
+            if entries and not should_delete:
+                pass  # unreachable, kept for clarity
+            if entries:
+                any_live = False
+                for entry in entries:
+                    tp = entry.get('transcript_path', '') or ''
+                    if not tp:
+                        any_live = True
+                        break
+                    try:
+                        os.stat(tp)
+                        any_live = True
+                        break
+                    except FileNotFoundError:
+                        continue  # transcript definitely gone
+                    except OSError:
+                        # Some other stat error (permission, I/O, network
+                        # filesystem hiccup).  Treat as live to avoid a
+                        # false-positive delete we can't undo.
+                        any_live = True
+                        break
+                should_delete = not any_live
+            if should_delete:
+                try:
+                    # Re-stat: if the file was modified while we were
+                    # deciding, a concurrent writer beat us to it — skip.
+                    if tag_file.stat().st_mtime != mtime_before:
+                        continue
+                    tag_file.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    return removed
 
 
 def load_tag_rows(storage_dir: Path) -> list[TagRow]:

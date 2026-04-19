@@ -16,12 +16,19 @@
 # Gemini CLI includes prompt, prompt_response, and transcript_path.
 #
 # Environment variables (set by Leap server via PTY):
-#   LEAP_TAG        - Session tag name
-#   LEAP_SIGNAL_DIR - Directory for signal files
+#   LEAP_TAG          - Session tag name
+#   LEAP_SIGNAL_DIR   - Directory for signal files
+#   LEAP_CLI_PROVIDER - CLI provider name (routes `leap --resume` recordings)
+#   LEAP_PROJECT_DIR  - Leap project root (exported by the user's shell rc)
 #
 # Fallback: if env vars are missing (some CLIs don't pass the parent
-# environment to hook subprocesses), the script looks for a PID mapping
-# file in /tmp written by the Leap server (leap_cli_pid_<PID>.json).
+# environment to hook subprocesses), the script recovers context by:
+#   1. Regex-reading `export LEAP_PROJECT_DIR="…"` out of the user's
+#      `~/.zshrc` / `~/.bashrc` / `~/.bash_profile` — the same line
+#      `make install` already writes.
+#   2. Walking up the PPID chain looking for
+#      `<project>/.storage/pid_maps/<ppid>.json` which the Leap server
+#      writes at CLI-spawn time.
 #
 
 STATE="$1"
@@ -31,12 +38,18 @@ STATE="$1"
 # Homebrew-only installs may not have python3 in PATH inside CLI subshells.
 PYTHON="${LEAP_PYTHON:-python3}"
 
-# If LEAP_TAG or LEAP_SIGNAL_DIR are missing, try to resolve them from the
-# PID mapping file.  The Leap server writes /tmp/leap_cli_pid_<PID>.json
-# after spawning the CLI process.  Walk up the parent PID chain to find it.
+# If LEAP_TAG / LEAP_SIGNAL_DIR / LEAP_CLI_PROVIDER are missing (some CLIs
+# like Codex strip env vars from hook subprocesses), recover them by
+# walking up the PPID chain looking for ``<project>/.storage/pid_maps/<ppid>.json``
+# written by the Leap server.  The ``<project>`` dir is found via either:
+#   1. ``$LEAP_PROJECT_DIR`` env (set by user's shell rc) — fast path, OR
+#   2. regex-reading the same ``export LEAP_PROJECT_DIR="…"`` line that
+#      ``make install`` wrote into ``~/.zshrc`` / ``~/.bashrc``.
+# That's the single anchor from which every other piece of context is
+# discoverable — no ``/tmp``, no separate config file.
 if [ -z "$LEAP_TAG" ] || [ -z "$LEAP_SIGNAL_DIR" ] || [ -z "$LEAP_CLI_PROVIDER" ]; then
     RESOLVED=$("$PYTHON" -c "
-import json, os, subprocess
+import json, os, re, subprocess
 
 def get_ppid(pid):
     try:
@@ -55,12 +68,35 @@ def get_ppid(pid):
         pass
     return None
 
+def find_project_dir():
+    # Prefer the env var if it survived.
+    env = os.environ.get('LEAP_PROJECT_DIR', '')
+    if env and os.path.isdir(env):
+        return env
+    # Otherwise regex the shell rc files that \`make install\` edits.
+    home = os.path.expanduser('~')
+    pat = re.compile(r'^\s*export\s+LEAP_PROJECT_DIR=\"([^\"]+)\"', re.M)
+    for rc in ('.zshrc', '.bashrc', '.bash_profile'):
+        try:
+            with open(os.path.join(home, rc)) as f:
+                m = pat.search(f.read())
+            if m and os.path.isdir(m.group(1)):
+                return m.group(1)
+        except OSError:
+            continue
+    return None
+
+proj = find_project_dir()
+if proj is None:
+    exit(0)
+pid_map_dir = os.path.join(proj, '.storage', 'pid_maps')
+
 pid = os.getpid()
 for _ in range(10):
     ppid = get_ppid(pid)
     if ppid is None or ppid <= 1:
         break
-    path = f'/tmp/leap_cli_pid_{ppid}.json'
+    path = os.path.join(pid_map_dir, f'{ppid}.json')
     if os.path.isfile(path):
         try:
             d = json.loads(open(path).read())

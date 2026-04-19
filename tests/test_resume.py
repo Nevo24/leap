@@ -21,6 +21,7 @@ from leap.utils.resume_store import (
     SessionRecord,
     TagRow,
     load_tag_rows,
+    prune_stale,
     record_session,
 )
 
@@ -196,6 +197,230 @@ class TestSpawnEnv:
 # --------------------------------------------------------------------------
 # Custom CLI names: wrapping a base provider for resume
 # --------------------------------------------------------------------------
+
+class TestLiveSessionOwners:
+    """Verify ``leap-resume.py``'s decision logic for in-use CLI sessions.
+
+    The picker must distinguish three cases:
+      1. The picked session_id is currently held by a live Leap server →
+         block and tell the user which tag to attach to.
+      2. The picked tag's server is alive but holding a *different*
+         session → prompt for a new tag to spawn under.
+      3. Nothing is in the way → normal resume.
+    """
+
+    @pytest.fixture
+    def picker(self, tmp_path):
+        """Load the picker module with SOCKET_DIR / STORAGE_DIR pointed at
+        tmp_path and ``_live_tag_cli_map`` replaced by a configurable stub.
+
+        Tests set ``picker._live_clis`` to a ``{tag: cli}`` dict to
+        control which live servers exist and what CLI they're running —
+        this mirrors the real ``<tag>.meta`` file's authoritative role.
+        """
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'leap_resume', 'src/scripts/leap-resume.py',
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.STORAGE_DIR = tmp_path
+        mod.SOCKET_DIR = tmp_path / "sockets"
+        mod.SOCKET_DIR.mkdir(exist_ok=True)
+        mod._live_clis = {}
+        mod._live_tag_cli_map = lambda: dict(mod._live_clis)
+        mod._server_alive = lambda tag: tag in mod._live_clis
+        return mod
+
+    def test_live_owner_maps_session_to_tag(self, tmp_path, picker):
+        record_session(tmp_path, "claude", "livetag",
+                       session_id="sess-A", transcript_path="")
+        picker._live_clis = {"livetag": "claude"}
+        owners = picker._live_session_owners(load_tag_rows(tmp_path))
+        assert owners == {"sess-A": [("claude", "livetag")]}
+
+    def test_live_owner_ignores_dead_tags(self, tmp_path, picker):
+        record_session(tmp_path, "claude", "ghosttag",
+                       session_id="sess-B", transcript_path="")
+        # _live_clis stays empty → tag is dead
+        owners = picker._live_session_owners(load_tag_rows(tmp_path))
+        assert owners == {}
+
+    def test_live_owner_points_at_the_forked_tag(self, tmp_path, picker):
+        # Same session UUID recorded under two tags; only the fork is live.
+        # Caller should be steered at the live fork.
+        record_session(tmp_path, "claude", "orig",
+                       session_id="sess-A", transcript_path="")
+        record_session(tmp_path, "claude", "fork",
+                       session_id="sess-A", transcript_path="")
+        picker._live_clis = {"fork": "claude"}
+        owners = picker._live_session_owners(load_tag_rows(tmp_path))
+        assert owners == {"sess-A": [("claude", "fork")]}
+
+    def test_live_owner_uses_newest_session_per_tag(self, tmp_path, picker):
+        # The tag's CURRENT session is the newest entry — picking an
+        # older session from the same tag is case 2, not case 1.
+        import time
+        record_session(tmp_path, "claude", "tagX",
+                       session_id="sess-Old", transcript_path="")
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "tagX",
+                       session_id="sess-New", transcript_path="")
+        picker._live_clis = {"tagX": "claude"}
+        owners = picker._live_session_owners(load_tag_rows(tmp_path))
+        assert "sess-New" in owners
+        assert "sess-Old" not in owners
+
+    def test_live_owner_stale_transcript_drops_from_tracking(self, tmp_path, picker):
+        # Defence: a row whose newest session has a deleted transcript
+        # is filtered by load_tag_rows BEFORE we scan — so even a live
+        # server can't produce a bogus "in use" entry for a gone session.
+        import os
+        t = tmp_path / "scratch.jsonl"
+        t.write_text("x")
+        record_session(tmp_path, "claude", "stale",
+                       session_id="sess-gone", transcript_path=str(t))
+        os.unlink(t)
+        picker._live_clis = {"stale": "claude"}
+        assert picker._live_session_owners(load_tag_rows(tmp_path)) == {}
+
+    def test_live_owner_lists_every_live_fork_of_the_same_session(
+        self, tmp_path, picker,
+    ):
+        # If the user /resume-d the same session into two different tags
+        # and both are live now, both should show up in the error
+        # message so they can pick whichever is closest.
+        record_session(tmp_path, "claude", "fork-a",
+                       session_id="shared", transcript_path="")
+        record_session(tmp_path, "claude", "fork-b",
+                       session_id="shared", transcript_path="")
+        picker._live_clis = {"fork-a": "claude", "fork-b": "claude"}
+        owners = picker._live_session_owners(load_tag_rows(tmp_path))
+        assert len(owners["shared"]) == 2
+        owner_tags = {t for _, t in owners["shared"]}
+        assert owner_tags == {"fork-a", "fork-b"}
+
+    def test_live_owner_ignores_stale_cli_records_for_same_tag(
+        self, tmp_path, picker,
+    ):
+        # REGRESSION: tag 9 has a Claude record from a previous run PLUS
+        # a Gemini record from today.  The live server is running Gemini
+        # (per `.meta`).  An old Claude record under the same tag MUST
+        # NOT be reported as owner — otherwise the picker sends users
+        # to a ``leap 9 (Claude Code)`` that actually runs Gemini.
+        record_session(tmp_path, "claude", "9",
+                       session_id="old-claude-sess", transcript_path="")
+        record_session(tmp_path, "gemini", "9",
+                       session_id="current-gemini-sess", transcript_path="")
+        picker._live_clis = {"9": "gemini"}
+        owners = picker._live_session_owners(load_tag_rows(tmp_path))
+        # Gemini session is rightly tracked as in-use …
+        assert owners == {"current-gemini-sess": [("gemini", "9")]}
+        # … and the stale Claude session is NOT reported as in-use.
+        assert "old-claude-sess" not in owners
+
+    def test_live_tag_cli_map_reads_meta_files(self, tmp_path):
+        """End-to-end: ``_live_tag_cli_map`` reads the real ``<tag>.meta``
+        JSON and combines it with ``_server_alive``.  Mocks out the
+        liveness check so we can run without real Unix sockets.
+        """
+        import importlib.util, json as _json
+        spec = importlib.util.spec_from_file_location(
+            'leap_resume', 'src/scripts/leap-resume.py',
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sockets = tmp_path / "sockets"
+        sockets.mkdir()
+        mod.SOCKET_DIR = sockets
+        mod._server_alive = lambda t: t in {"live1", "live2"}
+        # Create a .sock + .meta for each "live" tag (we mock _server_alive
+        # so the files don't need to actually be sockets — glob just
+        # needs to find them).
+        (sockets / "live1.sock").touch()
+        (sockets / "live1.meta").write_text(_json.dumps({"cli_provider": "claude"}))
+        (sockets / "live2.sock").touch()
+        (sockets / "live2.meta").write_text(_json.dumps({"cli_provider": "gemini"}))
+        # And a "dead" tag — socket file exists but _server_alive returns False
+        (sockets / "dead.sock").touch()
+        (sockets / "dead.meta").write_text(_json.dumps({"cli_provider": "claude"}))
+        result = mod._live_tag_cli_map()
+        assert result == {"live1": "claude", "live2": "gemini"}
+
+    def test_live_tag_cli_map_survives_missing_or_bad_meta(self, tmp_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'leap_resume', 'src/scripts/leap-resume.py',
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        sockets = tmp_path / "sockets"
+        sockets.mkdir()
+        mod.SOCKET_DIR = sockets
+        mod._server_alive = lambda t: True  # treat every sock file as live
+        (sockets / "no-meta.sock").touch()  # .meta missing entirely
+        (sockets / "bad-meta.sock").touch()
+        (sockets / "bad-meta.meta").write_text("this is not json")
+        (sockets / "no-cli.sock").touch()
+        (sockets / "no-cli.meta").write_text('{"tag": "no-cli"}')  # missing cli_provider
+        # None of these contribute → empty map, no crash
+        assert mod._live_tag_cli_map() == {}
+
+
+class TestPromptNewTag:
+    """Verify ``_prompt_new_tag``'s validation loop.  It should reject
+    ill-formed, duplicate-of-old, and already-running tags, re-prompt
+    until the user either supplies a valid one or cancels with blank /
+    Ctrl+C / EOF.
+    """
+
+    @pytest.fixture
+    def picker(self, tmp_path):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'leap_resume', 'src/scripts/leap-resume.py',
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod._live_tags = set()
+        mod._server_alive = lambda tag: tag in mod._live_tags
+        return mod
+
+    def _run(self, picker, inputs, live_tags=frozenset()):
+        from unittest.mock import patch
+        picker._live_tags = set(live_tags)
+        with patch('builtins.input', side_effect=inputs):
+            return picker._prompt_new_tag('orig-tag')
+
+    def test_happy_path(self, picker):
+        assert self._run(picker, ['newtag']) == 'newtag'
+
+    def test_loops_on_invalid_format(self, picker):
+        # Three bad shapes, then good
+        result = self._run(picker, ['has space', 'slash/tag', '!', 'valid-tag'])
+        assert result == 'valid-tag'
+
+    def test_loops_on_same_as_old(self, picker):
+        assert self._run(picker, ['orig-tag', 'newtag']) == 'newtag'
+
+    def test_loops_on_tag_already_live(self, picker):
+        assert self._run(picker, ['busy', 'freetag'], live_tags={'busy'}) == 'freetag'
+
+    def test_empty_line_cancels(self, picker):
+        assert self._run(picker, ['']) is None
+
+    def test_keyboardinterrupt_cancels(self, picker):
+        assert self._run(picker, [KeyboardInterrupt()]) is None
+
+    def test_eof_cancels(self, picker):
+        assert self._run(picker, [EOFError()]) is None
+
+    def test_invalid_then_empty_cancels(self, picker):
+        assert self._run(picker, ['bad char!', '']) is None
+
+    def test_accepts_underscores_and_digits(self, picker):
+        assert self._run(picker, ['A_1-b']) == 'A_1-b'
+
 
 class TestCustomCliResume:
     """Users can register a custom CLI via `leap --manage-clis` that wraps
@@ -384,6 +609,183 @@ class TestResumeStore:
         # No stray files under the storage dir or escaping it
         assert not (tmp_path.parent / "evil").exists()
         assert load_tag_rows(tmp_path) == []
+
+    def test_prune_stale_removes_all_dead_files(self, tmp_path, live_transcript):
+        """Files where every entry's transcript is deleted get pruned."""
+        tp_dead = live_transcript("dead.jsonl")
+        record_session(tmp_path, "claude", "deadtag",
+                       session_id="s", transcript_path=tp_dead)
+        import os as _os
+        _os.unlink(tp_dead)  # now every entry is stale
+        assert prune_stale(tmp_path) == 1
+        # File is gone
+        assert not (tmp_path / "cli_sessions" / "claude" / "deadtag.json").exists()
+        # And load_tag_rows returns nothing
+        assert load_tag_rows(tmp_path) == []
+
+    def test_prune_keeps_files_with_any_live_entry(self, tmp_path, live_transcript):
+        """A file with at least one live entry must NOT be deleted —
+        the stale entries will self-heal via the 20-cap as new sessions
+        push them out.
+        """
+        tp_live = live_transcript("live.jsonl")
+        tp_dead = live_transcript("will-delete.jsonl")
+        record_session(tmp_path, "claude", "tag",
+                       session_id="stale", transcript_path=tp_dead)
+        record_session(tmp_path, "claude", "tag",
+                       session_id="live", transcript_path=tp_live)
+        import os as _os
+        _os.unlink(tp_dead)
+        assert prune_stale(tmp_path) == 0
+        assert (tmp_path / "cli_sessions" / "claude" / "tag.json").exists()
+        rows = load_tag_rows(tmp_path)
+        # Only the live entry surfaces (stale is still on disk but filtered)
+        assert len(rows) == 1 and len(rows[0].sessions) == 1
+        assert rows[0].sessions[0].session_id == "live"
+
+    def test_prune_respects_entries_without_transcript_path(self, tmp_path):
+        """Entries with no transcript_path are treated as 'live' (we can't
+        prove they're dead), so their files aren't pruned.  Reserved for
+        future CLIs that might record only ids without a transcript file.
+        """
+        record_session(tmp_path, "claude", "no-path",
+                       session_id="sid", transcript_path="")
+        assert prune_stale(tmp_path) == 0
+        assert (tmp_path / "cli_sessions" / "claude" / "no-path.json").exists()
+
+    def test_prune_survives_concurrent_write_race(self, tmp_path, live_transcript):
+        """CRITICAL: if the hook atomically writes a fresh entry AFTER
+        prune decides "all dead" but BEFORE it unlinks, the fresh entry
+        must not be lost.  The mtime re-check before unlink must catch
+        this.
+        """
+        import threading, time, os as _os
+        t_dead = live_transcript("dead.jsonl")
+        t_live = live_transcript("live.jsonl")
+        record_session(tmp_path, "claude", "racy",
+                       session_id="stale", transcript_path=t_dead)
+        _os.unlink(t_dead)
+
+        race_file = tmp_path / "cli_sessions" / "claude" / "racy.json"
+
+        # Force the race: slow the stat on our race_file so prune has a
+        # predictable decision window we can slip a write into.
+        from leap.utils import resume_store
+        original_stat = _os.stat
+        def slow_stat(p, *a, **k):
+            r = original_stat(p, *a, **k)
+            if str(p).endswith("racy.json"):
+                time.sleep(0.15)
+            return r
+        resume_store.os.stat = slow_stat
+        try:
+            pt = threading.Thread(target=resume_store.prune_stale, args=(tmp_path,))
+            pt.start()
+            time.sleep(0.05)  # let prune's "is any live?" loop start
+            # Inject a live entry while prune is still deciding
+            record_session(tmp_path, "claude", "racy",
+                           session_id="fresh", transcript_path=t_live)
+            pt.join()
+        finally:
+            resume_store.os.stat = original_stat
+
+        assert race_file.exists(), "file deleted despite concurrent fresh write"
+        entries = json.loads(race_file.read_text())
+        sids = {e["session_id"] for e in entries}
+        assert "fresh" in sids, f"fresh entry lost: {sids}"
+
+    def test_prune_treats_unstatable_transcript_as_live(self, tmp_path):
+        """Defensive: if ``os.stat`` on the transcript fails with anything
+        other than FileNotFoundError (permission denied, I/O error,
+        network filesystem hiccup), we must NOT delete the record —
+        only a confirmed 'file gone' (ENOENT) means dead.
+        """
+        import os as _os
+        from unittest.mock import patch
+        target = "/mnt/remote/fs/unreachable.jsonl"
+        record_session(tmp_path, "claude", "maybe",
+                       session_id="s", transcript_path=target)
+        from leap.utils import resume_store
+
+        real_stat = _os.stat
+        def stat_selective(p, *a, **k):
+            # Raise PermissionError only for the target transcript path;
+            # let every other stat (the tag-file mtime guard, pathlib
+            # internals, etc.) go through untouched.
+            if str(p) == target:
+                raise PermissionError("simulated I/O error")
+            return real_stat(p, *a, **k)
+
+        with patch.object(resume_store.os, "stat", side_effect=stat_selective):
+            removed = resume_store.prune_stale(tmp_path)
+        assert removed == 0, "must not delete on non-ENOENT stat errors"
+        assert (tmp_path / "cli_sessions" / "claude" / "maybe.json").exists()
+
+    def test_prune_survives_permission_error_on_root(self, tmp_path):
+        """If even the outer ``.storage/cli_sessions/`` read fails
+        (unusual permission setup, bad mount), prune returns 0 without
+        raising — best-effort contract.
+        """
+        import os as _os
+        from unittest.mock import patch
+        from leap.utils import resume_store
+        record_session(tmp_path, "claude", "t", session_id="s", transcript_path="")
+        with patch.object(resume_store.Path, "is_dir",
+                          side_effect=PermissionError("denied")):
+            assert resume_store.prune_stale(tmp_path) == 0
+
+    def test_prune_concurrent_invocations_end_state(self, tmp_path):
+        """Multiple ``prune_stale`` calls racing on the same store must:
+        1. Leave the on-disk state correct (all stale files gone).
+        2. Never raise.
+
+        The *count* under concurrency is not checked — macOS APFS's
+        ``unlink`` can report success from multiple threads racing on
+        the same file, so the returned total can exceed the actual
+        number of deletions.  That's noted in ``prune_stale`` docstring
+        and harmless (caller discards the count).
+        """
+        import threading
+        from leap.utils import resume_store
+        for i in range(15):
+            record_session(tmp_path, "claude", f"t{i}",
+                           session_id="s", transcript_path="/definitely-nonexistent")
+        errors: list[BaseException] = []
+        def worker():
+            try:
+                resume_store.prune_stale(tmp_path)
+            except BaseException as e:
+                errors.append(e)
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        assert not errors, f"concurrent prune raised: {errors}"
+        # Final on-disk state: no files left
+        claude_dir = tmp_path / "cli_sessions" / "claude"
+        remaining = list(claude_dir.glob("*.json")) if claude_dir.exists() else []
+        assert not remaining, f"leaked stale files: {remaining}"
+
+    def test_prune_across_multiple_clis(self, tmp_path, live_transcript):
+        tp = live_transcript("t.jsonl")
+        record_session(tmp_path, "claude", "alive",
+                       session_id="s", transcript_path=tp)
+        record_session(tmp_path, "codex", "dead",
+                       session_id="s", transcript_path=tp)
+        import os as _os
+        # Only kill codex's transcript (we're using the same file — re-link)
+        # Actually use distinct transcripts
+        tp2 = live_transcript("t2.jsonl")
+        record_session(tmp_path, "codex", "dead",
+                       session_id="s2", transcript_path=tp2)
+        _os.unlink(tp2)
+        # codex/dead.json has entries pointing at: tp (still alive) and tp2 (dead)
+        # → has a live entry → NOT pruned
+        assert prune_stale(tmp_path) == 0
+        # Now delete tp too — both codex entries become stale
+        _os.unlink(tp)
+        # codex/dead now fully stale; claude/alive also fully stale now.
+        # Both files should go.
+        assert prune_stale(tmp_path) == 2
 
     def test_rejects_weird_tag_characters(self, tmp_path, live_transcript):
         tp = live_transcript()

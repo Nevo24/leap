@@ -22,6 +22,7 @@ Leap project root recorded at install time, not from `cwd`.
 
 import json
 import os
+import re
 import select
 import shutil
 import socket
@@ -133,6 +134,104 @@ def _server_alive(tag: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def _live_tag_cli_map() -> dict:
+    """For every live Leap socket, read ``<tag>.meta`` and return
+    ``{tag: cli_provider}`` — the authoritative source of which CLI the
+    running server is actually using *right now*.
+
+    A single Leap tag can have recorded sessions across multiple CLIs
+    over its lifetime (``cli_sessions/claude/9.json`` from yesterday's
+    Claude run plus ``cli_sessions/gemini/9.json`` from today's Gemini
+    run).  Only the CLI the *live* server is running should count as an
+    owner of the tag's current session.
+    """
+    live: dict[str, str] = {}
+    if not SOCKET_DIR.is_dir():
+        return live
+    for sock in SOCKET_DIR.glob('*.sock'):
+        tag = sock.stem
+        if not _server_alive(tag):
+            continue
+        try:
+            data = json.loads((SOCKET_DIR / f'{tag}.meta').read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        cli = data.get('cli_provider') if isinstance(data, dict) else None
+        if cli:
+            live[tag] = cli
+    return live
+
+
+def _live_session_owners(rows: list) -> dict:
+    """Return ``{session_id: [(cli, tag), ...]}`` for sessions currently
+    running in a Leap server.
+
+    A row counts as owner only when the live Leap server for its tag is
+    actually running row.cli (per the tag's ``.meta`` file).  This
+    prevents stale records from a past CLI run under the same tag from
+    being misattributed as owners — e.g. if tag ``9`` previously held
+    a Claude Code session but today's live server under that tag is
+    running Gemini CLI, the old Claude record must not claim ownership.
+    """
+    live_clis = _live_tag_cli_map()
+    owners: dict[str, list[tuple[str, str]]] = {}
+    for row in rows:
+        if live_clis.get(row.tag) != row.cli:
+            continue
+        newest = row.sessions[0]
+        owners.setdefault(newest.session_id, []).append((row.cli, row.tag))
+    return owners
+
+
+_TAG_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+
+
+def _prompt_new_tag(old_tag: str) -> Optional[str]:
+    """Ask for a new Leap tag to resume the picked session under.
+
+    Called when the tag attached to the picked session still has a
+    running Leap server that isn't using this specific session (case 2
+    in the resume decision).  Loops on validation errors so a typo
+    doesn't dump the user back to the shell — only an empty entry /
+    Ctrl+C returns ``None`` (i.e. cancel).
+    """
+    sys.stderr.write(
+        f"  {YELLOW}A different CLI session is currently running under "
+        f"Leap tag {BOLD}'{old_tag}'{RESET}{YELLOW}.{RESET}\n"
+        f"  {DIM}Enter a new Leap tag to resume your selected CLI session "
+        f"(blank/Ctrl+C to cancel):{RESET}\n"
+    )
+    while True:
+        sys.stderr.write(f"  {BOLD}new tag:{RESET} ")
+        sys.stderr.flush()
+        try:
+            line = input('').strip()
+        except (KeyboardInterrupt, EOFError):
+            sys.stderr.write('\n')
+            return None
+        if not line:
+            return None
+        if not _TAG_RE.match(line):
+            sys.stderr.write(
+                f"  {RED}Invalid — letters, numbers, '-' and '_' only, "
+                f"starting with a letter or digit.  Try again.{RESET}\n"
+            )
+            continue
+        if line == old_tag:
+            sys.stderr.write(
+                f"  {RED}That's the same tag the running server is "
+                f"occupying — pick a different one.{RESET}\n"
+            )
+            continue
+        if _server_alive(line):
+            sys.stderr.write(
+                f"  {RED}Tag '{line}' also has a running Leap server.  "
+                f"Try another.{RESET}\n"
+            )
+            continue
+        return line
 
 
 def _get_key() -> str:
@@ -324,9 +423,10 @@ def main() -> int:
     rows = _load_tag_entries()
     if not rows:
         sys.stderr.write(
-            f"  {YELLOW}No resumable Claude sessions found.{RESET}\n"
-            f"  {DIM}Run `leap <tag>` with the Claude CLI at least once; "
-            f"new sessions are recorded automatically.{RESET}\n"
+            f"  {YELLOW}No resumable CLI sessions found.{RESET}\n"
+            f"  {DIM}Run `leap <tag>` with any CLI that implements the Leap "
+            f"Resume protocol at least once; new sessions are recorded "
+            f"automatically.{RESET}\n"
         )
         return 1
 
@@ -367,13 +467,34 @@ def main() -> int:
     session_id = chosen_session.session_id
     target_cwd = chosen_session.cwd
 
-    if _server_alive(tag):
+    # Is the *CLI session UUID* already being used by a live Leap server?
+    # That's the real conflict — not whether the Leap tag has a running
+    # server (the user may have started it fresh without resuming).
+    owners = _live_session_owners(rows).get(session_id, [])
+    # Filter out the obvious self-case where the picked tag's server *is*
+    # running exactly this session — we still want to tell the user where
+    # to go.
+    if owners:
+        tags_str = ", ".join(
+            f"{BOLD}{u_tag}{RESET} {DIM}({get_display_name(u_cli)}){RESET}"
+            for u_cli, u_tag in owners
+        )
         sys.stderr.write(
-            f"  {RED}A Leap server is already running for '{tag}'.{RESET}\n"
-            f"  {DIM}Stop it first (exit the server terminal) and re-run "
-            f"`leap --resume` to attach a fresh session.{RESET}\n"
+            f"  {RED}This CLI session is already running under Leap tag "
+            f"{tags_str}{RED}.{RESET}\n"
+            f"  {DIM}You can easily locate it via the Leap Monitor app.{RESET}\n"
         )
         return 1
+
+    # Session itself is free — but if the picked tag's server is running
+    # something else, we need a different tag to spawn the resumed session
+    # under.  Ask the user.
+    if _server_alive(tag):
+        new_tag = _prompt_new_tag(tag)
+        if not new_tag:
+            sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
+            return 130
+        tag = new_tag
 
     if target_cwd and not os.path.isdir(target_cwd):
         sys.stderr.write(

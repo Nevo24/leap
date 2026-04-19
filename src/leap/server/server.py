@@ -3073,13 +3073,22 @@ class LeapServer:
 
         Hook scripts use LEAP_TAG/LEAP_SIGNAL_DIR env vars, but some CLIs
         (e.g. Codex) may not pass the parent environment to hook
-        subprocesses.  This mapping file in /tmp lets the hook discover
-        the session by walking up its parent PID chain.
+        subprocesses.  This mapping file under ``.storage/pid_maps/``
+        lets the hook discover the session by walking up its parent PID
+        chain.
         """
         if not self.pty.process:
             return
         cli_pid = self.pty.process.pid
-        self._cli_pid_map_file = Path(f"/tmp/leap_cli_pid_{cli_pid}.json")
+        # Keep all state under `.storage/` so the project is self-contained
+        # and normal uninstall cleans up after itself.  The hook walks up
+        # its PPID chain looking for ``<project>/.storage/pid_maps/<ppid>.json``
+        # — it resolves ``<project>`` from ``$LEAP_PROJECT_DIR`` if set or
+        # regex-reads ``~/.zshrc`` / ``~/.bashrc`` (the install-time
+        # anchor).
+        pid_map_dir = STORAGE_DIR / 'pid_maps'
+        pid_map_dir.mkdir(parents=True, exist_ok=True)
+        self._cli_pid_map_file = pid_map_dir / f'{cli_pid}.json'
         try:
             atomic_json_write(self._cli_pid_map_file, {
                 'tag': self.tag,

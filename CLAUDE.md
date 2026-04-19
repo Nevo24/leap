@@ -53,7 +53,8 @@ src/
     │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors, is_valid_tag()
     │   ├── terminal.py          # Terminal title, banner
     │   ├── ide_detection.py     # IDE detection, git branch
-    │   └── socket_utils.py     # Shared Unix socket send/recv helper
+    │   ├── socket_utils.py      # Shared Unix socket send/recv helper
+    │   └── resume_store.py      # Shared read/write/prune of `cli_sessions/<cli>/<tag>.json` (used by hook + picker)
     │
     ├── server/                  # PTY Server
     │   ├── server.py            # LeapServer - main orchestrator
@@ -211,6 +212,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |
 | CLI session tracking | `.storage/cli_sessions/<cli>/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook-process.py`; drives `leap --resume`. One subdir per provider — `claude/`, `codex/`, `cursor-agent/`, `gemini/`, plus any custom CLI that implements the Leap Resume interface) |
+| CLI PID map | `.storage/pid_maps/<cli_pid>.json` (written by server when spawning the CLI: `{tag, signal_dir, python, cli_provider}`. Lets `leap-hook.sh` recover context via a PPID walk when a CLI strips env vars from hook subprocesses — the project dir itself is recovered from `$LEAP_PROJECT_DIR` or the `export LEAP_PROJECT_DIR=` line in `~/.zshrc`/`~/.bashrc`. Swept by `leap-main.sh`'s `cleanup_dead_sockets` using `kill -0`) |
 
 ## Server Queue Shortcut
 

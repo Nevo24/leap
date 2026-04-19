@@ -3,9 +3,12 @@
 
 The CLI invokes ``leap-hook.sh <state>`` on lifecycle events; that
 shell script resolves ``LEAP_TAG`` / ``LEAP_SIGNAL_DIR`` / ``LEAP_PYTHON``
-(falling back to walking the PPID chain for a ``/tmp/leap_cli_pid_*``
-map when env vars were stripped by the CLI) and then execs this module
-with ``<state>`` + the target signal file path.
+(falling back to walking the PPID chain for a
+``<project>/.storage/pid_maps/<ppid>.json`` map when env vars were
+stripped by the CLI — the project dir itself is recovered from
+``$LEAP_PROJECT_DIR`` or a regex read of ``~/.zshrc`` / ``~/.bashrc``)
+and then execs this module with ``<state>`` + the target signal file
+path.
 
 Responsibilities:
 

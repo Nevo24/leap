@@ -49,9 +49,10 @@ if [ "$1" = "--manage-clis" ]; then
     exit $?
 fi
 
-# Resume picker: show tags with recorded Claude sessions, then relaunch
-# leap-main.sh with the chosen tag + LEAP_CLAUDE_RESUME_ID env var.
-# The picker script handles chdir'ing into the session's original cwd.
+# Resume picker: show tags that have at least one recorded CLI session,
+# then relaunch leap-main.sh with the chosen tag + LEAP_RESUME_SESSION_ID
+# and LEAP_RESUME_CLI env vars set.  The picker script handles chdir'ing
+# into the session's original cwd and enforces liveness checks.
 if [ "$1" = "--resume" ]; then
     PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
         exec "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/leap-resume.py"
@@ -264,6 +265,35 @@ cleanup_dead_sockets() {
         if ! ps aux | grep "leap-slack.py" | grep -v grep > /dev/null 2>&1; then
             rmdir "$slack_lock" 2>/dev/null
         fi
+    fi
+
+    # Orphaned pid_maps: a file survives a SIGKILL/crash/reboot because
+    # the server never got to run its cleanup.  Each file is named
+    # `<pid>.json` so a dead-PID check via `kill -0` is authoritative.
+    # Without this sweep, stale files could eventually collide with a
+    # reused PID and mislead the hook's PPID-walk fallback.
+    local pid_map_dir="$STORAGE_DIR/pid_maps"
+    if [ -d "$pid_map_dir" ]; then
+        for f in "$pid_map_dir"/*.json; do
+            [ -e "$f" ] || continue
+            local map_pid=$(basename "$f" .json)
+            if ! kill -0 "$map_pid" 2>/dev/null; then
+                rm -f "$f" 2>/dev/null
+            fi
+        done
+    fi
+
+    # Prune `cli_sessions/<cli>/<tag>.json` files whose every entry
+    # points at a now-deleted transcript (the CLI itself cleaned up its
+    # own session history, or the file was moved).  The picker already
+    # filters these at read time; this sweep reclaims the disk entry
+    # so abandoned tags stop accumulating forever.
+    if [ -d "$STORAGE_DIR/cli_sessions" ]; then
+        # Pass STORAGE_DIR as sys.argv[1] rather than string-interpolating it
+        # into the -c body — otherwise a path with a single quote in it would
+        # break Python's own quoting.
+        PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
+            "$PYTHON_CMD" -c "import sys; from pathlib import Path; from leap.utils.resume_store import prune_stale; prune_stale(Path(sys.argv[1]))" "$STORAGE_DIR" 2>/dev/null
     fi
 }
 
