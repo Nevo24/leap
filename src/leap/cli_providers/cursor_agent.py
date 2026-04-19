@@ -139,6 +139,18 @@ class CursorAgentProvider(CLIProvider):
     # -- Hook configuration ----------------------------------------------
 
     # -- Resume support --------------------------------------------------
+    #
+    # **Heads-up: Cursor gates `~/.cursor/hooks.json` behind a server-side
+    # feature flag (`claude_code_hooks_enabled`, visible in the
+    # cursor-agent binary's protobuf schema).  On plans where the flag
+    # isn't enabled, Cursor silently never fires any hook — not even for
+    # a perfectly-valid schema.  That means the resume recording below
+    # depends on the user's Cursor plan; on free plans our `stop` hook
+    # won't fire and the picker won't show a `[Cursor Agent]` row.**
+    #
+    # The provider implements the full protocol anyway so that accounts
+    # with the flag enabled get the feature end-to-end, and so any future
+    # change by Cursor (e.g. universal hooks) will just start working.
 
     @property
     def supports_resume(self) -> bool:

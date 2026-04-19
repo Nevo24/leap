@@ -237,6 +237,25 @@ transcripts under a cwd-derived slug), record `cwd` in the hook payload
 — the picker `chdir`s there before launch so resume can find the
 transcript.
 
+**Gotchas observed in the wild:**
+
+- Some CLIs (Codex 0.121+) require a non-obvious schema — e.g. events
+  nested under a top-level `"hooks"` key in `hooks.json`.  If
+  implementing `configure_hooks`, verify the resulting JSON actually
+  triggers the hook by checking for an entry in
+  `.storage/logs/hook-debug.log` (create the `logs/` dir to enable).
+- Some CLIs (Cursor Agent) gate hooks behind a server-side feature
+  flag — on plans where the flag isn't enabled, the hook silently
+  never fires regardless of schema validity.  That's outside our
+  control; implement the protocol anyway so users with the flag get
+  the feature.
+- Some CLIs (Codex) strip env vars when spawning hook subprocesses.
+  `leap-hook.sh` already walks the PPID chain looking for a
+  `/tmp/leap_cli_pid_<pid>.json` mapping — that mapping is written
+  with `cli_provider` so the fallback still identifies the CLI.  You
+  get this for free by using `get_spawn_env` (base class) without
+  overriding it.
+
 ### 2. Register the Provider
 
 Edit `src/leap/cli_providers/registry.py`:
