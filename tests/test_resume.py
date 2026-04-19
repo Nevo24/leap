@@ -231,6 +231,32 @@ class TestResumeStore:
         record_session(tmp_path, "claude", "tag", session_id="")
         assert load_tag_rows(tmp_path) == []
 
+    def test_rejects_path_traversal_in_tag(self, tmp_path, live_transcript):
+        tp = live_transcript()
+        record_session(tmp_path, "claude", "../evil",
+                       session_id="x", transcript_path=tp)
+        # Nothing should have been written anywhere under tmp_path's parent.
+        import os
+        for root, _, files in os.walk(tmp_path):
+            for f in files:
+                assert "evil" not in f, f"path traversal leaked: {os.path.join(root, f)}"
+        assert load_tag_rows(tmp_path) == []
+
+    def test_rejects_path_traversal_in_cli(self, tmp_path, live_transcript):
+        tp = live_transcript()
+        record_session(tmp_path, "../evil", "sometag",
+                       session_id="x", transcript_path=tp)
+        # No stray files under the storage dir or escaping it
+        assert not (tmp_path.parent / "evil").exists()
+        assert load_tag_rows(tmp_path) == []
+
+    def test_rejects_weird_tag_characters(self, tmp_path, live_transcript):
+        tp = live_transcript()
+        for bad in ("foo/bar", "foo bar", "foo\x00", ".leadingdot"):
+            record_session(tmp_path, "claude", bad,
+                           session_id="x", transcript_path=tp)
+        assert load_tag_rows(tmp_path) == []
+
 
 # --------------------------------------------------------------------------
 # extract_last_assistant_message protocol

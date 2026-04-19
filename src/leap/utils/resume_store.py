@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,17 @@ from pathlib import Path
 
 # Cap per (cli, tag) file; oldest-first trimming keeps this bounded.
 MAX_ENTRIES_PER_TAG: int = 20
+
+# Matches the ``<tag>`` and ``<cli>`` identifiers we're willing to
+# persist on disk — plain alphanumerics plus ``-``/``_``.  Guards
+# against path-traversal in the ``.storage/cli_sessions/<cli>/<tag>.json``
+# layout when the PPID-walk fallback recovers a crafted PID mapping or
+# an attacker otherwise controls the env vars the hook processor reads.
+_SAFE_ID: re.Pattern[str] = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+
+
+def _is_safe_id(value: str) -> bool:
+    return bool(_SAFE_ID.match(value))
 
 
 @dataclass(frozen=True)
@@ -96,6 +108,11 @@ def record_session(
     failures — this is best-effort bookkeeping, never the critical path.
     """
     if not (cli and tag and session_id):
+        return
+    # Defense in depth: tag/cli land in a filesystem path; reject anything
+    # that could escape ``cli_sessions/<cli>/`` even if the caller's
+    # upstream validation was bypassed.
+    if not (_is_safe_id(cli) and _is_safe_id(tag)):
         return
     tag_file = _tag_file(storage_dir, cli, tag)
     try:
@@ -161,12 +178,21 @@ def load_tag_rows(storage_dir: Path) -> list[TagRow]:
         if not cli_dir.is_dir():
             continue
         cli = cli_dir.name
+        # Matches write-side: skip anything that doesn't look like a
+        # legitimate provider name so stray directories (e.g. created
+        # by manual tampering or a prior path-traversal attempt) don't
+        # surface in the picker.
+        if not _is_safe_id(cli):
+            continue
         for path in cli_dir.glob("*.json"):
+            tag = path.stem
+            if not _is_safe_id(tag):
+                continue
             sessions = _resumable_sessions(_load_raw_entries(path))
             if not sessions:
                 continue
             rows.append(TagRow(
-                tag=path.stem,
+                tag=tag,
                 cli=cli,
                 sessions=sessions,
                 last_seen=sessions[0].last_seen,
