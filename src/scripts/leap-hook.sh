@@ -92,10 +92,12 @@ SIGNAL_FILE="$LEAP_SIGNAL_DIR/$LEAP_TAG.signal"
 # All processing in Python — reads stdin with timeout to handle CLIs
 # that may not close stdin promptly (e.g. Codex).
 "$PYTHON" -c "
-import json, sys, os, threading
+import json, sys, os, threading, time
 
 state = sys.argv[1]
 signal_file = sys.argv[2]
+leap_tag = os.environ.get('LEAP_TAG', '')
+leap_signal_dir = os.environ.get('LEAP_SIGNAL_DIR', '')
 
 signal = {'state': state}
 
@@ -104,6 +106,51 @@ signal = {'state': state}
 # updated later with the assistant message text for Slack.
 with open(signal_file, 'w') as f:
     json.dump(signal, f)
+
+
+def _record_claude_session(transcript_path, session_cwd):
+    '''Record the Claude session UUID for this Leap tag so that
+    \`leap --resume\` can offer it later.  Silently ignores failures —
+    this is best-effort bookkeeping, not critical path.
+    '''
+    if not (leap_tag and leap_signal_dir and transcript_path):
+        return
+    try:
+        session_id = os.path.basename(transcript_path)
+        if session_id.endswith('.jsonl'):
+            session_id = session_id[:-6]
+        if not session_id:
+            return
+        # .storage is the parent of the signal dir (sockets/)
+        storage_dir = os.path.dirname(leap_signal_dir.rstrip('/'))
+        sessions_dir = os.path.join(storage_dir, 'cli_sessions', 'claude')
+        os.makedirs(sessions_dir, exist_ok=True)
+        tag_file = os.path.join(sessions_dir, leap_tag + '.json')
+        entries = []
+        if os.path.isfile(tag_file):
+            try:
+                with open(tag_file) as f:
+                    entries = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                entries = []
+            if not isinstance(entries, list):
+                entries = []
+        # Dedupe by session_id so the latest entry always wins
+        entries = [e for e in entries if isinstance(e, dict) and e.get('session_id') != session_id]
+        entries.append({
+            'session_id': session_id,
+            'transcript_path': transcript_path,
+            'cwd': session_cwd or os.getcwd(),
+            'last_seen': time.time(),
+        })
+        # Cap history per tag
+        entries = entries[-20:]
+        tmp = tag_file + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(entries, f, indent=2)
+        os.replace(tmp, tag_file)
+    except (OSError, ValueError):
+        pass
 
 # Read stdin with timeout — some CLIs (e.g. Codex) may not close stdin
 # promptly, which would hang the hook.  5s is generous for JSON delivery.
@@ -131,11 +178,17 @@ try:
     if direct_msg:
         signal['last_assistant_message'] = direct_msg
 
+    # Record the Claude session so \`leap --resume\` can offer it later.
+    # Claude's transcript_path lives under ~/.claude/projects/<slug>/<uuid>.jsonl;
+    # we use that marker to avoid recording for other CLIs (Codex/Cursor/Gemini)
+    # until per-provider support is added.
+    transcript_path = hook_data.get('transcript_path', '')
+    if transcript_path and '.claude/projects/' in transcript_path:
+        _record_claude_session(transcript_path, hook_data.get('cwd', ''))
+
     # If we already have the message from the hook payload, skip
     # transcript reading entirely (faster, and avoids format mismatches).
     if not direct_msg:
-        transcript_path = hook_data.get('transcript_path', '')
-
         if transcript_path:
             # Read the transcript from the END to find the last assistant
             # message efficiently.  Seek backwards in chunks instead of

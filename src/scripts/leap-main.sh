@@ -49,6 +49,14 @@ if [ "$1" = "--manage-clis" ]; then
     exit $?
 fi
 
+# Resume picker: show tags with recorded Claude sessions, then relaunch
+# leap-main.sh with the chosen tag + LEAP_CLAUDE_RESUME_ID env var.
+# The picker script handles chdir'ing into the session's original cwd.
+if [ "$1" = "--resume" ]; then
+    PYTHONPATH="$PROJECT_DIR/src:${PYTHONPATH:-}" \
+        exec "$PYTHON_CMD" "$PROJECT_DIR/src/scripts/leap-resume.py"
+fi
+
 # Run Slack bot if requested
 if [ "$1" = "--slack" ]; then
     shift
@@ -92,6 +100,7 @@ USAGE:
     leap --help, -h                   Show this help
     leap --update                     Update Leap to latest version
     leap --manage-clis                Manage CLI providers (order, flags, visibility, custom CLIs)
+    leap --resume                     Pick a previous Leap session and resume its Claude CLI session
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
         echo "    leap --slack                      Start the Slack bot daemon"
@@ -372,6 +381,21 @@ history = history[-50:]
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 HISTORY_FILE.write_text('\n'.join(history) + '\n')
 " 2>/dev/null
+
+# If leap-resume.py set LEAP_CLAUDE_RESUME_ID, inject `--resume=<id>` into
+# the CLI flags so claude picks up the previous session.  Must use the `=`
+# form (single token) — leap-server.py's flag filter drops any arg that
+# doesn't start with `--`, so `--resume <id>` would lose the UUID and
+# trigger claude's native picker instead of a direct resume.
+# Only applied when the CLI actually is Claude; silently ignored for other
+# providers (the env var is scoped to the claude-resume flow).
+if [ -n "$LEAP_CLAUDE_RESUME_ID" ]; then
+    RESUME_CLI="${CLI_FROM_ARG:-${LEAP_CLI:-claude}}"
+    if [ "$RESUME_CLI" = "claude" ]; then
+        FLAGS+=("--resume=$LEAP_CLAUDE_RESUME_ID")
+    fi
+    unset LEAP_CLAUDE_RESUME_ID
+fi
 
 # Start server
 # Set terminal tab name (OSC for native terminals; VS Code rename is done from Python)

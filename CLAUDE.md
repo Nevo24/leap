@@ -20,6 +20,7 @@ leap                             # Interactive: choose CLI + session name
 src/
 ├── scripts/                     # Entry point scripts
 │   ├── leap-main.sh          # Main launcher (called by 'leap' command)
+│   ├── leap-resume.py        # `leap --resume` picker — lists Leap tags that have a recorded Claude CLI session, resumes the chosen one via `claude --resume <uuid>`
 │   ├── leap-cleanup.sh       # Dead session cleanup
 │   ├── leap-server.py        # Thin launcher → LeapServer
 │   ├── leap-client.py        # Thin launcher → LeapClient
@@ -208,6 +209,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Slack config | `.storage/slack/config.json` |
 | Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |
+| Claude session tracking | `.storage/cli_sessions/claude/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook.sh`; drives `leap --resume`) |
 
 ## Server Queue Shortcut
 

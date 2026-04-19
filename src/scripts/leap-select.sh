@@ -21,6 +21,9 @@ fi
 if [ "$1" = "--manage-clis" ]; then
     exec "$SCRIPT_DIR/leap-main.sh" "$@"
 fi
+if [ "$1" = "--resume" ]; then
+    exec "$SCRIPT_DIR/leap-main.sh" "$@"
+fi
 
 # Find Python (same logic as leap-main.sh)
 if [ -f "$VENV_PATH_FILE" ]; then

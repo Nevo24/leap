@@ -75,6 +75,12 @@ ICON_CACHE_DIR: Final[Path] = STORAGE_DIR / "icon_cache"
 # State debug logs directory (one log per session, overwritten on server start)
 STATE_LOG_DIR: Final[Path] = STORAGE_DIR / "state_logs"
 
+# CLI session tracking (for `leap --resume`) — one subdir per provider,
+# one JSON file per Leap tag, listing the CLI session IDs that have run
+# under that tag.  Populated by leap-hook.sh on Stop/Notification events.
+CLI_SESSIONS_DIR: Final[Path] = STORAGE_DIR / "cli_sessions"
+CLAUDE_SESSIONS_DIR: Final[Path] = CLI_SESSIONS_DIR / "claude"
+
 # Timing constants
 POLL_INTERVAL: Final[float] = 0.5  # Queue check interval in seconds
 TITLE_RESET_INTERVAL: Final[float] = 2.0  # Terminal title reset interval
@@ -132,6 +138,8 @@ def ensure_storage_dirs() -> None:
     SLACK_DIR.mkdir(parents=True, exist_ok=True)
     ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     STATE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    CLI_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    CLAUDE_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def atomic_json_write(path: Path, data: Any, **json_kwargs: Any) -> None:
