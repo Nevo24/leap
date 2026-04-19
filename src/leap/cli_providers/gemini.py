@@ -23,6 +23,10 @@ from leap.cli_providers.base import CLIProvider
 
 GEMINI_CONFIG_DIR: Path = Path.home() / ".gemini"
 GEMINI_SETTINGS_FILE: Path = GEMINI_CONFIG_DIR / "settings.json"
+
+# Matches Gemini's top-level ``"sessionId": "<uuid>"`` field in the
+# session JSON.  Used by :meth:`GeminiProvider.extract_session_id`.
+_SESSION_ID_RE: re.Pattern[str] = re.compile(r'"sessionId"\s*:\s*"([^"]+)"')
 HOOK_MARKER: str = "leap-hook.sh"
 
 
@@ -122,10 +126,17 @@ class GeminiProvider(CLIProvider):
     def extract_session_id(self, hook_data: dict) -> Optional[str]:
         """Read Gemini's session UUID from the hook payload.
 
-        The hook payload's direct ``session_id`` / ``sessionId`` fields
-        come first (if upstream adds them later); otherwise we open the
-        ``transcript_path`` session JSON and pull the top-level
-        ``sessionId`` field that Gemini writes at session start.
+        Direct ``session_id`` / ``sessionId`` hook-payload fields come
+        first (in case upstream later adds them).  Otherwise we peek at
+        the head of the session JSON that Gemini writes at session start
+        and regex-match the top-level ``sessionId`` field.
+
+        Regex (not ``json.loads``) because Gemini session files grow
+        unbounded — a busy session's JSON is >> 4 KiB, and a bounded
+        read would produce a truncated-JSON ``JSONDecodeError``.  The
+        field we need is always written near the top of the file in
+        Gemini's serialiser output, so a 4 KiB head read + regex is
+        both cheap and complete.
         """
         for key in ('session_id', 'sessionId'):
             sid = hook_data.get(key) or ''
@@ -136,26 +147,11 @@ class GeminiProvider(CLIProvider):
             return None
         try:
             with open(path, 'r') as f:
-                # Session files are either a single JSON object or JSONL;
-                # a top-of-file read of up to 4 KiB is enough to find the
-                # sessionId without pulling in the whole history.
                 head = f.read(4096)
-            try:
-                data = json.loads(head)
-                if isinstance(data, dict):
-                    sid = data.get('sessionId') or data.get('session_id')
-                    if sid:
-                        return sid
-            except json.JSONDecodeError:
-                # JSONL? Try first line.
-                first = head.splitlines()[0] if head else ''
-                if first:
-                    entry = json.loads(first)
-                    if isinstance(entry, dict):
-                        return entry.get('sessionId') or entry.get('session_id') or None
-        except (OSError, json.JSONDecodeError, ValueError):
+        except OSError:
             return None
-        return None
+        m = _SESSION_ID_RE.search(head)
+        return m.group(1) if m else None
 
     def resume_args(self, session_id: str) -> list[str]:
         # Gemini's flag takes a value as a second token; Leap's server

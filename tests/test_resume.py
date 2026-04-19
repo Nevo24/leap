@@ -145,6 +145,26 @@ class TestGeminiProviderResume:
         sid = p.extract_session_id({"transcript_path": str(session_file)})
         assert sid == "5ec95d33-d405-4b82-9be5-8080824363b5"
 
+    def test_extract_session_id_works_on_large_session_file(self, tmp_path):
+        # Regression: regex-based head scan must still find sessionId on
+        # session files too large for ``json.loads`` on a bounded read.
+        # Gemini sessions grow unbounded with the history; a busy session
+        # can easily exceed 4 KiB.  The sessionId is always near the top
+        # of the file in Gemini's serialisation, so this works.
+        p = get_provider("gemini")
+        session_file = tmp_path / ".gemini/tmp/proj/chats/session-2026-04-19T16-09-5ec95d33.json"
+        session_file.parent.mkdir(parents=True)
+        session_file.write_text(json.dumps({
+            "sessionId": "5ec95d33-d405-4b82-9be5-8080824363b5",
+            "projectHash": "abc",
+            "messages": [
+                {"id": f"{i:03d}", "content": "x" * 200} for i in range(50)
+            ],
+        }, indent=2))
+        assert session_file.stat().st_size > 4096
+        sid = p.extract_session_id({"transcript_path": str(session_file)})
+        assert sid == "5ec95d33-d405-4b82-9be5-8080824363b5"
+
     def test_extract_session_id_ignores_non_gemini_path(self, tmp_path):
         p = get_provider("gemini")
         f = tmp_path / "unrelated.json"
