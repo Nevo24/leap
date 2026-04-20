@@ -386,7 +386,7 @@ class PRTrackingMixin(_Base):
         worker = SCMPollerWorker(self)
         worker.configure(
             self._scm_providers, tracked_sessions,
-            auto_fetch_leap=self._prefs.get('auto_fetch_leap', True),
+            auto_fetch_leap=self._prefs.get('auto_fetch_leap', False),
             notif_scm_types=notif_types,
         )
         worker.results_ready.connect(self._on_scm_results)

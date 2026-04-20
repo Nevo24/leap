@@ -516,7 +516,7 @@ class MonitorWindow(
         self.auto_leap_check.setToolTip(
             "Automatically send /leap-tagged PR comments to Leap sessions each poll cycle"
         )
-        self.auto_leap_check.setChecked(self._prefs.get('auto_fetch_leap', True))
+        self.auto_leap_check.setChecked(self._prefs.get('auto_fetch_leap', False))
         self.auto_leap_check.stateChanged.connect(self._toggle_auto_fetch_leap)
         _pin_checkbox_min_width(self.auto_leap_check)
         auto_leap_layout.addWidget(self.auto_leap_check, 0, Qt.AlignVCenter)

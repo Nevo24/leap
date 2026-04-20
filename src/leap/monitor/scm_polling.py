@@ -71,14 +71,14 @@ class SCMPollerWorker(QThread):
         super().__init__(parent)
         self._providers: dict[str, SCMProvider] = {}
         self._sessions: list[dict[str, Any]] = []
-        self._auto_fetch_leap: bool = True
+        self._auto_fetch_leap: bool = False
         self._notif_scm_types: set[str] = set()
 
     def configure(
         self,
         providers: dict[str, SCMProvider],
         sessions: list[dict[str, Any]],
-        auto_fetch_leap: bool = True,
+        auto_fetch_leap: bool = False,
         notif_scm_types: Optional[set[str]] = None,
     ) -> None:
         """Configure the poller with available providers and sessions to poll.

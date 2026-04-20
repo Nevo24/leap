@@ -205,7 +205,7 @@ class PulsingLabel(QLabel):
         self._on_send_leap_threads_combined: Optional[callable] = None
         self._has_unresponded: bool = False
         self._server_running: bool = False
-        self._auto_fetch_leap: bool = True
+        self._auto_fetch_leap: bool = False
         self._indicator_help: Optional[str] = None
         self._popup: Optional[IndicatorPopup] = None
         self._preserve_popup: bool = False

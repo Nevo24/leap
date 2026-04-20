@@ -27,7 +27,7 @@ _OLD_LEAP_TEMPLATES_FILE = STORAGE_DIR / "leap_templates.json"
 # Default monitor preferences
 _DEFAULT_PREFS = {
     'include_bots': False,
-    'auto_fetch_leap': True,
+    'auto_fetch_leap': False,
 }
 
 # Default notification preferences per notification type.

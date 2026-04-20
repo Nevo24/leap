@@ -1402,7 +1402,7 @@ class TableBuilderMixin(_Base):
                                 self._send_leap_threads_combined_to_leap(t)
                         )
                     pr_widget.set_auto_fetch_leap(
-                        self._prefs.get('auto_fetch_leap', True)
+                        self._prefs.get('auto_fetch_leap', False)
                     )
                     self.table.removeCellWidget(row, self.COL_PR_BRANCH)
                     self._set_cell_text(row, self.COL_PR_BRANCH, pr_branch,
