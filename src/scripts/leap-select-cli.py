@@ -8,6 +8,8 @@ Providers are discovered dynamically from the registry — adding a new
 provider to registry.py automatically makes it appear here.
 """
 
+import os
+import select
 import sys
 import termios
 import tty
@@ -39,20 +41,31 @@ RESET = "\033[0m"
 
 
 def get_key() -> str:
-    """Read a single keypress, handling arrow key escape sequences."""
+    """Read a single keypress, handling arrow key escape sequences.
+
+    Uses ``os.read`` + ``select`` so a bare Esc can be distinguished
+    from the start of an arrow-key CSI/SS3 sequence, and so Python's
+    text-mode stdin buffer can't swallow the follow-up bytes.
+    """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
+        b = os.read(fd, 1)
+        if not b:
+            return "quit"  # EOF
+        ch = b.decode("utf-8", errors="replace")
         if ch == "\x1b":
-            ch2 = sys.stdin.read(1)
-            if ch2 == "[":
-                ch3 = sys.stdin.read(1)
-                if ch3 == "A":
-                    return "up"
-                if ch3 == "B":
-                    return "down"
+            # CSI bytes arrive back-to-back after the ESC; bare Esc
+            # leaves stdin idle.  Poll briefly for the follow-up.
+            if not select.select([fd], [], [], 0.1)[0]:
+                return "quit"
+            rest = os.read(fd, 16).decode("utf-8", errors="replace")
+            if rest.startswith("[A") or rest.startswith("OA"):
+                return "up"
+            if rest.startswith("[B") or rest.startswith("OB"):
+                return "down"
+            return ""  # unhandled sequence, already fully drained
         if ch in ("\r", "\n"):
             return "enter"
         if ch == "\x03":  # Ctrl+C

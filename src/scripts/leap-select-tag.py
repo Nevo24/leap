@@ -8,7 +8,9 @@ stdout for the shell wrapper.
 History is stored in .storage/tag_history (one tag per line, newest last).
 """
 
+import os
 import re
+import select
 import sys
 import tty
 import termios
@@ -62,22 +64,31 @@ def save_history(history: list[str], new_tag: str) -> None:
 
 
 def get_key() -> str:
-    """Read a single keypress, handling special keys."""
+    """Read a single keypress, handling special keys.
+
+    Uses ``os.read`` + ``select`` so a bare Esc can be distinguished
+    from the start of an arrow-key CSI/SS3 sequence, and so Python's
+    text-mode stdin buffer can't swallow the follow-up bytes.
+    """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
+        b = os.read(fd, 1)
+        if not b:
+            return 'quit'  # EOF
+        ch = b.decode('utf-8', errors='replace')
         if ch == '\x1b':
-            ch2 = sys.stdin.read(1)
-            if ch2 == '[':
-                ch3 = sys.stdin.read(1)
-                if ch3 == 'A':
-                    return 'up'
-                if ch3 == 'B':
-                    return 'down'
-                return ''
-            return 'escape'
+            # CSI bytes arrive back-to-back after the ESC; bare Esc
+            # leaves stdin idle.  Poll briefly for the follow-up.
+            if not select.select([fd], [], [], 0.1)[0]:
+                return 'escape'
+            rest = os.read(fd, 16).decode('utf-8', errors='replace')
+            if rest.startswith('[A') or rest.startswith('OA'):
+                return 'up'
+            if rest.startswith('[B') or rest.startswith('OB'):
+                return 'down'
+            return ''  # unhandled sequence, already fully drained
         if ch in ('\r', '\n'):
             return 'enter'
         if ch == '\x03':  # Ctrl+C

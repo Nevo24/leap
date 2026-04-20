@@ -8,7 +8,9 @@ Provides a menu to:
   4. Rename CLIs (custom display names shown everywhere)
 """
 
+import os
 import re
+import select
 import sys
 import termios
 import tty
@@ -54,22 +56,31 @@ RESET = "\033[0m"
 def get_key() -> str:
     """Read a single keypress, handling arrow key escape sequences.
 
+    Uses ``os.read`` + ``select`` so a bare Esc can be distinguished
+    from the start of an arrow-key CSI/SS3 sequence, and so Python's
+    text-mode stdin buffer can't swallow the follow-up bytes.
+
     Supports q and / (Hebrew keyboard maps q key to /) for quit.
     """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        ch = sys.stdin.read(1)
+        b = os.read(fd, 1)
+        if not b:
+            return "quit"  # EOF
+        ch = b.decode("utf-8", errors="replace")
         if ch == "\x1b":
-            ch2 = sys.stdin.read(1)
-            if ch2 == "[":
-                ch3 = sys.stdin.read(1)
-                if ch3 == "A":
-                    return "up"
-                if ch3 == "B":
-                    return "down"
-            return ""
+            # CSI bytes arrive back-to-back after the ESC; bare Esc
+            # leaves stdin idle.  Poll briefly for the follow-up.
+            if not select.select([fd], [], [], 0.1)[0]:
+                return "quit"
+            rest = os.read(fd, 16).decode("utf-8", errors="replace")
+            if rest.startswith("[A") or rest.startswith("OA"):
+                return "up"
+            if rest.startswith("[B") or rest.startswith("OB"):
+                return "down"
+            return ""  # unhandled sequence, already fully drained
         if ch in ("\r", "\n"):
             return "enter"
         if ch == "\x03":  # Ctrl+C
@@ -168,7 +179,7 @@ def render_main_menu(cursor: int) -> int:
     lines = 0
     sys.stderr.write(f"\r\033[K  {BOLD}Manage CLIs:{RESET}\n")
     lines += 1
-    sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: select  q: quit{RESET}\n")
+    sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to select · Esc/q to quit{RESET}\n")
     lines += 1
     sys.stderr.write("\033[K\n")
     lines += 1
@@ -229,9 +240,9 @@ def render_reorder(providers: list[tuple[str, str]], cursor: int, grabbed: bool)
     sys.stderr.write("\033[K\n")
     lines += 1
     if grabbed:
-        sys.stderr.write(f"\033[K  {GREEN}↕ Moving — ↑↓ to move, Enter: drop{RESET}\n")
+        sys.stderr.write(f"\033[K  {GREEN}↕ Moving · ↑/↓ to move · Enter to drop · Esc/q to go back (auto-saves){RESET}\n")
     else:
-        sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: grab  q: back (auto-saves){RESET}\n")
+        sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to grab · Esc/q to go back (auto-saves){RESET}\n")
     lines += 1
     sys.stderr.flush()
     return lines
@@ -313,7 +324,7 @@ def render_overview(
     lines = 0
     sys.stderr.write(f"\r\033[K  {BOLD}CLI overview:{RESET}\n")
     lines += 1
-    sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: edit flags  e: edit env  q: back{RESET}\n")
+    sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to edit flags · e to edit env · Esc/q to go back{RESET}\n")
     lines += 1
     sys.stderr.write("\033[K\n")
     lines += 1
@@ -463,7 +474,7 @@ def render_visibility_menu(
     lines = 0
     sys.stderr.write(f"\r\033[K  {BOLD}Show/hide CLIs:{RESET}\n")
     lines += 1
-    sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: toggle  q: back{RESET}\n")
+    sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to toggle · Esc/q to go back{RESET}\n")
     lines += 1
     sys.stderr.write("\033[K\n")
     lines += 1
@@ -545,7 +556,7 @@ def render_rename_menu(
     lines = 0
     sys.stderr.write(f"\r\033[K  {BOLD}Rename CLIs:{RESET}\n")
     lines += 1
-    sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: rename  q: back{RESET}\n")
+    sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to rename · Esc/q to go back{RESET}\n")
     lines += 1
     sys.stderr.write("\033[K\n")
     lines += 1
@@ -635,7 +646,7 @@ def render_base_picker(bases: list[tuple[str, str]], cursor: int) -> int:
     lines = 0
     sys.stderr.write(f"\r\033[K  {BOLD}Select base CLI:{RESET}\n")
     lines += 1
-    sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: select  q: back{RESET}\n")
+    sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to select · Esc/q to go back{RESET}\n")
     lines += 1
     sys.stderr.write("\033[K\n")
     lines += 1
@@ -776,7 +787,7 @@ def render_delete_menu(
     lines = 0
     sys.stderr.write(f"\r\033[K  {BOLD}Delete custom CLI:{RESET}\n")
     lines += 1
-    sys.stderr.write(f"\033[K  {DIM}↑↓: navigate  Enter: delete  q: back{RESET}\n")
+    sys.stderr.write(f"\033[K  {DIM}↑/↓ navigate · Enter to delete · Esc/q to go back{RESET}\n")
     lines += 1
     sys.stderr.write("\033[K\n")
     lines += 1
