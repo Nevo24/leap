@@ -115,6 +115,14 @@ def record_session(
     if not (_is_safe_id(cli) and _is_safe_id(tag)):
         return
     tag_file = _tag_file(storage_dir, cli, tag)
+    # Normalize transcript_path to absolute using the hook's cwd as the
+    # reference frame — if the reader (the picker) runs from a different
+    # cwd, a relative path would otherwise resolve incorrectly for the
+    # ``os.path.getsize`` / stale-filter checks in ``_resumable_sessions``.
+    # Today's built-in CLIs all pass absolute paths; this hardens against
+    # a future custom CLI that emits a relative one.
+    if transcript_path and not os.path.isabs(transcript_path):
+        transcript_path = os.path.abspath(transcript_path)
     try:
         tag_file.parent.mkdir(parents=True, exist_ok=True)
         entries = _load_raw_entries(tag_file)

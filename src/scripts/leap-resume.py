@@ -497,7 +497,8 @@ def main() -> int:
         sys.stderr.write(
             f"  {RED}This CLI session is already running under Leap tag "
             f"{tags_str}{RED}.{RESET}\n"
-            f"  {DIM}You can easily locate it via the Leap Monitor app.{RESET}\n"
+            f"  {DIM}Check your open terminals — or the Leap Monitor "
+            f"app, if installed — to find it.{RESET}\n"
         )
         return 1
 

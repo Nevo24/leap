@@ -8,6 +8,7 @@ stateful / terminal-dependent so we leave that out of the unit layer.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
@@ -536,6 +537,27 @@ class TestResumeStore:
         assert s.size == 100
         assert s.cwd == "/home/me"
         assert s.last_seen > 0
+
+    def test_record_normalizes_relative_transcript_path(self, tmp_path, monkeypatch):
+        """A relative ``transcript_path`` must be normalized against the
+        hook's cwd at record time — otherwise ``os.path.getsize`` in the
+        picker (which runs from a different cwd) would resolve against
+        the wrong root.  All built-in CLIs pass absolute paths; this
+        guards against a future custom CLI emitting a relative one."""
+        # Create a real file inside tmp_path we can reach via a
+        # relative name by chdir'ing to tmp_path first.
+        tp_abs = tmp_path / "live.jsonl"
+        tp_abs.write_bytes(b"x" * 42)
+        monkeypatch.chdir(tmp_path)
+        record_session(tmp_path, "claude", "rel",
+                       session_id="s", transcript_path="live.jsonl")
+        monkeypatch.chdir("/")  # picker runs from elsewhere
+        rows = load_tag_rows(tmp_path)
+        assert len(rows) == 1
+        s = rows[0].sessions[0]
+        assert os.path.isabs(s.transcript_path)
+        assert s.transcript_path == str(tp_abs)
+        assert s.size == 42
 
     def test_dedup_by_session_id(self, tmp_path, live_transcript):
         tp = live_transcript()

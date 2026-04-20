@@ -107,8 +107,14 @@ for _ in range(10):
             # an old-format map (pre-leap-resume) would mis-attribute
             # an unrelated child run to the wrong tag/provider.
             if tag and sd and cli:
-                print(f'{tag}|{sd}|{py}|{cli}')
-                break
+                # Staleness guard: if the OS reused ppid after the
+                # original server died, the map is now lying about a
+                # long-gone tag.  The socket file at ``sd/<tag>.sock``
+                # is the server's own creation — if it's gone, so is
+                # the server.  Keep walking up.
+                if os.path.exists(os.path.join(sd, tag + '.sock')):
+                    print(f'{tag}|{sd}|{py}|{cli}')
+                    break
         except Exception:
             pass
     pid = ppid
