@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 from typing import Any, Optional
@@ -2328,12 +2329,34 @@ def _request_notification_permission() -> None:
     """Request macOS notification permission and exit.
 
     Called when the app is launched with ``--request-permissions``.
-    This registers the app bundle with the notification system so it
-    appears in System Settings > Notifications, then exits without
-    showing any GUI.  The user sees only the native macOS permission
-    dialog.
+    Registers the bundle with the notification system (so it appears
+    in System Settings > Notifications) and presents the native
+    "Leap Monitor would like to send you notifications" dialog.
+
+    On macOS 14+ ``UNUserNotificationCenter`` silently declines to
+    present the dialog unless a real ``NSApplication`` with
+    ``NSApplicationActivationPolicyRegular`` is running, so we set
+    that up first.  If authorization still isn't granted (user
+    dismissed, macOS suppressed, etc.) we open the System Settings
+    Notifications pane as a fallback.
+
+    Idempotency: the bundle is registered in
+    ``~/Library/Preferences/com.apple.ncprefs.plist`` the first time
+    ``requestAuthorizationWithOptions`` is invoked, regardless of the
+    user's answer — ``make install-monitor`` then reads that plist
+    and skips this whole prompt on subsequent runs.
     """
     try:
+        # Make this process a real app so the UN framework will
+        # present the authorization dialog.
+        app = NSApplication.sharedApplication()
+        try:
+            # 0 = NSApplicationActivationPolicyRegular (dock icon, UI).
+            app.setActivationPolicy_(0)
+            app.activateIgnoringOtherApps_(True)
+        except Exception:
+            pass
+
         objc.loadBundle(
             'UserNotifications', globals(),
             '/System/Library/Frameworks/UserNotifications.framework',
@@ -2351,8 +2374,10 @@ def _request_notification_permission() -> None:
 
         center = UNUserNotificationCenter.currentNotificationCenter()
         done = [False]
+        granted = [False]
 
-        def _on_auth(granted: bool, error: object) -> None:
+        def _on_auth(ok: bool, error: object) -> None:
+            granted[0] = bool(ok)
             done[0] = True
 
         center.requestAuthorizationWithOptions_completionHandler_(
@@ -2367,6 +2392,17 @@ def _request_notification_permission() -> None:
             NSRunLoop.currentRunLoop().runUntilDate_(
                 NSDate.dateWithTimeIntervalSinceNow_(0.25))
             timeout -= 0.25
+
+        # User dismissed / macOS suppressed the dialog / we timed
+        # out.  The bundle is already registered with the
+        # notification system by the request above, so point the
+        # user at the Settings toggle they can flip by hand.
+        if not granted[0]:
+            subprocess.run(
+                ['open',
+                 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'],
+                check=False,
+            )
     except Exception as exc:
         print(f"  Note: Could not request notification permission ({exc})")
         print("  You can grant it later in System Settings > Notifications > Leap Monitor")
