@@ -258,12 +258,50 @@ def prune_stale(storage_dir: Path) -> int:
     return removed
 
 
+def _dedup_sessions_across_tags(rows: list[TagRow]) -> list[TagRow]:
+    """For each ``(cli, session_id)`` keep the session only on the tag
+    with the newest ``last_seen``.
+
+    Forked resume (``leap --resume`` → tag busy → user picks new tag ``9b``)
+    lands the same CLI session UUID in both the old tag's file and the new
+    one's.  Both are "correct" — the UUID genuinely lived under both Leap
+    tags — but the picker would otherwise show the user two rows pointing
+    at the same conversation.  We keep only the freshest touch; older
+    rows drop the duplicated session.  A row that loses *every* session
+    this way is dropped entirely.
+    """
+    best: dict[tuple[str, str], tuple[float, str]] = {}
+    for row in rows:
+        for s in row.sessions:
+            key = (row.cli, s.session_id)
+            prev = best.get(key)
+            if prev is None or s.last_seen > prev[0]:
+                best[key] = (s.last_seen, row.tag)
+    deduped: list[TagRow] = []
+    for row in rows:
+        kept = [
+            s for s in row.sessions
+            if best.get((row.cli, s.session_id), (0.0, row.tag))[1] == row.tag
+        ]
+        if not kept:
+            continue
+        deduped.append(TagRow(
+            tag=row.tag,
+            cli=row.cli,
+            sessions=kept,
+            last_seen=kept[0].last_seen,
+        ))
+    return deduped
+
+
 def load_tag_rows(storage_dir: Path) -> list[TagRow]:
     """Return one :class:`TagRow` per ``(cli, tag)`` pair with live sessions.
 
     Scans every ``cli_sessions/<cli>/*.json`` so custom CLIs appear
-    alongside the built-in providers.  Rows are sorted newest-first by
-    the freshest session's ``last_seen``.
+    alongside the built-in providers, then dedups by ``(cli, session_id)``
+    so a forked-tag resume (``leap --resume`` under a new Leap tag while
+    the original is busy) shows only the most recent tag for each UUID.
+    Rows are sorted newest-first by the freshest session's ``last_seen``.
     """
     root = _sessions_root(storage_dir)
     if not root.is_dir():
@@ -292,5 +330,6 @@ def load_tag_rows(storage_dir: Path) -> list[TagRow]:
                 sessions=sessions,
                 last_seen=sessions[0].last_seen,
             ))
+    rows = _dedup_sessions_across_tags(rows)
     rows.sort(key=lambda r: r.last_seen, reverse=True)
     return rows

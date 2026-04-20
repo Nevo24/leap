@@ -284,21 +284,23 @@ class TestLiveSessionOwners:
         picker._live_clis = {"stale": "claude"}
         assert picker._live_session_owners(load_tag_rows(tmp_path)) == {}
 
-    def test_live_owner_lists_every_live_fork_of_the_same_session(
+    def test_live_owner_scopes_to_the_freshest_forked_tag(
         self, tmp_path, picker,
     ):
-        # If the user /resume-d the same session into two different tags
-        # and both are live now, both should show up in the error
-        # message so they can pick whichever is closest.
+        # A CLI session recorded under two Leap tags (the user forked
+        # ``fork-a`` → ``fork-b`` to resume it) is deduped by
+        # ``load_tag_rows`` so the picker never shows the same UUID
+        # twice.  Consequently the owner map reports only the surviving
+        # (freshest) tag — which is the one users will naturally land
+        # on when they pick that conversation again.
         record_session(tmp_path, "claude", "fork-a",
                        session_id="shared", transcript_path="")
+        time.sleep(0.01)
         record_session(tmp_path, "claude", "fork-b",
                        session_id="shared", transcript_path="")
         picker._live_clis = {"fork-a": "claude", "fork-b": "claude"}
         owners = picker._live_session_owners(load_tag_rows(tmp_path))
-        assert len(owners["shared"]) == 2
-        owner_tags = {t for _, t in owners["shared"]}
-        assert owner_tags == {"fork-a", "fork-b"}
+        assert owners == {"shared": [("claude", "fork-b")]}
 
     def test_live_owner_ignores_stale_cli_records_for_same_tag(
         self, tmp_path, picker,
@@ -580,6 +582,61 @@ class TestResumeStore:
         record_session(tmp_path, "claude", "new", session_id="n", transcript_path=tp)
         rows = load_tag_rows(tmp_path)
         assert [r.tag for r in rows] == ["new", "old"]
+
+    def test_dedup_same_session_across_tags_keeps_newest(
+        self, tmp_path, live_transcript,
+    ):
+        """Forked resume: tag ``9`` busy → user picks ``9b``.  Both files
+        end up with the same session_id; the older tag's copy must drop
+        out of the picker so the user sees one row per conversation."""
+        tp = live_transcript()
+        record_session(tmp_path, "claude", "9",
+                       session_id="S1", transcript_path=tp)
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "9b",
+                       session_id="S1", transcript_path=tp)
+        rows = load_tag_rows(tmp_path)
+        assert len(rows) == 1, "duplicate CLI session should surface once"
+        assert rows[0].tag == "9b", "newest last_seen wins"
+        assert [s.session_id for s in rows[0].sessions] == ["S1"]
+
+    def test_dedup_preserves_non_duplicated_sessions_on_older_tag(
+        self, tmp_path, live_transcript,
+    ):
+        """Surgery is per-session: tag ``9`` with [S1, S2, S3] loses only
+        the duplicated S1 when ``9b`` picks it up, keeping [S2, S3]."""
+        tp = live_transcript()
+        record_session(tmp_path, "claude", "9",
+                       session_id="S1", transcript_path=tp)
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "9",
+                       session_id="S2", transcript_path=tp)
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "9",
+                       session_id="S3", transcript_path=tp)
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "9b",
+                       session_id="S1", transcript_path=tp)
+        rows = sorted(load_tag_rows(tmp_path), key=lambda r: r.tag)
+        assert len(rows) == 2
+        by_tag = {r.tag: r for r in rows}
+        assert sorted(s.session_id for s in by_tag["9"].sessions) == ["S2", "S3"]
+        assert [s.session_id for s in by_tag["9b"].sessions] == ["S1"]
+
+    def test_dedup_is_per_cli_not_cross_cli(
+        self, tmp_path, live_transcript,
+    ):
+        """Same UUID recorded under two different CLIs must not collapse —
+        Claude's S1 and Codex's S1 are unrelated conversations that happen
+        to share a hex string."""
+        tp = live_transcript()
+        record_session(tmp_path, "claude", "9",
+                       session_id="S1", transcript_path=tp)
+        record_session(tmp_path, "codex", "9",
+                       session_id="S1", transcript_path=tp)
+        rows = load_tag_rows(tmp_path)
+        assert len(rows) == 2
+        assert {r.cli for r in rows} == {"claude", "codex"}
 
     def test_empty_storage_returns_empty_list(self, tmp_path):
         assert load_tag_rows(tmp_path) == []
