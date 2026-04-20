@@ -49,13 +49,16 @@ if str(_SRC_DIR) not in sys.path:
 
 try:
     from leap.cli_providers.registry import get_display_name
-    from leap.utils.resume_store import TagRow, SessionRecord, load_tag_rows
+    from leap.utils.resume_store import (
+        TagRow, SessionRecord, load_tag_rows, load_raw_tag_rows,
+    )
 except ImportError:
     def get_display_name(name: str) -> str:  # type: ignore[no-redef]
         return name
     TagRow = None  # type: ignore
     SessionRecord = None  # type: ignore
     load_tag_rows = None  # type: ignore
+    load_raw_tag_rows = None  # type: ignore
 
 DIM = "\033[2m"
 BOLD = "\033[1m"
@@ -167,6 +170,14 @@ def _live_tag_cli_map() -> dict:
 def _live_session_owners(rows: list) -> dict:
     """Return ``{session_id: [(cli, tag), ...]}`` for sessions currently
     running in a Leap server.
+
+    Must be called with **raw** (un-deduped) rows — see
+    :func:`leap.utils.resume_store.load_raw_tag_rows`.  If two live
+    tags have recorded the same CLI session (a fork race that's
+    physically impossible for today's CLIs but would become possible
+    if a future CLI supported multi-seat resume), display-layer dedup
+    would otherwise hide the older tag and we'd fail to warn the user
+    about one of the live owners.
 
     A row counts as owner only when the live Leap server for its tag is
     actually running row.cli (per the tag's ``.meta`` file).  This
@@ -470,7 +481,11 @@ def main() -> int:
     # Is the *CLI session UUID* already being used by a live Leap server?
     # That's the real conflict — not whether the Leap tag has a running
     # server (the user may have started it fresh without resuming).
-    owners = _live_session_owners(rows).get(session_id, [])
+    # Use RAW rows here (pre-dedup): display-layer dedup drops the
+    # older tag's copy of a session, but an ownership check needs
+    # every live tag to have a chance to claim the session.
+    raw_rows = load_raw_tag_rows(STORAGE_DIR) if load_raw_tag_rows else rows
+    owners = _live_session_owners(raw_rows).get(session_id, [])
     # Filter out the obvious self-case where the picked tag's server *is*
     # running exactly this session — we still want to tell the user where
     # to go.

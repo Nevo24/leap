@@ -20,6 +20,7 @@ from leap.utils.resume_store import (
     MAX_ENTRIES_PER_TAG,
     SessionRecord,
     TagRow,
+    load_raw_tag_rows,
     load_tag_rows,
     prune_stale,
     record_session,
@@ -284,23 +285,24 @@ class TestLiveSessionOwners:
         picker._live_clis = {"stale": "claude"}
         assert picker._live_session_owners(load_tag_rows(tmp_path)) == {}
 
-    def test_live_owner_scopes_to_the_freshest_forked_tag(
+    def test_live_owner_lists_every_live_fork_of_the_same_session(
         self, tmp_path, picker,
     ):
-        # A CLI session recorded under two Leap tags (the user forked
-        # ``fork-a`` → ``fork-b`` to resume it) is deduped by
-        # ``load_tag_rows`` so the picker never shows the same UUID
-        # twice.  Consequently the owner map reports only the surviving
-        # (freshest) tag — which is the one users will naturally land
-        # on when they pick that conversation again.
+        # Ownership checks read **raw** rows (``load_raw_tag_rows``),
+        # bypassing the display-layer dedup.  If two Leap tags both
+        # have live servers on the same CLI session UUID (physically
+        # impossible for today's CLIs, but a future multi-seat resume
+        # would enable it), both tags must be reported so the user
+        # isn't silently routed past the other owner.
         record_session(tmp_path, "claude", "fork-a",
                        session_id="shared", transcript_path="")
         time.sleep(0.01)
         record_session(tmp_path, "claude", "fork-b",
                        session_id="shared", transcript_path="")
         picker._live_clis = {"fork-a": "claude", "fork-b": "claude"}
-        owners = picker._live_session_owners(load_tag_rows(tmp_path))
-        assert owners == {"shared": [("claude", "fork-b")]}
+        owners = picker._live_session_owners(load_raw_tag_rows(tmp_path))
+        assert "shared" in owners
+        assert {t for _, t in owners["shared"]} == {"fork-a", "fork-b"}
 
     def test_live_owner_ignores_stale_cli_records_for_same_tag(
         self, tmp_path, picker,

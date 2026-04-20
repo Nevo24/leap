@@ -294,14 +294,21 @@ def _dedup_sessions_across_tags(rows: list[TagRow]) -> list[TagRow]:
     return deduped
 
 
-def load_tag_rows(storage_dir: Path) -> list[TagRow]:
-    """Return one :class:`TagRow` per ``(cli, tag)`` pair with live sessions.
+def load_raw_tag_rows(storage_dir: Path) -> list[TagRow]:
+    """Return one :class:`TagRow` per ``(cli, tag)`` pair with live sessions,
+    WITHOUT dedup across tags.
 
     Scans every ``cli_sessions/<cli>/*.json`` so custom CLIs appear
-    alongside the built-in providers, then dedups by ``(cli, session_id)``
-    so a forked-tag resume (``leap --resume`` under a new Leap tag while
-    the original is busy) shows only the most recent tag for each UUID.
-    Rows are sorted newest-first by the freshest session's ``last_seen``.
+    alongside the built-in providers.  Rows are sorted newest-first by
+    the freshest session's ``last_seen``.
+
+    Ownership checks that need to know which session each live tag is
+    *actually* running (``_live_session_owners``) must read raw rows —
+    :func:`load_tag_rows`'s cross-tag dedup is a display concern only,
+    and dropping the older tag's copy of a session would hide a
+    legitimately-live second owner in the pathological (though
+    physically rare) case where two Leap tags are resuming the same
+    CLI session concurrently.
     """
     root = _sessions_root(storage_dir)
     if not root.is_dir():
@@ -330,6 +337,19 @@ def load_tag_rows(storage_dir: Path) -> list[TagRow]:
                 sessions=sessions,
                 last_seen=sessions[0].last_seen,
             ))
-    rows = _dedup_sessions_across_tags(rows)
+    rows.sort(key=lambda r: r.last_seen, reverse=True)
+    return rows
+
+
+def load_tag_rows(storage_dir: Path) -> list[TagRow]:
+    """Return dedup'd rows for the picker display.
+
+    Same as :func:`load_raw_tag_rows` plus ``(cli, session_id)``
+    cross-tag dedup: a forked-tag resume (``leap --resume`` under a
+    new Leap tag while the original is busy) leaves the same UUID in
+    both files, and the picker should show the conversation only once
+    (on its newest tag).
+    """
+    rows = _dedup_sessions_across_tags(load_raw_tag_rows(storage_dir))
     rows.sort(key=lambda r: r.last_seen, reverse=True)
     return rows
