@@ -130,6 +130,26 @@ class CLIProvider(ABC):
         return SIGNAL_STATES
 
     @property
+    def running_indicator_patterns(self) -> list[bytes]:
+        """Compact patterns (ANSI-stripped, spaces+newlines removed) that,
+        when visible on screen, mean the CLI is actively processing even
+        though no hook has fired to say so.
+
+        Primary use case: long-running operations the CLI does without
+        emitting a Stop/Notification event, e.g. Claude's "Compacting
+        conversation…" during /compact and auto-compact.  When any
+        pattern matches the compact screen text, the state tracker:
+
+        - Transitions idle → running if detected while idle
+        - Ignores a running → idle signal (keeps running)
+        - Skips the running → idle cursor+silence fallback
+        - Skips the silence-timeout safety fallback
+
+        Return empty to opt out (default).
+        """
+        return []
+
+    @property
     def cursor_hidden_while_idle(self) -> bool:
         """Whether the CLI keeps the terminal cursor hidden during idle.
 

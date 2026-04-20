@@ -229,6 +229,21 @@ class CLIStateTracker:
         """
         return '\n'.join(self._get_display_lines())
 
+    def _screen_has_running_indicator(self) -> bool:
+        """Return True if the screen shows a provider 'busy' indicator
+        (e.g. Claude's "Compacting conversation…").
+
+        Must be called with ``_screen_lock`` held.
+        """
+        patterns = self._provider.running_indicator_patterns
+        if not patterns:
+            return False
+        compact = self._get_screen_text().replace(' ', '').replace('\n', '')
+        return any(
+            p.decode('utf-8', errors='replace') in compact
+            for p in patterns
+        )
+
     # -- Public API -----------------------------------------------------------
 
     @property
@@ -564,6 +579,36 @@ class CLIStateTracker:
         if not self._seen_user_input:
             return
 
+        # -- Running indicator detection --
+        # The CLI can be actively processing a long-running operation
+        # with no hook to signal it (Claude's "Compacting conversation…"
+        # during /compact and auto-compact).  Detect the on-screen
+        # label and move idle → running immediately so the monitor
+        # reflects reality and queued messages don't auto-send into
+        # a compacting CLI.
+        running_patterns = self._provider.running_indicator_patterns
+        if running_patterns and any(
+            p.decode('utf-8', errors='replace') in compact
+            for p in running_patterns
+        ):
+            _log.debug(
+                'ON_OUTPUT idle→running (running indicator on screen)',
+            )
+            self._running_since = now
+            self._interrupt_pending = False
+            self._user_input_since_idle = False
+            self._reset_screen()
+            self._prompt_snapshot = []
+            self._last_running_snapshot = []
+            with self._lock:
+                self._state = CLIState.RUNNING
+                self._waiting_since = None
+            try:
+                self._signal_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+
         # -- Auto-resume via cursor visibility --
         # Don't check cursor here (on_output) — a mid-render chunk may
         # have cursor hidden but the show-cursor sequence arrives in
@@ -776,6 +821,24 @@ class CLIStateTracker:
                 new_state == CLIState.IDLE
                 and current == CLIState.RUNNING
             ):
+                # Running indicator guard: a between-turns auto-compact
+                # immediately follows the Stop hook that wrote 'idle'.
+                # Honouring the signal here would make the session read
+                # as idle for the entire compaction — stay running
+                # until the indicator disappears.
+                with self._screen_lock:
+                    running_indicator = self._screen_has_running_indicator()
+                if running_indicator:
+                    _log.debug(
+                        'GET_STATE signal=idle but running indicator '
+                        'on screen — keeping running',
+                    )
+                    try:
+                        self._signal_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    return current
+
                 # Only convert to INTERRUPTED if the interrupt pattern
                 # is actually visible on the pyte screen.  The user may
                 # have pressed Escape but the CLI ignored it (busy) and
@@ -1089,6 +1152,11 @@ class CLIStateTracker:
         ):
             with self._screen_lock:
                 cursor_visible = not self._screen.cursor.hidden
+                running_indicator = self._screen_has_running_indicator()
+            # Long-running op in progress (e.g. "Compacting
+            # conversation…") — skip the idle fallback.
+            if running_indicator:
+                return current
             if cursor_visible:
                 # Before transitioning to idle, check if the screen
                 # has a permission/input dialog.  This detects prompts
@@ -1156,6 +1224,12 @@ class CLIStateTracker:
         if current == CLIState.RUNNING and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
             if silence > silence_timeout:
+                with self._screen_lock:
+                    running_indicator = self._screen_has_running_indicator()
+                if running_indicator:
+                    # Long-running op still on screen — don't force
+                    # idle; wait for the indicator to disappear.
+                    return current
                 _log.debug(
                     'GET_STATE safety timeout %.1fs → idle', silence,
                 )

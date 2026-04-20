@@ -58,6 +58,18 @@ class ClaudeProvider(CLIProvider):
     def dialog_patterns(self) -> list[bytes]:
         return [b'Entertoselect', b'Esctocancel']
 
+    @property
+    def running_indicator_patterns(self) -> list[bytes]:
+        # Claude's "Compacting conversation…" spinner is shown during
+        # both the /compact slash command and auto-compact between turns.
+        # No hook fires for compaction, and between-turns auto-compact
+        # starts immediately after a Stop hook has already written
+        # ``idle`` — without this indicator the session would read as
+        # idle even though Claude is still working.  In compact form
+        # (spaces+newlines removed), "Compactingconversation" is
+        # specific enough to avoid colliding with conversational text.
+        return [b'Compactingconversation']
+
     def _has_numbered_menu(self, compact_text: str) -> bool:
         """Check for numbered menu cursor indicator (❯ or ›) before option 1."""
         # ❯ = U+276F, › = U+203A — both used by Ink TUI

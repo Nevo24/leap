@@ -1641,3 +1641,112 @@ class TestLateNotificationGuard:
 
         write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'needs_input'
+
+
+# ---------------------------------------------------------------------------
+# Claude conversation-compaction detection
+# ---------------------------------------------------------------------------
+
+class TestClaudeCompactingIndicator:
+    """Claude Code runs /compact and auto-compact without firing any
+    hook for the compaction itself.  Between-turns auto-compact starts
+    right after a Stop hook wrote 'idle' — without running-indicator
+    detection the session would read as idle for the full duration."""
+
+    def test_idle_transitions_to_running_when_compacting_appears(
+        self, tmp_path: Path,
+    ) -> None:
+        """Auto-compact fires right after Stop → indicator moves idle→running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+        t[0] = 1.0
+        feed_screen_text(tracker, '* Compacting conversation...')
+        assert tracker.current_state == 'running'
+
+    def test_idle_to_running_needs_seen_user_input(
+        self, tmp_path: Path,
+    ) -> None:
+        """Before any user input, indicator-based transition is suppressed
+        (matches the general gating for post-startup checks)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        feed_screen_text(tracker, '* Compacting conversation...')
+        assert tracker.current_state == 'idle'
+
+    def test_running_idle_signal_ignored_while_compacting(
+        self, tmp_path: Path,
+    ) -> None:
+        """Stop hook writing idle during an on-screen compaction must not
+        flip the state to idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(tracker, '* Compacting conversation... (12s)')
+        assert tracker.current_state == 'running'
+
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # The stale signal should be cleared so it doesn't keep re-firing.
+        assert not tracker._signal_file.exists()
+
+    def test_cursor_silence_fallback_skipped_while_compacting(
+        self, tmp_path: Path,
+    ) -> None:
+        """The running→idle cursor+silence fallback must not fire while
+        the compaction indicator is on screen."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # Cursor visible + indicator on screen.
+        feed_with_visible_cursor(
+            tracker, '* Compacting conversation... (3s)',
+        )
+        # Advance past the 5s silence window without any new output.
+        t[0] = 10.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_silence_safety_timeout_skipped_while_compacting(
+        self, tmp_path: Path,
+    ) -> None:
+        """Safety silence timeout must not force-idle while compacting."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(tracker, '* Compacting conversation...')
+        t[0] = SAFETY_SILENCE_TIMEOUT + 10.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_compaction_end_allows_idle_transition(
+        self, tmp_path: Path,
+    ) -> None:
+        """Once the indicator is gone (compaction finished), a subsequent
+        idle signal is honoured normally."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(tracker, '* Compacting conversation...')
+        assert tracker.current_state == 'running'
+
+        # Compaction finishes — indicator replaced by the normal prompt.
+        feed_screen_text(tracker, '> ')
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_other_providers_unaffected(
+        self, tmp_path: Path,
+    ) -> None:
+        """Providers without running indicators keep the default behaviour."""
+        t = [0.0]
+        tracker = make_tracker(
+            tmp_path, t, provider=CodexProvider(),
+        )
+        assert tracker._provider.running_indicator_patterns == []
+        tracker.on_input(b'x')
+        feed_screen_text(tracker, 'Compacting conversation...')
+        # No idle→running transition — the pattern is provider-specific.
+        assert tracker.current_state == 'idle'
