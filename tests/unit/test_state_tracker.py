@@ -690,10 +690,13 @@ class TestSafetyTimeouts:
     def test_waiting_timeout_respects_signal_confirmation(
         self, tmp_path: Path,
     ) -> None:
+        """When the signal still says needs_permission AND the dialog
+        patterns are still visible on screen, the 60s safety timeout
+        must keep us waiting (not force idle).  Refreshing the dialog
+        text with every redraw is what a real Ink TUI does."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
-        # Dialog patterns must be on screen for the guard to accept
         feed_screen_text(
             tracker,
             'Allow tool?  Enter to select  Esc to cancel',
@@ -701,7 +704,12 @@ class TestSafetyTimeouts:
         write_signal(tracker, 'needs_permission')
         tracker.get_state(pty_alive=True)
         t[0] = 1.0
-        tracker.on_output(b'prompt text')
+        # Redraw the dialog (still live) so the waiting→idle
+        # cursor+silence fallback doesn't see indicator-gone.
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
         # Signal still confirms needs_permission
         t[0] = 1.0 + SAFETY_WAITING_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'needs_permission'

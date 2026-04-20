@@ -379,15 +379,25 @@ class CLIStateTracker:
             self._user_responded = True
             _log.debug('ON_INPUT _user_responded=True')
 
-        # Enter in idle → RUNNING.  This covers server-terminal typing
-        # (the only path — on_send() only fires for client/queue sends).
-        # For slash commands (/clear, /help) where the Stop hook doesn't
-        # fire, the running→idle cursor+silence check in get_state()
-        # resolves it within ~1s.
-        if has_enter and self._state == CLIState.IDLE:
-            _log.debug('ON_INPUT Enter in idle → running')
+        # Enter in idle or interrupted → RUNNING.  Covers:
+        # * server-terminal typing in idle (slash commands, new prompts)
+        # * typing a reply into Claude's "What should Claude do?"
+        #   interrupt dialog — without this path the user stays stuck
+        #   in interrupted until the 60s safety timeout.
+        # NEEDS_PERMISSION/NEEDS_INPUT deliberately excluded: Enter
+        # there is a dialog answer, not a new submission, and must
+        # not unconditionally force running.
+        if has_enter and self._state in (
+            CLIState.IDLE, CLIState.INTERRUPTED,
+        ):
+            _log.debug(
+                'ON_INPUT Enter in %s → running', self._state,
+            )
+            if self._state == CLIState.INTERRUPTED:
+                self._suppress_stale_interrupt = True
             self._running_since = self._clock()
             self._interrupt_pending = False
+            self._user_responded = False
             self._user_input_since_idle = False
             with self._screen_lock:
                 self._reset_screen()
@@ -1099,6 +1109,67 @@ class CLIStateTracker:
                     self._state = CLIState.RUNNING
                     self._waiting_since = None
                 return CLIState.RUNNING
+
+        # -- Waiting → idle via indicator-gone + cursor visible + silence --
+        # Mirror of the running→idle cursor+silence fallback, for the
+        # cases where no hook fires to end a waiting state:
+        # * INTERRUPTED + double-Escape: user dismissed the interrupt
+        #   prompt entirely.  Gated on _user_responded so a mid-TUI
+        #   redraw (pattern briefly off screen) doesn't false-fire.
+        # * NEEDS_PERMISSION / NEEDS_INPUT + CLI self-dismissed: tool
+        #   timed out, dialog auto-cancelled, or a replacement dialog
+        #   rendered with different content.  No gate — the 5s
+        #   silence already proves the CLI isn't in the middle of a
+        #   redraw.
+        # Disabled for full-screen TUIs (cursor always hidden) and
+        # while trust_dialog_phase is active (startup output would
+        # otherwise look like dialog dismissal).
+        if (
+            current in WAITING_STATES
+            and not self._provider.cursor_hidden_while_idle
+            and not self._trust_dialog_phase
+            and self._last_output_time > 0
+            and (self._clock() - self._last_output_time) > 5.0
+        ):
+            with self._screen_lock:
+                cursor_visible = not self._screen.cursor.hidden
+                screen_text = self._get_screen_text()
+                compact = screen_text.replace(' ', '').replace('\n', '')
+            if cursor_visible:
+                indicator_gone = False
+                if current == CLIState.INTERRUPTED:
+                    if self._user_responded:
+                        pattern_str = self._provider.interrupted_pattern.decode(
+                            'utf-8', errors='replace',
+                        )
+                        indicator_gone = pattern_str not in compact
+                else:  # NEEDS_PERMISSION / NEEDS_INPUT
+                    indicator_gone = (
+                        not self._provider.has_dialog_indicator(compact)
+                    )
+                if indicator_gone:
+                    _log.debug(
+                        'GET_STATE %s→idle '
+                        '(indicator gone + cursor visible + silence)',
+                        current,
+                    )
+                    if current == CLIState.INTERRUPTED:
+                        self._suppress_stale_interrupt = True
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = CLIState.IDLE
+                        self._waiting_since = None
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                        self._prompt_snapshot = []
+                        self._last_running_snapshot = []
+                    try:
+                        self._signal_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    return CLIState.IDLE
 
         # -- Auto-resume via cursor visibility (poll-based) --
         # Checked at poll time (every 0.5s) rather than on_output to

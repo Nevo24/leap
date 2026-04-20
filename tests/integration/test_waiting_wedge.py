@@ -7,8 +7,6 @@ dialog that's already been dismissed by the CLI.
 
 import time
 
-import pytest
-
 from leap.utils.constants import SAFETY_WAITING_TIMEOUT
 
 from tests.conftest import PTYFixture
@@ -131,21 +129,15 @@ class TestLateNotificationGuard:
         assert pty.get_state() == 'needs_permission'
 
 
-class TestWaitingWedges:
-    """Scenarios that currently leave the session stuck."""
+class TestWaitingRecovery:
+    """Scenarios where no Stop hook fires — the cursor+silence
+    fallback rescues us from what used to be 60-second wedges."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason='If the CLI dismisses its own dialog (timeout, '
-               'auto-cancel) with no Stop hook, the tracker has no '
-               'event-driven way to notice — state stays at '
-               'needs_permission until SAFETY_WAITING_TIMEOUT (60s).',
-    )
     def test_cli_dismisses_dialog_without_signal(
         self, pty: PTYFixture,
     ) -> None:
-        """The CLI aborts the dialog without a hook — ideally the
-        tracker would notice the missing dialog patterns and resume."""
+        """CLI aborts the dialog without a hook — the waiting→idle
+        cursor+silence fallback catches it after 5s of silence."""
         pty.tracker.on_send()
         pty.feed_output(_DIALOG_BYTES)
         pty.write_signal('needs_permission')
@@ -153,8 +145,10 @@ class TestWaitingWedges:
 
         # Dialog disappears — CLI redraws a plain prompt.
         pty.feed_output(b'\x1b[?25h\x1b[2J\x1b[H> ')
-        # Expectation: within a couple polls, we notice and exit.
-        assert pty.wait_for_state('idle', timeout=2.0) == 'idle'
+        # Advance past the 5s silence window.
+        base = pty.tracker._clock()
+        pty.tracker._clock = lambda: base + 6.0
+        assert pty.get_state() == 'idle'
 
     def test_safety_timeout_force_exits_stuck_waiting(
         self, pty: PTYFixture,
