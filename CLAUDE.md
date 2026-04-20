@@ -291,13 +291,18 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 ## Testing
 
 ```bash
-poetry run pytest tests/ -v     # Run all tests
+make test                         # All tests (unit + integration)
+make test-unit                    # Fast unit tests only (fake clock)
+make test-integration             # Real-PTY integration tests (~2 min)
+poetry run pytest tests/ -v       # All tests with verbose output
 ```
 
 - Tests use `pytest` (dev dependency, `poetry install --with dev`)
+- `tests/unit/` — fake-clock tracker tests and other in-process units
+- `tests/integration/` — real bash-via-pexpect PTY + pyte rendering; shared `PTYFixture` lives in `tests/conftest.py`
 - `ClaudeStateTracker` uses an injectable `clock` parameter — tests pass a fake clock (`lambda: t[0]`) for deterministic time control
 - Use `tmp_path` fixture for signal files
-- Test file naming: `tests/test_<module>.py`
+- Test file naming: `tests/unit/test_<module>.py` or `tests/integration/test_<topic>.py`
 
 ## Code Conventions
 
@@ -431,6 +436,9 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 make install           # Install core + configure shell
 make install-monitor   # Build and install GUI app
 make install-slack-app # Install Slack integration + setup wizard
+make test              # Run the full test suite (unit + integration)
+make test-unit         # Run only fast unit tests
+make test-integration  # Run only real-PTY integration tests
 make run-monitor       # Run monitor from source (no build needed)
 make update            # Update to latest version (git pull + rebuild)
 make update-deps       # Update Python dependencies only

@@ -270,6 +270,21 @@ run-monitor:
 run-cleanup-sessions:
 	@$(SCRIPTS_DIR)/leap-cleanup.sh
 
+.PHONY: test
+test:
+	@echo "$(PROMPT_PREFIX) Running tests..."
+	@poetry run pytest tests/
+
+.PHONY: test-unit
+test-unit:
+	@echo "$(PROMPT_PREFIX) Running unit tests..."
+	@poetry run pytest tests/unit/
+
+.PHONY: test-integration
+test-integration:
+	@echo "$(PROMPT_PREFIX) Running integration tests..."
+	@poetry run pytest tests/integration/
+
 .PHONY: clean
 clean:
 	@echo "$(PROMPT_PREFIX) Cleaning up..."
