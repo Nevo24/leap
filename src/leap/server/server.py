@@ -3001,7 +3001,6 @@ class LeapServer:
         set_terminal_title(f"lps {self.tag}")
         self._print_startup_banner()
         self.pty.spawn()
-        self._write_cli_pid_map()
 
         # Start background threads
         self.socket_handler.start()
@@ -3013,6 +3012,13 @@ class LeapServer:
         # so concurrent `leap <tag>` invocations see the socket and connect as
         # clients instead of trying to start a second server.
         self.socket_handler.wait_ready()
+
+        # Write the pid_map only AFTER the socket is listening so the
+        # hook's PPID-walker can treat ``pid_map exists ⟹ socket is bound``
+        # as a hard invariant.  Without this ordering, a hook firing in
+        # the narrow window between map-write and bind would fail the
+        # socket-existence staleness guard and drop the signal.
+        self._write_cli_pid_map()
 
         # Release the shell startup lock now that the socket is listening.
         # The lock dir was created by leap-main.sh to prevent duplicate
