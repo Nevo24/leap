@@ -238,6 +238,18 @@ class ClaudeProvider(CLIProvider):
             make_entry("needs_input", matcher="elicitation_dialog"),
         ])
 
+        # SessionStart(resume) — fires on `/resume` inside a running Claude
+        # and on `claude --resume=<id>` startup.  Without it, a user who
+        # loads a past session but exits before sending a message never
+        # triggers Stop, so the session id is never recorded and
+        # `leap --resume` can't see it.  Matcher "startup" is intentionally
+        # omitted so abandoned fresh sessions don't clutter the picker.
+        if "SessionStart" not in hooks:
+            hooks["SessionStart"] = []
+        hooks["SessionStart"] = upsert(hooks["SessionStart"], [
+            make_entry("idle", matcher="resume"),
+        ])
+
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         with open(settings_path, "w") as f:
             json.dump(settings, f, indent=2)
