@@ -2511,6 +2511,10 @@ def _request_notification_permission() -> None:
     # so the bundle registers and the user sees the Allow dialog.
     if plist_state is None:
         _run_first_time_notification_prompt()
+        # Give usernoted a moment to commit the plist write before we
+        # re-read it — belt-and-suspenders against a theoretical race
+        # between the completion callback firing and the disk flush.
+        time.sleep(0.2)
         plist_state = (
             _read_notifications_plist_status(bundle_id) if bundle_id else None
         )
