@@ -23,6 +23,7 @@ src/
 │   ├── leap-resume.py        # `leap --resume` picker — CLI-agnostic; each row is shown as `[cli] tag` and resumes via the provider's `resume_args(id)`
 │   ├── leap-hook-process.py  # Hook processor invoked by `leap-hook.sh`; shared across all CLIs. Handles stdin parsing, session recording via `provider.extract_session_id()`, and last-assistant-message extraction for Slack
 │   ├── leap-cleanup.sh       # Dead session cleanup
+│   ├── _leap                 # zsh completion for user-facing flags (conditional --slack)
 │   ├── leap-server.py        # Thin launcher → LeapServer
 │   ├── leap-client.py        # Thin launcher → LeapClient
 │   ├── leap-monitor.py       # Thin launcher → MonitorWindow

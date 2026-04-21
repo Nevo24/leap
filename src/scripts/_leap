@@ -1,0 +1,37 @@
+#compdef leap
+#
+# zsh completion for the `leap` command.
+#
+# Only the user-facing flags from `leap --help` are completed — anything
+# else (tag, message, or --flags forwarded to the chosen CLI) is
+# pass-through, which zsh's default completion handles well enough.
+#
+# `--slack` is conditional on the Slack bot being configured, matching
+# leap-main.sh's own --help behavior.
+
+_leap() {
+    # Our top-level flags are only meaningful as the FIRST arg after `leap`
+    # — leap-main.sh checks `$1` against each of them. Anything at a later
+    # position is passed straight through to the CLI, which we don't try to
+    # complete (the CLI's own flag set is unknown to us).
+    if (( CURRENT != 2 )); then
+        _default
+        return
+    fi
+
+    local -a opts
+    opts=(
+        '(-h --help)'{-h,--help}'[show help]'
+        '--update[update Leap to the latest version]'
+        '--manage-clis[manage CLI providers (order, flags, visibility, custom CLIs)]'
+        '--resume[resume a previous session in its original CLI]'
+    )
+
+    if [[ -n "$LEAP_PROJECT_DIR" && -f "$LEAP_PROJECT_DIR/.storage/slack/config.json" ]]; then
+        opts+=('--slack[start the Slack bot daemon]')
+    fi
+
+    _arguments -s -S "${opts[@]}" '*: :_default'
+}
+
+_leap "$@"

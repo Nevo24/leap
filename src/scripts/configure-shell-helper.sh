@@ -9,9 +9,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-UPDATE_MODE=false
+# `--update` used to gate the overwrite prompt; now the overwrite is always
+# silent, so we just consume the flag for backward compatibility with the
+# Makefile's `.detect-shell-update` target.
 if [ "$1" = "--update" ]; then
-    UPDATE_MODE=true
     shift
 fi
 REPO_PATH="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
@@ -38,29 +39,26 @@ if [ -f "$RC_FILE" ]; then
     rm -f "$RC_FILE.bak"
 fi
 
-# Check if config already exists
-if grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
-    if [ "$UPDATE_MODE" = true ]; then
-        REPLY="y"
-    else
-        echo -e "${YELLOW}⚠ Leap configuration already exists in $RC_FILE${NC}"
-        read -p "  Overwrite? (y/N) " -n 1 -r REPLY
-        echo
-    fi
+# Silently strip any existing Leap block — the content is 100% regenerated
+# from this script, and the timestamped .zshrc backup below preserves
+# anything the user may have hand-edited.
+stripped=false
+if grep -q "Leap Configuration START" "$RC_FILE" 2>/dev/null; then
+    sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
+    rm -f "$RC_FILE.bak"
+    stripped=true
+elif grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
+    # Legacy pre-marker block — fall back to the old heuristic.
+    sed -i.bak '/# Leap/,/^alias claudel=/d' "$RC_FILE"
+    rm -f "$RC_FILE.bak"
+    stripped=true
+fi
 
-    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
-        # Remove old config
-        if grep -q "Leap Configuration START" "$RC_FILE"; then
-            sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
-        else
-            sed -i.bak '/# Leap/,/^alias claudel=/d' "$RC_FILE"
-        fi
-        rm -f "$RC_FILE.bak"
-        echo -e "${GREEN}✓ Removed old configuration${NC}"
-    else
-        echo "  Skipping shell configuration."
-        exit 0
-    fi
+# Collapse trailing blank lines left behind by the strip, so the separator
+# blank line in our heredoc doesn't accumulate across repeated installs.
+if [ "$stripped" = true ] && [ -s "$RC_FILE" ]; then
+    awk 'NF {for (i=0;i<bl;i++) print ""; bl=0; print; next} {bl++}' \
+        "$RC_FILE" > "$RC_FILE.trim" && mv "$RC_FILE.trim" "$RC_FILE"
 fi
 
 # Backup RC file
@@ -82,53 +80,38 @@ fi
 # Add Leap configuration
 cat >> "$RC_FILE" <<'EOF'
 
-# ===== Leap Configuration START - DO NOT REMOVE (needed for uninstall) =====
-# Leap - Scrollable in JetBrains IDEs! 🎯
-# Uses PTY (no tmux) with native scrolling
-# Server in JetBrains, client in any terminal
-#
-# Usage: leap [tag] [--flags]
-#
-# You can modify the content below, but keep the START/END marker lines
-# for proper uninstallation.
+# ===== Leap Configuration START - DO NOT REMOVE =====
 EOF
 
 echo "export LEAP_PROJECT_DIR=\"$REPO_PATH\"" >> "$RC_FILE"
-echo "" >> "$RC_FILE"
 
-# Add JetBrains IDE CLI tools to PATH
-echo "# Add JetBrains IDE CLI tools to PATH for monitor support" >> "$RC_FILE"
-JETBRAINS_PATHS=""
-for pattern in IntelliJ PyCharm WebStorm PhpStorm GoLand RubyMine CLion DataGrip Rider Fleet "Android Studio"; do
-    # Search both /Applications (standalone) and ~/Applications (JetBrains Toolbox)
-    for app_dir in /Applications "$HOME/Applications"; do
-        for app in "$app_dir"/"${pattern}"*.app; do
-            if [ -d "$app/Contents/MacOS" ]; then
-                JETBRAINS_PATHS="$JETBRAINS_PATHS:$app/Contents/MacOS"
-            fi
-        done
-    done
-done
-
-# JetBrains Toolbox shell scripts directory
-TOOLBOX_SCRIPTS="$HOME/Library/Application Support/JetBrains/Toolbox/scripts"
-if [ -d "$TOOLBOX_SCRIPTS" ]; then
-    JETBRAINS_PATHS="$JETBRAINS_PATHS:$TOOLBOX_SCRIPTS"
-fi
-
-if [ -n "$JETBRAINS_PATHS" ]; then
-    echo "export PATH=\"\$PATH$JETBRAINS_PATHS\"" >> "$RC_FILE"
-fi
-echo "" >> "$RC_FILE"
-
-# Add leap function
 cat >> "$RC_FILE" <<'EOF'
 
 leap() {
     "$LEAP_PROJECT_DIR/src/scripts/leap-select.sh" "$@"
 }
+EOF
 
-# ===== Leap Configuration END - DO NOT REMOVE (needed for uninstall) =====
+# Fast-path compdef if the user's framework (oh-my-zsh/prezto/etc) already
+# ran compinit — skips a 100–500ms fpath rescan on every shell start.
+if [ "$SHELL_NAME" = "zsh" ]; then
+    cat >> "$RC_FILE" <<'EOF'
+
+# Tab-complete `leap` flags
+if [ -f "$LEAP_PROJECT_DIR/src/scripts/_leap" ]; then
+    fpath=("$LEAP_PROJECT_DIR/src/scripts" $fpath)
+    if (( $+functions[compdef] )); then
+        autoload -Uz _leap && compdef _leap leap
+    else
+        autoload -Uz compinit && compinit -u
+    fi
+fi
+EOF
+fi
+
+cat >> "$RC_FILE" <<'EOF'
+
+# ===== Leap Configuration END - DO NOT REMOVE =====
 EOF
 
 echo -e "${GREEN}✓ Added Leap configuration to $RC_FILE${NC}"
