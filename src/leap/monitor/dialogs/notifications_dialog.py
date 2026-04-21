@@ -134,7 +134,7 @@ class NotificationsDialog(ZoomMixin, QDialog):
                 grid.addWidget(dock_container, row, 1)
 
                 banner_cb = QCheckBox()
-                banner_cb.setChecked(prefs.get('banner', False))
+                banner_cb.setChecked(prefs.get('banner', True))
                 banner_container = QWidget()
                 banner_lay = QHBoxLayout(banner_container)
                 banner_lay.setContentsMargins(0, 0, 0, 0)

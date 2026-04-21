@@ -33,16 +33,16 @@ _DEFAULT_PREFS = {
 # Default notification preferences per notification type.
 # Each type has independent 'dock' (badge count) and 'banner' (macOS banner) toggles.
 _DEFAULT_NOTIFICATIONS: dict[str, dict[str, Any]] = {
-    'pr_unresponded': {'dock': True, 'banner': False, 'sound': 'None'},
-    'pr_all_responded': {'dock': True, 'banner': False, 'sound': 'None'},
-    'pr_approved': {'dock': True, 'banner': False, 'sound': 'None'},
-    'session_completed': {'dock': True, 'banner': False, 'sound': 'None'},
-    'session_needs_permission': {'dock': True, 'banner': False, 'sound': 'None'},
-    'session_needs_input': {'dock': True, 'banner': False, 'sound': 'None'},
-    'session_interrupted': {'dock': True, 'banner': False, 'sound': 'None'},
-    'review_requested': {'dock': True, 'banner': False, 'sound': 'None'},
-    'assigned': {'dock': True, 'banner': False, 'sound': 'None'},
-    'mentioned': {'dock': True, 'banner': False, 'sound': 'None'},
+    'pr_unresponded': {'dock': True, 'banner': True, 'sound': 'None'},
+    'pr_all_responded': {'dock': True, 'banner': True, 'sound': 'None'},
+    'pr_approved': {'dock': True, 'banner': True, 'sound': 'None'},
+    'session_completed': {'dock': True, 'banner': True, 'sound': 'None'},
+    'session_needs_permission': {'dock': True, 'banner': True, 'sound': 'None'},
+    'session_needs_input': {'dock': True, 'banner': True, 'sound': 'None'},
+    'session_interrupted': {'dock': True, 'banner': True, 'sound': 'None'},
+    'review_requested': {'dock': True, 'banner': True, 'sound': 'None'},
+    'assigned': {'dock': True, 'banner': True, 'sound': 'None'},
+    'mentioned': {'dock': True, 'banner': True, 'sound': 'None'},
 }
 
 # macOS system sounds available in /System/Library/Sounds/
