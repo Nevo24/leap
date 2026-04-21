@@ -78,6 +78,7 @@ src/
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   ├── themes.py            # Visual theme definitions (9 built-in themes, manager API)
+    │   ├── permissions.py       # macOS Accessibility + Notifications checks; live state via AXIsProcessTrusted and ncprefs.plist bit 25
     │   │
     │   ├── _mixins/             # MonitorWindow mixin classes
     │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE)

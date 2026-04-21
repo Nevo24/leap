@@ -34,6 +34,11 @@ from PyQt5.QtGui import (
 from PyQt5.QtSvg import QSvgRenderer
 
 from leap.monitor.dialogs.settings_dialog import detect_default_difftool
+from leap.monitor.permissions import (
+    check_accessibility, check_notifications,
+    prompt_accessibility, prompt_notifications,
+    _current_bundle_id, _read_notifications_plist_status,
+)
 from leap.monitor.popup_zoom import PopupZoomManager
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
 from leap.monitor.pr_tracking.config import (
@@ -220,6 +225,7 @@ class MonitorWindow(
 
         self._init_ui()
         self._apply_window_effects()
+        self._refresh_permissions_banner()
         # Synchronous initial load — UI needs sessions before first paint
         self.sessions = self._merge_sessions(get_active_sessions())
         self._update_table()
@@ -282,6 +288,13 @@ class MonitorWindow(
         self._accent_bar = ShimmerBar()
         self._accent_bar.setFixedHeight(3)
         layout.addWidget(self._accent_bar)
+
+        # Permissions banner — only visible when Accessibility or
+        # Notifications permission is missing. Built once, refreshed on
+        # startup and whenever the window is activated (so flipping the
+        # toggle in System Settings makes the banner vanish on return).
+        self._permissions_banner = self._build_permissions_banner()
+        layout.addWidget(self._permissions_banner)
 
         # Table
         self.table = QTableWidget()
@@ -607,6 +620,143 @@ class MonitorWindow(
         status_layout.addWidget(close_btn)
 
         layout.addLayout(status_layout)
+
+    # ------------------------------------------------------------------
+    #  Permissions banner
+    # ------------------------------------------------------------------
+
+    def _build_permissions_banner(self) -> QFrame:
+        """Construct the (initially hidden) missing-permissions banner.
+
+        The banner itself is a horizontal strip that sits between the
+        accent stripe and the logo bar. It holds a warning label plus
+        one "Open in Settings" button per missing permission. Content
+        is (re)populated by ``_refresh_permissions_banner`` — build
+        time we just set up the container and layout.
+        """
+        banner = QFrame()
+        banner.setObjectName('_leapPermsBanner')
+        banner.setVisible(False)
+        # Assign early so ``_apply_permissions_banner_style`` below can
+        # find it via its ``hasattr`` guard — otherwise the banner
+        # never receives its initial orange palette.
+        self._permissions_banner = banner
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(10, 6, 10, 6)
+        row.setSpacing(10)
+
+        self._perms_icon_label = QLabel('⚠')  # warning sign
+        self._perms_icon_label.setObjectName('_leapPermsIcon')
+        row.addWidget(self._perms_icon_label, 0, Qt.AlignVCenter)
+
+        self._perms_text_label = QLabel('')
+        self._perms_text_label.setObjectName('_leapPermsText')
+        self._perms_text_label.setWordWrap(True)
+        row.addWidget(self._perms_text_label, 1, Qt.AlignVCenter)
+
+        self._perms_ax_btn = QPushButton('Open Accessibility')
+        self._perms_ax_btn.setObjectName('_leapPermsBtn')
+        self._perms_ax_btn.setToolTip(
+            'Open System Settings › Privacy & Security › '
+            'Accessibility and enable Leap Monitor')
+        self._perms_ax_btn.clicked.connect(self._on_fix_accessibility_clicked)
+        row.addWidget(self._perms_ax_btn, 0, Qt.AlignVCenter)
+
+        self._perms_notif_btn = QPushButton('Open Notifications')
+        self._perms_notif_btn.setObjectName('_leapPermsBtn')
+        self._perms_notif_btn.setToolTip(
+            'Open System Settings › Notifications and enable '
+            'Leap Monitor')
+        self._perms_notif_btn.clicked.connect(self._on_fix_notifications_clicked)
+        row.addWidget(self._perms_notif_btn, 0, Qt.AlignVCenter)
+
+        self._apply_permissions_banner_style()
+        return banner
+
+    def _apply_permissions_banner_style(self) -> None:
+        """Apply theme colors to the banner. Called on build + theme change."""
+        if not hasattr(self, '_permissions_banner'):
+            return
+        t = current_theme()
+        # A muted warning strip: orange tint with an orange border.
+        self._permissions_banner.setStyleSheet(
+            f"#_leapPermsBanner {{"
+            f"  background-color: rgba(255, 152, 0, 0.12);"
+            f"  border: 1px solid {t.accent_orange};"
+            f"  border-radius: {t.border_radius}px;"
+            f"}}"
+            f"#_leapPermsIcon {{"
+            f"  color: {t.accent_orange};"
+            f"  font-size: {t.font_size_large}px;"
+            f"  font-weight: bold;"
+            f"}}"
+            f"#_leapPermsText {{"
+            f"  color: {t.text_primary};"
+            f"}}"
+            f"#_leapPermsBtn {{"
+            f"  color: {t.accent_orange};"
+            f"  background: transparent;"
+            f"  border: 1px solid {t.accent_orange};"
+            f"  border-radius: {t.border_radius}px;"
+            f"  padding: 4px 12px;"
+            f"}}"
+            f"#_leapPermsBtn:hover {{"
+            f"  background-color: rgba(255, 152, 0, 0.18);"
+            f"}}"
+        )
+
+    def _refresh_permissions_banner(self, is_followup: bool = False) -> None:
+        """Re-run the permission checks and update banner visibility + text.
+
+        On macOS, the UN framework's ``requestAuthorization`` block can be
+        dispatched slightly after our NSRunLoop spin-timeout in the live
+        Qt app, which would leave the banner showing a stale "granted"
+        state on the very first check.  Every non-followup invocation
+        schedules a single follow-up refresh ~1.2s later so a late
+        callback result still propagates without waiting for the next
+        user-initiated event.  ``is_followup=True`` suppresses further
+        scheduling to avoid an infinite chain.
+        """
+        if not hasattr(self, '_permissions_banner'):
+            return
+        missing_ax = not check_accessibility()
+        missing_notif = not check_notifications()
+
+        if not is_followup and not getattr(self, '_perms_followup_queued', False):
+            self._perms_followup_queued = True
+
+            def _run_followup() -> None:
+                self._perms_followup_queued = False
+                self._refresh_permissions_banner(is_followup=True)
+
+            QTimer.singleShot(1200, _run_followup)
+
+        self._perms_ax_btn.setVisible(missing_ax)
+        self._perms_notif_btn.setVisible(missing_notif)
+
+        if not missing_ax and not missing_notif:
+            self._permissions_banner.setVisible(False)
+            return
+
+        missing = []
+        if missing_ax:
+            missing.append('Accessibility')
+        if missing_notif:
+            missing.append('Notifications')
+        joined = ' and '.join(missing)
+        self._perms_text_label.setText(
+            f"Leap Monitor is missing {joined} permission"
+            f"{'s' if len(missing) > 1 else ''}. "
+            f"Some features won't work until you grant "
+            f"{'them' if len(missing) > 1 else 'it'} in System Settings."
+        )
+        self._permissions_banner.setVisible(True)
+
+    def _on_fix_accessibility_clicked(self) -> None:
+        prompt_accessibility()
+
+    def _on_fix_notifications_clicked(self) -> None:
+        prompt_notifications()
 
     # ------------------------------------------------------------------
     #  Core utilities
@@ -1237,6 +1387,9 @@ class MonitorWindow(
             # (dialogs set it to their size while they're active).
             self.set_tooltip_font_size(
                 getattr(self, '_main_font_size', 13))
+            # Re-check system permissions — user may have just returned
+            # from System Settings after flipping a toggle.
+            self._refresh_permissions_banner()
 
     def _auto_refresh(self) -> None:
         """Auto-refresh callback."""
@@ -1864,6 +2017,9 @@ class MonitorWindow(
         # Update logo to themed variant
         self._update_logo_pixmap()
 
+        # Re-apply permissions banner palette
+        self._apply_permissions_banner_style()
+
         # Re-apply main-window font zoom (theme change replaces our overlay)
         self._apply_main_font_size()
 
@@ -2326,32 +2482,58 @@ class MonitorWindow(
 
 
 def _request_notification_permission() -> None:
-    """Request macOS notification permission and exit.
+    """Probe live notification state for the install flow and exit.
 
-    Called when the app is launched with ``--request-permissions``.
-    Registers the bundle with the notification system (so it appears
-    in System Settings > Notifications) and presents the native
-    "Leap Monitor would like to send you notifications" dialog.
+    Uses the *exact same* read-only plist check the in-app banner
+    uses (``check_notifications`` → bit 25 of the per-app ``flags`` in
+    ``com.apple.ncprefs.plist``).  No ``requestAuthorization`` side
+    trip — that call has been observed to mutate the plist entry as a
+    side effect, which would make this subprocess falsely report
+    "granted" right after the user toggled the app off.
 
-    On macOS 14+ ``UNUserNotificationCenter`` silently declines to
-    present the dialog unless a real ``NSApplication`` with
-    ``NSApplicationActivationPolicyRegular`` is running, so we set
-    that up first.  If authorization still isn't granted (user
-    dismissed, macOS suppressed, etc.) we open the System Settings
-    Notifications pane as a fallback.
+    For a first-time install where the bundle has never been
+    registered with the notification system (not listed in the plist
+    at all), we still need the native prompt to appear so the app
+    shows up in System Settings.  In that single case we do run
+    ``requestAuthorization`` — it's harmless there because there's no
+    prior state to overwrite.
 
-    Idempotency: the bundle is registered in
-    ``~/Library/Preferences/com.apple.ncprefs.plist`` the first time
-    ``requestAuthorizationWithOptions`` is invoked, regardless of the
-    user's answer — ``make install-monitor`` then reads that plist
-    and skips this whole prompt on subsequent runs.
+    Exit codes (for the Makefile to key off):
+        0 — notifications currently allowed per plist
+        1 — not allowed (Settings opened so user can flip the toggle)
+    """
+    bundle_id = _current_bundle_id()
+    plist_state = (
+        _read_notifications_plist_status(bundle_id) if bundle_id else None
+    )
+
+    # Bundle not listed → first-time install.  Show the native prompt
+    # so the bundle registers and the user sees the Allow dialog.
+    if plist_state is None:
+        _run_first_time_notification_prompt()
+        plist_state = (
+            _read_notifications_plist_status(bundle_id) if bundle_id else None
+        )
+
+    if plist_state is True:
+        sys.exit(0)
+    # Exit nonzero and let the Makefile prompt the user Y/n before
+    # opening Settings (mirrors the Accessibility flow).
+    sys.exit(1)
+
+
+def _run_first_time_notification_prompt() -> None:
+    """Show the native "would like to send you notifications" prompt.
+
+    Only invoked from ``_request_notification_permission`` when the
+    bundle isn't yet registered with the notification system.  Sets up
+    an NSApplication so the UN framework will actually present the
+    dialog on macOS 14+, fires ``requestAuthorizationWithOptions_``,
+    and waits up to 30 seconds for the user's answer.
     """
     try:
-        # Make this process a real app so the UN framework will
-        # present the authorization dialog.
         app = NSApplication.sharedApplication()
         try:
-            # 0 = NSApplicationActivationPolicyRegular (dock icon, UI).
             app.setActivationPolicy_(0)
             app.activateIgnoringOtherApps_(True)
         except Exception:
@@ -2374,40 +2556,22 @@ def _request_notification_permission() -> None:
 
         center = UNUserNotificationCenter.currentNotificationCenter()
         done = [False]
-        granted = [False]
 
         def _on_auth(ok: bool, error: object) -> None:
-            granted[0] = bool(ok)
             done[0] = True
 
         center.requestAuthorizationWithOptions_completionHandler_(
-            (1 << 0) | (1 << 1) | (1 << 2),  # badge | sound | alert
+            (1 << 0) | (1 << 1) | (1 << 2),
             _on_auth,
         )
 
-        # Spin the run loop so the completion handler fires and the
-        # system dialog can be presented / dismissed.
-        timeout = 30.0  # seconds — generous limit
+        timeout = 30.0
         while not done[0] and timeout > 0:
             NSRunLoop.currentRunLoop().runUntilDate_(
                 NSDate.dateWithTimeIntervalSinceNow_(0.25))
             timeout -= 0.25
-
-        # User dismissed / macOS suppressed the dialog / we timed
-        # out.  The bundle is already registered with the
-        # notification system by the request above, so point the
-        # user at the Settings toggle they can flip by hand.
-        if not granted[0]:
-            subprocess.run(
-                ['open',
-                 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'],
-                check=False,
-            )
     except Exception as exc:
         print(f"  Note: Could not request notification permission ({exc})")
-        print("  You can grant it later in System Settings > Notifications > Leap Monitor")
-
-    sys.exit(0)
 
 
 def main() -> None:

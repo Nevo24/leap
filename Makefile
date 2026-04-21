@@ -231,25 +231,27 @@ install-monitor: .env ensure-storage write-install-metadata
 	if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
 		open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
 	fi
-	@NOTIF_KNOWN=$$(python3 -c "import plistlib,pathlib; \
-		p=pathlib.Path.home()/'Library/Preferences/com.apple.ncprefs.plist'; \
-		data=plistlib.load(open(p,'rb')) if p.exists() else {}; \
-		print('yes' if any(a.get('bundle-id')=='com.leap.monitor' for a in data.get('apps',[])) else 'no')" 2>/dev/null || echo "no"); \
-	if [ "$$NOTIF_KNOWN" = "yes" ]; then \
-		echo ""; \
-		echo "  $(YELLOW)Notifications$(NC) — already configured, skipping prompt."; \
+	@$(MAKE) .prompt-notifications
+
+.PHONY: .prompt-notifications
+.prompt-notifications:
+	@echo ""
+	@echo "$(YELLOW)Notifications — required for banner / Slack / PR alerts$(NC)"
+	@if pgrep -f "Leap Monitor.app" > /dev/null 2>&1; then \
+		echo "  Leap Monitor is already running — can't probe permission state."; \
+		echo "  Quit the app and run 'make install-monitor' again, or enable it"; \
+		echo "  directly in System Settings > Notifications > Leap Monitor."; \
 	else \
-		echo ""; \
-		echo "  $(YELLOW)Notifications$(NC) — Required for system notifications"; \
-		echo "  A macOS permission dialog will appear — click Allow to enable."; \
-		read -p "  Request notification permission? (Y/n) " -n 1 -r REPLY_NOTIF; echo; \
-		if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-			if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
-				echo "  Leap Monitor is already running — skipping permission request."; \
-				echo "  Grant notifications in System Settings > Notifications > Leap Monitor."; \
-			elif ! open -W -a "Leap Monitor" --args --request-permissions 2>/dev/null; then \
-				echo "  $(YELLOW)Could not launch Leap Monitor for permission request.$(NC)"; \
-				echo "  You can grant notification permission later in System Settings."; \
+		LEAP_BIN="/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor"; \
+		"$$LEAP_BIN" --request-permissions 2>/dev/null; \
+		NOTIF_STATUS=$$?; \
+		if [ "$$NOTIF_STATUS" = "0" ]; then \
+			echo "  $(GREEN)✓ Already granted — skipping.$(NC)"; \
+		else \
+			printf "  Open Notifications settings? (Y/n) "; \
+			read -n 1 -r REPLY_NOTIF; echo; \
+			if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
+				open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"; \
 			fi; \
 		fi; \
 	fi
@@ -325,7 +327,8 @@ update: .env
 		echo ""; \
 		echo "  Slack not installed. To install it, run: make install-slack-app"; \
 	fi
-	@if [ -d "/Applications/Leap Monitor.app" ]; then \
+	@MONITOR_REBUILT=no; \
+	if [ -d "/Applications/Leap Monitor.app" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Detected Leap Monitor installation"; \
 		echo "$(PROMPT_PREFIX) Updating monitor dependencies..."; \
@@ -339,6 +342,7 @@ update: .env
 		if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
 			open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
 		fi; \
+		MONITOR_REBUILT=yes; \
 	elif [ -f "$(REPO_PATH)/.storage/.migration_had_monitor" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Old ClaudeQ Monitor was removed during migration"; \
@@ -354,9 +358,13 @@ update: .env
 		if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
 			open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
 		fi; \
+		MONITOR_REBUILT=yes; \
 	else \
 		echo ""; \
 		echo "  Monitor not installed. To install it, run: make install-monitor"; \
+	fi; \
+	if [ "$$MONITOR_REBUILT" = "yes" ]; then \
+		$(MAKE) .prompt-notifications; \
 	fi
 	@echo ""
 	@echo "$(PROMPT_PREFIX) Updating IDE/terminal configurations..."
