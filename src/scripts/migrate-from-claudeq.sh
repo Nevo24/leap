@@ -124,8 +124,6 @@ fi
 
 # ── Step 2: Remove old shell config block ───────────────────────────
 if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ] && grep -q "ClaudeQ Configuration" "$RC_FILE" 2>/dev/null; then
-    cp "$RC_FILE" "$RC_FILE.backup-migration-$(date +%Y%m%d-%H%M%S)"
-
     if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
         sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
     elif grep -q "# ClaudeQ" "$RC_FILE"; then
@@ -141,7 +139,6 @@ if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ] && grep -q "ClaudeQ Configuration" "$R
     fi
 
     echo -e "  ${GREEN}✓ Removed old ClaudeQ shell configuration from $RC_FILE${NC}"
-    echo "    (backup saved as $RC_FILE.backup-migration-*)"
 else
     echo "  ✓ No old shell configuration to remove"
 fi

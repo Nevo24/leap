@@ -39,9 +39,9 @@ if [ -f "$RC_FILE" ]; then
     rm -f "$RC_FILE.bak"
 fi
 
-# Silently strip any existing Leap block — the content is 100% regenerated
-# from this script, and the timestamped .zshrc backup below preserves
-# anything the user may have hand-edited.
+# Silently strip any existing Leap block. The content is 100% regenerated
+# from this script — hand-edits between the START/END markers are not
+# protected (users are expected to customize outside the block).
 stripped=false
 if grep -q "Leap Configuration START" "$RC_FILE" 2>/dev/null; then
     sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
@@ -59,14 +59,6 @@ fi
 if [ "$stripped" = true ] && [ -s "$RC_FILE" ]; then
     awk 'NF {for (i=0;i<bl;i++) print ""; bl=0; print; next} {bl++}' \
         "$RC_FILE" > "$RC_FILE.trim" && mv "$RC_FILE.trim" "$RC_FILE"
-fi
-
-# Backup RC file
-if [ -f "$RC_FILE" ]; then
-    cp "$RC_FILE" "$RC_FILE.backup-$(date +%Y%m%d-%H%M%S)"
-    echo -e "${GREEN}✓ Backed up $RC_FILE${NC}"
-else
-    echo -e "${GREEN}✓ Creating new $RC_FILE${NC}"
 fi
 
 # Get Poetry venv path (try stored path first, then poetry command)

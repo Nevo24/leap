@@ -45,17 +45,14 @@ endef
 # Shell helper: remove Leap/ClaudeQ config from RC file
 define REMOVE_SHELL_CONFIG
 if grep -q "Leap Configuration START" "$$RC_FILE"; then \
-	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
 	sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$$RC_FILE"; \
 	rm -f "$$RC_FILE.bak"; \
 elif grep -q "# Leap" "$$RC_FILE"; then \
-	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
 	sed -i.bak '/# Leap/,/# End Leap/d' "$$RC_FILE"; \
 	sed -i.bak '/# Leap/,/^alias claudel/d' "$$RC_FILE"; \
 	rm -f "$$RC_FILE.bak"; \
 fi; \
 if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
-	cp "$$RC_FILE" "$$RC_FILE.backup-$$(date +%Y%m%d-%H%M%S)"; \
 	sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$$RC_FILE"; \
 	rm -f "$$RC_FILE.bak"; \
 fi

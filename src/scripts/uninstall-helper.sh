@@ -42,9 +42,6 @@ remove_shell_config() {
     echo
 
     if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
-        # Backup
-        cp "$RC_FILE" "$RC_FILE.backup-uninstall-$(date +%Y%m%d-%H%M%S)"
-
         # Remove Leap config (current naming)
         if grep -q "Leap Configuration START" "$RC_FILE"; then
             sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
@@ -71,7 +68,6 @@ remove_shell_config() {
         fi
 
         echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
-        echo "  Backup created: $RC_FILE.backup-uninstall-*"
     else
         echo "  Skipped shell configuration removal."
         echo "  To manually remove later, delete lines between:"
