@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import (
-    QColor, QCursor, QDesktopServices, QDrag, QImage, QPixmap,
+    QColor, QCursor, QDesktopServices, QDrag, QFont, QImage, QPixmap,
     QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat, QWheelEvent,
 )
 
@@ -60,6 +60,13 @@ _URL_RE = re.compile(r'https?://[^\s<>\"\')]+')
 _ANY_URL_RE = re.compile(r'[a-zA-Z][a-zA-Z0-9+.-]*://\S+|mailto:\S+')
 # Markdown link: [display text](url) — negative lookbehind excludes ![image](…)
 _LINK_RE = re.compile(r'(?<!!)\[([^\]]+)\]\((\S+://[^\s\)]+)\)')
+# Combined inline formats: [link](url) OR **bold**.  Bold does not span
+# newlines (``.`` without re.DOTALL).  Groups: 1=link-text, 2=link-url,
+# 3=bold-text.
+_INLINE_FORMAT_RE = re.compile(
+    r'(?<!!)\[([^\]]+)\]\((\S+://[^\s\)]+)\)'
+    r'|\*\*(.+?)\*\*'
+)
 
 
 # ── URL highlighting ───────────────────────────────────────────────
@@ -321,6 +328,34 @@ class _NoteTextEdit(QTextEdit):
                 return
         super().mousePressEvent(event)
 
+    def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
+        # Cmd+B toggles bold on the current selection (or insertion point).
+        # Qt maps Cmd → ControlModifier on macOS.  Mask keypad/fn bits.
+        mods = event.modifiers() & (
+            Qt.ControlModifier | Qt.ShiftModifier
+            | Qt.AltModifier | Qt.MetaModifier)
+        if event.key() == Qt.Key_B and mods == Qt.ControlModifier:
+            self._toggle_bold()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _toggle_bold(self) -> None:
+        """Flip bold on the selection, or on subsequent typing if no selection."""
+        is_bold = self.fontWeight() >= QFont.Bold
+        t = current_theme()
+        fmt = QTextCharFormat()
+        if is_bold:
+            fmt.setFontWeight(QFont.Normal)
+            fmt.setForeground(QColor(t.text_primary))
+        else:
+            fmt.setFontWeight(QFont.Black)
+            fmt.setForeground(QColor(t.accent_blue))
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            cursor.mergeCharFormat(fmt)
+        self.mergeCurrentCharFormat(fmt)
+
     def mouseMoveEvent(self, event: 'QMouseEvent') -> None:
         name = self._image_name_at(event.pos())
         if name:
@@ -386,18 +421,23 @@ class _NoteTextEdit(QTextEdit):
 
     @staticmethod
     def _insert_text_with_links(cursor: QTextCursor, text: str) -> None:
-        """Insert plain text, rendering [text](url) as styled anchor spans."""
+        """Insert plain text, rendering [text](url) as links and **text** as bold."""
         pos = 0
-        for m in _LINK_RE.finditer(text):
-            # Insert text before this link
+        for m in _INLINE_FORMAT_RE.finditer(text):
             if m.start() > pos:
                 cursor.insertText(text[pos:m.start()])
-            # Insert link display text with anchor format
-            cursor.insertText(m.group(1), _link_char_format(m.group(2)))
-            # Reset format so subsequent text is not styled as a link
+            if m.group(1) is not None:
+                # Markdown link
+                cursor.insertText(m.group(1), _link_char_format(m.group(2)))
+            else:
+                # Bold
+                bold_fmt = QTextCharFormat()
+                bold_fmt.setFontWeight(QFont.Black)
+                bold_fmt.setForeground(QColor(current_theme().accent_blue))
+                cursor.insertText(m.group(3), bold_fmt)
+            # Reset format so subsequent text has no inherited styling
             cursor.setCharFormat(QTextCharFormat())
             pos = m.end()
-        # Trailing text
         if pos < len(text):
             cursor.insertText(text[pos:])
 
@@ -456,7 +496,10 @@ class _NoteTextEdit(QTextEdit):
                         result.append(
                             f'[{fragment.text()}]({fmt.anchorHref()})')
                     else:
-                        result.append(fragment.text())
+                        txt = fragment.text()
+                        if txt and fmt.fontWeight() >= QFont.Bold:
+                            txt = f'**{txt}**'
+                        result.append(txt)
                 it += 1
             block = block.next()
         return ''.join(result)
@@ -2286,7 +2329,8 @@ class NotesDialog(QDialog):
         bottom_row = QHBoxLayout()
         hint = QLabel(
             'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
-            '  |  Cmd+K: Insert link  |  Cmd+/\u2212/0/Scroll: Zoom'
+            '  |  Cmd+K: Insert link  |  Cmd+B: Bold'
+            '  |  Cmd+/\u2212/0/Scroll: Zoom'
             '  |  Cmd+Z/Shift+Z: Undo/Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
         hint.setStyleSheet(
