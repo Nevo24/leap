@@ -1263,7 +1263,8 @@ class _ChecklistWidget(QWidget):
     def set_font_size(self, pt: int) -> None:
         """Update font size on all item editors and the add field."""
         self._container.setStyleSheet(
-            f'QLineEdit, QTextEdit {{ font-size: {pt}pt; }}'
+            f'QLineEdit, QTextEdit {{ font-size: {pt}pt;'
+            f' font-family: Menlo; }}'
         )
 
     def set_items(self, items: list[dict]) -> None:
@@ -3345,12 +3346,14 @@ class NotesDialog(QDialog):
         """Apply the content font size to the text editor and checklist."""
         font = self._editor.font()
         font.setPointSize(self._font_size)
+        font.setFamily('Menlo')
         self._editor.setFont(font)
         self._editor.document().setDefaultFont(font)
         # Stylesheet is the final authority — setFont/defaultFont can be
         # overridden by inserted char-formats.  Stylesheet wins.
         self._editor.setStyleSheet(
-            f'QTextEdit {{ font-size: {self._font_size}pt; }}'
+            f'QTextEdit {{ font-size: {self._font_size}pt;'
+            f' font-family: Menlo; }}'
         )
         self._checklist.set_font_size(self._font_size)
 
