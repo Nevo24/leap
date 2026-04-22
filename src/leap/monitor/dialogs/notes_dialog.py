@@ -142,6 +142,9 @@ def _link_char_format(url: str) -> QTextCharFormat:
     t = current_theme()
     fmt.setForeground(QColor(t.accent_blue))
     fmt.setFontUnderline(True)
+    # Explicitly normal weight so linking bolded text drops the bold —
+    # the user asked a bold word to become a link, not a bold link.
+    fmt.setFontWeight(QFont.Normal)
     fmt.setAnchor(True)
     fmt.setAnchorHref(url)
     return fmt
@@ -360,7 +363,7 @@ class _NoteTextEdit(QTextEdit):
             fmt.setForeground(QColor(t.text_primary))
         else:
             fmt.setFontWeight(QFont.Black)
-            fmt.setForeground(QColor(t.accent_blue))
+            fmt.setForeground(QColor(t.accent_orange))
         cursor = self.textCursor()
         if cursor.hasSelection():
             cursor.mergeCharFormat(fmt)
@@ -443,7 +446,7 @@ class _NoteTextEdit(QTextEdit):
                 # Bold
                 bold_fmt = QTextCharFormat()
                 bold_fmt.setFontWeight(QFont.Black)
-                bold_fmt.setForeground(QColor(current_theme().accent_blue))
+                bold_fmt.setForeground(QColor(current_theme().accent_orange))
                 cursor.insertText(m.group(3), bold_fmt)
             # Reset format so subsequent text has no inherited styling
             cursor.setCharFormat(QTextCharFormat())
@@ -1064,7 +1067,7 @@ class _ChecklistItemWidget(QFrame):
         if checked:
             color = t.text_muted
         elif bold:
-            color = t.accent_blue
+            color = t.accent_orange
         else:
             color = t.text_primary
         return f'QLineEdit {{ color: {color}; background: transparent; }}'
@@ -1082,7 +1085,7 @@ class _ChecklistItemWidget(QFrame):
             self._popup.setFont(popup_font)
             t = current_theme()
             color = (t.text_muted if self._checked
-                     else t.accent_blue if self._bold
+                     else t.accent_orange if self._bold
                      else t.text_primary)
             self._popup.setStyleSheet(
                 f'QTextEdit {{ color: {color}; background: transparent;'
@@ -1150,7 +1153,7 @@ class _ChecklistItemWidget(QFrame):
         wrap.setFont(self._edit.font())
         t = current_theme()
         color = (t.text_muted if self._checked
-                 else t.accent_blue if self._bold
+                 else t.accent_orange if self._bold
                  else t.text_primary)
         wrap.setStyleSheet(
             f'QTextEdit {{ color: {color}; background: transparent;'
@@ -3927,8 +3930,10 @@ class NotesDialog(QDialog):
                                 'Please enter a valid URL (e.g. https://…)')
 
         # The dialog may have caused expand popups to dismiss, so
-        # re-check which widget should receive the link.
-        focus_died = sip.isdeleted(focus)
+        # re-check which widget should receive the link.  ``focus`` may
+        # also be None if nothing was focused when Cmd+K fired — treat
+        # that the same as "died" and re-fetch whatever is focused now.
+        focus_died = focus is None or sip.isdeleted(focus)
         if focus_died:
             focus = QApplication.focusWidget()
             # Selection context was lost with the deleted widget — only
