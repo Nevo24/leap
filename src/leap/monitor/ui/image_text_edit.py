@@ -341,14 +341,14 @@ def _build_send_position_toggle(
     choice is remembered across all dialogs and sessions.
     """
     row = QHBoxLayout()
-    label = QLabel('Send:')
+    label = QLabel('Queue:')
     row.addWidget(label)
 
-    next_radio = QRadioButton('Next (front of queue)')
+    next_radio = QRadioButton('Front (processed next)')
     next_radio.setToolTip(
         'Insert at the front of the queue,\n'
         'so it is processed before other queued messages.')
-    end_radio = QRadioButton('To end of queue')
+    end_radio = QRadioButton('End (processed last)')
     end_radio.setToolTip(
         'Append to the end of the queue.')
 

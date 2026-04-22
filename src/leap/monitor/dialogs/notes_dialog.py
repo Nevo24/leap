@@ -26,7 +26,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import (
     QColor, QCursor, QDesktopServices, QDrag, QFont, QImage, QPixmap,
-    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextImageFormat, QWheelEvent,
+    QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument,
+    QTextImageFormat, QWheelEvent,
 )
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
@@ -43,10 +44,12 @@ from leap.monitor.leap_sender import (
 )
 from leap.monitor.pr_tracking.config import (
     load_dialog_geometry, load_monitor_prefs, load_saved_presets,
-    save_dialog_geometry, save_monitor_prefs, save_named_preset,
+    load_send_position, save_dialog_geometry, save_monitor_prefs,
+    save_named_preset,
 )
 from leap.monitor.session_manager import get_active_sessions
 from leap.monitor.themes import current_theme
+from leap.monitor.ui.image_text_edit import _build_send_position_toggle
 from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR, QUEUE_IMAGES_DIR
 
 
@@ -60,12 +63,19 @@ _URL_RE = re.compile(r'https?://[^\s<>\"\')]+')
 _ANY_URL_RE = re.compile(r'[a-zA-Z][a-zA-Z0-9+.-]*://\S+|mailto:\S+')
 # Markdown link: [display text](url) — negative lookbehind excludes ![image](…)
 _LINK_RE = re.compile(r'(?<!!)\[([^\]]+)\]\((\S+://[^\s\)]+)\)')
-# Combined inline formats: [link](url) OR **bold**.  Bold does not span
+# Bold is delimited on disk by ASCII control chars STX/ETX (U+0002/U+0003).
+# These are impossible to type on a keyboard, so any text the user types —
+# including literal ``**``, ``<b>``, ``__``, etc. — is preserved exactly.
+# The trade-off: if you open a note's .txt externally, bolded spans show
+# up as ``^B…^C`` glyphs.  Notes are edited via the Leap UI by design.
+_BOLD_START = '\x02'
+_BOLD_END = '\x03'
+# Combined inline formats: [link](url) OR STX…ETX.  Bold does not span
 # newlines (``.`` without re.DOTALL).  Groups: 1=link-text, 2=link-url,
 # 3=bold-text.
 _INLINE_FORMAT_RE = re.compile(
     r'(?<!!)\[([^\]]+)\]\((\S+://[^\s\)]+)\)'
-    r'|\*\*(.+?)\*\*'
+    f'|{_BOLD_START}(.+?){_BOLD_END}'
 )
 
 
@@ -474,8 +484,15 @@ class _NoteTextEdit(QTextEdit):
                     cursor.insertText(f'![image]({part})')
         self.setTextCursor(cursor)
 
-    def get_note_content(self) -> str:
-        """Serialize the document back to text with markers for images and links."""
+    def get_note_content(self, include_bold_markers: bool = True) -> str:
+        """Serialize the document back to text with markers for images and links.
+
+        Bold spans are delimited by ASCII STX/ETX control chars — see
+        the module-level comment near ``_BOLD_START``.  When
+        *include_bold_markers* is False, bold fragments emit plain text
+        without any wrapper — used for "Run in Session" where the
+        downstream AI does not need formatting metadata.
+        """
         doc = self.document()
         result: list[str] = []
         block = doc.begin()
@@ -497,8 +514,9 @@ class _NoteTextEdit(QTextEdit):
                             f'[{fragment.text()}]({fmt.anchorHref()})')
                     else:
                         txt = fragment.text()
-                        if txt and fmt.fontWeight() >= QFont.Bold:
-                            txt = f'**{txt}**'
+                        if (txt and include_bold_markers
+                                and fmt.fontWeight() >= QFont.Bold):
+                            txt = f'{_BOLD_START}{txt}{_BOLD_END}'
                         result.append(txt)
                 it += 1
             block = block.next()
@@ -588,6 +606,14 @@ def _rename_note_meta(old_name: str, new_name: str) -> None:
 
 # ── Checklist serialization ──────────────────────────────────────────
 
+def _unwrap_bold(text: str) -> tuple[str, bool]:
+    """If *text* is wrapped in STX/ETX, return (inner, True); else (text, False)."""
+    if (len(text) >= 2 and text[0] == _BOLD_START
+            and text[-1] == _BOLD_END):
+        return text[1:-1], True
+    return text, False
+
+
 def _parse_checklist(text: str) -> list[dict]:
     """Parse markdown-style checklist text into item dicts."""
     items: list[dict] = []
@@ -596,11 +622,16 @@ def _parse_checklist(text: str) -> list[dict]:
         if not stripped:
             continue
         if stripped in ('- [x]', '- [X]') or stripped.startswith('- [x] ') or stripped.startswith('- [X] '):
-            items.append({'text': stripped[6:] if len(stripped) > 6 else '', 'checked': True})
+            raw = stripped[6:] if len(stripped) > 6 else ''
+            item_text, bold = _unwrap_bold(raw)
+            items.append({'text': item_text, 'checked': True, 'bold': bold})
         elif stripped == '- [ ]' or stripped.startswith('- [ ] '):
-            items.append({'text': stripped[6:] if len(stripped) > 6 else '', 'checked': False})
+            raw = stripped[6:] if len(stripped) > 6 else ''
+            item_text, bold = _unwrap_bold(raw)
+            items.append({'text': item_text, 'checked': False, 'bold': bold})
         else:
-            items.append({'text': stripped, 'checked': False})
+            item_text, bold = _unwrap_bold(stripped)
+            items.append({'text': item_text, 'checked': False, 'bold': bold})
     return items
 
 
@@ -611,7 +642,10 @@ def _serialize_checklist(items: list[dict]) -> str:
         if not item['text'] and not item['checked']:
             continue  # skip empty unchecked items
         mark = 'x' if item['checked'] else ' '
-        lines.append(f'- [{mark}] {item["text"]}')
+        text = item['text']
+        if item.get('bold') and text:
+            text = f'{_BOLD_START}{text}{_BOLD_END}'
+        lines.append(f'- [{mark}] {text}')
     return '\n'.join(lines)
 
 
@@ -757,6 +791,7 @@ class _ItemLineEdit(QLineEdit):
     image_pasted: pyqtSignal = pyqtSignal(str)  # emits the filename
     arrow_up: pyqtSignal = pyqtSignal()
     arrow_down: pyqtSignal = pyqtSignal()
+    bold_toggle_requested: pyqtSignal = pyqtSignal()
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
@@ -849,6 +884,15 @@ class _ItemLineEdit(QLineEdit):
         if event.key() == Qt.Key_Backspace and not self.text():
             self.empty_backspace.emit()
             return
+        # Cmd+B — toggle bold on the parent checklist item
+        mods_masked = event.modifiers() & (
+            Qt.ControlModifier | Qt.ShiftModifier
+            | Qt.AltModifier | Qt.MetaModifier)
+        if (event.key() == Qt.Key_B
+                and mods_masked == Qt.ControlModifier):
+            self.bold_toggle_requested.emit()
+            event.accept()
+            return
         # Cmd+V / Ctrl+V — check clipboard for images
         if (event.key() == Qt.Key_V
                 and event.modifiers() & Qt.ControlModifier):
@@ -926,13 +970,16 @@ class _ChecklistItemWidget(QFrame):
     drag_started: pyqtSignal = pyqtSignal(int)
     focus_prev: pyqtSignal = pyqtSignal(int)  # arrow up
     focus_next: pyqtSignal = pyqtSignal(int)  # arrow down
+    bold_changed: pyqtSignal = pyqtSignal(int, bool)
 
     def __init__(
-        self, index: int, text: str, checked: bool, parent: Optional[QWidget] = None,
+        self, index: int, text: str, checked: bool,
+        bold: bool = False, parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._index = index
         self._checked = checked
+        self._bold = bold
         self._popup: Optional[QTextEdit] = None
 
         row = QHBoxLayout(self)
@@ -969,6 +1016,7 @@ class _ChecklistItemWidget(QFrame):
         self._edit.arrow_down.connect(
             lambda: self.focus_next.emit(self._index),
         )
+        self._edit.bold_toggle_requested.connect(self._toggle_bold)
         row.addWidget(self._edit, 1)
 
         self._del_btn = QPushButton('\u00d7')
@@ -985,6 +1033,7 @@ class _ChecklistItemWidget(QFrame):
         row.addWidget(self._del_btn, 0, Qt.AlignVCenter)
 
         self._apply_checked_style(checked)
+        self._apply_bold_style()
         self.setStyleSheet(
             f'_ChecklistItemWidget {{ border-bottom: 1px solid {current_theme().border_subtle}; }}'
         )
@@ -997,11 +1046,49 @@ class _ChecklistItemWidget(QFrame):
         font.setStrikeOut(checked)
         self._edit.setFont(font)
         t = current_theme()
-        self._edit.setStyleSheet(
-            f'QLineEdit {{ color: {t.text_muted}; background: transparent; }}'
-            if checked else 'QLineEdit { background: transparent; }'
-        )
+        self._edit.setStyleSheet(self._compose_edit_style(t, checked, self._bold))
         self._checked = checked
+
+    def _apply_bold_style(self) -> None:
+        """Apply bold weight + accent color to the item edit widget."""
+        font = self._edit.font()
+        font.setWeight(QFont.Black if self._bold else QFont.Normal)
+        self._edit.setFont(font)
+        t = current_theme()
+        self._edit.setStyleSheet(
+            self._compose_edit_style(t, self._checked, self._bold))
+
+    @staticmethod
+    def _compose_edit_style(t: object, checked: bool, bold: bool) -> str:
+        """Assemble the QSS for the item's line edit based on its flags."""
+        if checked:
+            color = t.text_muted
+        elif bold:
+            color = t.accent_blue
+        else:
+            color = t.text_primary
+        return f'QLineEdit {{ color: {color}; background: transparent; }}'
+
+    def _toggle_bold(self) -> None:
+        """Flip the item's bold flag and report to the parent checklist."""
+        self._bold = not self._bold
+        self._apply_bold_style()
+        # If the expand popup is open, mirror the font + color there too —
+        # otherwise the user toggling bold inside the popup would see no
+        # change until dismissal.
+        if self._popup is not None:
+            popup_font = self._popup.font()
+            popup_font.setWeight(QFont.Black if self._bold else QFont.Normal)
+            self._popup.setFont(popup_font)
+            t = current_theme()
+            color = (t.text_muted if self._checked
+                     else t.accent_blue if self._bold
+                     else t.text_primary)
+            self._popup.setStyleSheet(
+                f'QTextEdit {{ color: {color}; background: transparent;'
+                f' border: 1px solid {t.text_secondary}; }}'
+            )
+        self.bold_changed.emit(self._index, self._bold)
 
     def focus_edit(self, cursor_at_end: bool = True) -> None:
         """Focus this item's text field and expand into wrapping editor."""
@@ -1062,7 +1149,9 @@ class _ChecklistItemWidget(QFrame):
         wrap.document().setDocumentMargin(2)
         wrap.setFont(self._edit.font())
         t = current_theme()
-        color = t.text_muted if self._checked else t.text_primary
+        color = (t.text_muted if self._checked
+                 else t.accent_blue if self._bold
+                 else t.text_primary)
         wrap.setStyleSheet(
             f'QTextEdit {{ color: {color}; background: transparent;'
             f' border: 1px solid {t.text_secondary}; }}'
@@ -1135,6 +1224,15 @@ class _ChecklistItemWidget(QFrame):
             if event.key() == Qt.Key_Backspace and not wrap.toPlainText():
                 dismiss(True)
                 self.merge_up.emit(self._index)
+                return
+            # Cmd+B — toggle bold on the whole item (QLineEdit can't do
+            # per-character bold, so bold is an item-level flag).
+            mods_masked = event.modifiers() & (
+                Qt.ControlModifier | Qt.ShiftModifier
+                | Qt.AltModifier | Qt.MetaModifier)
+            if (event.key() == Qt.Key_B
+                    and mods_masked == Qt.ControlModifier):
+                self._toggle_bold()
                 return
             # Cmd+V / Ctrl+V — paste image
             if (event.key() == Qt.Key_V
@@ -1412,7 +1510,8 @@ class _ChecklistWidget(QWidget):
 
         # Active (unchecked) items
         for list_idx, data in active:
-            w = self._make_item_widget(list_idx, data['text'], False)
+            w = self._make_item_widget(
+                list_idx, data['text'], False, data.get('bold', False))
             self._layout.addWidget(w)
             if (self._focus_after_rebuild is not None
                     and self._focus_after_rebuild[0] == list_idx):
@@ -1453,7 +1552,8 @@ class _ChecklistWidget(QWidget):
 
             if self._completed_visible:
                 for list_idx, data in completed:
-                    w = self._make_item_widget(list_idx, data['text'], True)
+                    w = self._make_item_widget(
+                        list_idx, data['text'], True, data.get('bold', False))
                     self._layout.addWidget(w)
                     if (self._focus_after_rebuild is not None
                             and self._focus_after_rebuild[0] == list_idx):
@@ -1497,9 +1597,9 @@ class _ChecklistWidget(QWidget):
 
 
     def _make_item_widget(
-        self, index: int, text: str, checked: bool,
+        self, index: int, text: str, checked: bool, bold: bool = False,
     ) -> _ChecklistItemWidget:
-        w = _ChecklistItemWidget(index, text, checked)
+        w = _ChecklistItemWidget(index, text, checked, bold)
         w.toggled.connect(self._on_toggle)
         w.text_edited.connect(self._on_text_edited)
         w.delete_requested.connect(self._on_delete)
@@ -1508,6 +1608,7 @@ class _ChecklistWidget(QWidget):
         w.drag_started.connect(self._start_item_drag)
         w.focus_prev.connect(self._on_focus_prev)
         w.focus_next.connect(self._on_focus_next)
+        w.bold_changed.connect(self._on_bold_changed)
         w._edit.image_pasted.connect(lambda fn: self._pasted_images.add(fn))
         w._edit._register_image_fn = self._register_image
         w._edit._resolve_placeholder_fn = self._resolve_placeholder
@@ -1657,6 +1758,12 @@ class _ChecklistWidget(QWidget):
         self._items[index]['text'] = text
         self.content_changed.emit()
 
+    def _on_bold_changed(self, index: int, bold: bool) -> None:
+        if index < 0 or index >= len(self._items):
+            return
+        self._items[index]['bold'] = bold
+        self.content_changed.emit()
+
     def _on_delete(self, index: int) -> None:
         if index < 0 or index >= len(self._items):
             return
@@ -1673,7 +1780,7 @@ class _ChecklistWidget(QWidget):
         if index < 0 or index >= len(self._items):
             return
         new_idx = index + 1
-        self._items.insert(new_idx, {'text': '', 'checked': False})
+        self._items.insert(new_idx, {'text': '', 'checked': False, 'bold': False})
         self._focus_after_rebuild = (new_idx, True)
         self._rebuild()
         self.content_changed.emit()
@@ -1778,7 +1885,7 @@ class _ChecklistWidget(QWidget):
         if not text:
             return
         new_idx = len(self._items)
-        self._items.append({'text': text, 'checked': False})
+        self._items.append({'text': text, 'checked': False, 'bold': False})
         self._focus_add_after_rebuild = True
         self._rebuild()
         self.content_changed.emit()
@@ -2057,7 +2164,7 @@ class _SessionPickerDialog(ZoomMixin, QDialog):
             if hasattr(state, 'value'):
                 state = state.value
             self._table.setItem(row, 2, QTableWidgetItem(str(state)))
-        self._table.doubleClicked.connect(lambda: self._accept(True))
+        self._table.doubleClicked.connect(self._on_send_clicked)
         layout.addWidget(self._table)
 
         if sessions:
@@ -2073,17 +2180,16 @@ class _SessionPickerDialog(ZoomMixin, QDialog):
                 prefs.get('run_session_include_completed', False))
             layout.addWidget(self._include_completed)
 
+        toggle_row, _group, _next_radio, _end_radio = (
+            _build_send_position_toggle(self))
+        layout.addLayout(toggle_row)
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        send_next_btn = QPushButton('Send Next')
-        send_next_btn.setToolTip('Prepend messages to the front of the queue')
-        send_next_btn.clicked.connect(lambda: self._accept(False))
-        btn_row.addWidget(send_next_btn)
-        send_end_btn = QPushButton('Send at End')
-        send_end_btn.setToolTip('Append messages to the end of the queue')
-        send_end_btn.setDefault(True)
-        send_end_btn.clicked.connect(lambda: self._accept(True))
-        btn_row.addWidget(send_end_btn)
+        send_btn = QPushButton('Send')
+        send_btn.setDefault(True)
+        send_btn.clicked.connect(self._on_send_clicked)
+        btn_row.addWidget(send_btn)
         layout.addLayout(btn_row)
 
         self._init_zoom(
@@ -2104,6 +2210,11 @@ class _SessionPickerDialog(ZoomMixin, QDialog):
         self._result = (self._tags[row], at_end)
         self.accept()
 
+    def _on_send_clicked(self) -> None:
+        """Read the persisted toggle and dispatch to _accept."""
+        at_end = load_send_position() != 'next'
+        self._accept(at_end)
+
     @staticmethod
     def pick_session(
         parent: Optional[QWidget] = None,
@@ -2115,7 +2226,13 @@ class _SessionPickerDialog(ZoomMixin, QDialog):
             QMessageBox.information(
                 parent, 'Run in Session', 'No active sessions found.')
             return None
-        aliases = load_monitor_prefs().get('aliases', {})
+        prefs = load_monitor_prefs()
+        aliases = prefs.get('aliases', {})
+        # Match the main-window order (drag-and-drop reorder is persisted
+        # as ``row_order`` in monitor prefs).  Unknown tags go to the end.
+        row_order = prefs.get('row_order', [])
+        order_map = {tag: i for i, tag in enumerate(row_order)}
+        sessions.sort(key=lambda s: order_map.get(s['tag'], float('inf')))
         dlg = _SessionPickerDialog(sessions, aliases, is_checklist, parent)
         accepted = dlg.exec_() == QDialog.Accepted
         # Persist checkbox state on any close (OK, Cancel, or X)
@@ -2309,6 +2426,10 @@ class NotesDialog(QDialog):
 
         right_layout.addWidget(self._stack, 1)
 
+        # ── In-note find bar (Cmd+F) ──
+        self._find_bar = self._build_find_bar()
+        right_layout.addWidget(self._find_bar)
+
         # Apply saved font sizes + intercept Cmd+scroll on all viewports
         self._apply_font_size()
         self._apply_sidebar_font_size()
@@ -2316,6 +2437,10 @@ class NotesDialog(QDialog):
         self._editor.viewport().installEventFilter(self)
         self._checklist._scroll.viewport().installEventFilter(self)
         self._tree.viewport().installEventFilter(self)
+        # Filter on the tree itself (not just viewport) so we can catch
+        # Delete/Backspace keys — QAbstractItemView sometimes consumes
+        # them before they reach the dialog's keyPressEvent.
+        self._tree.installEventFilter(self)
 
         right.setMinimumWidth(375)
         splitter.addWidget(right)
@@ -2328,7 +2453,8 @@ class NotesDialog(QDialog):
         # Bottom bar
         bottom_row = QHBoxLayout()
         hint = QLabel(
-            'Cmd+N: New note  |  Cmd+Shift+N: New folder  |  Cmd+F: Search'
+            'Cmd+N: New note  |  Cmd+Shift+N: New folder'
+            '  |  Cmd+F: Find in note  |  Cmd+Shift+F: Search notes'
             '  |  Cmd+K: Insert link  |  Cmd+B: Bold'
             '  |  Cmd+/\u2212/0/Scroll: Zoom'
             '  |  Cmd+Z/Shift+Z: Undo/Redo'
@@ -2566,6 +2692,7 @@ class NotesDialog(QDialog):
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText('')
             self._update_action_visibility(False)
+            self._find_bar.setVisible(False)
             return
 
         if current.data(0, self._ROLE_TYPE) == 'folder':
@@ -2578,6 +2705,7 @@ class NotesDialog(QDialog):
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText(current.text(0))
             self._update_action_visibility(False)
+            self._find_bar.setVisible(False)
             return
 
         name = current.data(0, self._ROLE_PATH)
@@ -2595,6 +2723,7 @@ class NotesDialog(QDialog):
             self._mode_combo.setCurrentIndex(self._MODE_CHECKLIST)
             self._checklist.set_items(_parse_checklist(text))
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
+            self._find_bar.setVisible(False)
         else:
             self._mode_combo.setCurrentIndex(self._MODE_TEXT)
             self._editor.set_note_content(text)
@@ -2626,7 +2755,15 @@ class NotesDialog(QDialog):
             items = self._checklist.get_items()
             self._editor._pasted_images |= self._checklist.take_pasted_images()
             old_content = _serialize_checklist(self._checklist.get_items())
-            lines = [item['text'] for item in items if item['text']]
+            # Preserve each item's bold flag when flattening to text.
+            lines = []
+            for item in items:
+                text = item['text']
+                if not text:
+                    continue
+                if item.get('bold'):
+                    text = f'{_BOLD_START}{text}{_BOLD_END}'
+                lines.append(text)
             new_content = '\n'.join(lines)
 
         cmd = ModeSwitchCmd(
@@ -2641,6 +2778,7 @@ class NotesDialog(QDialog):
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
             _set_note_mode(self._current_name, 'checklist')
             self._save_current()
+            self._find_bar.setVisible(False)
         else:
             self._editor.set_note_content(new_content)
             self._editor.setEnabled(True)
@@ -3152,7 +3290,8 @@ class NotesDialog(QDialog):
                     messages.append(text)
             return messages
         else:
-            text = self._editor.get_note_content().strip()
+            text = self._editor.get_note_content(
+                include_bold_markers=False).strip()
             text = self._resolve_note_images(text).strip()
             return [text] if text else []
 
@@ -3575,6 +3714,30 @@ class NotesDialog(QDialog):
         if obj is self._search and event.type() == QEvent.FocusIn:
             if not self.isActiveWindow():
                 QApplication.setActiveWindow(self)
+        # Find-bar: Enter / Shift+Enter / Escape
+        if (hasattr(self, '_find_input') and obj is self._find_input
+                and event.type() == QEvent.KeyPress):
+            if event.key() == Qt.Key_Escape:
+                self._hide_find_bar()
+                return True
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if event.modifiers() & Qt.ShiftModifier:
+                    self._find_prev()
+                else:
+                    self._find_next()
+                return True
+        # Tree: Delete / Backspace remove the selected note or folder.
+        # Guarded at the filter level because QAbstractItemView can swallow
+        # these keys before propagation reaches the dialog's keyPressEvent.
+        if (hasattr(self, '_tree') and obj is self._tree
+                and event.type() == QEvent.KeyPress
+                and event.key() in (Qt.Key_Delete, Qt.Key_Backspace)
+                and not (event.modifiers() & (
+                    Qt.ControlModifier | Qt.ShiftModifier
+                    | Qt.AltModifier | Qt.MetaModifier))
+                and self._tree.selectedItems()):
+            self._on_delete()
+            return True
         # Intercept Cmd+scroll on viewports — route to correct zoom target
         if event.type() == QEvent.Wheel:
             we = sip.cast(event, QWheelEvent)
@@ -3585,6 +3748,140 @@ class NotesDialog(QDialog):
                 self._zoom(delta, target=target)
                 return True
         return super().eventFilter(obj, event)
+
+    # ── In-note find bar ────────────────────────────────────────────
+
+    def _build_find_bar(self) -> QWidget:
+        """Build the inline find bar (Cmd+F).  Hidden by default."""
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 4, 0, 0)
+        row.setSpacing(4)
+
+        self._find_input = QLineEdit()
+        self._find_input.setPlaceholderText('Find in note…')
+        self._find_input.textChanged.connect(self._on_find_query_changed)
+        self._find_input.installEventFilter(self)
+        row.addWidget(self._find_input, 1)
+
+        self._find_counter = QLabel('')
+        self._find_counter.setStyleSheet(
+            f'color: {current_theme().text_muted}; padding: 0 6px;')
+        self._find_counter.setMinimumWidth(70)
+        self._find_counter.setAlignment(Qt.AlignCenter)
+        row.addWidget(self._find_counter)
+
+        prev_btn = QPushButton('◀')
+        prev_btn.setFixedWidth(30)
+        prev_btn.setToolTip('Previous match (Shift+Enter)')
+        prev_btn.clicked.connect(self._find_prev)
+        row.addWidget(prev_btn)
+
+        next_btn = QPushButton('▶')
+        next_btn.setFixedWidth(30)
+        next_btn.setToolTip('Next match (Enter)')
+        next_btn.clicked.connect(self._find_next)
+        row.addWidget(next_btn)
+
+        close_btn = QPushButton('✕')
+        close_btn.setFixedWidth(30)
+        close_btn.setToolTip('Close (Esc)')
+        close_btn.clicked.connect(self._hide_find_bar)
+        row.addWidget(close_btn)
+
+        bar.setVisible(False)
+        return bar
+
+    def _show_find_bar(self) -> None:
+        """Reveal the find bar, pre-filled with the editor's selection if any."""
+        if not self._current_name or self._current_mode() != self._MODE_TEXT:
+            return
+        cursor = self._editor.textCursor()
+        if cursor.hasSelection():
+            # Block signals so the prefill doesn't yank the cursor back
+            # to doc start via the incremental-search handler.
+            self._find_input.blockSignals(True)
+            self._find_input.setText(cursor.selectedText())
+            self._find_input.blockSignals(False)
+        self._find_bar.setVisible(True)
+        self._find_input.setFocus()
+        self._find_input.selectAll()
+        self._update_find_counter()
+
+    def _hide_find_bar(self) -> None:
+        self._find_bar.setVisible(False)
+        self._editor.setFocus()
+
+    def _on_find_query_changed(self, text: str) -> None:
+        """Incremental find — jumps to first match on every keystroke."""
+        self._find_input.setStyleSheet('')
+        if not text:
+            self._find_counter.setText('')
+            return
+        # Reset cursor to doc start so the search always lands on the
+        # earliest match (Chrome-style).  Otherwise typing that extends
+        # the query could skip earlier matches.
+        cursor = self._editor.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        self._editor.setTextCursor(cursor)
+        found = self._editor.find(text, QTextDocument.FindFlag(0))
+        self._update_find_counter()
+        if not found:
+            self._find_input.setStyleSheet(
+                'background: rgba(248, 113, 113, 0.25);')
+
+    def _find_next(self) -> None:
+        self._find_in_editor(backward=False)
+
+    def _find_prev(self) -> None:
+        self._find_in_editor(backward=True)
+
+    def _find_in_editor(self, backward: bool) -> None:
+        """Search for the find-bar text, wrapping around on no-match."""
+        query = self._find_input.text()
+        if not query:
+            return
+        flags = QTextDocument.FindFlag(0)
+        if backward:
+            flags |= QTextDocument.FindBackward
+        if self._editor.find(query, flags):
+            self._update_find_counter()
+            return
+        # First attempt failed — try wrapping around.  Remember the
+        # original cursor so we can restore it if the wrap also fails,
+        # otherwise the user loses their place on a no-match.
+        orig_cursor = self._editor.textCursor()
+        wrap_cursor = QTextCursor(orig_cursor)
+        wrap_cursor.movePosition(
+            QTextCursor.End if backward else QTextCursor.Start)
+        self._editor.setTextCursor(wrap_cursor)
+        if not self._editor.find(query, flags):
+            self._editor.setTextCursor(orig_cursor)
+            self._find_input.setStyleSheet(
+                'background: rgba(248, 113, 113, 0.25);')
+        self._update_find_counter()
+
+    def _update_find_counter(self) -> None:
+        """Refresh the 'K of N' label based on cursor position + query."""
+        query = self._find_input.text()
+        if not query:
+            self._find_counter.setText('')
+            return
+        doc_text = self._editor.toPlainText()
+        q_lower = query.lower()
+        total = doc_text.lower().count(q_lower)
+        if total == 0:
+            self._find_counter.setText('No results')
+            return
+        cursor = self._editor.textCursor()
+        # If the cursor is sitting on a live match, report 1-based index;
+        # otherwise report "· of N" as a neutral pre-navigation state.
+        if (cursor.hasSelection()
+                and cursor.selectedText().lower() == q_lower):
+            before = doc_text[:cursor.selectionStart()].lower().count(q_lower)
+            self._find_counter.setText(f'{before + 1} of {total}')
+        else:
+            self._find_counter.setText(f'· of {total}')
 
     def _insert_link(self) -> None:
         """Prompt for a URL and insert it at the cursor (Cmd+K)."""
@@ -3717,9 +4014,14 @@ class NotesDialog(QDialog):
                     self._on_new()
                 return
             if event.key() == Qt.Key_F:
-                QApplication.setActiveWindow(self)
-                self._search.setFocus()
-                self._search.selectAll()
+                if mods & Qt.ShiftModifier:
+                    # Cmd+Shift+F → focus sidebar (search all notes)
+                    QApplication.setActiveWindow(self)
+                    self._search.setFocus()
+                    self._search.selectAll()
+                else:
+                    # Cmd+F → find within the current note
+                    self._show_find_bar()
                 return
             if event.key() == Qt.Key_K:
                 self._insert_link()
