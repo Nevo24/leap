@@ -7,6 +7,7 @@ Notes auto-save on switch, close, and Cmd+S.
 """
 
 import hashlib
+import html
 import json
 import re
 import shutil
@@ -872,12 +873,25 @@ class _ItemLineEdit(QLineEdit):
         # without this, the focusInEvent handler would immediately
         # reopen the popup and the user could never cancel out.
         self._suppress_focus_expand: bool = False
+        # Rich-text overlay so checklist items can show per-word link
+        # styling (QLineEdit can only apply font attributes to the whole
+        # widget, so mixed content like ``[word](url) tail`` would
+        # otherwise underline the whole row).  Set by the parent
+        # ``_ChecklistItemWidget`` when it owns this line edit; remains
+        # None for the "Add item" field / non-checklist uses where there
+        # is no raw markdown to render.
+        self._rich_overlay: Optional['QLabel'] = None
         self.textChanged.connect(self._update_text_direction)
         self._update_text_direction(self.text())
 
     def _update_text_direction(self, text: str) -> None:
         """Set layout direction based on RTL/LTR content detection."""
         _apply_rtl_direction(self, text)
+
+    def resizeEvent(self, event: 'QResizeEvent') -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        if self._rich_overlay is not None:
+            self._rich_overlay.setGeometry(self.rect())
 
     def _reset_cursor_to_start(self) -> None:
         """Move cursor so the visual start of the text is shown when not editing."""
@@ -1160,6 +1174,23 @@ class _ChecklistItemWidget(QFrame):
         # Read-only: typing always routes through the rich-text popup,
         # so the raw markdown stays intact.  Focus auto-expands.
         self._edit.setReadOnly(True)
+        # Rich-text overlay for per-word link styling — the label sits
+        # on top of the line edit, shows HTML with only the link span
+        # underlined+blue, and passes mouse events through to the line
+        # edit below.  The line edit's own text is hidden by making it
+        # transparent when the overlay is in use (see
+        # ``_sync_rich_overlay``).  Popup edit mode hides ``self._edit``
+        # which also hides the overlay (it's a child of the line edit).
+        self._rich_overlay = QLabel(self._edit)
+        self._rich_overlay.setTextFormat(Qt.RichText)
+        self._rich_overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        # 2px left padding matches QLineEdit's internal text offset so
+        # the overlay text lines up with the (invisible) line edit text.
+        self._rich_overlay.setContentsMargins(2, 0, 2, 0)
+        self._rich_overlay.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self._rich_overlay.setStyleSheet('background: transparent;')
+        self._rich_overlay.setGeometry(self._edit.rect())
+        self._edit._rich_overlay = self._rich_overlay
         # text_edited is intentionally NOT wired from textChanged —
         # the line edit is display-only.  Changes flow from the popup's
         # dismiss path (_dismiss_popup_if_active / on_focus_out).
@@ -1207,43 +1238,97 @@ class _ChecklistItemWidget(QFrame):
         self._edit.setFont(font)
         t = current_theme()
         self._edit.setStyleSheet(self._compose_edit_style(
-            t, checked, self._bold, has_url=self._is_entirely_link(),
-            font_size=self._font_size))
+            t, checked, self._bold, has_url=False,
+            font_size=self._font_size,
+            text_transparent=self._has_link_display()))
         self._checked = checked
+        self._sync_rich_overlay()
 
     def _apply_bold_style(self) -> None:
-        """Apply bold weight + link styling (underline when raw has markdown)."""
+        """Apply bold weight + keep widget-level underline off.
+
+        Per-word link styling is rendered via ``_rich_overlay`` (QLabel
+        with HTML) — QLineEdit can only apply font attributes to the
+        whole widget, so mixed content like ``[word](url) tail`` can't
+        be expressed on the line edit itself.  The overlay handles link
+        styling; here we only apply bold weight to the line edit's
+        font (the overlay mirrors bold in its HTML too).
+        """
         font = self._edit.font()
         font.setWeight(QFont.Black if self._bold else QFont.Normal)
-        # Underline the whole QLineEdit only when the entire item IS a
-        # single link — QLineEdit can't style individual spans, so for
-        # mixed content (e.g. ``[word](url) extra``) we'd falsely
-        # underline the plain text too.  Clicks still open links
-        # correctly in mixed content via ``_link_at_stripped_pos``.
-        font.setUnderline(self._is_entirely_link())
+        font.setUnderline(False)
         self._edit.setFont(font)
         t = current_theme()
         self._edit.setStyleSheet(
             self._compose_edit_style(
                 t, self._checked, self._bold,
-                has_url=self._is_entirely_link(), font_size=self._font_size))
+                has_url=False, font_size=self._font_size,
+                text_transparent=self._has_link_display()))
         self._update_link_tooltip()
+        self._sync_rich_overlay()
+
+    def _sync_rich_overlay(self) -> None:
+        """Render the item text with per-link styling on the overlay label.
+
+        Emits HTML where each ``[display](url)`` span is rendered as an
+        underlined + accent-blue run, plain text stays as ``text_primary``
+        (or ``text_muted`` when the item is checked / ``accent_orange``
+        when bolded).  When ``_has_link_display`` is False, the overlay
+        is hidden and the line edit shows its own text — a plain-text
+        item doesn't need the overlay at all.
+        """
+        if self._rich_overlay is None:
+            return
+        if not self._has_link_display():
+            self._rich_overlay.hide()
+            return
+        # Match the line edit's current font so the overlay text has
+        # the same metrics (especially bold/strikeOut reflected on the
+        # line edit font).  Without this the overlay defaults to the
+        # Qt application font and visibly drifts from the cursor + any
+        # selection the QLineEdit still shows during focus.
+        self._rich_overlay.setFont(self._edit.font())
+        t = current_theme()
+        if self._checked:
+            base_color = t.text_muted
+        elif self._bold:
+            base_color = t.accent_orange
+        else:
+            base_color = t.text_primary
+        link_color = t.accent_blue
+        # Walk the raw text: emit link spans as underlined+blue, other
+        # text in ``base_color``.  Escape HTML-specials to avoid
+        # accidental tag interpretation.
+        parts: list[str] = []
+        pos = 0
+        for m in _LINK_RE.finditer(self._raw_text):
+            if m.start() > pos:
+                parts.append(html.escape(self._raw_text[pos:m.start()]))
+            display = html.escape(m.group(1))
+            parts.append(
+                f'<span style="color:{link_color};'
+                f' text-decoration:underline">{display}</span>'
+            )
+            pos = m.end()
+        if pos < len(self._raw_text):
+            parts.append(html.escape(self._raw_text[pos:]))
+        weight = 'bold' if self._bold else 'normal'
+        strike = ' text-decoration:line-through;' if self._checked else ''
+        # Wrap the whole string in a span that sets the base color +
+        # strike (link spans override color+underline).
+        size_rule = (f' font-size:{self._font_size}pt;'
+                     if self._font_size else '')
+        self._rich_overlay.setText(
+            f'<span style="color:{base_color}; font-weight:{weight};'
+            f' font-family:Menlo;{size_rule}{strike}">'
+            f'{"".join(parts)}</span>'
+        )
+        self._rich_overlay.setGeometry(self._edit.rect())
+        self._rich_overlay.show()
 
     def _has_link_display(self) -> bool:
         """True if the raw text contains any markdown link span."""
         return _LINK_RE.search(self._raw_text) is not None
-
-    def _is_entirely_link(self) -> bool:
-        """True if the raw text is exactly one link with no surrounding text.
-
-        Used to decide whether to style the entire line edit as a link
-        (blue + underline).  QLineEdit can only apply font attributes to
-        the whole widget, so for mixed content we deliberately render as
-        plain text — the click handler still opens the embedded link.
-        """
-        raw = self._raw_text.strip()
-        m = _LINK_RE.fullmatch(raw)
-        return m is not None
 
     def set_font_size(self, pt: int) -> None:
         """Update the item's content font size and re-apply QSS styles."""
@@ -1284,15 +1369,21 @@ class _ChecklistItemWidget(QFrame):
     @staticmethod
     def _compose_edit_style(
         t: object, checked: bool, bold: bool, has_url: bool = False,
-        font_size: Optional[int] = None,
+        font_size: Optional[int] = None, text_transparent: bool = False,
     ) -> str:
         """Assemble the QSS for the item's line edit based on its flags.
 
         ``font_size`` is baked into the rule so ancestor QSS font-size
         (from ``_ChecklistWidget.set_font_size``) is not lost to Qt's
         unreliable cascade for widgets with their own stylesheet.
+
+        When ``text_transparent`` is True the line edit's own text is
+        hidden — used while the rich-text overlay label handles display
+        so the underlying QLineEdit text doesn't bleed through.
         """
-        if checked:
+        if text_transparent:
+            color = 'transparent'
+        elif checked:
             color = t.text_muted
         elif has_url:
             color = t.accent_blue
