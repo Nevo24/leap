@@ -20,7 +20,7 @@ from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter,
+    QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QStyle, QTableWidget, QTableWidgetItem, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout,
     QWidget,
@@ -164,14 +164,18 @@ def _find_markdown_link_at(text: str, col: int) -> Optional[tuple[int, int, str]
 
 
 def _link_char_format(url: str) -> QTextCharFormat:
-    """Return a QTextCharFormat styled as a clickable link."""
+    """Return a QTextCharFormat styled as a clickable link.
+
+    Weight is deliberately left unset so callers that merge this
+    format into an existing selection keep the existing bold/italic
+    attributes — a link applied to a bold word stays bold + becomes
+    blue/underlined.  Fresh inserts (no prior format) default to
+    normal weight as Qt would.
+    """
     fmt = QTextCharFormat()
     t = current_theme()
     fmt.setForeground(QColor(t.accent_blue))
     fmt.setFontUnderline(True)
-    # Explicitly normal weight so linking bolded text drops the bold —
-    # the user asked a bold word to become a link, not a bold link.
-    fmt.setFontWeight(QFont.Normal)
     fmt.setAnchor(True)
     fmt.setAnchorHref(url)
     return fmt
@@ -385,20 +389,95 @@ class _NoteTextEdit(QTextEdit):
             self._toggle_bold()
             event.accept()
             return
+        # Cmd+C — convert selection to markdown so pasting elsewhere
+        # (other notes / checklist popups) preserves link and bold
+        # spans as ``[text](url)`` / ``**text**``.
+        if event.key() == Qt.Key_C and mods == Qt.ControlModifier:
+            cursor = self.textCursor()
+            if cursor.hasSelection():
+                md = _NoteTextEdit._serialize_selection_to_markdown(cursor)
+                QApplication.clipboard().setText(md)
+                event.accept()
+                return
         super().keyPressEvent(event)
 
+    @staticmethod
+    def _serialize_selection_to_markdown(cursor: QTextCursor) -> str:
+        """Convert a QTextCursor selection to the note's serialized form.
+
+        Anchor spans → ``[text](url)``.  Bold spans → STX/ETX-wrapped
+        (the same form ``_insert_text_with_links`` parses back into
+        bold formatting).  Image fragments → ``![image](filename)``.
+        Plain fragments keep their text.
+        """
+        if not cursor.hasSelection():
+            return ''
+        sel_start = cursor.selectionStart()
+        sel_end = cursor.selectionEnd()
+        doc = cursor.document()
+        parts: list[str] = []
+        block = doc.findBlock(sel_start)
+        first = True
+        while block.isValid() and block.position() < sel_end:
+            if not first:
+                parts.append('\n')
+            first = False
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    frag_start = frag.position()
+                    frag_end = frag_start + frag.length()
+                    clip_start = max(frag_start, sel_start)
+                    clip_end = min(frag_end, sel_end)
+                    if clip_start < clip_end:
+                        fmt = frag.charFormat()
+                        if fmt.isImageFormat():
+                            name = fmt.toImageFormat().name()
+                            if name:
+                                parts.append(f'![image]({name})')
+                        else:
+                            text = frag.text()[
+                                clip_start - frag_start:clip_end - frag_start]
+                            is_anchor = (fmt.isAnchor()
+                                         and fmt.anchorHref())
+                            is_bold = fmt.fontWeight() >= QFont.Bold
+                            if is_anchor and is_bold and text:
+                                parts.append(
+                                    f'{_BOLD_START}[{text}]'
+                                    f'({fmt.anchorHref()}){_BOLD_END}')
+                            elif is_anchor:
+                                parts.append(f'[{text}]({fmt.anchorHref()})')
+                            elif is_bold and text:
+                                parts.append(
+                                    f'{_BOLD_START}{text}{_BOLD_END}')
+                            else:
+                                parts.append(text)
+                it += 1
+            block = block.next()
+        return ''.join(parts)
+
     def _toggle_bold(self) -> None:
-        """Flip bold on the selection, or on subsequent typing if no selection."""
-        is_bold = self.fontWeight() >= QFont.Bold
+        """Flip bold on the selection, or on subsequent typing if no selection.
+
+        If the cursor/selection starts inside a link (anchor span), the
+        link colour is preserved — we only touch font weight.  This
+        keeps a bold link's blue colour instead of painting it orange.
+        """
+        cursor = self.textCursor()
+        probe = cursor.charFormat()
+        is_bold = probe.fontWeight() >= QFont.Bold
+        is_anchor = probe.isAnchor() and probe.anchorHref()
         t = current_theme()
         fmt = QTextCharFormat()
         if is_bold:
             fmt.setFontWeight(QFont.Normal)
-            fmt.setForeground(QColor(t.text_primary))
+            if not is_anchor:
+                fmt.setForeground(QColor(t.text_primary))
         else:
             fmt.setFontWeight(QFont.Black)
-            fmt.setForeground(QColor(t.accent_orange))
-        cursor = self.textCursor()
+            if not is_anchor:
+                fmt.setForeground(QColor(t.accent_orange))
         if cursor.hasSelection():
             cursor.mergeCharFormat(fmt)
         self.mergeCurrentCharFormat(fmt)
@@ -438,10 +517,21 @@ class _NoteTextEdit(QTextEdit):
                     self._pasted_images.add(filename)
                     self._insert_image(filename)
                     return
-        # Force plain-text paste — clipboard HTML (e.g. browser links)
-        # would otherwise leak rich formatting into the editor.
+        # Render ``[text](url)`` + STX/ETX-wrapped bold markdown as
+        # styled spans (anchor / bold) instead of literal syntax.
+        # Clipboard HTML is intentionally ignored so browser-style rich
+        # formatting doesn't leak in.
         if source.hasText():
-            self.insertPlainText(source.text())
+            cursor = self.textCursor()
+            # If the cursor is sitting in an anchor span (typical after
+            # inserting a link), reset the format so the pasted plain
+            # run doesn't inherit the link styling.
+            cursor.setCharFormat(QTextCharFormat())
+            self._insert_text_with_links(cursor, source.text())
+            # Push the mutated cursor back so the caret + selection
+            # reflect the end of the paste, matching Qt's default
+            # insertPlainText behaviour.
+            self.setTextCursor(cursor)
             return
         super().insertFromMimeData(source)
 
@@ -468,7 +558,13 @@ class _NoteTextEdit(QTextEdit):
 
     @staticmethod
     def _insert_text_with_links(cursor: QTextCursor, text: str) -> None:
-        """Insert plain text, rendering [text](url) as links and **text** as bold."""
+        """Insert plain text, rendering [text](url) / STX-ETX bold.
+
+        Handles the three inline forms: ``[text](url)`` (link),
+        ``\\x02text\\x03`` (bold), and ``\\x02[text](url)\\x03`` (bold
+        link — the whole STX/ETX block contains a single markdown link,
+        rendered with bold weight AND link colour+underline).
+        """
         pos = 0
         for m in _INLINE_FORMAT_RE.finditer(text):
             if m.start() > pos:
@@ -477,11 +573,20 @@ class _NoteTextEdit(QTextEdit):
                 # Markdown link
                 cursor.insertText(m.group(1), _link_char_format(m.group(2)))
             else:
-                # Bold
-                bold_fmt = QTextCharFormat()
-                bold_fmt.setFontWeight(QFont.Black)
-                bold_fmt.setForeground(QColor(current_theme().accent_orange))
-                cursor.insertText(m.group(3), bold_fmt)
+                # Bold — may wrap a link (\x02[text](url)\x03) in which
+                # case we render bold + link in one span.
+                bold_content = m.group(3)
+                link_match = _LINK_RE.fullmatch(bold_content)
+                if link_match:
+                    fmt = _link_char_format(link_match.group(2))
+                    fmt.setFontWeight(QFont.Black)
+                    cursor.insertText(link_match.group(1), fmt)
+                else:
+                    bold_fmt = QTextCharFormat()
+                    bold_fmt.setFontWeight(QFont.Black)
+                    bold_fmt.setForeground(
+                        QColor(current_theme().accent_orange))
+                    cursor.insertText(bold_content, bold_fmt)
             # Reset format so subsequent text has no inherited styling
             cursor.setCharFormat(QTextCharFormat())
             pos = m.end()
@@ -546,14 +651,20 @@ class _NoteTextEdit(QTextEdit):
                         name = img_fmt.name()
                         if name:
                             result.append(f'![image]({name})')
-                    elif fmt.isAnchor() and fmt.anchorHref():
+                        it += 1
+                        continue
+                    txt = fragment.text()
+                    is_anchor = fmt.isAnchor() and fmt.anchorHref()
+                    is_bold = fmt.fontWeight() >= QFont.Bold
+                    if is_anchor and is_bold and txt and include_bold_markers:
                         result.append(
-                            f'[{fragment.text()}]({fmt.anchorHref()})')
+                            f'{_BOLD_START}[{txt}]'
+                            f'({fmt.anchorHref()}){_BOLD_END}')
+                    elif is_anchor:
+                        result.append(f'[{txt}]({fmt.anchorHref()})')
+                    elif is_bold and txt and include_bold_markers:
+                        result.append(f'{_BOLD_START}{txt}{_BOLD_END}')
                     else:
-                        txt = fragment.text()
-                        if (txt and include_bold_markers
-                                and fmt.fontWeight() >= QFont.Bold):
-                            txt = f'{_BOLD_START}{txt}{_BOLD_END}'
                         result.append(txt)
                 it += 1
             block = block.next()
@@ -643,17 +754,56 @@ def _rename_note_meta(old_name: str, new_name: str) -> None:
 
 # ── Checklist serialization ──────────────────────────────────────────
 
-def _unwrap_bold(text: str) -> tuple[str, bool]:
-    """If *text* is wrapped in STX/ETX, return (inner, True); else (text, False)."""
-    if (len(text) >= 2 and text[0] == _BOLD_START
-            and text[-1] == _BOLD_END):
-        return text[1:-1], True
-    return text, False
-
-
 def _strip_markdown_links(text: str) -> str:
     """Return *text* with markdown ``[display](url)`` spans reduced to ``display``."""
     return _LINK_RE.sub(r'\1', text)
+
+
+def _display_to_raw_pos(raw: str, display_pos: int) -> int:
+    """Map a position in the stripped display text to the raw text.
+
+    Walks the raw string, counting display characters.  Link syntax
+    ``[text](url)`` contributes ``len(text)`` display chars; STX/ETX
+    bold markers contribute zero.  Returns the raw-string position
+    that corresponds to *display_pos*.  Used by the checklist line
+    edit's Cmd+K fallback so link insertion slices ``_raw_text`` at
+    the right offset even when the raw contains existing markdown.
+    """
+    display_count = 0
+    pos = 0
+    while pos < len(raw):
+        if display_count >= display_pos:
+            return pos
+        # Skip STX/ETX markers (invisible in display)
+        if raw[pos] in (_BOLD_START, _BOLD_END):
+            pos += 1
+            continue
+        # Handle [display](url) as a unit
+        m = _LINK_RE.match(raw, pos)
+        if m:
+            display_len = len(m.group(1))
+            if display_count + display_len > display_pos:
+                # display_pos lands inside this link's display text —
+                # return the position within the link's bracketed text
+                return m.start(1) + (display_pos - display_count)
+            display_count += display_len
+            pos = m.end()
+            continue
+        # Plain character
+        pos += 1
+        display_count += 1
+    return pos
+
+
+def _strip_inline_formats(text: str) -> str:
+    """Strip markdown link syntax AND STX/ETX bold markers for plain display.
+
+    Use in place of ``_strip_markdown_links`` wherever the raw item
+    text is shown in a QLineEdit (which can't render per-character
+    styling) — the rich-text overlay handles styled rendering.
+    """
+    text = _LINK_RE.sub(r'\1', text)
+    return text.replace(_BOLD_START, '').replace(_BOLD_END, '')
 
 
 def _link_at_stripped_pos(raw: str, stripped_pos: int) -> Optional[str]:
@@ -662,7 +812,11 @@ def _link_at_stripped_pos(raw: str, stripped_pos: int) -> Optional[str]:
 
     Used so clicks on the rendered "word" in a checklist item's line
     edit (which hides the ``[…](url)`` syntax) can still open the link.
+    Strips STX/ETX bold markers from ``raw`` first so bold-wrapped
+    links (``\\x02[word](url)\\x03``) map correctly between raw and
+    display positions.
     """
+    raw = raw.replace(_BOLD_START, '').replace(_BOLD_END, '')
     stripped_count = 0
     raw_pos = 0
     for m in _LINK_RE.finditer(raw):
@@ -681,8 +835,15 @@ def _link_at_stripped_pos(raw: str, stripped_pos: int) -> Optional[str]:
 def _parse_checklist(text: str) -> list[dict]:
     """Parse markdown-style checklist text into item dicts.
 
-    ``item['text']`` contains the RAW body (with any markdown link syntax
-    preserved) — display stripping happens at render time, not here.
+    ``item['text']`` preserves inline formatting verbatim — markdown
+    link syntax and STX/ETX bold markers both stay in the text so the
+    rich-text overlay can render partial styling.  Display stripping
+    happens at render time via ``_strip_inline_formats``.
+
+    ``item['bold']`` is retained as ``False`` for a transitional API
+    shape — partial-item bold is expressed inline rather than via a
+    single flag.  Legacy disk format (whole item wrapped in STX/ETX)
+    is preserved as-is in ``text``; the overlay renders the bold span.
     """
     items: list[dict] = []
     for line in text.split('\n'):
@@ -691,27 +852,32 @@ def _parse_checklist(text: str) -> list[dict]:
             continue
         if stripped in ('- [x]', '- [X]') or stripped.startswith('- [x] ') or stripped.startswith('- [X] '):
             raw = stripped[6:] if len(stripped) > 6 else ''
-            item_text, bold = _unwrap_bold(raw)
-            items.append({'text': item_text, 'checked': True, 'bold': bold})
+            items.append({'text': raw, 'checked': True, 'bold': False})
         elif stripped == '- [ ]' or stripped.startswith('- [ ] '):
             raw = stripped[6:] if len(stripped) > 6 else ''
-            item_text, bold = _unwrap_bold(raw)
-            items.append({'text': item_text, 'checked': False, 'bold': bold})
+            items.append({'text': raw, 'checked': False, 'bold': False})
         else:
-            item_text, bold = _unwrap_bold(stripped)
-            items.append({'text': item_text, 'checked': False, 'bold': bold})
+            items.append({'text': stripped, 'checked': False, 'bold': False})
     return items
 
 
 def _serialize_checklist(items: list[dict]) -> str:
-    """Serialize item dicts to markdown-style checklist text."""
+    """Serialize item dicts to markdown-style checklist text.
+
+    ``item['text']`` is written as-is — it already carries any inline
+    STX/ETX bold markers and markdown link spans.  The deprecated
+    ``bold`` flag (legacy whole-item toggle) is still respected for
+    migration: if set, the text is wrapped in STX/ETX.
+    """
     lines: list[str] = []
     for item in items:
         if not item['text'] and not item['checked']:
             continue  # skip empty unchecked items
         mark = 'x' if item['checked'] else ' '
         text = item['text']
-        if item.get('bold') and text:
+        if (item.get('bold') and text
+                and _BOLD_START not in text):
+            # Legacy flag-based bold — migrate to inline on write.
             text = f'{_BOLD_START}{text}{_BOLD_END}'
         lines.append(f'- [{mark}] {text}')
     return '\n'.join(lines)
@@ -1169,7 +1335,7 @@ class _ChecklistItemWidget(QFrame):
 
         # Display stripped text (markdown hidden).  The raw form lives
         # in self._raw_text; the popup is the only editor that sees it.
-        self._edit = _ItemLineEdit(_strip_markdown_links(text))
+        self._edit = _ItemLineEdit(_strip_inline_formats(text))
         self._edit.setFrame(False)
         # Read-only: typing always routes through the rich-text popup,
         # so the raw markdown stays intact.  Focus auto-expands.
@@ -1184,9 +1350,15 @@ class _ChecklistItemWidget(QFrame):
         self._rich_overlay = QLabel(self._edit)
         self._rich_overlay.setTextFormat(Qt.RichText)
         self._rich_overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
-        # 2px left padding matches QLineEdit's internal text offset so
-        # the overlay text lines up with the (invisible) line edit text.
-        self._rich_overlay.setContentsMargins(2, 0, 2, 0)
+        # contentsMargins(11, 0, 11, 0) matches the line edit's text X
+        # position: theme ``QLineEdit { padding: 6px 10px; border: 1px
+        # solid ... }`` puts line-edit text at x=11.  Without this,
+        # the overlay renders text at x=2 and adding a link (which
+        # makes the overlay visible) visibly jerks the text ~9px
+        # leftward.  Vertical alignment is AlignVCenter so the overlay
+        # text sits at the same Y as the line edit's (Qt-centered)
+        # text — matches the popup edit position too.
+        self._rich_overlay.setContentsMargins(11, 0, 11, 0)
         self._rich_overlay.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         self._rich_overlay.setStyleSheet('background: transparent;')
         self._rich_overlay.setGeometry(self._edit.rect())
@@ -1228,6 +1400,16 @@ class _ChecklistItemWidget(QFrame):
         self.setStyleSheet(
             f'_ChecklistItemWidget {{ border-bottom: 1px solid {current_theme().border_subtle}; }}'
         )
+        # Fixed vertical size policy: item always matches its sizeHint
+        # height and never absorbs excess space from the parent
+        # ``QVBoxLayout``.  Without this, the parent layout would
+        # distribute excess space across items when the trailing
+        # ``addStretch()`` wasn't enough — observed as a ~200px gap
+        # below the edited item even though sizeHint was 40.  The
+        # item's sizeHint still grows dynamically when the popup
+        # expands (because children drive sizeHint), so multi-line
+        # edit still expands correctly.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Show the start of the text (not the end) when the item is first laid out.
         QTimer.singleShot(0, self._edit._reset_cursor_to_start)
@@ -1296,45 +1478,82 @@ class _ChecklistItemWidget(QFrame):
         else:
             base_color = t.text_primary
         link_color = t.accent_blue
-        # Walk the raw text: emit link spans as underlined+blue, other
-        # text in ``base_color``.  Escape HTML-specials to avoid
-        # accidental tag interpretation.
-        # CSS ``text-decoration`` isn't inherited — the link span
-        # replaces the parent span's value — so include ``line-through``
-        # explicitly on the link when the item is checked, otherwise
-        # the whole row is struck through *except* the link word.
+        bold_color = t.accent_orange if not self._checked else t.text_muted
+        # Walk the raw text: emit link / bold spans with their own
+        # styling, plain runs in base_color.  Escape HTML-specials so
+        # user text isn't interpreted as tags.
+        # CSS ``text-decoration`` isn't inherited — child spans replace
+        # the parent's value — so include ``line-through`` explicitly
+        # on link spans when the item is checked.
         link_decoration = ('underline line-through'
                            if self._checked else 'underline')
+        bold_decoration = ('line-through' if self._checked else 'none')
         parts: list[str] = []
         pos = 0
-        for m in _LINK_RE.finditer(self._raw_text):
+        for m in _INLINE_FORMAT_RE.finditer(self._raw_text):
             if m.start() > pos:
                 parts.append(html.escape(self._raw_text[pos:m.start()]))
-            display = html.escape(m.group(1))
-            parts.append(
-                f'<span style="color:{link_color};'
-                f' text-decoration:{link_decoration}">{display}</span>'
-            )
+            if m.group(1) is not None:
+                # Link span: [display](url)
+                display = html.escape(m.group(1))
+                parts.append(
+                    f'<span style="color:{link_color};'
+                    f' text-decoration:{link_decoration}">{display}</span>'
+                )
+            else:
+                # Bold span: \x02text\x03 — may wrap a link
+                # (\x02[display](url)\x03) which renders as bold+link.
+                bold_content = m.group(3)
+                nested_link = _LINK_RE.fullmatch(bold_content)
+                if nested_link:
+                    display = html.escape(nested_link.group(1))
+                    parts.append(
+                        f'<span style="color:{link_color};'
+                        f' font-weight:bold;'
+                        f' text-decoration:{link_decoration}">{display}</span>'
+                    )
+                else:
+                    btext = html.escape(bold_content)
+                    parts.append(
+                        f'<span style="color:{bold_color};'
+                        f' font-weight:bold;'
+                        f' text-decoration:{bold_decoration}">{btext}</span>'
+                    )
             pos = m.end()
         if pos < len(self._raw_text):
             parts.append(html.escape(self._raw_text[pos:]))
         weight = 'bold' if self._bold else 'normal'
         strike = ' text-decoration:line-through;' if self._checked else ''
         # Wrap the whole string in a span that sets the base color +
-        # strike (link spans override color+underline).
+        # strike (link / bold spans override color+decoration).
+        # ``white-space: pre-wrap`` preserves consecutive spaces that
+        # HTML would otherwise collapse — matches what the line edit
+        # and popup show for raw text like ``hello  hi``.
         size_rule = (f' font-size:{self._font_size}pt;'
                      if self._font_size else '')
         self._rich_overlay.setText(
             f'<span style="color:{base_color}; font-weight:{weight};'
-            f' font-family:Menlo;{size_rule}{strike}">'
+            f' font-family:Menlo;{size_rule}{strike}'
+            f' white-space:pre-wrap;">'
             f'{"".join(parts)}</span>'
         )
         self._rich_overlay.setGeometry(self._edit.rect())
         self._rich_overlay.show()
 
     def _has_link_display(self) -> bool:
-        """True if the raw text contains any markdown link span."""
-        return _LINK_RE.search(self._raw_text) is not None
+        """True if the raw text contains any inline-format span.
+
+        Historically this checked only for markdown links.  Now we
+        also trigger the overlay for inline bold (STX/ETX markers)
+        and for the deprecated ``_bold`` flag so legacy items still
+        render their bolding via the rich-text path.  Name kept for
+        call-site compatibility.
+        """
+        if _LINK_RE.search(self._raw_text):
+            return True
+        if _BOLD_START in self._raw_text and _BOLD_END in self._raw_text:
+            return True
+        return False
 
     def set_font_size(self, pt: int) -> None:
         """Update the item's content font size and re-apply QSS styles."""
@@ -1355,7 +1574,7 @@ class _ChecklistItemWidget(QFrame):
         if raw == self._raw_text:
             return
         self._raw_text = raw
-        self._edit.setText(_strip_markdown_links(raw))
+        self._edit.setText(_strip_inline_formats(raw))
         # Refresh styling (link color/underline depends on markdown presence).
         self._apply_checked_style(self._checked)
         self._apply_bold_style()
@@ -1403,29 +1622,46 @@ class _ChecklistItemWidget(QFrame):
             f'{size_rule} }}')
 
     def _toggle_bold(self) -> None:
-        """Flip the item's bold flag and report to the parent checklist."""
+        """Toggle bold formatting.
+
+        If the expand popup is open and the user has a selection,
+        apply bold as a per-character char format (the selected run
+        flips between QFont.Black + accent_orange and QFont.Normal +
+        text_primary).  Otherwise fall back to the legacy whole-item
+        toggle that flips ``self._bold`` — used when the line edit has
+        focus in non-edit mode (no selection available).
+        """
+        t = current_theme()
+        if self._popup is not None:
+            wrap = self._popup
+            cursor = wrap.textCursor()
+            # Detect current bold/anchor state at cursor.  We only
+            # override the foreground colour when the span is NOT a
+            # link — for a bold link we want to keep the link's blue
+            # colour after un-bolding (it's still a link) and we don't
+            # want to paint the link word orange when bolding it
+            # (link identity > bold colour).
+            probe = cursor.charFormat()
+            is_bold = probe.fontWeight() >= QFont.Bold
+            is_anchor = probe.isAnchor() and probe.anchorHref()
+            fmt = QTextCharFormat()
+            if is_bold:
+                fmt.setFontWeight(QFont.Normal)
+                if not is_anchor:
+                    fmt.setForeground(QColor(
+                        t.text_muted if self._checked else t.text_primary))
+            else:
+                fmt.setFontWeight(QFont.Black)
+                if not is_anchor:
+                    fmt.setForeground(QColor(t.accent_orange))
+            if cursor.hasSelection():
+                cursor.mergeCharFormat(fmt)
+            else:
+                wrap.mergeCurrentCharFormat(fmt)
+            return
+        # Legacy whole-item toggle (no popup — line edit Cmd+B).
         self._bold = not self._bold
         self._apply_bold_style()
-        # If the expand popup is open, mirror the font + color there too —
-        # otherwise the user toggling bold inside the popup would see no
-        # change until dismissal.
-        if self._popup is not None:
-            popup_font = self._popup.font()
-            popup_font.setWeight(QFont.Black if self._bold else QFont.Normal)
-            self._popup.setFont(popup_font)
-            t = current_theme()
-            color = (t.text_muted if self._checked
-                     else t.accent_orange if self._bold
-                     else t.text_primary)
-            # Preserve the baked-in font-size so bold toggle doesn't
-            # shrink the popup back to Qt default (widget stylesheet
-            # blocks ancestor font-size cascade).
-            size_css = (f' font-size: {self._font_size}pt; font-family: Menlo;'
-                        if self._font_size else '')
-            self._popup.setStyleSheet(
-                f'QTextEdit {{ color: {color}; background: transparent;'
-                f' border: 1px solid {t.text_secondary};{size_css} }}'
-            )
         self.bold_changed.emit(self._index, self._bold)
 
     def focus_edit(self, cursor_at_end: bool = True) -> None:
@@ -1452,9 +1688,11 @@ class _ChecklistItemWidget(QFrame):
         """Walk the popup's document, emitting raw markdown text.
 
         The popup renders ``[text](url)`` spans as anchor-format
-        fragments (blue + underlined).  To round-trip back to disk we
-        need the markdown form: anchors → ``[text](url)``, plain
-        fragments → their own text.
+        fragments (blue + underlined) and bold runs as
+        ``QFont.Bold``-weight char formats.  Serialize back to the
+        note format: anchors → ``[text](url)``, bold runs →
+        ``\\x02text\\x03`` (STX/ETX markers), plain fragments emit
+        their own text.
         """
         doc = wrap.document()
         parts: list[str] = []
@@ -1469,10 +1707,69 @@ class _ChecklistItemWidget(QFrame):
                 frag = it.fragment()
                 if frag.isValid():
                     fmt = frag.charFormat()
-                    if fmt.isAnchor() and fmt.anchorHref():
-                        parts.append(f'[{frag.text()}]({fmt.anchorHref()})')
+                    text = frag.text()
+                    is_anchor = fmt.isAnchor() and fmt.anchorHref()
+                    is_bold = fmt.fontWeight() >= QFont.Bold
+                    if is_anchor and is_bold and text:
+                        parts.append(
+                            f'{_BOLD_START}[{text}]'
+                            f'({fmt.anchorHref()}){_BOLD_END}')
+                    elif is_anchor:
+                        parts.append(f'[{text}]({fmt.anchorHref()})')
+                    elif is_bold and text:
+                        parts.append(f'{_BOLD_START}{text}{_BOLD_END}')
                     else:
-                        parts.append(frag.text())
+                        parts.append(text)
+                it += 1
+            block = block.next()
+        return ''.join(parts)
+
+    @staticmethod
+    def _serialize_cursor_selection_to_markdown(cursor: QTextCursor) -> str:
+        """Convert a QTextCursor selection into markdown text.
+
+        Walks the fragments covered by the selection; anchor-format
+        runs become ``[text](url)``, plain runs emit their own text.
+        Used by the popup's Cmd+C override so pasting back into
+        another popup (or the text editor) re-renders the link via
+        ``_insert_text_with_links``.
+        """
+        if not cursor.hasSelection():
+            return ''
+        sel_start = cursor.selectionStart()
+        sel_end = cursor.selectionEnd()
+        doc = cursor.document()
+        parts: list[str] = []
+        block = doc.findBlock(sel_start)
+        first = True
+        while block.isValid() and block.position() < sel_end:
+            if not first:
+                parts.append(' ')
+            first = False
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    frag_start = frag.position()
+                    frag_end = frag_start + frag.length()
+                    clip_start = max(frag_start, sel_start)
+                    clip_end = min(frag_end, sel_end)
+                    if clip_start < clip_end:
+                        text = frag.text()[
+                            clip_start - frag_start:clip_end - frag_start]
+                        fmt = frag.charFormat()
+                        is_anchor = fmt.isAnchor() and fmt.anchorHref()
+                        is_bold = fmt.fontWeight() >= QFont.Bold
+                        if is_anchor and is_bold and text:
+                            parts.append(
+                                f'{_BOLD_START}[{text}]'
+                                f'({fmt.anchorHref()}){_BOLD_END}')
+                        elif is_anchor:
+                            parts.append(f'[{text}]({fmt.anchorHref()})')
+                        elif is_bold and text:
+                            parts.append(f'{_BOLD_START}{text}{_BOLD_END}')
+                        else:
+                            parts.append(text)
                 it += 1
             block = block.next()
         return ''.join(parts)
@@ -1516,8 +1813,16 @@ class _ChecklistItemWidget(QFrame):
         wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap.setTabChangesFocus(True)
         wrap.setAcceptRichText(False)
-        wrap.document().setDocumentMargin(2)
         wrap.setFont(self._edit.font())
+        # documentMargin(7) + padding(0 3) + border(1) positions the
+        # popup's text at the same x/y as the line edit's (theme gives
+        # the line edit border:1 + padding:6 10 and Qt centres the
+        # text vertically inside).  The math:
+        #   line edit text x = 1(border) + 10(padding-l) = 11;
+        #                  y = 1 + 6 + (content_h-text_h)/2 ≈ 8 for line_h=33.
+        #   popup    text x = 1(border) + 3(padding-l) + 7(doc-margin) = 11 ✓
+        #                  y = 1 + 0 + 7 = 8 ✓.
+        wrap.document().setDocumentMargin(7)
         t = current_theme()
         color = (t.text_muted if self._checked
                  else t.accent_orange if self._bold
@@ -1527,20 +1832,54 @@ class _ChecklistItemWidget(QFrame):
         # font-size in Qt, so we must specify it explicitly here.
         size_css = (f' font-size: {self._font_size}pt; font-family: Menlo;'
                     if self._font_size else '')
+        # 1px border gives the user a visible "square" signalling edit
+        # mode; padding: 0 3px offsets text horizontally to line up
+        # with the line edit's 10px left padding (the rest comes from
+        # the documentMargin above).
         wrap.setStyleSheet(
             f'QTextEdit {{ color: {color}; background: transparent;'
-            f' border: 1px solid {t.text_secondary};{size_css} }}'
+            f' border: 1px solid {t.text_secondary}; padding: 0 3px;'
+            f'{size_css} }}'
         )
-        # Force plain-text paste — clipboard HTML (e.g. browser links)
-        # would otherwise leak rich formatting into the plain-text editor.
-        wrap.insertFromMimeData = lambda src: wrap.insertPlainText(
-            src.text()) if src.hasText() else None
+        # Paste: if the clipboard text contains markdown links, render
+        # them as anchor spans (so ``[hello](url)`` appears as a styled
+        # link, not literal markdown).  Bare text still pastes as
+        # plain text.  HTML is intentionally not interpreted — only
+        # markdown text is — to avoid browser-style rich formatting
+        # leaking in.
+        def _paste_with_links(src: QMimeData) -> None:
+            if not src.hasText():
+                return
+            text = src.text()
+            cursor = wrap.textCursor()
+            # Reset char format — pasting plain text inside an anchor
+            # span would otherwise inherit its underline/colour.
+            cursor.setCharFormat(QTextCharFormat())
+            _NoteTextEdit._insert_text_with_links(cursor, text)
+            wrap.setTextCursor(cursor)
+            # Emit text_edited so the items list is kept current.
+            # Cmd+V via on_key emits this anyway (tail of the handler),
+            # but right-click paste (context menu) calls this directly
+            # and would otherwise leak pasted content into a stale
+            # items dict until the popup dismisses.
+            self.text_edited.emit(
+                self._index, self._serialize_popup_markdown(wrap))
+        wrap.insertFromMimeData = _paste_with_links
         # Render the raw markdown as rich text (anchor-styled links),
         # not visible ``[word](url)`` syntax.  On dismiss we serialize
         # the document back to markdown (_serialize_popup_markdown).
+        # Migrate legacy whole-item bold: if the ``_bold`` flag is set
+        # but there are no inline STX/ETX markers in the raw text, wrap
+        # the text so the popup renders it with bold char format and a
+        # subsequent dismiss saves the inline form (Cmd+B per-char then
+        # works cleanly).
+        render_text = self._raw_text
+        if (self._bold and _BOLD_START not in render_text
+                and render_text):
+            render_text = f'{_BOLD_START}{render_text}{_BOLD_END}'
         cursor = wrap.textCursor()
         cursor.movePosition(QTextCursor.Start)
-        _NoteTextEdit._insert_text_with_links(cursor, self._raw_text)
+        _NoteTextEdit._insert_text_with_links(cursor, render_text)
 
         # Stop the cursor's anchor format from bleeding into subsequent
         # typing — same mechanism _NoteTextEdit uses for text notes.
@@ -1584,9 +1923,13 @@ class _ChecklistItemWidget(QFrame):
             margin = wrap.document().documentMargin()
             # ``documentMargin()`` returns qreal (float in Python), so
             # cast to int before ``setFixedHeight`` which is int-only.
-            content_h = int(fm.lineSpacing() * line_count + margin * 2)
-            # +4 for the 1px border top/bottom plus descent safety.
-            wrap.setFixedHeight(max(line_h, content_h + 4))
+            # +2 accounts for the 1px border top + 1px border bottom.
+            content_h = int(fm.lineSpacing() * line_count + margin * 2 + 2)
+            # Grow ONLY when the content is actually taller than the
+            # line edit it replaced (the text wrapped or has multiple
+            # visual lines).  Single-line content keeps exactly the
+            # line edit's height — the row doesn't move on edit.
+            wrap.setFixedHeight(max(line_h, content_h))
 
         def dismiss(save: bool) -> None:
             if self._popup is not wrap:
@@ -1654,6 +1997,17 @@ class _ChecklistItemWidget(QFrame):
                     and mods_masked == Qt.ControlModifier):
                 self._toggle_bold()
                 return
+            # Cmd+C — copy selection as markdown so pasting back into
+            # another popup (or the text editor) re-renders any link
+            # spans as anchor-styled text instead of dropping them.
+            if (event.key() == Qt.Key_C
+                    and mods_masked == Qt.ControlModifier):
+                cursor = wrap.textCursor()
+                if cursor.hasSelection():
+                    md = _ChecklistItemWidget \
+                        ._serialize_cursor_selection_to_markdown(cursor)
+                    QApplication.clipboard().setText(md)
+                    return
             # Cmd+V / Ctrl+V — paste image
             if (event.key() == Qt.Key_V
                     and event.modifiers() & Qt.ControlModifier):
@@ -1697,11 +2051,20 @@ class _ChecklistItemWidget(QFrame):
                 QTextEdit.focusOutEvent(wrap, event)
             except RuntimeError:
                 return
+            # Suppress dismissal when a modal URL dialog (Cmd+K) is
+            # stealing focus.  Without this the popup serializes to
+            # markdown and calls set_raw_text before the URL dialog
+            # returns — the fallback line-edit path then slices raw
+            # markdown using positions captured from popup plain text,
+            # corrupting content (e.g. producing ``[word]asdas``).
+            if getattr(wrap, '_suppress_dismiss', False):
+                return
             QTimer.singleShot(0, lambda: dismiss(True))
 
         _setup_textedit_image_hover(wrap, self._edit._resolve_placeholder_fn)
         _setup_textedit_url_click(wrap)
         wrap._url_hl = _UrlHighlighter(wrap.document())
+        wrap._suppress_dismiss = False
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -1832,6 +2195,7 @@ class _ChecklistWidget(QWidget):
         outer.addWidget(self._scroll)
 
         self._add_field: Optional[_ItemLineEdit] = None
+        self._add_popup: Optional[QTextEdit] = None
 
         # Drop indicator line (hidden by default)
         self._drop_indicator = QWidget(self._scroll.viewport())
@@ -1865,6 +2229,12 @@ class _ChecklistWidget(QWidget):
 
     def set_items(self, items: list[dict]) -> None:
         """Load items and rebuild the UI."""
+        # Flush any active popup BEFORE replacing self._items — the
+        # popup's text_edited signal is keyed to the OLD index, so
+        # letting it fire after the items list changed would write
+        # into the new note's data (wrong row) or get silently
+        # dropped.
+        self._flush_popups()
         # Reset image mapping for new note
         self._image_counter = 0
         self._placeholder_to_file.clear()
@@ -1927,6 +2297,22 @@ class _ChecklistWidget(QWidget):
         return self._placeholder_to_file.get(placeholder)
 
     # ── Layout rebuild ───────────────────────────────────────────────
+
+    def _flush_popups(self) -> None:
+        """Dismiss any active item or add-field popup, saving content.
+
+        Call this BEFORE mutating ``self._items`` (delete / insert /
+        toggle / reorder / replace) so the popup's ``text_edited``
+        signal flushes into the *old* items list at the correct index.
+        If called AFTER mutation, the popup's index may point to a
+        shifted or removed item and the text update goes to the wrong
+        row (or gets silently dropped by the index-range check).
+        """
+        prev = _ChecklistItemWidget._active_expand
+        if prev is not None:
+            prev._dismiss_popup_if_active()
+        if self._add_popup is not None:
+            self._dismiss_add_popup(save=True)
 
     def _clear_layout(self) -> None:
         # Move focus to the scroll area BEFORE destroying children —
@@ -1991,8 +2377,12 @@ class _ChecklistWidget(QWidget):
         self._add_field._register_image_fn = self._register_image
         self._add_field._resolve_placeholder_fn = self._resolve_placeholder
         self._add_field.setFrame(False)
+        # Match the add-popup's effective geometry so entering edit mode
+        # doesn't shift the text.  Popup uses padding(6, 4) + border(1),
+        # so the add field needs padding(7, 5) — same internal space +
+        # 1px on each side that the popup's border occupies.
         self._add_field.setStyleSheet(
-            f'QLineEdit {{ padding: 6px 4px; background: transparent;'
+            f'QLineEdit {{ padding: 7px 5px; background: transparent;'
             f' font-size: {self._current_font_size}pt;'
             f' font-family: Menlo; }}'
         )
@@ -2208,6 +2598,8 @@ class _ChecklistWidget(QWidget):
 
     def _move_item(self, src: int, dst: int) -> None:
         """Move an item from src index to before dst index in self._items."""
+        # Flush popup before reorder — see _flush_popups docstring.
+        self._flush_popups()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistReorderCmd(note_name=self._cmd_ctx.current_name, src_index=src, dst_index=dst))
         item = self._items.pop(src)
@@ -2223,6 +2615,11 @@ class _ChecklistWidget(QWidget):
     def _on_toggle(self, index: int, checked: bool) -> None:
         if index < 0 or index >= len(self._items):
             return
+        # Flush a popup on a DIFFERENT item before toggling — otherwise
+        # the popup's pending text_edited would land on a shifted row
+        # after the rebuild moves items between active/completed
+        # sections.
+        self._flush_popups()
         old_checked = self._items[index]['checked']
         self._items[index]['checked'] = checked
         self._rebuild()
@@ -2245,6 +2642,10 @@ class _ChecklistWidget(QWidget):
     def _on_delete(self, index: int) -> None:
         if index < 0 or index >= len(self._items):
             return
+        # Flush popup BEFORE the deletion — otherwise the popup's
+        # pending text_edited would write to the wrong row (indices
+        # above the deleted one shift down) or get dropped.
+        self._flush_popups()
         item = self._items[index]
         del self._items[index]
         self._rebuild()
@@ -2352,9 +2753,14 @@ class _ChecklistWidget(QWidget):
                 item_checked=item['checked']))
 
     def _on_add_item(self) -> None:
-        # If the add popup is active, read from it
+        # If the add popup is active, serialize its document so any
+        # inline link / bold spans survive into the new item.  The
+        # line-edit fallback can't have inline formatting, so plain
+        # text is fine there.
         if self._add_popup is not None:
-            text = self._add_popup.toPlainText().replace('\n', ' ').strip()
+            text = _ChecklistItemWidget \
+                ._serialize_popup_markdown(self._add_popup) \
+                .replace('\n', ' ').strip()
             self._dismiss_add_popup(save=False)  # don't save back, we're consuming it
         elif self._add_field is not None:
             text = self._add_field.text().strip()
@@ -2392,20 +2798,33 @@ class _ChecklistWidget(QWidget):
         wrap.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         wrap.setTabChangesFocus(True)
         wrap.setAcceptRichText(False)
-        wrap.document().setDocumentMargin(2)
+        # Bake current zoom size into the font so ``QFontMetrics``
+        # inside resize_wrap reflects the actual rendered line height
+        # (see checkbox popup for rationale — otherwise wrapped text
+        # is clipped at higher zoom levels).
         wrap.setFont(self._add_field.font())
+        # Popup text sits at (x=5, y=8) via padding:7 4 + border:1.
+        # Add field uses padding:7 5 (no border) which also places
+        # text at (5, 8) — so entering edit mode shows NO visible
+        # text movement, only the border appearing around the text.
+        wrap.document().setDocumentMargin(0)
         t = current_theme()
-        # Bake font-size into the popup's own stylesheet — a widget QSS
-        # with any properties blocks ancestor font-size cascade in Qt, so
-        # we need to specify the zoom size here explicitly.
         wrap.setStyleSheet(
             f'QTextEdit {{ color: {t.text_primary}; background: transparent;'
-            f' border: 1px solid {t.text_secondary}; padding: 4px;'
+            f' border: 1px solid {t.text_secondary}; padding: 7px 4px;'
             f' font-size: {self._current_font_size}pt;'
             f' font-family: Menlo; }}'
         )
-        wrap.insertFromMimeData = lambda src: wrap.insertPlainText(
-            src.text()) if src.hasText() else None
+        # Paste: render markdown links as anchor spans instead of
+        # literal ``[text](url)`` syntax.  Matches the checkbox popup.
+        def _paste_with_links(src: QMimeData) -> None:
+            if not src.hasText():
+                return
+            cursor = wrap.textCursor()
+            cursor.setCharFormat(QTextCharFormat())
+            _NoteTextEdit._insert_text_with_links(cursor, src.text())
+            wrap.setTextCursor(cursor)
+        wrap.insertFromMimeData = _paste_with_links
         wrap.setPlainText(self._add_field.text())
         wrap.setPlaceholderText('Add item')
 
@@ -2439,8 +2858,14 @@ class _ChecklistWidget(QWidget):
             margin = wrap.document().documentMargin()
             # ``documentMargin()`` returns qreal (float in Python), so
             # cast to int before ``setFixedHeight`` which is int-only.
-            content_h = int(fm.lineSpacing() * line_count + margin * 2)
-            wrap.setFixedHeight(max(line_h, content_h + 4))
+            # +2 for the 1px border top/bottom, +12 for ``padding: 6px``
+            # top/bottom (must match the popup's stylesheet above).
+            # +16 = 2 (border top+bottom) + 14 (padding 7px top+bottom)
+            content_h = int(fm.lineSpacing() * line_count + margin * 2 + 16)
+            # Grow only when the content genuinely needs more room;
+            # single-line input keeps the add-field's height so the
+            # row doesn't visibly jump on edit.
+            wrap.setFixedHeight(max(line_h, content_h))
 
         def on_key(event: 'QKeyEvent') -> None:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
@@ -2473,6 +2898,45 @@ class _ChecklistWidget(QWidget):
                     return
                 wrap.setTextCursor(cur)
                 return
+            mods_masked = event.modifiers() & (
+                Qt.ControlModifier | Qt.ShiftModifier
+                | Qt.AltModifier | Qt.MetaModifier)
+            # Cmd+B — per-character bold (same pattern as the checkbox
+            # item popup).  Toggles bold on the current selection or
+            # subsequent typing when there's no selection.  Preserves
+            # link colour when toggling bold on a link span.
+            if (event.key() == Qt.Key_B
+                    and mods_masked == Qt.ControlModifier):
+                cursor = wrap.textCursor()
+                probe = cursor.charFormat()
+                is_bold = probe.fontWeight() >= QFont.Bold
+                is_anchor = probe.isAnchor() and probe.anchorHref()
+                t = current_theme()
+                fmt = QTextCharFormat()
+                if is_bold:
+                    fmt.setFontWeight(QFont.Normal)
+                    if not is_anchor:
+                        fmt.setForeground(QColor(t.text_primary))
+                else:
+                    fmt.setFontWeight(QFont.Black)
+                    if not is_anchor:
+                        fmt.setForeground(QColor(t.accent_orange))
+                if cursor.hasSelection():
+                    cursor.mergeCharFormat(fmt)
+                else:
+                    wrap.mergeCurrentCharFormat(fmt)
+                return
+            # Cmd+C — copy selection as markdown so pasting back into
+            # another popup or the text editor re-renders any link
+            # spans as anchor-styled text.
+            if (event.key() == Qt.Key_C
+                    and mods_masked == Qt.ControlModifier):
+                cursor = wrap.textCursor()
+                if cursor.hasSelection():
+                    md = _ChecklistItemWidget \
+                        ._serialize_cursor_selection_to_markdown(cursor)
+                    QApplication.clipboard().setText(md)
+                    return
             # Cmd+V / Ctrl+V — paste image
             if (event.key() == Qt.Key_V
                     and event.modifiers() & Qt.ControlModifier):
@@ -2500,11 +2964,16 @@ class _ChecklistWidget(QWidget):
                 QTextEdit.focusOutEvent(wrap, event)
             except RuntimeError:
                 return
+            # Suppress dismissal when a modal URL dialog (Cmd+K) is
+            # stealing focus — see checkbox popup for rationale.
+            if getattr(wrap, '_suppress_dismiss', False):
+                return
             QTimer.singleShot(0, lambda: self._dismiss_add_popup(save=True))
 
         _setup_textedit_image_hover(wrap, self._resolve_placeholder)
         _setup_textedit_url_click(wrap)
         wrap._url_hl = _UrlHighlighter(wrap.document())
+        wrap._suppress_dismiss = False
         wrap.keyPressEvent = on_key
         wrap.focusOutEvent = on_focus_out
 
@@ -2535,6 +3004,8 @@ class _ChecklistWidget(QWidget):
                 self._add_field.setText(new_text)
 
     def _toggle_completed(self) -> None:
+        # Flush popups before rebuild — see _flush_popups docstring.
+        self._flush_popups()
         self._completed_visible = not self._completed_visible
         self._rebuild()
 
@@ -3261,6 +3732,10 @@ class NotesDialog(QDialog):
         if self._switching_mode or not self._current_name:
             return
 
+        # Flush any open checklist popup so its unsaved text is
+        # captured before we convert to the other mode.
+        self._checklist._flush_popups()
+
         old_mode = 'text' if index == self._MODE_CHECKLIST else 'checklist'
         new_mode = 'checklist' if index == self._MODE_CHECKLIST else 'text'
 
@@ -3944,6 +4419,16 @@ class NotesDialog(QDialog):
         """Write the current note to disk if changed."""
         if not self._current_name or self._undoing:
             return
+        # Flush any open checklist popup so its unsaved text is
+        # serialized before we read/save (popups feed the items list
+        # on dismiss; without this, popup edits made since the last
+        # keystroke that didn't emit text_edited could be lost).
+        try:
+            if (self._current_mode() == self._MODE_CHECKLIST
+                    and not sip.isdeleted(self._checklist)):
+                self._checklist._flush_popups()
+        except RuntimeError:
+            pass
         # Guard against reading from destroyed widgets during dialog teardown.
         # If a C++ widget was already deleted, bail out — do NOT write.
         try:
@@ -4554,42 +5039,47 @@ class NotesDialog(QDialog):
     def _unlink_selection(self, focus: QWidget) -> None:
         """Strip any link styling from the selection.
 
-        For _NoteTextEdit: clears the anchor/underline/link-color from
-        char formats in the selection, keeping the text intact.
-        For popup QTextEdit / QLineEdit: if the selection (or the text
-        around it) is a markdown ``[text](url)`` span, replace it with
-        just ``text``.
+        For QTextEdit targets (main editor + checklist popup): clear
+        anchor / underline / link-colour char-format properties while
+        preserving the bold state — a bold link becomes a bold plain
+        word (orange), a plain link becomes plain text (primary).
+        For QLineEdit (checklist read-only display): walk the raw
+        markdown text and remove the ``[text](url)`` span under the
+        cursor.
         """
-        if isinstance(focus, _NoteTextEdit):
+        if isinstance(focus, (_NoteTextEdit, QTextEdit)):
             cursor = focus.textCursor()
             if not cursor.hasSelection():
                 return
+            probe = cursor.charFormat()
+            is_bold = probe.fontWeight() >= QFont.Bold
+            t = current_theme()
+            color = t.accent_orange if is_bold else t.text_primary
             clear_fmt = QTextCharFormat()
             clear_fmt.setAnchor(False)
             clear_fmt.setAnchorHref('')
             clear_fmt.setFontUnderline(False)
-            clear_fmt.setForeground(QColor(current_theme().text_primary))
+            clear_fmt.setForeground(QColor(color))
             cursor.mergeCharFormat(clear_fmt)
             focus.setTextCursor(cursor)
             return
-        # Markdown-text targets: look for a [text](url) span overlapping
-        # the selection/cursor and replace it with the display text.
-        if isinstance(focus, QTextEdit):
-            cursor = focus.textCursor()
-            block_text = cursor.block().text()
-            block_start = cursor.block().position()
-            col = cursor.position() - block_start
-            span = _find_markdown_link_at(block_text, col)
-            if span is None:
-                return
-            a, b, display = span
-            c = QTextCursor(focus.document())
-            c.setPosition(block_start + a)
-            c.setPosition(block_start + b, QTextCursor.KeepAnchor)
-            c.insertText(display)
-            focus.setTextCursor(c)
-            return
         if isinstance(focus, QLineEdit):
+            parent_item = focus.parent()
+            if isinstance(parent_item, _ChecklistItemWidget):
+                # Line edit shows stripped display — operate on
+                # ``_raw_text`` so the markdown link syntax is removed.
+                raw = parent_item._raw_text
+                col = focus.cursorPosition()
+                # Map display position to raw position, then find the
+                # link span in raw that covers it.
+                raw_col = _display_to_raw_pos(raw, col)
+                span = _find_markdown_link_at(raw, raw_col)
+                if span is None:
+                    return
+                a, b, display = span
+                new_raw = raw[:a] + display + raw[b:]
+                parent_item.set_raw_text(new_raw)
+                return
             text = focus.text()
             col = focus.cursorPosition()
             span = _find_markdown_link_at(text, col)
@@ -4667,20 +5157,44 @@ class NotesDialog(QDialog):
         clip = clipboard.text().strip() if clipboard else ''
         prefill = clip if _ANY_URL_RE.fullmatch(clip) else ''
 
-        while True:
-            url, ok = QInputDialog.getText(
-                self, 'Insert Link', 'URL:', QLineEdit.Normal, prefill)
-            if not ok:
-                return
-            url = url.strip()
-            # Empty URL is allowed — it means "unset any link on the
-            # selection".  Any other non-matching string is still an
-            # error and re-prompts.
-            if not url or _ANY_URL_RE.fullmatch(url):
-                break
-            prefill = url
-            QMessageBox.warning(self, 'Invalid URL',
-                                'Please enter a valid URL (e.g. https://…)')
+        # Suppress the checklist popup's focus-out dismissal while the
+        # URL dialog is open.  Otherwise the popup serializes to
+        # markdown and updates ``_raw_text``, and the captured
+        # ``sel_start/sel_end`` (in popup plain-text coordinates) no
+        # longer match the raw text's positions — slicing raw markdown
+        # with those positions corrupts content (e.g. ``[a](u1) b``
+        # becomes ``[a]b`` after trying to link ``b``).
+        popup_had_suppression = False
+        if (isinstance(focus, QTextEdit)
+                and not isinstance(focus, _NoteTextEdit)):
+            popup_had_suppression = True
+            focus._suppress_dismiss = True
+
+        try:
+            while True:
+                url, ok = QInputDialog.getText(
+                    self, 'Insert Link', 'URL:', QLineEdit.Normal, prefill)
+                if not ok:
+                    return
+                url = url.strip()
+                # Empty URL is allowed — it means "unset any link on the
+                # selection".  Any other non-matching string is still an
+                # error and re-prompts.
+                if not url or _ANY_URL_RE.fullmatch(url):
+                    break
+                prefill = url
+                QMessageBox.warning(self, 'Invalid URL',
+                                    'Please enter a valid URL (e.g. https://…)')
+        finally:
+            # Clear the flag so the popup dismisses normally on its
+            # next focus loss (the one that was suppressed has
+            # already been consumed by the modal).
+            if (popup_had_suppression
+                    and focus is not None
+                    and not sip.isdeleted(focus)):
+                focus._suppress_dismiss = False
+                # Restore focus so typing after Cmd+K stays in the popup.
+                focus.setFocus()
 
         # The dialog may have caused the popup to dismiss.  If so, route
         # the link into its parent's line edit rather than falling back
@@ -4709,29 +5223,38 @@ class NotesDialog(QDialog):
         if isinstance(focus, _NoteTextEdit):
             cursor = focus.textCursor()
             if selected and sel_start >= 0:
-                # Re-anchor to the saved range
+                # Re-anchor to the saved range and merge the link
+                # format — ``mergeCharFormat`` preserves existing
+                # attributes (e.g. bold) while adding anchor + colour
+                # + underline on top.  This is what lets a bold word
+                # become a bold *link* instead of a plain link.
                 cursor.setPosition(sel_start)
                 cursor.setPosition(sel_end, QTextCursor.KeepAnchor)
-                cursor.removeSelectedText()
-                cursor.insertText(selected, fmt)
+                cursor.mergeCharFormat(fmt)
+                # Collapse the selection BEFORE clearing the
+                # insertion format — ``setCharFormat`` on a selection
+                # replaces the selection's format (which would undo
+                # the merge we just did).
+                cursor.setPosition(sel_end)
             else:
                 cursor.insertText(url, fmt)
             # Reset format so text typed after the link is normal
             cursor.setCharFormat(QTextCharFormat())
             focus.setTextCursor(cursor)
         elif isinstance(focus, QTextEdit):
-            # Checklist expand popup (still alive).  Insert the link as
-            # an anchor-format span so it renders styled (blue +
-            # underline) matching the popup's rich-text rendering —
-            # otherwise new links would show as plain ``[x](y)`` text
-            # while existing ones already render as anchors.
+            # Checklist expand popup (still alive).  Merge the link
+            # format onto the selection so existing bold/other char
+            # attributes survive.  If there's no saved selection, we
+            # insert fresh link text with just the link format.
             cursor = focus.textCursor()
             link_fmt = _link_char_format(url)
             if selected and sel_start >= 0:
                 cursor.setPosition(sel_start)
                 cursor.setPosition(sel_end, QTextCursor.KeepAnchor)
-                cursor.removeSelectedText()
-                cursor.insertText(selected, link_fmt)
+                cursor.mergeCharFormat(link_fmt)
+                # Collapse selection before setCharFormat (see
+                # _NoteTextEdit branch above for rationale).
+                cursor.setPosition(sel_end)
             elif selected:
                 cursor.insertText(selected, link_fmt)
             else:
@@ -4752,17 +5275,21 @@ class NotesDialog(QDialog):
                     _ChecklistItemWidget._serialize_popup_markdown(focus))
         elif isinstance(focus, QLineEdit):
             # Line edit (direct focus, or fallback after a popup dismissed).
-            # For checklist items the line edit shows STRIPPED display,
-            # but the authoritative text is the widget's _raw_text (which
-            # matches the popup's former content 1:1).  We perform the
-            # insertion against that raw string and let set_raw_text
-            # propagate the change back to the display + the items list.
+            # For checklist items the line edit shows STRIPPED display
+            # (markdown link syntax + STX/ETX bold markers hidden),
+            # so the saved ``sel_start/sel_end`` are in display
+            # coordinates.  Map them to raw-text positions before
+            # slicing — otherwise a raw like ``[a](u) asdas`` with a
+            # display-position of 2 would slice at raw position 2
+            # (inside the link brackets), corrupting the markdown.
             replacement = f'[{selected}]({url})' if selected else url
             parent_item = focus.parent()
             if isinstance(parent_item, _ChecklistItemWidget):
                 source = parent_item._raw_text
-                if selected and sel_start >= 0 and sel_end <= len(source):
-                    new_raw = source[:sel_start] + replacement + source[sel_end:]
+                if selected and sel_start >= 0:
+                    raw_start = _display_to_raw_pos(source, sel_start)
+                    raw_end = _display_to_raw_pos(source, sel_end)
+                    new_raw = source[:raw_start] + replacement + source[raw_end:]
                 else:
                     new_raw = source + replacement
                 parent_item.set_raw_text(new_raw)
