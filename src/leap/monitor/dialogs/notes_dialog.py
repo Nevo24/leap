@@ -2652,7 +2652,8 @@ class _ChecklistWidget(QWidget):
         self.content_changed.emit()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistDeleteItemCmd(
-                note_name=self._cmd_ctx.current_name, item_index=index, item_text=item['text'], item_checked=item['checked']))
+                note_name=self._cmd_ctx.current_name, item_index=index, item_text=item['text'],
+                item_checked=item['checked'], item_bold=item.get('bold', False)))
 
     def _on_new_after(self, index: int) -> None:
         """Insert a new empty item after the given index."""
@@ -2732,6 +2733,8 @@ class _ChecklistWidget(QWidget):
             return
         if self._items[index]['text']:
             return
+        # Flush popups before the del — see _flush_popups docstring.
+        self._flush_popups()
         unchecked = [i for i, d in enumerate(self._items) if not d['checked']]
         try:
             pos = unchecked.index(index)
@@ -2750,7 +2753,7 @@ class _ChecklistWidget(QWidget):
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistDeleteItemCmd(
                 note_name=self._cmd_ctx.current_name, item_index=index, item_text=item['text'],
-                item_checked=item['checked']))
+                item_checked=item['checked'], item_bold=item.get('bold', False)))
 
     def _on_add_item(self) -> None:
         # If the add popup is active, serialize its document so any
@@ -2825,7 +2828,13 @@ class _ChecklistWidget(QWidget):
             _NoteTextEdit._insert_text_with_links(cursor, src.text())
             wrap.setTextCursor(cursor)
         wrap.insertFromMimeData = _paste_with_links
-        wrap.setPlainText(self._add_field.text())
+        # Render any markdown in the line edit as anchor / bold spans —
+        # ``setPlainText`` would show the literal ``[text](url)`` syntax
+        # and lose the link URL on a subsequent serialize.  This matches
+        # the item popup which renders its raw text the same way.
+        cursor = wrap.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        _NoteTextEdit._insert_text_with_links(cursor, self._add_field.text())
         wrap.setPlaceholderText('Add item')
 
         # Pin to line-edit height BEFORE inserting — otherwise the row
@@ -2873,7 +2882,10 @@ class _ChecklistWidget(QWidget):
                 self._on_add_item()
                 return
             if event.key() == Qt.Key_Escape:
-                self._dismiss_add_popup(save=True)
+                # Escape cancels — do NOT save popup content into the
+                # line edit (matches the item popup's Escape behaviour
+                # and what users expect from a "cancel" key).
+                self._dismiss_add_popup(save=False)
                 self._add_field.setFocus()
                 return
             # Arrow up/down: try moving within visual lines first;
@@ -2987,14 +2999,26 @@ class _ChecklistWidget(QWidget):
         wrap.setTextCursor(cursor)
 
     def _dismiss_add_popup(self, save: bool) -> None:
-        """Collapse the add-field wrapping editor back to QLineEdit."""
+        """Collapse the add-field wrapping editor back to QLineEdit.
+
+        On save=True we serialize to markdown (``[text](url)`` and
+        STX/ETX bold markers) rather than plain text — ``toPlainText``
+        would strip the URL from a link span, silently destroying the
+        user's work on a simple click-away.  The line edit shows the
+        raw markdown until the user expands again, at which point
+        ``_expand_add_field`` parses it back into anchor/bold spans.
+        """
         wrap = self._add_popup
         if wrap is None:
             return
         self._add_popup = None
         if sip.isdeleted(wrap):
             return
-        new_text = wrap.toPlainText().replace('\n', ' ') if save else ''
+        if save:
+            new_text = _ChecklistItemWidget \
+                ._serialize_popup_markdown(wrap).replace('\n', ' ')
+        else:
+            new_text = ''
         wrap.setVisible(False)
         self._layout.removeWidget(wrap)
         wrap.deleteLater()
@@ -5203,9 +5227,15 @@ class NotesDialog(QDialog):
         if focus is None or sip.isdeleted(focus):
             if (fallback_line_edit is not None
                     and not sip.isdeleted(fallback_line_edit)):
-                # Keep ``selected`` and ``sel_start/sel_end`` — the popup
-                # text transfers to the line edit 1:1 on dismissal, so
-                # the same positions apply.
+                # Safety net for the case where something destroyed the
+                # popup while the modal was up despite ``_suppress_dismiss``.
+                # For item line edits the ``_raw_text``/``_display_to_raw_pos``
+                # path below handles the markdown-vs-display offset.  For
+                # the add field the dismissed popup serializes markdown
+                # into the line edit, so display-coordinate
+                # ``sel_start``/``sel_end`` may no longer point at the
+                # intended range — we accept a potentially corrupted edit
+                # here as the lesser evil to losing the link entirely.
                 focus = fallback_line_edit
             else:
                 return

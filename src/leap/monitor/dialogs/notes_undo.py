@@ -753,12 +753,14 @@ class ChecklistAddItemCmd(UndoCommand):
 class ChecklistDeleteItemCmd(UndoCommand):
     """Undo command for deleting a checklist item."""
 
-    def __init__(self, note_name: str, item_index: int, item_text: str, item_checked: bool) -> None:
+    def __init__(self, note_name: str, item_index: int, item_text: str,
+                 item_checked: bool, item_bold: bool = False) -> None:
         super().__init__(description='Delete checklist item')
         self._note_name = note_name
         self._index = item_index
         self._text = item_text
         self._checked = item_checked
+        self._bold = item_bold
 
     def execute(self, ctx: NotesCmdContext) -> None:
         if ctx.current_name != self._note_name:
@@ -772,7 +774,8 @@ class ChecklistDeleteItemCmd(UndoCommand):
         if ctx.current_name != self._note_name:
             ctx.select_and_load(name=self._note_name)
         items = ctx.get_checklist_items()
-        items.insert(self._index, {'text': self._text, 'checked': self._checked})
+        items.insert(self._index, {'text': self._text, 'checked': self._checked,
+                                   'bold': self._bold})
         ctx.set_checklist_items(items)
 
 

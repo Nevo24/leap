@@ -550,7 +550,20 @@ class TestChecklistDeleteItemCmd:
         assert ctx._items[1]['text'] == 'c'
         cmd.undo(ctx)
         assert len(ctx._items) == 3
-        assert ctx._items[1] == {'text': 'b', 'checked': True}
+        assert ctx._items[1] == {'text': 'b', 'checked': True, 'bold': False}
+
+    def test_delete_preserves_bold_on_undo(self) -> None:
+        """Undoing a delete must restore the bold flag (regression)."""
+        ctx = _StubChecklistCtx()
+        ctx._items = [{'text': 'bold-item', 'checked': False, 'bold': True}]
+        ctx.current_name = 'test'
+        cmd = ChecklistDeleteItemCmd(note_name='test', item_index=0,
+                                      item_text='bold-item', item_checked=False,
+                                      item_bold=True)
+        cmd.execute(ctx)
+        assert ctx._items == []
+        cmd.undo(ctx)
+        assert ctx._items[0] == {'text': 'bold-item', 'checked': False, 'bold': True}
 
 
 # ---------------------------------------------------------------------------
