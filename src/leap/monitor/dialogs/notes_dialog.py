@@ -1207,7 +1207,7 @@ class _ChecklistItemWidget(QFrame):
         self._edit.setFont(font)
         t = current_theme()
         self._edit.setStyleSheet(self._compose_edit_style(
-            t, checked, self._bold, has_url=self._has_link_display(),
+            t, checked, self._bold, has_url=self._is_entirely_link(),
             font_size=self._font_size))
         self._checked = checked
 
@@ -1215,20 +1215,35 @@ class _ChecklistItemWidget(QFrame):
         """Apply bold weight + link styling (underline when raw has markdown)."""
         font = self._edit.font()
         font.setWeight(QFont.Black if self._bold else QFont.Normal)
-        # Underline if this item has any markdown link — the stripped
-        # display should look like a hyperlink.
-        font.setUnderline(self._has_link_display())
+        # Underline the whole QLineEdit only when the entire item IS a
+        # single link — QLineEdit can't style individual spans, so for
+        # mixed content (e.g. ``[word](url) extra``) we'd falsely
+        # underline the plain text too.  Clicks still open links
+        # correctly in mixed content via ``_link_at_stripped_pos``.
+        font.setUnderline(self._is_entirely_link())
         self._edit.setFont(font)
         t = current_theme()
         self._edit.setStyleSheet(
             self._compose_edit_style(
                 t, self._checked, self._bold,
-                has_url=self._has_link_display(), font_size=self._font_size))
+                has_url=self._is_entirely_link(), font_size=self._font_size))
         self._update_link_tooltip()
 
     def _has_link_display(self) -> bool:
         """True if the raw text contains any markdown link span."""
         return _LINK_RE.search(self._raw_text) is not None
+
+    def _is_entirely_link(self) -> bool:
+        """True if the raw text is exactly one link with no surrounding text.
+
+        Used to decide whether to style the entire line edit as a link
+        (blue + underline).  QLineEdit can only apply font attributes to
+        the whole widget, so for mixed content we deliberately render as
+        plain text — the click handler still opens the embedded link.
+        """
+        raw = self._raw_text.strip()
+        m = _LINK_RE.fullmatch(raw)
+        return m is not None
 
     def set_font_size(self, pt: int) -> None:
         """Update the item's content font size and re-apply QSS styles."""
