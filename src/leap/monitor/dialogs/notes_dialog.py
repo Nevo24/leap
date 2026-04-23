@@ -1299,6 +1299,12 @@ class _ChecklistItemWidget(QFrame):
         # Walk the raw text: emit link spans as underlined+blue, other
         # text in ``base_color``.  Escape HTML-specials to avoid
         # accidental tag interpretation.
+        # CSS ``text-decoration`` isn't inherited — the link span
+        # replaces the parent span's value — so include ``line-through``
+        # explicitly on the link when the item is checked, otherwise
+        # the whole row is struck through *except* the link word.
+        link_decoration = ('underline line-through'
+                           if self._checked else 'underline')
         parts: list[str] = []
         pos = 0
         for m in _LINK_RE.finditer(self._raw_text):
@@ -1307,7 +1313,7 @@ class _ChecklistItemWidget(QFrame):
             display = html.escape(m.group(1))
             parts.append(
                 f'<span style="color:{link_color};'
-                f' text-decoration:underline">{display}</span>'
+                f' text-decoration:{link_decoration}">{display}</span>'
             )
             pos = m.end()
         if pos < len(self._raw_text):
@@ -1576,7 +1582,9 @@ class _ChecklistItemWidget(QFrame):
                 block = block.next()
             line_count = max(1, line_count)
             margin = wrap.document().documentMargin()
-            content_h = fm.lineSpacing() * line_count + margin * 2
+            # ``documentMargin()`` returns qreal (float in Python), so
+            # cast to int before ``setFixedHeight`` which is int-only.
+            content_h = int(fm.lineSpacing() * line_count + margin * 2)
             # +4 for the 1px border top/bottom plus descent safety.
             wrap.setFixedHeight(max(line_h, content_h + 4))
 
@@ -2429,7 +2437,9 @@ class _ChecklistWidget(QWidget):
                 block = block.next()
             line_count = max(1, line_count)
             margin = wrap.document().documentMargin()
-            content_h = fm.lineSpacing() * line_count + margin * 2
+            # ``documentMargin()`` returns qreal (float in Python), so
+            # cast to int before ``setFixedHeight`` which is int-only.
+            content_h = int(fm.lineSpacing() * line_count + margin * 2)
             wrap.setFixedHeight(max(line_h, content_h + 4))
 
         def on_key(event: 'QKeyEvent') -> None:
