@@ -240,6 +240,7 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 ## Adding Features
 
 - **New CLI provider** → See the `.claude/skills/add-cli-provider.md` skill for a comprehensive step-by-step guide. Key files: create `cli_providers/<name>.py`, register in `registry.py`, implement `configure_hooks()`. The CLI selector, monitor table, ASCII banner, and shell flags are all dynamic and require no changes.
+- **New monitor dialog / window** → See the `.claude/skills/add-dialog.md` skill. Covers `ZoomMixin` setup, dialog geometry persistence, theme integration, the font-size cascade quirk, and — critically — the **prefs persistence model** (`MonitorWindow._DIALOG_OWNED_KEYS` and why `save_monitor_prefs(self._prefs)` must NOT be called outside `_save_prefs`). Skipping that last part is the most common way dialog state silently gets clobbered.
 - **Utils** → `src/leap/utils/`
 - **Server** → `src/leap/server/`, update `LeapServer`
 - **Client** → `src/leap/client/`, update `LeapClient`

@@ -42,9 +42,9 @@ from leap.monitor.permissions import (
 from leap.monitor.popup_zoom import PopupZoomManager
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
 from leap.monitor.pr_tracking.config import (
-    load_auto_fetch_preset_name, load_monitor_prefs, load_notification_seen,
-    load_pinned_sessions, load_saved_presets, save_auto_fetch_preset_name,
-    save_monitor_prefs,
+    clear_all_dialog_geometry, load_auto_fetch_preset_name, load_monitor_prefs,
+    load_notification_seen, load_pinned_sessions, load_saved_presets,
+    save_auto_fetch_preset_name, save_monitor_prefs,
 )
 from leap.monitor.themes import THEMES, current_theme, set_theme
 from leap.monitor.scm_polling import (
@@ -1177,8 +1177,14 @@ class MonitorWindow(
         class attribute — otherwise the dialog would save its current
         size back to disk on close and silently undo this reset.
         """
+        # Clear disk first — ``_save_prefs`` re-reads ``dialog_geometry``
+        # from disk on every write (to preserve concurrent dialog
+        # writes), so a plain pop-then-save would silently undo the
+        # reset on the next write.  Zero it on disk, then route through
+        # ``_save_prefs`` so dialog-owned keys are still refreshed.
+        clear_all_dialog_geometry()
         self._prefs.pop('dialog_geometry', None)
-        save_monitor_prefs(self._prefs)
+        self._save_prefs()
 
         self._center_on_screen()
         self._apply_equal_column_widths()
@@ -1435,6 +1441,21 @@ class MonitorWindow(
         save_auto_fetch_preset_name(
             '' if text == self._AUTO_LEAP_PRESET_NONE else text)
 
+    # Keys that dialogs/helpers write directly to disk via
+    # ``save_monitor_prefs`` without going through ``self._prefs``.
+    # ``_save_prefs`` must refresh these from disk before writing or the
+    # stale startup-cached value will silently clobber the dialog's save.
+    # Font-size / font-family keys are covered by an ``endswith`` check
+    # (except ``main_font_size`` which MonitorWindow legitimately owns).
+    _DIALOG_OWNED_KEYS: frozenset[str] = frozenset({
+        'run_session_include_completed',
+        'save_preset_include_completed',
+        'send_position',
+        'send_comments_filter',
+        'send_comments_mode',
+        'preset_editor_last_name',
+    })
+
     def _save_prefs(self) -> None:
         """Save self._prefs to disk, preserving keys written by other code.
 
@@ -1453,6 +1474,19 @@ class MonitorWindow(
         disk_geom = disk_prefs.get('dialog_geometry')
         if disk_geom:
             self._prefs['dialog_geometry'] = disk_geom
+        # Dialog-owned keys: any pref that a dialog/mixin writes directly
+        # to disk (bypassing ``self._prefs``) must be refreshed from disk
+        # before we write, or our stale cached value clobbers the
+        # dialog's save.  See ``_DIALOG_OWNED_KEYS`` and the pattern
+        # check below — covers font zooms, popup zoom, ZoomMixin dialogs,
+        # notes zooms, send/preset toggles, etc.
+        for key, value in disk_prefs.items():
+            if key == 'main_font_size':
+                continue  # owned by MonitorWindow itself
+            if (key.endswith('_font_size')
+                    or key.endswith('_font_family')
+                    or key in self._DIALOG_OWNED_KEYS):
+                self._prefs[key] = value
         save_monitor_prefs(self._prefs)
 
     def _apply_theme(self, theme_name: str) -> None:
@@ -2068,7 +2102,34 @@ class MonitorWindow(
                              self._main_font_size)
         tooltip_rule = (f'\n/* tooltip zoom */\n'
                         f'QToolTip {{ font-size: {tooltip_pt}pt; }}\n')
-        app.setStyleSheet(base + rule + tooltip_rule)
+        # Notes chrome zoom — dialog-level QSS loses to the theme's
+        # ``* { font-size: ... }`` on some Qt versions, so route the
+        # override through the app QSS with an ID-qualified selector
+        # (specificity 2) that definitively beats the universal rule.
+        notes_chrome_pt = getattr(self, '_notes_chrome_font_size', None)
+        notes_chrome_rule = ''
+        if notes_chrome_pt is not None:
+            notes_chrome_rule = (
+                f'\n/* notes chrome zoom */\n'
+                f'#leapNotesDlg QPushButton,'
+                f' #leapNotesDlg QComboBox,'
+                f' #leapNotesDlg QCheckBox,'
+                f' #leapNotesDlg QLabel'
+                f' {{ font-size: {notes_chrome_pt}pt; }}\n')
+        app.setStyleSheet(base + rule + tooltip_rule + notes_chrome_rule)
+
+    def set_notes_chrome_font_size(self, pt: int) -> None:
+        """Register the Notes dialog's chrome font size in the app QSS.
+
+        Notes dialog calls this with its ``notes_buttons_font_size``.
+        The rule is compiled into the app stylesheet (see
+        ``_reapply_theme_stylesheet``) with an ID-qualified selector
+        that beats the theme's ``* { font-size }``.
+        """
+        if getattr(self, '_notes_chrome_font_size', None) == pt:
+            return
+        self._notes_chrome_font_size = pt
+        self._reapply_theme_stylesheet()
 
     def set_tooltip_font_size(self, pt: int) -> None:
         """Update the global tooltip font size and re-apply the app QSS.
@@ -2166,7 +2227,10 @@ class MonitorWindow(
         self._main_font_size = default
         self._apply_main_font_size()
         self._rebuild_table_for_zoom()
-        self._prefs.pop('main_font_size', None)
+        # Write the default value explicitly — popping from self._prefs
+        # would get silently re-added by ``_save_prefs`` (which merges
+        # disk keys not in memory, to preserve dialog-written prefs).
+        self._prefs['main_font_size'] = default
         self._save_prefs()
 
     def _rebuild_table_for_zoom(self) -> None:

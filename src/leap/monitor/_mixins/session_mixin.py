@@ -147,7 +147,7 @@ class SessionMixin(_Base):
             if prefs_changed:
                 self._prefs['row_colors'] = self._row_colors
                 self._prefs['aliases'] = self._aliases
-                save_monitor_prefs(self._prefs)
+                self._save_prefs()
                 self.table.setProperty('_row_colors', self._row_colors)
             self._remove_from_row_order(set(tags_to_remove))
 
@@ -168,7 +168,7 @@ class SessionMixin(_Base):
         if new_tags:
             row_order = row_order + new_tags
             self._prefs['row_order'] = row_order
-            save_monitor_prefs(self._prefs)
+            self._save_prefs()
 
         return merged
 
@@ -503,7 +503,7 @@ class SessionMixin(_Base):
             self._prefs['aliases'] = self._aliases
             prefs_changed = True
         if prefs_changed:
-            save_monitor_prefs(self._prefs)
+            self._save_prefs()
             self.table.setProperty('_row_colors', self._row_colors)
 
         # Clean up row order
@@ -522,7 +522,7 @@ class SessionMixin(_Base):
         updated = [t for t in row_order if t not in tags]
         if len(updated) != len(row_order):
             self._prefs['row_order'] = updated
-            save_monitor_prefs(self._prefs)
+            self._save_prefs()
 
     def _get_active_project_paths(self) -> set[str]:
         """Return the set of project_path values for all running Leap servers."""
