@@ -3048,6 +3048,7 @@ class _NotesTreeWidget(QTreeWidget):
     # (source_path, source_type, target_folder, before_path)
     # target_folder '' = root.  before_path '' = append at end.
     item_dropped = pyqtSignal(str, str, str, str)
+    rename_requested = pyqtSignal()
 
     _ROLE_PATH = Qt.UserRole
     _ROLE_TYPE = Qt.UserRole + 1
@@ -3058,6 +3059,15 @@ class _NotesTreeWidget(QTreeWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QAbstractItemView.InternalMove)
+
+    def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
+        # Enter on a selected note/folder opens the rename dialog.
+        if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
+                and self.currentItem() is not None):
+            self.rename_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def dropEvent(self, event: 'QDropEvent') -> None:
         """Intercept drop — compute target folder, emit signal, skip Qt rearrange."""
@@ -3341,6 +3351,7 @@ class NotesDialog(QDialog):
         )
         self._tree.currentItemChanged.connect(self._on_item_changed)
         self._tree.item_dropped.connect(self._on_tree_drop)
+        self._tree.rename_requested.connect(self._on_rename)
         left_layout.addWidget(self._tree, 1)
 
         # Button row
