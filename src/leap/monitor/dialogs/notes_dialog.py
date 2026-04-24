@@ -4092,14 +4092,22 @@ class NotesDialog(QDialog):
             else:
                 new_full = new_name
 
+            # On case-insensitive filesystems (macOS APFS/HFS+, Windows
+            # NTFS) ``.exists()`` matches the current entry by case —
+            # skip the collision check when the only difference between
+            # the new and old paths is letter case, so a rename like
+            # ``notes`` → ``Notes`` is allowed.  The OS-level rename
+            # updates the case-preserving name in the directory.
+            case_only_change = (new_full != old_path
+                                and new_full.lower() == old_path.lower())
             if item_type == 'note':
-                if _note_path(new_full).exists():
+                if not case_only_change and _note_path(new_full).exists():
                     QMessageBox.warning(
                         self, 'Already Exists',
                         f"A note named '{new_name}' already exists.")
                     continue
             else:
-                if (NOTES_DIR / new_full).exists():
+                if not case_only_change and (NOTES_DIR / new_full).exists():
                     QMessageBox.warning(
                         self, 'Already Exists',
                         f"A folder named '{new_name}' already exists.")
