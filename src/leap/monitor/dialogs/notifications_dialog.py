@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from AppKit import NSBeep, NSSound
 from Foundation import NSURL
-from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QCursor, QFont
 from PyQt5.QtWidgets import (
     QAction, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
@@ -105,6 +105,12 @@ class NotificationsDialog(ZoomMixin, QDialog):
         self._checks: dict[str, dict[str, QCheckBox]] = {}
         self._sound_combos: dict[str, QComboBox] = {}
         self._browsing: bool = False  # guard against re-entrant Browse...
+        # One-shot suppress flag: a right-click that's handled by our
+        # dropdown ``eventFilter`` also fires ``customContextMenuRequested``
+        # on the combo, which would show a second menu after ours
+        # dismisses.  Setting this in the eventFilter makes the path-1
+        # handler bail for that one event.
+        self._suppress_combo_context_once: bool = False
 
         row = 1
         for section_idx, (title, keys) in enumerate(_SECTIONS):
@@ -233,7 +239,7 @@ class NotificationsDialog(ZoomMixin, QDialog):
         combo.setToolTip(sound_name)
 
     def eventFilter(self, obj: Any, event: QEvent) -> bool:
-        """Intercept right-clicks on combobox dropdown items."""
+        """Intercept right-clicks while the dropdown is open."""
         if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
             key = obj.property('_sound_key')
             if not key:
@@ -242,27 +248,48 @@ class NotificationsDialog(ZoomMixin, QDialog):
             if not combo:
                 return super().eventFilter(obj, event)
 
-            # Dropdown viewport — use the item under the cursor
-            view = combo.view()
-            index = view.indexAt(event.pos())
-            if not index.isValid():
-                return True
-            item_idx = index.row()
+            # Use the COMBO'S CURRENT SELECTION — not the dropdown
+            # item under the cursor — so the menu always shows the
+            # row's chosen sound.  The previous hovered-item behaviour
+            # confused users: right-clicking a non-selected dropdown
+            # row would show "Apply '<that row>' to all", which doesn't
+            # match the user's mental model ("apply THIS row's sound
+            # to all").  This path now mirrors the closed-combo
+            # right-click in ``_on_combo_context_menu``.
+            item_text = combo.currentText()
+            item_data = combo.currentData()
 
-            item_text = combo.itemText(item_idx)
-            item_data = combo.itemData(item_idx)
-            if item_text in ('None', _BROWSE_SENTINEL):
-                return True
-
-            self._browsing = True
-            combo.hidePopup()
-            self._show_sound_context_menu(key, combo, item_text, item_data)
-            self._browsing = False
+            # Suppress the duplicate ``customContextMenuRequested``
+            # that fires on the combo for this same right-click —
+            # without this, dismissing our menu reveals a second
+            # identical menu underneath, requiring a second Escape.
+            self._suppress_combo_context_once = True
+            try:
+                if item_text in ('None', _BROWSE_SENTINEL):
+                    combo.hidePopup()
+                    return True
+                self._browsing = True
+                combo.hidePopup()
+                self._show_sound_context_menu(key, combo, item_text, item_data)
+                self._browsing = False
+            finally:
+                # Clear after the deferred customContextMenuRequested
+                # has had a chance to fire and check the flag.  Queued
+                # signals run before timers, so this fires last.
+                QTimer.singleShot(
+                    0,
+                    lambda: setattr(self, '_suppress_combo_context_once', False))
             return True
         return super().eventFilter(obj, event)
 
     def _on_combo_context_menu(self, key: str) -> None:
         """Handle right-click on the closed combobox."""
+        # Bail when the dropdown ``eventFilter`` already handled this
+        # same right-click — Qt fires both for one click on the open
+        # dropdown, and showing two menus forces a second Escape.
+        if self._suppress_combo_context_once:
+            self._suppress_combo_context_once = False
+            return
         combo = self._sound_combos.get(key)
         if not combo:
             return
