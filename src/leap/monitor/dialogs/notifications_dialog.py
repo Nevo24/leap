@@ -63,10 +63,26 @@ _SECTIONS: list[tuple[str, list[str]]] = [
 _TYPE_ORDER = [key for _, keys in _SECTIONS for key in keys]
 
 
+class _MasterCheckBox(QCheckBox):
+    """Header checkbox that toggles a whole column.
+
+    Tri-state for visual feedback (all / none / partial), but a user
+    click never lands on ``PartiallyChecked`` — clicking flips between
+    ``Checked`` and ``Unchecked`` only.  ``PartiallyChecked`` is set
+    programmatically by the dialog when the rows are in mixed state.
+    """
+
+    def nextCheckState(self) -> None:  # type: ignore[override]
+        if self.checkState() == Qt.Checked:
+            self.setCheckState(Qt.Unchecked)
+        else:
+            self.setCheckState(Qt.Checked)
+
+
 class NotificationsDialog(ZoomMixin, QDialog):
     """Dialog for configuring per-type notification preferences."""
 
-    _DEFAULT_SIZE = (520, 340)
+    _DEFAULT_SIZE = (520, 380)
 
     def __init__(
         self,
@@ -78,7 +94,9 @@ class NotificationsDialog(ZoomMixin, QDialog):
         self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('notifications')
         if saved:
-            self.resize(saved[0], saved[1])
+            # Clamp the saved height to the new minimum — geometries
+            # saved before the bulk-toggle row was added would clip it.
+            self.resize(saved[0], max(saved[1], self._DEFAULT_SIZE[1]))
 
         layout = QVBoxLayout(self)
 
@@ -132,6 +150,7 @@ class NotificationsDialog(ZoomMixin, QDialog):
 
                 dock_cb = QCheckBox()
                 dock_cb.setChecked(prefs.get('dock', True))
+                dock_cb.stateChanged.connect(self._refresh_master_states)
                 dock_container = QWidget()
                 dock_lay = QHBoxLayout(dock_container)
                 dock_lay.setContentsMargins(0, 0, 0, 0)
@@ -141,6 +160,7 @@ class NotificationsDialog(ZoomMixin, QDialog):
 
                 banner_cb = QCheckBox()
                 banner_cb.setChecked(prefs.get('banner', True))
+                banner_cb.stateChanged.connect(self._refresh_master_states)
                 banner_container = QWidget()
                 banner_lay = QHBoxLayout(banner_container)
                 banner_lay.setContentsMargins(0, 0, 0, 0)
@@ -186,6 +206,49 @@ class NotificationsDialog(ZoomMixin, QDialog):
                 self._sound_combos[key] = sound_combo
                 row += 1
 
+        # Bulk-toggle row — placed inside the grid so the masters fall
+        # under their respective columns (visually aligned with every
+        # row checkbox above them).  "Apply to all rows" reuses the
+        # verb already used by the Sound column's right-click menu so
+        # the dialog speaks one bulk-action vocabulary.  The masters
+        # carry no inline label; the column header above is the label.
+        grid.addWidget(QLabel(''), row, 0)  # spacer row
+        row += 1
+        bulk_label = QLabel('Apply to all rows:')
+        bulk_label.setStyleSheet(f'color: {current_theme().text_secondary};')
+        grid.addWidget(bulk_label, row, 0)
+
+        self._dock_master = _MasterCheckBox()
+        self._dock_master.setTristate(True)
+        self._dock_master.setToolTip(
+            'Toggle the dock badge column on or off for every row.')
+        self._dock_master.clicked.connect(self._toggle_all_dock)
+        dock_master_container = QWidget()
+        dock_master_lay = QHBoxLayout(dock_master_container)
+        dock_master_lay.setContentsMargins(0, 0, 0, 0)
+        dock_master_lay.addWidget(self._dock_master)
+        dock_master_lay.setAlignment(Qt.AlignCenter)
+        grid.addWidget(dock_master_container, row, 1)
+
+        self._banner_master = _MasterCheckBox()
+        self._banner_master.setTristate(True)
+        self._banner_master.setToolTip(
+            'Toggle the banner column on or off for every row.')
+        self._banner_master.clicked.connect(self._toggle_all_banner)
+        banner_master_container = QWidget()
+        banner_master_lay = QHBoxLayout(banner_master_container)
+        banner_master_lay.setContentsMargins(0, 0, 0, 0)
+        banner_master_lay.addWidget(self._banner_master)
+        banner_master_lay.setAlignment(Qt.AlignCenter)
+        grid.addWidget(banner_master_container, row, 2)
+
+        # Column 3 (Sound) is intentionally empty here — bulk sound is
+        # handled by the existing right-click "Apply X to all" on each
+        # combo, so a column-wide master would be redundant.
+
+        # Sync the masters with the row state now that they exist.
+        self._refresh_master_states()
+
         layout.addLayout(grid)
         layout.addSpacing(4)
 
@@ -209,6 +272,50 @@ class NotificationsDialog(ZoomMixin, QDialog):
         """Save dialog size on close."""
         save_dialog_geometry('notifications', self.width(), self.height())
         super().done(result)
+
+    # ------------------------------------------------------------------
+    # Column-master bulk toggles
+    # ------------------------------------------------------------------
+
+    def _toggle_all_dock(self) -> None:
+        """Click on the Dock master — all-on if any are off, else all-off."""
+        self._toggle_column('dock')
+
+    def _toggle_all_banner(self) -> None:
+        """Click on the Banner master — all-on if any are off, else all-off."""
+        self._toggle_column('banner')
+
+    def _toggle_column(self, col: str) -> None:
+        target = not all(c[col].isChecked() for c in self._checks.values())
+        # Block stateChanged on each row while we flip them so the
+        # master doesn't visibly oscillate Checked → Partial → Partial →
+        # … → Checked during the loop.  One explicit refresh at the end.
+        for c in self._checks.values():
+            cb = c[col]
+            cb.blockSignals(True)
+            cb.setChecked(target)
+            cb.blockSignals(False)
+        self._refresh_master_states()
+
+    def _refresh_master_states(self) -> None:
+        """Reflect the rows' aggregate state in each column-header master.
+
+        Tri-state: ``Checked`` when every row in the column is on,
+        ``Unchecked`` when none are, ``PartiallyChecked`` for any mix.
+        """
+        if not self._checks:
+            return
+        for col, master in (
+            ('dock', self._dock_master),
+            ('banner', self._banner_master),
+        ):
+            states = [c[col].isChecked() for c in self._checks.values()]
+            if all(states):
+                master.setCheckState(Qt.Checked)
+            elif not any(states):
+                master.setCheckState(Qt.Unchecked)
+            else:
+                master.setCheckState(Qt.PartiallyChecked)
 
     # ------------------------------------------------------------------
     # Sound helpers
