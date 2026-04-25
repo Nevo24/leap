@@ -45,9 +45,9 @@ from leap.monitor.leap_sender import (
     prepend_to_leap_queue, send_to_leap_session_raw,
 )
 from leap.monitor.pr_tracking.config import (
-    load_dialog_geometry, load_monitor_prefs, load_saved_presets,
-    load_send_position, save_dialog_geometry, save_monitor_prefs,
-    save_named_preset,
+    load_dialog_geometry, load_dialog_splitter_sizes, load_monitor_prefs,
+    load_saved_presets, load_send_position, save_dialog_geometry,
+    save_dialog_splitter_sizes, save_monitor_prefs, save_named_preset,
 )
 from leap.monitor.session_manager import get_active_sessions
 from leap.monitor.themes import current_theme
@@ -3303,7 +3303,7 @@ class NotesDialog(QDialog):
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
 
-        splitter = QSplitter(Qt.Horizontal)
+        self._splitter = splitter = QSplitter(Qt.Horizontal)
         splitter.setHandleWidth(1)
         splitter.setStyleSheet('QSplitter::handle { background: transparent; }')
 
@@ -3467,6 +3467,13 @@ class NotesDialog(QDialog):
         splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 3)
+
+        # Restore the user's last drag position for the sidebar/editor
+        # split.  When no value is stored, the stretch factors above
+        # supply the default 1:3 ratio.
+        saved_sizes = load_dialog_splitter_sizes('notes_dialog_main')
+        if saved_sizes and len(saved_sizes) == 2:
+            splitter.setSizes(saved_sizes)
 
         root_layout.addWidget(splitter, 1)
 
@@ -4559,6 +4566,9 @@ class NotesDialog(QDialog):
             meta['_last_note'] = self._current_name
             _save_notes_meta(meta)
         save_dialog_geometry('notes_dialog', self.width(), self.height())
+        if hasattr(self, '_splitter') and not sip.isdeleted(self._splitter):
+            save_dialog_splitter_sizes(
+                'notes_dialog_main', self._splitter.sizes())
         super().done(result)
 
     def closeEvent(self, event: 'QCloseEvent') -> None:  # type: ignore[override]
@@ -4583,6 +4593,9 @@ class NotesDialog(QDialog):
             meta['_last_note'] = self._current_name
             _save_notes_meta(meta)
         save_dialog_geometry('notes_dialog', self.width(), self.height())
+        if hasattr(self, '_splitter') and not sip.isdeleted(self._splitter):
+            save_dialog_splitter_sizes(
+                'notes_dialog_main', self._splitter.sizes())
         super().closeEvent(event)
         # Emit finished so _on_notes_closed cleans up (closeEvent does
         # not call done(), so finished is not emitted by default).

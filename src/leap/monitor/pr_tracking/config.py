@@ -160,6 +160,25 @@ def clear_all_dialog_geometry() -> None:
     save_monitor_prefs(prefs)
 
 
+def load_dialog_splitter_sizes(key: str) -> Optional[list[int]]:
+    """Return the saved splitter sizes for the given dialog, or None."""
+    prefs = load_monitor_prefs()
+    sizes = prefs.get('dialog_splitter_sizes', {}).get(key)
+    if (isinstance(sizes, list) and len(sizes) >= 2
+            and all(isinstance(s, int) and s >= 0 for s in sizes)):
+        return sizes
+    return None
+
+
+def save_dialog_splitter_sizes(key: str, sizes: list[int]) -> None:
+    """Persist splitter sizes for the given dialog key."""
+    prefs = load_monitor_prefs()
+    saved = prefs.get('dialog_splitter_sizes', {})
+    saved[key] = list(sizes)
+    prefs['dialog_splitter_sizes'] = saved
+    save_monitor_prefs(prefs)
+
+
 def load_gitlab_config() -> Optional[dict[str, Any]]:
     """Load GitLab configuration from storage.
 

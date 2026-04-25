@@ -1454,6 +1454,7 @@ class MonitorWindow(
         'send_comments_filter',
         'send_comments_mode',
         'preset_editor_last_name',
+        'dialog_splitter_sizes',
     })
 
     def _save_prefs(self) -> None:
