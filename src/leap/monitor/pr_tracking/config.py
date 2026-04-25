@@ -1,5 +1,6 @@
 """Configuration management for SCM integrations and monitor preferences."""
 
+import base64
 import json
 import os
 import tempfile
@@ -154,9 +155,16 @@ def save_dialog_geometry(key: str, width: int, height: int) -> None:
 
 
 def clear_all_dialog_geometry() -> None:
-    """Remove all saved dialog geometries (for reset)."""
+    """Remove all saved dialog geometries (for reset).
+
+    Clears both the legacy ``[w, h]`` map and the full Qt window-state
+    blob map — leaving the latter would silently override the reset on
+    next reopen because ``restoreGeometry`` is layered on top of the
+    plain resize.
+    """
     prefs = load_monitor_prefs()
     prefs.pop('dialog_geometry', None)
+    prefs.pop('dialog_geometry_state', None)
     save_monitor_prefs(prefs)
 
 
@@ -176,6 +184,33 @@ def save_dialog_splitter_sizes(key: str, sizes: list[int]) -> None:
     saved = prefs.get('dialog_splitter_sizes', {})
     saved[key] = list(sizes)
     prefs['dialog_splitter_sizes'] = saved
+    save_monitor_prefs(prefs)
+
+
+def load_dialog_geometry_state(key: str) -> Optional[bytes]:
+    """Return the saved Qt window-state blob for *key*, or None.
+
+    Wraps Qt's ``QWidget.saveGeometry()`` byte array so we can persist
+    not just width/height but also the maximised/fullscreen flag,
+    position, and screen — things ``[w, h]`` alone can't represent.
+    Stored base64 so it round-trips through JSON cleanly.
+    """
+    prefs = load_monitor_prefs()
+    encoded = prefs.get('dialog_geometry_state', {}).get(key)
+    if isinstance(encoded, str) and encoded:
+        try:
+            return base64.b64decode(encoded.encode('ascii'))
+        except (ValueError, UnicodeEncodeError):
+            return None
+    return None
+
+
+def save_dialog_geometry_state(key: str, data: bytes) -> None:
+    """Persist a Qt window-state blob for *key*."""
+    prefs = load_monitor_prefs()
+    saved = prefs.get('dialog_geometry_state', {})
+    saved[key] = base64.b64encode(data).decode('ascii')
+    prefs['dialog_geometry_state'] = saved
     save_monitor_prefs(prefs)
 
 

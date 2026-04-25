@@ -25,7 +25,9 @@ from PyQt5.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import QEvent, QMimeData, QPoint, QSize, QTimer, QUrl, Qt, pyqtSignal
+from PyQt5.QtCore import (
+    QByteArray, QEvent, QMimeData, QPoint, QSize, QTimer, QUrl, Qt, pyqtSignal,
+)
 from PyQt5.QtGui import (
     QColor, QCursor, QDesktopServices, QDrag, QFont, QFontMetrics, QImage,
     QPixmap, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument,
@@ -45,8 +47,9 @@ from leap.monitor.leap_sender import (
     prepend_to_leap_queue, send_to_leap_session_raw,
 )
 from leap.monitor.pr_tracking.config import (
-    load_dialog_geometry, load_dialog_splitter_sizes, load_monitor_prefs,
-    load_saved_presets, load_send_position, save_dialog_geometry,
+    load_dialog_geometry, load_dialog_geometry_state,
+    load_dialog_splitter_sizes, load_monitor_prefs, load_saved_presets,
+    load_send_position, save_dialog_geometry, save_dialog_geometry_state,
     save_dialog_splitter_sizes, save_monitor_prefs, save_named_preset,
 )
 from leap.monitor.session_manager import get_active_sessions
@@ -3282,6 +3285,13 @@ class NotesDialog(QDialog):
         saved = load_dialog_geometry('notes_dialog')
         if saved:
             self.resize(saved[0], saved[1])
+        # Restore the full Qt window-state blob if we have one — this
+        # carries the maximised/fullscreen flag that ``[w, h]`` alone
+        # can't represent, so a window closed maximised reopens
+        # maximised instead of "almost fullscreen".
+        geom_state = load_dialog_geometry_state('notes_dialog')
+        if geom_state:
+            self.restoreGeometry(QByteArray(geom_state))
         # Position left to Qt — it auto-centers modal dialogs on the
         # parent window, matching every other dialog in the project.
 
@@ -4565,7 +4575,16 @@ class NotesDialog(QDialog):
             meta = _load_notes_meta()
             meta['_last_note'] = self._current_name
             _save_notes_meta(meta)
-        save_dialog_geometry('notes_dialog', self.width(), self.height())
+        # Save both the normal-state size (for first-run / fallback)
+        # and the full Qt window-state blob (which carries
+        # maximised/fullscreen).  ``normalGeometry`` is the same as
+        # ``geometry`` when the window isn't maximised, so this also
+        # works for the common case.
+        normal_geom = self.normalGeometry()
+        save_dialog_geometry(
+            'notes_dialog', normal_geom.width(), normal_geom.height())
+        save_dialog_geometry_state(
+            'notes_dialog', bytes(self.saveGeometry()))
         if hasattr(self, '_splitter') and not sip.isdeleted(self._splitter):
             save_dialog_splitter_sizes(
                 'notes_dialog_main', self._splitter.sizes())
@@ -4592,7 +4611,16 @@ class NotesDialog(QDialog):
             meta = _load_notes_meta()
             meta['_last_note'] = self._current_name
             _save_notes_meta(meta)
-        save_dialog_geometry('notes_dialog', self.width(), self.height())
+        # Save both the normal-state size (for first-run / fallback)
+        # and the full Qt window-state blob (which carries
+        # maximised/fullscreen).  ``normalGeometry`` is the same as
+        # ``geometry`` when the window isn't maximised, so this also
+        # works for the common case.
+        normal_geom = self.normalGeometry()
+        save_dialog_geometry(
+            'notes_dialog', normal_geom.width(), normal_geom.height())
+        save_dialog_geometry_state(
+            'notes_dialog', bytes(self.saveGeometry()))
         if hasattr(self, '_splitter') and not sip.isdeleted(self._splitter):
             save_dialog_splitter_sizes(
                 'notes_dialog_main', self._splitter.sizes())

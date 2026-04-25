@@ -4,6 +4,7 @@ Leap Monitor GUI application.
 PyQt5-based GUI for viewing and managing active Leap sessions.
 """
 
+import base64
 import faulthandler
 import logging
 import os
@@ -26,7 +27,9 @@ from PyQt5.QtWidgets import (
     QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
-from PyQt5.QtCore import QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QTimer, Qt
+from PyQt5.QtCore import (
+    QByteArray, QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QTimer, Qt,
+)
 from PyQt5.QtGui import (
     QColor, QCursor, QDrag, QIcon, QCloseEvent, QKeySequence,
     QPainter, QPainterPath, QPalette, QPen, QPixmap, QResizeEvent,
@@ -272,6 +275,18 @@ class MonitorWindow(
                 self._center_on_screen()
         else:
             self._center_on_screen()
+
+        # If a full Qt window-state blob is also saved, restore that on
+        # top — it carries the maximised/fullscreen flag that
+        # ``[x, y, w, h]`` alone can't represent, so a window closed
+        # maximised reopens maximised instead of "almost fullscreen".
+        geom_state = self._prefs.get('window_geometry_state')
+        if isinstance(geom_state, str) and geom_state:
+            try:
+                data = base64.b64decode(geom_state.encode('ascii'))
+                self.restoreGeometry(QByteArray(data))
+            except (ValueError, UnicodeEncodeError):
+                pass
 
         # Set app icon
         self._set_window_icon()
@@ -1184,6 +1199,11 @@ class MonitorWindow(
         # ``_save_prefs`` so dialog-owned keys are still refreshed.
         clear_all_dialog_geometry()
         self._prefs.pop('dialog_geometry', None)
+        self._prefs.pop('dialog_geometry_state', None)
+        # Also drop the main window's own state blob so the reset path
+        # un-maximises / re-centres instead of being overridden by a
+        # stale ``restoreGeometry`` on next launch.
+        self._prefs.pop('window_geometry_state', None)
         self._save_prefs()
 
         self._center_on_screen()
@@ -1455,6 +1475,7 @@ class MonitorWindow(
         'send_comments_mode',
         'preset_editor_last_name',
         'dialog_splitter_sizes',
+        'dialog_geometry_state',
     })
 
     def _save_prefs(self) -> None:
@@ -2521,10 +2542,17 @@ class MonitorWindow(
         self._unregister_notes_shortcut()
         self._clear_dock_badge()
 
-        # Save window geometry and column widths
+        # Save window geometry and column widths.  ``normalGeometry``
+        # gives the un-maximised rect (so the saved [x, y, w, h] is
+        # sensible whether the window was maximised or not), and the
+        # full state blob captures maximised/fullscreen so reopening
+        # restores the same window mode.
         try:
-            geom = self.geometry()
-            self._prefs['window_geometry'] = [geom.x(), geom.y(), geom.width(), geom.height()]
+            geom = self.normalGeometry()
+            self._prefs['window_geometry'] = [
+                geom.x(), geom.y(), geom.width(), geom.height()]
+            self._prefs['window_geometry_state'] = base64.b64encode(
+                bytes(self.saveGeometry())).decode('ascii')
             self._prefs['column_widths'] = [
                 self.table.columnWidth(col) for col in range(self.table.columnCount())
             ]
