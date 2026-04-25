@@ -2584,16 +2584,17 @@ def _request_notification_permission() -> None:
     side effect, which would make this subprocess falsely report
     "granted" right after the user toggled the app off.
 
-    For a first-time install where the bundle has never been
-    registered with the notification system (not listed in the plist
-    at all), we still need the native prompt to appear so the app
-    shows up in System Settings.  In that single case we do run
-    ``requestAuthorization`` — it's harmless there because there's no
-    prior state to overwrite.
+    When the bundle is not listed in the plist at all (first-time install
+    or post-rebuild where macOS removed the entry), we check the UN
+    framework's authorization status first.  If already ``.authorized``
+    (e.g. macOS remembers a prior Allow from before the rebuild), we skip
+    the native prompt entirely and exit 0 silently.  Only for a true
+    ``.notDetermined`` state do we show the native "Allow" dialog.
 
     Exit codes (for the Makefile to key off):
-        0 — notifications currently allowed per plist
-        2 — user explicitly clicked "Don't Allow" on the prompt
+        0 — notifications allowed (plist confirmed, or UN framework
+            confirms .authorized / user just clicked Allow)
+        2 — user explicitly clicked "Don't Allow" on the live prompt
         1 — anything else (bundle not yet registered, prompt not run,
             error, callback never fired) — Makefile asks Y/n before
             opening Settings
@@ -2605,8 +2606,8 @@ def _request_notification_permission() -> None:
 
     auth_result: Optional[bool] = None
 
-    # Bundle not listed → first-time install.  Show the native prompt
-    # so the bundle registers and the user sees the Allow dialog.
+    # Bundle not listed → first-time install or post-rebuild eviction.
+    # Check UN status first; only show the native prompt if truly undetermined.
     if plist_state is None:
         auth_result = _run_first_time_notification_prompt()
         # Give usernoted a moment to commit the plist write before we
@@ -2618,6 +2619,11 @@ def _request_notification_permission() -> None:
         )
 
     if plist_state is True:
+        sys.exit(0)
+    # User clicked Allow on the native prompt — trust the callback even
+    # if the plist hasn't flushed within the 0.2s window (timing race
+    # on slow builds means usernoted may not have written through yet).
+    if auth_result is True:
         sys.exit(0)
     # The user explicitly chose "Don't Allow" on the prompt — respect
     # the choice and tell the Makefile not to nudge them toward
@@ -2642,7 +2648,7 @@ def _run_first_time_notification_prompt() -> Optional[bool]:
 
     Returns the user's choice so the caller can distinguish an
     explicit "Don't Allow" from "callback never fired / errored":
-        True  — user clicked Allow
+        True  — user clicked Allow (or was already authorized)
         False — user clicked Don't Allow
         None  — exception or the prompt never produced a response
     """
@@ -2668,26 +2674,65 @@ def _run_first_time_notification_prompt() -> Optional[bool]:
                 'arguments': {0: {'type': b'^v'}, 1: {'type': b'Z'}, 2: {'type': b'@'}},
             }}}},
         )
+        objc.registerMetaDataForSelector(
+            b'UNUserNotificationCenter',
+            b'getNotificationSettingsWithCompletionHandler:',
+            {'arguments': {2: {'callable': {
+                'retval': {'type': b'v'},
+                'arguments': {0: {'type': b'^v'}, 1: {'type': b'@'}},
+            }}}},
+        )
 
         center = UNUserNotificationCenter.currentNotificationCenter()
-        done = [False]
-        auth_result: list[Optional[bool]] = [None]
 
-        def _on_auth(ok: bool, error: object) -> None:
-            auth_result[0] = bool(ok)
-            done[0] = True
+        # Check authorization status BEFORE printing any message or calling
+        # requestAuthorization. After an app rebuild, macOS removes the plist
+        # entry (hence plist_state=None in the caller) but remembers the
+        # previous Allow/Deny decision in the UN framework. If already
+        # .authorized (2) or .provisional (3), requestAuthorization would
+        # fire the callback immediately with ok=True and show NO popup — the
+        # "look at top-right" instruction would be confusing and wrong.
+        status_done: list[bool] = [False]
+        status_val: list[Optional[int]] = [None]
 
-        # Tell the user where to look BEFORE the prompt fires.  The
-        # native macOS dialog appears at the top-right of the screen;
-        # without this heads-up the terminal looks frozen while a
-        # system prompt sits unseen waiting for their click.  Cyan
-        # stands out from the Makefile's yellow section header.
+        def _on_settings(settings: object) -> None:
+            try:
+                status_val[0] = int(settings.authorizationStatus())
+            except Exception:
+                pass
+            status_done[0] = True
+
+        center.getNotificationSettingsWithCompletionHandler_(_on_settings)
+        timeout = 2.0
+        while not status_done[0] and timeout > 0:
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.25))
+            timeout -= 0.25
+
+        # .authorized=2, .provisional=3: already granted, no popup will appear.
+        if status_val[0] in (2, 3):
+            return True
+        # .denied=1: user explicitly denied before; we can't re-prompt via the
+        # API — caller will offer to open Settings.
+        if status_val[0] == 1:
+            return None
+
+        # .notDetermined=0 (or status unknown): a real first-time prompt will
+        # appear. Tell the user where to look before it fires so the terminal
+        # doesn't look frozen while the system dialog waits in the corner.
         print(
             "\n  \033[36m→ macOS is asking for notification permission.\033[0m"
             "\n  \033[36m  Look at the top-right of your screen and click "
             "\"Allow\".\033[0m\n",
             flush=True,
         )
+
+        done: list[bool] = [False]
+        auth_result: list[Optional[bool]] = [None]
+
+        def _on_auth(ok: bool, error: object) -> None:
+            auth_result[0] = bool(ok)
+            done[0] = True
 
         center.requestAuthorizationWithOptions_completionHandler_(
             (1 << 0) | (1 << 1) | (1 << 2),
