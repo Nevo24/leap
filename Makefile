@@ -243,7 +243,10 @@ install-monitor: .env ensure-storage write-install-metadata
 		"$$LEAP_BIN" --request-permissions 2>/dev/null; \
 		NOTIF_STATUS=$$?; \
 		if [ "$$NOTIF_STATUS" = "0" ]; then \
-			echo "  $(GREEN)✓ Already granted — skipping.$(NC)"; \
+			echo "  $(GREEN)✓ Notifications permission OK.$(NC)"; \
+		elif [ "$$NOTIF_STATUS" = "2" ]; then \
+			echo "  Notifications declined — you can enable them later in"; \
+			echo "  System Settings if you change your mind."; \
 		else \
 			printf "  Open Notifications settings? (Y/n) "; \
 			read -n 1 -r REPLY_NOTIF; echo; \

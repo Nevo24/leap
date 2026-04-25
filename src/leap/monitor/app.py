@@ -2564,17 +2564,22 @@ def _request_notification_permission() -> None:
 
     Exit codes (for the Makefile to key off):
         0 — notifications currently allowed per plist
-        1 — not allowed (Settings opened so user can flip the toggle)
+        2 — user explicitly clicked "Don't Allow" on the prompt
+        1 — anything else (bundle not yet registered, prompt not run,
+            error, callback never fired) — Makefile asks Y/n before
+            opening Settings
     """
     bundle_id = _current_bundle_id()
     plist_state = (
         _read_notifications_plist_status(bundle_id) if bundle_id else None
     )
 
+    auth_result: Optional[bool] = None
+
     # Bundle not listed → first-time install.  Show the native prompt
     # so the bundle registers and the user sees the Allow dialog.
     if plist_state is None:
-        _run_first_time_notification_prompt()
+        auth_result = _run_first_time_notification_prompt()
         # Give usernoted a moment to commit the plist write before we
         # re-read it — belt-and-suspenders against a theoretical race
         # between the completion callback firing and the disk flush.
@@ -2585,19 +2590,32 @@ def _request_notification_permission() -> None:
 
     if plist_state is True:
         sys.exit(0)
-    # Exit nonzero and let the Makefile prompt the user Y/n before
-    # opening Settings (mirrors the Accessibility flow).
+    # The user explicitly chose "Don't Allow" on the prompt — respect
+    # the choice and tell the Makefile not to nudge them toward
+    # Settings.  Distinguished from "callback never fired" / "bundle
+    # not registered" / "exception" via a third exit code.
+    if auth_result is False:
+        sys.exit(2)
+    # Exit 1 and let the Makefile prompt the user Y/n before opening
+    # Settings (mirrors the Accessibility flow).
     sys.exit(1)
 
 
-def _run_first_time_notification_prompt() -> None:
+def _run_first_time_notification_prompt() -> Optional[bool]:
     """Show the native "would like to send you notifications" prompt.
 
     Only invoked from ``_request_notification_permission`` when the
     bundle isn't yet registered with the notification system.  Sets up
     an NSApplication so the UN framework will actually present the
     dialog on macOS 14+, fires ``requestAuthorizationWithOptions_``,
-    and waits up to 30 seconds for the user's answer.
+    and blocks until the user responds (no timeout — macOS doesn't
+    auto-dismiss the prompt either).
+
+    Returns the user's choice so the caller can distinguish an
+    explicit "Don't Allow" from "callback never fired / errored":
+        True  — user clicked Allow
+        False — user clicked Don't Allow
+        None  — exception or the prompt never produced a response
     """
     try:
         app = NSApplication.sharedApplication()
@@ -2624,22 +2642,41 @@ def _run_first_time_notification_prompt() -> None:
 
         center = UNUserNotificationCenter.currentNotificationCenter()
         done = [False]
+        auth_result: list[Optional[bool]] = [None]
 
         def _on_auth(ok: bool, error: object) -> None:
+            auth_result[0] = bool(ok)
             done[0] = True
+
+        # Tell the user where to look BEFORE the prompt fires.  The
+        # native macOS dialog appears at the top-right of the screen;
+        # without this heads-up the terminal looks frozen while a
+        # system prompt sits unseen waiting for their click.  Cyan
+        # stands out from the Makefile's yellow section header.
+        print(
+            "\n  \033[36m→ macOS is asking for notification permission.\033[0m"
+            "\n  \033[36m  Look at the top-right of your screen and click "
+            "\"Allow\".\033[0m\n",
+            flush=True,
+        )
 
         center.requestAuthorizationWithOptions_completionHandler_(
             (1 << 0) | (1 << 1) | (1 << 2),
             _on_auth,
         )
 
-        timeout = 30.0
-        while not done[0] and timeout > 0:
+        # Block until the user responds.  No timeout: macOS itself
+        # never auto-dismisses the prompt, so the install shouldn't
+        # either — if the user steps away, we wait for them to come
+        # back.  The 250ms slice keeps the run loop responsive enough
+        # to deliver the completion callback when it fires.
+        while not done[0]:
             NSRunLoop.currentRunLoop().runUntilDate_(
                 NSDate.dateWithTimeIntervalSinceNow_(0.25))
-            timeout -= 0.25
+        return auth_result[0]
     except Exception as exc:
         print(f"  Note: Could not request notification permission ({exc})")
+        return None
 
 
 def main() -> None:
