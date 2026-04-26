@@ -37,43 +37,34 @@ remove_shell_config() {
         return
     fi
 
-    echo -e "${YELLOW}⚠ Shell configuration found in $RC_FILE${NC}"
-    read -p "  Remove shell configuration? (y/N) " -n 1 -r REPLY
-    echo
+    echo "  Removing shell configuration from $RC_FILE..."
 
-    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
-        # Remove Leap config (current naming)
-        if grep -q "Leap Configuration START" "$RC_FILE"; then
-            sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
-            rm -f "$RC_FILE.bak"
-        elif grep -q "# Leap" "$RC_FILE"; then
-            sed -i.bak '/# Leap/,/# End Leap/d' "$RC_FILE"
-            sed -i.bak '/# Leap/,/^alias claudel/d' "$RC_FILE"
-            rm -f "$RC_FILE.bak"
-        fi
-
-        # Remove ClaudeQ config (old naming)
-        if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
-            sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
-            rm -f "$RC_FILE.bak"
-        elif grep -q "# ClaudeQ" "$RC_FILE"; then
-            sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$RC_FILE"
-            rm -f "$RC_FILE.bak"
-        fi
-
-        # Clean up any stale env vars
-        if grep -q "CLAUDEQ_PROJECT_DIR" "$RC_FILE" 2>/dev/null; then
-            sed -i.bak '/CLAUDEQ_PROJECT_DIR/d' "$RC_FILE"
-            rm -f "$RC_FILE.bak"
-        fi
-
-        echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
-    else
-        echo "  Skipped shell configuration removal."
-        echo "  To manually remove later, delete lines between:"
-        echo "    '# ===== Leap Configuration START =====' and"
-        echo "    '# ===== Leap Configuration END ====='"
+    # Remove Leap config (current naming)
+    if grep -q "Leap Configuration START" "$RC_FILE"; then
+        sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
+        rm -f "$RC_FILE.bak"
+    elif grep -q "# Leap" "$RC_FILE"; then
+        sed -i.bak '/# Leap/,/# End Leap/d' "$RC_FILE"
+        sed -i.bak '/# Leap/,/^alias claudel/d' "$RC_FILE"
+        rm -f "$RC_FILE.bak"
     fi
+
+    # Remove ClaudeQ config (old naming)
+    if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
+        sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
+        rm -f "$RC_FILE.bak"
+    elif grep -q "# ClaudeQ" "$RC_FILE"; then
+        sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$RC_FILE"
+        rm -f "$RC_FILE.bak"
+    fi
+
+    # Clean up any stale env vars
+    if grep -q "CLAUDEQ_PROJECT_DIR" "$RC_FILE" 2>/dev/null; then
+        sed -i.bak '/CLAUDEQ_PROJECT_DIR/d' "$RC_FILE"
+        rm -f "$RC_FILE.bak"
+    fi
+
+    echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
 }
 
 # Main
