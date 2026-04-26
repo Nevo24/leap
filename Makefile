@@ -73,6 +73,7 @@ if [ -d "/Applications/Leap Monitor.app" ]; then \
 	sudo rm -rf "/Applications/Leap Monitor.app"; \
 fi; \
 sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/; \
+codesign --force --deep --sign - "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 tccutil reset Accessibility com.leap.monitor 2>/dev/null || true
 endef
 
@@ -247,6 +248,10 @@ install-monitor: .env ensure-storage write-install-metadata
 		elif [ "$$NOTIF_STATUS" = "2" ]; then \
 			echo "  Notifications declined — you can enable them later in"; \
 			echo "  System Settings if you change your mind."; \
+		elif [ "$$NOTIF_STATUS" -ge 126 ] 2>/dev/null; then \
+			echo "  $(YELLOW)⚠ Notification probe was blocked (process terminated externally).$(NC)"; \
+			echo "  If notifications are not working, enable them in"; \
+			echo "  System Settings > Notifications > Leap Monitor."; \
 		else \
 			printf "  Open Notifications settings? (Y/n) "; \
 			read -n 1 -r REPLY_NOTIF; echo; \
