@@ -460,6 +460,8 @@ After writing any fix or feature, **always re-read your own changes and verify t
 
 ## Commit & Push Checklist
 
+**NEVER commit or push without explicit user approval.** Always present the plan and wait for the user to say "commit", "go ahead", or equivalent before running any `git commit` or `git push` command.
+
 When the user asks to commit and push, **before committing**:
 
 1. **Review CLAUDE.md** — Check that it reflects the current codebase. Update any outdated sections (project structure, key classes, features, conventions). Keep it detailed — this is the developer reference.

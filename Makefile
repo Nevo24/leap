@@ -62,18 +62,52 @@ endef
 define BUILD_MONITOR_APP
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
-codesign --force --deep --sign - "$(REPO_PATH)/.dist/Leap Monitor.app" 2>/dev/null || true; \
-echo "$(PROMPT_PREFIX) Installing Leap Monitor.app to /Applications..."; \
 if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
 	echo "$(PROMPT_PREFIX) Closing running Leap Monitor..."; \
 	osascript -e 'quit app "Leap Monitor"' 2>/dev/null || true; \
 	sleep 1; \
 	pkill -f "Leap Monitor" 2>/dev/null || true; \
 fi; \
+echo "$(PROMPT_PREFIX) Installing Leap Monitor.app..."; \
 if [ -d "/Applications/Leap Monitor.app" ]; then \
 	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 fi; \
-cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/; \
+if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null; then \
+	rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null; \
+	if [ -d "/Applications/Leap Monitor.app/Contents/_CodeSignature" ]; then \
+		echo "$(YELLOW)  ⚠ Stale codesignature in /Applications can't be removed (requires IT/admin).$(NC)"; \
+		echo "  Installing clean copy to ~/Applications instead..."; \
+		mkdir -p "$$HOME/Applications"; \
+		rm -rf "$$HOME/Applications/Leap Monitor.app"; \
+		if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" "$$HOME/Applications/"; then \
+			echo "$(GREEN)✓ Installed to ~/Applications$(NC)"; \
+			echo "  Launch Leap Monitor from Spotlight or ~/Applications in Finder."; \
+		else \
+			echo "$(YELLOW)⚠ Installation to ~/Applications also failed. Check disk space and permissions.$(NC)"; \
+			exit 1; \
+		fi; \
+	else \
+		echo "$(GREEN)✓ Installed to /Applications$(NC)"; \
+		if [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
+			echo "$(PROMPT_PREFIX) Removing stale ~/Applications copy..."; \
+			rm -rf "$$HOME/Applications/Leap Monitor.app"; \
+		fi; \
+	fi; \
+else \
+	echo "$(YELLOW)  ⚠ Could not install to /Applications (blocked by system policy).$(NC)"; \
+	echo "  Falling back to ~/Applications..."; \
+	mkdir -p "$$HOME/Applications"; \
+	if [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
+		rm -rf "$$HOME/Applications/Leap Monitor.app"; \
+	fi; \
+	if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" "$$HOME/Applications/"; then \
+		echo "$(GREEN)✓ Installed to ~/Applications$(NC)"; \
+		echo "  To launch: open ~/Applications in Finder, or search 'Leap Monitor' in Spotlight."; \
+	else \
+		echo "$(YELLOW)⚠ Installation to ~/Applications also failed. Check disk space and permissions.$(NC)"; \
+		exit 1; \
+	fi; \
+fi; \
 tccutil reset Accessibility com.leap.monitor 2>/dev/null || true
 endef
 
@@ -219,7 +253,7 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo ""
 	@echo "Launch Leap Monitor from:"
 	@echo "  • Spotlight: Search 'Leap Monitor'"
-	@echo "  • Applications: Double-click Leap Monitor.app"
+	@echo "  • Finder: Open Leap Monitor.app from Applications or ~/Applications"
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
 	@echo "$(YELLOW)Optional: Grant macOS permissions for full functionality$(NC)"
@@ -240,23 +274,35 @@ install-monitor: .env ensure-storage write-install-metadata
 		echo "  Quit the app and run 'make install-monitor' again, or enable it"; \
 		echo "  directly in System Settings > Notifications > Leap Monitor."; \
 	else \
-		LEAP_BIN="/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor"; \
-		"$$LEAP_BIN" --request-permissions 2>/dev/null; \
-		NOTIF_STATUS=$$?; \
-		if [ "$$NOTIF_STATUS" = "0" ]; then \
-			echo "  $(GREEN)✓ Notifications permission OK.$(NC)"; \
-		elif [ "$$NOTIF_STATUS" = "2" ]; then \
-			echo "  Notifications declined — you can enable them later in"; \
-			echo "  System Settings if you change your mind."; \
-		elif [ "$$NOTIF_STATUS" -ge 126 ] 2>/dev/null; then \
-			echo "  $(YELLOW)⚠ Notification probe was blocked (process terminated externally).$(NC)"; \
+		if [ -f "/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor" ]; then \
+			LEAP_BIN="/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor"; \
+		elif [ -f "$$HOME/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor" ]; then \
+			LEAP_BIN="$$HOME/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor"; \
+		else \
+			LEAP_BIN=""; \
+		fi; \
+		if [ -z "$$LEAP_BIN" ]; then \
+			echo "  Could not find Leap Monitor binary to probe notification permissions."; \
 			echo "  If notifications are not working, enable them in"; \
 			echo "  System Settings > Notifications > Leap Monitor."; \
 		else \
-			printf "  Open Notifications settings? (Y/n) "; \
-			read -n 1 -r REPLY_NOTIF; echo; \
-			if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-				open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"; \
+			"$$LEAP_BIN" --request-permissions 2>/dev/null; \
+			NOTIF_STATUS=$$?; \
+			if [ "$$NOTIF_STATUS" = "0" ]; then \
+				echo "  $(GREEN)✓ Notifications permission OK.$(NC)"; \
+			elif [ "$$NOTIF_STATUS" = "2" ]; then \
+				echo "  Notifications declined — you can enable them later in"; \
+				echo "  System Settings if you change your mind."; \
+			elif [ "$$NOTIF_STATUS" -ge 126 ] 2>/dev/null; then \
+				echo "  $(YELLOW)⚠ Notification probe was blocked (process terminated externally).$(NC)"; \
+				echo "  If notifications are not working, enable them in"; \
+				echo "  System Settings > Notifications > Leap Monitor."; \
+			else \
+				printf "  Open Notifications settings? (Y/n) "; \
+				read -n 1 -r REPLY_NOTIF; echo; \
+				if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
+					open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"; \
+				fi; \
 			fi; \
 		fi; \
 	fi
@@ -333,7 +379,7 @@ update: .env
 		echo "  Slack not installed. To install it, run: make install-slack-app"; \
 	fi
 	@MONITOR_REBUILT=no; \
-	if [ -d "/Applications/Leap Monitor.app" ]; then \
+	if [ -d "/Applications/Leap Monitor.app" ] || [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Detected Leap Monitor installation"; \
 		echo "$(PROMPT_PREFIX) Updating monitor dependencies..."; \
@@ -386,7 +432,7 @@ update: .env
 	echo "Changes applied:"; \
 	echo "  • Core code and dependencies updated"; \
 	echo "  • Shell configuration updated (flags preserved)"; \
-	if [ -d "/Applications/Leap Monitor.app" ]; then \
+	if [ -d "/Applications/Leap Monitor.app" ] || [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
 		echo "  • Monitor app rebuilt"; \
 	fi; \
 	if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
@@ -770,14 +816,33 @@ configure-shell:
 .PHONY: uninstall-monitor
 uninstall-monitor:
 	@echo "$(PROMPT_PREFIX) Uninstalling Leap Monitor..."
-	@if [ -d "/Applications/Leap Monitor.app" ]; then \
-		sudo rm -rf "/Applications/Leap Monitor.app"; \
-		echo "$(GREEN)✓ Removed Leap Monitor.app from /Applications$(NC)"; \
-	elif [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
-		sudo rm -rf "/Applications/ClaudeQ Monitor.app"; \
-		echo "$(GREEN)✓ Removed ClaudeQ Monitor.app from /Applications$(NC)"; \
-	else \
-		echo "  Monitor app not found in /Applications"; \
+	@REMOVED=no; \
+	if [ -d "/Applications/Leap Monitor.app" ]; then \
+		if rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null; then \
+			echo "$(GREEN)✓ Removed Leap Monitor.app from /Applications$(NC)"; \
+			REMOVED=yes; \
+		else \
+			echo "$(YELLOW)⚠ Could not remove /Applications/Leap Monitor.app (try manually)$(NC)"; \
+		fi; \
+	fi; \
+	if [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
+		if rm -rf "$$HOME/Applications/Leap Monitor.app"; then \
+			echo "$(GREEN)✓ Removed Leap Monitor.app from ~/Applications$(NC)"; \
+			REMOVED=yes; \
+		else \
+			echo "$(YELLOW)⚠ Could not remove ~/Applications/Leap Monitor.app (try manually)$(NC)"; \
+		fi; \
+	fi; \
+	if [ -d "/Applications/ClaudeQ Monitor.app" ]; then \
+		if rm -rf "/Applications/ClaudeQ Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/ClaudeQ Monitor.app" 2>/dev/null; then \
+			echo "$(GREEN)✓ Removed ClaudeQ Monitor.app from /Applications$(NC)"; \
+			REMOVED=yes; \
+		else \
+			echo "$(YELLOW)⚠ Could not remove /Applications/ClaudeQ Monitor.app (try manually)$(NC)"; \
+		fi; \
+	fi; \
+	if [ "$$REMOVED" = "no" ]; then \
+		echo "  Monitor app not found"; \
 	fi
 	@rm -rf build .dist
 	@echo "$(GREEN)✓ Monitor uninstalled successfully!$(NC)"
