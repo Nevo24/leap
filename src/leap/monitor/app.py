@@ -28,7 +28,8 @@ from PyQt5.QtWidgets import (
     QProgressBar,
 )
 from PyQt5.QtCore import (
-    QByteArray, QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QTimer, Qt,
+    QByteArray, QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QThread,
+    QTimer, Qt, pyqtSignal,
 )
 from PyQt5.QtGui import (
     QColor, QCursor, QDrag, QIcon, QCloseEvent, QKeySequence,
@@ -65,6 +66,7 @@ from leap.monitor.ui.table_helpers import (
 from leap.monitor.ui.ui_widgets import PulsingLabel, ShimmerBar, IndicatorLabel
 from leap.utils.constants import ICON_CACHE_DIR, STORAGE_DIR
 
+from leap.monitor.navigation import open_terminal_with_command
 from leap.slack.config import is_slack_installed
 from leap.monitor._mixins.actions_menu_mixin import ActionsMenuMixin
 from leap.monitor._mixins.scm_config_mixin import SCMConfigMixin
@@ -107,6 +109,43 @@ class _RefreshableComboBox(QComboBox):
     def showPopup(self) -> None:
         self._refresh_fn()
         super().showPopup()
+
+
+class UpdateCheckWorker(QThread):
+    """Background thread: git fetch + count commits behind origin/main.
+
+    Emits ``result_ready(n)`` where n > 0 means the local repo is that
+    many commits behind the remote.  Silently swallows all errors so a
+    network hiccup never surfaces in the UI.
+    """
+
+    result_ready = pyqtSignal(int)
+
+    def __init__(self, repo_path: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._repo_path = repo_path
+
+    def run(self) -> None:
+        try:
+            subprocess.run(
+                ['git', 'fetch', 'origin', '--quiet'],
+                cwd=self._repo_path,
+                timeout=15,
+                capture_output=True,
+                check=False,
+            )
+            result = subprocess.run(
+                ['git', 'rev-list', 'HEAD..origin/main', '--count'],
+                cwd=self._repo_path,
+                timeout=10,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                self.result_ready.emit(int(result.stdout.strip()))
+        except Exception:
+            pass
 
 
 class MonitorWindow(
@@ -226,9 +265,16 @@ class MonitorWindow(
         self._scm_poll_timer = QTimer()
         self._scm_poll_timer.timeout.connect(self._start_scm_poll)
 
+        # Update-check timer — git fetch against origin/main every 30 min
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.timeout.connect(self._run_update_check)
+        self._update_check_timer.start(30 * 60 * 1000)
+        self._update_check_worker: Optional[UpdateCheckWorker] = None
+
         self._init_ui()
         self._apply_window_effects()
         self._refresh_permissions_banner()
+        QTimer.singleShot(3000, self._run_update_check)
         # Synchronous initial load — UI needs sessions before first paint
         self.sessions = self._merge_sessions(get_active_sessions())
         self._update_table()
@@ -310,6 +356,10 @@ class MonitorWindow(
         # toggle in System Settings makes the banner vanish on return).
         self._permissions_banner = self._build_permissions_banner()
         layout.addWidget(self._permissions_banner)
+
+        # Update-available banner — visible only when origin/main is ahead
+        self._update_banner = self._build_update_banner()
+        layout.addWidget(self._update_banner)
 
         # Table
         self.table = QTableWidget()
@@ -772,6 +822,103 @@ class MonitorWindow(
 
     def _on_fix_notifications_clicked(self) -> None:
         prompt_notifications()
+
+    # ------------------------------------------------------------------
+    #  Update-available banner
+    # ------------------------------------------------------------------
+
+    def _build_update_banner(self) -> QFrame:
+        """Construct the (initially hidden) update-available banner."""
+        banner = QFrame()
+        banner.setObjectName('_leapUpdateBanner')
+        banner.setVisible(False)
+        self._update_banner = banner
+        row = QHBoxLayout(banner)
+        row.setContentsMargins(10, 6, 10, 6)
+        row.setSpacing(10)
+
+        self._update_icon_label = QLabel('↑')
+        self._update_icon_label.setObjectName('_leapUpdateIcon')
+        row.addWidget(self._update_icon_label, 0, Qt.AlignVCenter)
+
+        self._update_text_label = QLabel('')
+        self._update_text_label.setObjectName('_leapUpdateText')
+        self._update_text_label.setWordWrap(True)
+        row.addWidget(self._update_text_label, 1, Qt.AlignVCenter)
+
+        self._update_btn = QPushButton('Update')
+        self._update_btn.setObjectName('_leapUpdateBtn')
+        self._update_btn.setToolTip('Open a terminal and run leap --update')
+        self._update_btn.clicked.connect(self._on_update_clicked)
+        row.addWidget(self._update_btn, 0, Qt.AlignVCenter)
+
+        self._apply_update_banner_style()
+        return banner
+
+    def _apply_update_banner_style(self) -> None:
+        """Apply theme colors to the update banner. Called on build + theme change."""
+        if not hasattr(self, '_update_banner'):
+            return
+        t = current_theme()
+        self._update_banner.setStyleSheet(
+            f"#_leapUpdateBanner {{"
+            f"  background-color: rgba(76, 175, 80, 0.12);"
+            f"  border: 1px solid {t.accent_green};"
+            f"  border-radius: {t.border_radius}px;"
+            f"}}"
+            f"#_leapUpdateIcon {{"
+            f"  color: {t.accent_green};"
+            f"  font-size: {t.font_size_large}px;"
+            f"  font-weight: bold;"
+            f"}}"
+            f"#_leapUpdateText {{"
+            f"  color: {t.text_primary};"
+            f"}}"
+            f"#_leapUpdateBtn {{"
+            f"  color: {t.accent_green};"
+            f"  background: transparent;"
+            f"  border: 1px solid {t.accent_green};"
+            f"  border-radius: {t.border_radius}px;"
+            f"  padding: 4px 12px;"
+            f"}}"
+            f"#_leapUpdateBtn:hover {{"
+            f"  background-color: rgba(76, 175, 80, 0.18);"
+            f"}}"
+        )
+
+    def _run_update_check(self) -> None:
+        """Spawn a background worker to fetch and compare against origin/main."""
+        if self._shutting_down:
+            return
+        repo_path = os.environ.get('LEAP_PROJECT_DIR', '')
+        if not repo_path or not os.path.isdir(os.path.join(repo_path, '.git')):
+            return
+        # Don't pile up workers if the previous one is still running
+        if self._update_check_worker and self._update_check_worker.isRunning():
+            return
+        worker = UpdateCheckWorker(repo_path, parent=self)
+        worker.result_ready.connect(self._on_update_check_result)
+        worker.start()
+        self._update_check_worker = worker
+
+    def _on_update_check_result(self, commits_behind: int) -> None:
+        """Show or hide the update banner based on how far behind origin/main we are."""
+        if not hasattr(self, '_update_banner'):
+            return
+        if commits_behind > 0:
+            n = commits_behind
+            self._update_text_label.setText(
+                f"A new version of Leap is available "
+                f"({n} commit{'s' if n != 1 else ''} behind origin/main)."
+            )
+            self._update_banner.setVisible(True)
+        else:
+            self._update_banner.setVisible(False)
+
+    def _on_update_clicked(self) -> None:
+        """Open the user's configured terminal and run leap --update."""
+        terminal = self._prefs.get('default_terminal', '')
+        open_terminal_with_command('leap --update', preferred_ide=terminal or None)
 
     # ------------------------------------------------------------------
     #  Core utilities
@@ -2075,6 +2222,7 @@ class MonitorWindow(
 
         # Re-apply permissions banner palette
         self._apply_permissions_banner_style()
+        self._apply_update_banner_style()
 
         # Re-apply main-window font zoom (theme change replaces our overlay)
         self._apply_main_font_size()
@@ -2537,6 +2685,7 @@ class MonitorWindow(
         self._shutting_down = True
         self.timer.stop()
         self._scm_poll_timer.stop()
+        self._update_check_timer.stop()
         self._hover_timer.stop()
         self._unregister_global_shortcut()
         self._unregister_notes_shortcut()
