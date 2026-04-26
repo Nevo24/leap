@@ -77,7 +77,7 @@ remove_storage() {
     fi
 
     echo ""
-    printf "  Remove .storage directory (queues, settings, session data)? (y/N) "
+    printf "  Remove .storage directory (queues, settings, notes, session data)? (y/N) "
     read -n 1 -r REPLY
     echo
 
