@@ -73,7 +73,8 @@ if [ -d "/Applications/Leap Monitor.app" ]; then \
 	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 fi; \
 if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null; then \
-	rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null; \
+	rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || \
+		sudo rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || true; \
 	if [ -d "/Applications/Leap Monitor.app/Contents/_CodeSignature" ]; then \
 		echo "$(YELLOW)  ⚠ Stale codesignature in /Applications can't be removed (requires IT/admin).$(NC)"; \
 		echo "  Installing clean copy to ~/Applications instead..."; \
