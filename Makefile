@@ -179,7 +179,7 @@ install: check-macos check-python .env .migrate-from-claudeq install-core ensure
 	@echo ""
 	@echo "To start using Leap:"
 	@echo "  1. Reload your shell: source ~/.zshrc  (or ~/.bashrc)"
-	@echo "  2. Run: claudel <tag-name>"
+	@echo "  2. Run: leap <tag-name>"
 	@echo ""
 	@echo "Note: The venv is automatically used by leap commands."
 	@echo ""
