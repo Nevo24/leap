@@ -878,6 +878,7 @@ uninstall:
 	@$(MAKE) uninstall-slack-app
 	@echo "$(PROMPT_PREFIX) Cleaning up cache directories..."
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
+	@rm -f "$(REPO_PATH)/.storage/venv-path" "$(REPO_PATH)/.storage/project-path"
 	@echo "$(GREEN)✓ Cleaned up cache directories$(NC)"
 	@echo "$(PROMPT_PREFIX) Removing VS Code configuration..."
 	@CODE_SYMLINK="/usr/local/bin/code"; \
