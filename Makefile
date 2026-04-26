@@ -69,15 +69,18 @@ if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
 	pkill -f "Leap Monitor" 2>/dev/null || true; \
 fi; \
 echo "$(PROMPT_PREFIX) Installing Leap Monitor.app..."; \
+rm -rf "$(REPO_PATH)/.dist/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || true; \
 if [ -d "/Applications/Leap Monitor.app" ]; then \
 	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 fi; \
 if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null; then \
-	rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || \
+	if [ -d "/Applications/Leap Monitor.app/Contents/_CodeSignature" ]; then \
 		sudo rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || true; \
+	fi; \
 	if [ -d "/Applications/Leap Monitor.app/Contents/_CodeSignature" ]; then \
 		echo "$(YELLOW)  ⚠ Stale codesignature in /Applications can't be removed (requires IT/admin).$(NC)"; \
 		echo "  Installing clean copy to ~/Applications instead..."; \
+		rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 		mkdir -p "$$HOME/Applications"; \
 		rm -rf "$$HOME/Applications/Leap Monitor.app"; \
 		if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" "$$HOME/Applications/"; then \
