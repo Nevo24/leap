@@ -67,6 +67,29 @@ remove_shell_config() {
     echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
 }
 
+# Ask whether to remove .storage
+remove_storage() {
+    local REPO_PATH="$1"
+    local STORAGE_DIR="$REPO_PATH/.storage"
+
+    if [ ! -d "$STORAGE_DIR" ]; then
+        return
+    fi
+
+    echo ""
+    printf "  Remove .storage directory (queues, settings, session data)? (y/N) "
+    read -n 1 -r REPLY
+    echo
+
+    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
+        rm -rf "$STORAGE_DIR"
+        echo -e "${GREEN}✓ Removed .storage${NC}"
+    else
+        echo "  Keeping .storage (your settings and session data are preserved)."
+    fi
+}
+
 # Main
 RC_FILE=$(get_rc_file)
 remove_shell_config "$RC_FILE"
+remove_storage "$REPO_PATH"

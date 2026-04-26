@@ -871,10 +871,9 @@ uninstall:
 	@echo "$(GREEN)✓ Removed Poetry venv$(NC)"
 	@$(MAKE) uninstall-monitor
 	@$(MAKE) uninstall-slack-app
-	@echo "$(PROMPT_PREFIX) Cleaning up data and cache directories..."
-	@rm -rf .storage
+	@echo "$(PROMPT_PREFIX) Cleaning up cache directories..."
 	@rm -rf .pytest_cache .coverage coverage.xml .ruff_cache .mypy_cache
-	@echo "$(GREEN)✓ Cleaned up all data and cache directories$(NC)"
+	@echo "$(GREEN)✓ Cleaned up cache directories$(NC)"
 	@echo "$(PROMPT_PREFIX) Removing VS Code configuration..."
 	@CODE_SYMLINK="/usr/local/bin/code"; \
 	if [ -L "$$CODE_SYMLINK" ] && [ "$$(readlink "$$CODE_SYMLINK")" = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" ]; then \
@@ -935,4 +934,3 @@ uninstall:
 	@echo "$(GREEN)✓ Removed hook files$(NC)"
 	@echo ""
 	@echo "$(GREEN)✓ Leap fully uninstalled!$(NC)"
-	@echo "Project is now in clean state (like just cloned)"
