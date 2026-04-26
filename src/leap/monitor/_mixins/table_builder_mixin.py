@@ -2082,7 +2082,14 @@ class TableBuilderMixin(_Base):
         if row < 0 or row >= len(self.sessions):
             return
         tag = self.sessions[row]['tag']
-        if tag in self._state_changed_at and tag not in self._dismissed_new_status:
+        if tag not in self._state_changed_at or tag in self._dismissed_new_status:
+            return
+        threshold = self._prefs.get('new_status_seconds', 60)
+        cli_state = self.sessions[row].get('cli_state', CLIState.IDLE)
+        changed_at = self._state_changed_at[tag][1]
+        if (threshold > 0
+                and cli_state not in (CLIState.RUNNING, CLIState.INTERRUPTED)
+                and (time.time() - changed_at) < threshold):
             self._dismissed_new_status.add(tag)
             self._update_table()
 

@@ -18,7 +18,7 @@ from leap.monitor.dialogs.notifications_dialog import _play_sound
 from leap.monitor.monitor_utils import find_icon
 from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import get_dock_enabled, get_notification_prefs
-from leap.monitor.themes import current_theme
+from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.dock_badge import NotificationEvent, NotificationType
 from leap.monitor.ui.ui_widgets import IndicatorLabel, PulsingLabel
 
@@ -224,6 +224,18 @@ class PRDisplayMixin(_Base):
                         fire_label.setText('\U0001f525' if show else '')
                         fire_label.setToolTip(
                             self._pr_fire_tooltip(tag) if show else '')
+                        if show:
+                            t_pf = current_theme()
+                            pf_color = t_pf.accent_orange
+                            row_color = self._row_colors.get(tag)
+                            if row_color:
+                                pf_color = ensure_contrast(
+                                    t_pf.accent_orange, row_color)
+                            pr_fire_px = max(10, self._zoomed_size(-3))
+                            fire_label.setStyleSheet(
+                                f'color: {pf_color}; font-size: {pr_fire_px}px;')
+                        else:
+                            fire_label.setStyleSheet('')
             except RuntimeError:
                 # Widget was deleted, remove from cache
                 self._pr_widgets.pop(tag, None)

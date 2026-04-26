@@ -143,6 +143,8 @@ class SessionMixin(_Base):
                 if tag in self._aliases:
                     del self._aliases[tag]
                     prefs_changed = True
+                self._state_changed_at.pop(tag, None)
+                self._dismissed_new_status.discard(tag)
             save_pinned_sessions(self._pinned_sessions)
             if prefs_changed:
                 self._prefs['row_colors'] = self._row_colors
@@ -485,6 +487,8 @@ class SessionMixin(_Base):
         self._remove_from_row_order({tag})
         self._deleted_tags.add(tag)
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
+        self._state_changed_at.pop(tag, None)
+        self._dismissed_new_status.discard(tag)
         self._show_status(f"Removed dead row '{tag}' (PR tracking failed, no server)")
 
     def _remove_pinned_session(self, tag: str) -> None:
@@ -511,6 +515,10 @@ class SessionMixin(_Base):
 
         # Clean up PR tracking (skip prompt — _delete_row already prompted)
         self._stop_tracking(tag, _skip_prompt=True)
+
+        # Clean up status fire state
+        self._state_changed_at.pop(tag, None)
+        self._dismissed_new_status.discard(tag)
 
         # Remove from sessions list and refresh table
         self.sessions = [s for s in self.sessions if s['tag'] != tag]

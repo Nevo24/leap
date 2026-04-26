@@ -226,6 +226,8 @@ class PRTrackingMixin(_Base):
             save_pinned_sessions(self._pinned_sessions)
             self._deleted_tags.add(tag)
             self.sessions = [s for s in self.sessions if s['tag'] != tag]
+            self._state_changed_at.pop(tag, None)
+            self._dismissed_new_status.discard(tag)
 
         # Stop poll timer if no tags are being tracked and no notifications enabled
         if (not self._tracked_tags
