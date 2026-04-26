@@ -824,6 +824,12 @@ configure-shell:
 .PHONY: uninstall-monitor
 uninstall-monitor:
 	@echo "$(PROMPT_PREFIX) Uninstalling Leap Monitor..."
+	@if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
+		echo "$(PROMPT_PREFIX) Closing running Leap Monitor..."; \
+		osascript -e 'quit app "Leap Monitor"' 2>/dev/null || true; \
+		sleep 1; \
+		pkill -f "Leap Monitor" 2>/dev/null || true; \
+	fi
 	@REMOVED=no; \
 	if [ -d "/Applications/Leap Monitor.app" ]; then \
 		if rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null; then \
