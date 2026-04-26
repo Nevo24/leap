@@ -62,6 +62,7 @@ endef
 define BUILD_MONITOR_APP
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
+codesign --force --deep --sign - "$(REPO_PATH)/.dist/Leap Monitor.app" 2>/dev/null || true; \
 echo "$(PROMPT_PREFIX) Installing Leap Monitor.app to /Applications..."; \
 if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
 	echo "$(PROMPT_PREFIX) Closing running Leap Monitor..."; \
@@ -73,7 +74,6 @@ if [ -d "/Applications/Leap Monitor.app" ]; then \
 	sudo rm -rf "/Applications/Leap Monitor.app"; \
 fi; \
 sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/; \
-codesign --force --deep --sign - "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 tccutil reset Accessibility com.leap.monitor 2>/dev/null || true
 endef
 
