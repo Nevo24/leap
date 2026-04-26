@@ -71,9 +71,9 @@ if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
 	pkill -f "Leap Monitor" 2>/dev/null || true; \
 fi; \
 if [ -d "/Applications/Leap Monitor.app" ]; then \
-	sudo rm -rf "/Applications/Leap Monitor.app"; \
+	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 fi; \
-sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/; \
+cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/; \
 tccutil reset Accessibility com.leap.monitor 2>/dev/null || true
 endef
 
