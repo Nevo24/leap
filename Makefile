@@ -355,6 +355,10 @@ lock: .env
 
 .PHONY: update
 update: .env
+	@if [ ! -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+		echo "$(YELLOW)⚠ Leap is not installed. Run: make install$(NC)"; \
+		exit 1; \
+	fi
 	@$(MAKE) .update-after-pull
 
 .PHONY: .update-after-pull
