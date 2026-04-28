@@ -375,7 +375,12 @@ class CLIStateTracker:
 
         # Any input in WAITING_STATES → user responded.
         # This includes Escape (dismiss prompt) and regular keys (answer).
-        if self._state in WAITING_STATES:
+        # Also covers IDLE: a false running→idle may leave us in IDLE
+        # while a permission dialog is still on screen.  If the user
+        # answers before the Notification hook signal arrives, we need
+        # _user_responded=True to survive the IDLE→NEEDS_PERMISSION
+        # transition (which only resets it when coming from non-IDLE).
+        if self._state in WAITING_STATES or self._state == CLIState.IDLE:
             self._user_responded = True
             _log.debug('ON_INPUT _user_responded=True')
 
@@ -1022,7 +1027,15 @@ class CLIStateTracker:
                         self._waiting_since = self._clock()
                     else:
                         self._waiting_since = None
-                self._user_responded = False
+                # Preserve _user_responded when coming from IDLE: a false
+                # running→idle may have left us in IDLE while a dialog
+                # was still on screen.  If the user answered during that
+                # IDLE window, on_input() set _user_responded=True; we
+                # must not wipe it here or the cursor-hidden / waiting→
+                # idle exit paths will never fire.  All other source
+                # states (RUNNING, INTERRUPTED) reset it as before.
+                if current != CLIState.IDLE:
+                    self._user_responded = False
                 # Clear trust dialog phase on any signal transition —
                 # if a real permission prompt fires after the trust
                 # dialog, we must not treat its output as startup.
