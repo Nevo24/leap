@@ -6,6 +6,7 @@ Discovers and tracks active Leap sessions.
 
 import fcntl
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -172,11 +173,31 @@ def get_active_sessions() -> list[dict[str, Any]]:
         current_tags.add(tag)
         status_response = query_server_status(socket_file)
 
+        metadata = load_session_metadata(tag)
+
         if status_response:
             _last_good_status[tag] = status_response
         elif tag in _last_good_status:
-            # Server busy — reuse last known good status so the row
-            # doesn't flicker/disappear for one refresh cycle.
+            # Socket query failed — only reuse cached status if the server
+            # process is still alive (transient busy). If the process is dead
+            # but left its .sock file behind (e.g. kill -9), evict the cache
+            # so the row disappears rather than lingering as a zombie.
+            pid = metadata.get('pid') if metadata else None
+            if pid is not None:
+                try:
+                    os.kill(int(pid), 0)
+                    server_alive = True
+                except ProcessLookupError:
+                    server_alive = False
+                except PermissionError:
+                    server_alive = True  # process exists, just can't signal it
+                except (OSError, ValueError, TypeError):
+                    server_alive = False
+            else:
+                server_alive = False
+            if not server_alive:
+                _last_good_status.pop(tag, None)
+                continue
             status_response = _last_good_status[tag]
         else:
             continue
@@ -188,8 +209,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
         recently_sent = status_response.get('recently_sent', [])
         current_task = recently_sent[-1] if recently_sent else ''
 
-        # Load metadata
-        metadata = load_session_metadata(tag)
+        # metadata already loaded above
         project_name = None
         branch_name = None
         project_path = None
