@@ -459,6 +459,94 @@ class BatchDeleteCmd(UndoCommand):
             cmd.undo(ctx)
 
 
+class DuplicateNoteCmd(UndoCommand):
+    def __init__(self, src_name: str, new_name: str, content: str,
+                 metadata: dict, folder: str) -> None:
+        super().__init__(description=f"Duplicate note '{_leaf_name(src_name)}'")
+        self._new_name = new_name
+        self._content = content
+        self._metadata = metadata
+        self._folder = folder
+
+    def execute(self, ctx: NotesCmdContext) -> None:
+        path = _note_path(self._new_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._content, encoding='utf-8')
+        if self._metadata:
+            meta = _load_notes_meta()
+            meta[self._new_name] = dict(self._metadata)
+            _save_notes_meta(meta)
+        ctx.select_and_load(name=self._new_name)
+
+    def undo(self, ctx: NotesCmdContext) -> None:
+        try:
+            _note_path(self._new_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        _remove_from_order(self._folder, _leaf_name(self._new_name))
+        meta = _load_notes_meta()
+        if meta.pop(self._new_name, None) is not None:
+            _save_notes_meta(meta)
+        ctx.clear_and_select_first()
+
+
+class DuplicateFolderCmd(UndoCommand):
+    def __init__(self, src_path: str, new_path: str,
+                 notes: dict[str, str], metadata_entries: dict[str, dict],
+                 order_entries: dict[str, list[str]], subfolder_paths: list[str],
+                 parent_folder: str) -> None:
+        super().__init__(description=f"Duplicate folder '{_leaf_name(src_path)}'")
+        self._new_path = new_path
+        self._notes = notes
+        self._metadata_entries = metadata_entries
+        self._order_entries = order_entries
+        self._subfolder_paths = subfolder_paths
+        self._parent_folder = parent_folder
+
+    def execute(self, ctx: NotesCmdContext) -> None:
+        (NOTES_DIR / self._new_path).mkdir(parents=True, exist_ok=True)
+        for sf in self._subfolder_paths:
+            (NOTES_DIR / sf).mkdir(parents=True, exist_ok=True)
+        for name, content in self._notes.items():
+            path = _note_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding='utf-8')
+        if self._metadata_entries:
+            meta = _load_notes_meta()
+            for name, entry in self._metadata_entries.items():
+                meta[name] = dict(entry)
+            _save_notes_meta(meta)
+        if self._order_entries:
+            order = _load_order()
+            for k, v in self._order_entries.items():
+                order[k] = list(v)
+            _save_order(order)
+        _insert_into_order(self._parent_folder, _leaf_name(self._new_path))
+        ctx.select_and_load(name=self._new_path, select_type='folder')
+
+    def undo(self, ctx: NotesCmdContext) -> None:
+        for name in self._notes:
+            try:
+                _note_path(name).unlink(missing_ok=True)
+            except OSError:
+                pass
+        meta = _load_notes_meta()
+        for name in self._notes:
+            meta.pop(name, None)
+        _save_notes_meta(meta)
+        order = _load_order()
+        for k in list(order):
+            if k == self._new_path or k.startswith(self._new_path + '/'):
+                del order[k]
+        _save_order(order)
+        _remove_from_order(self._parent_folder, _leaf_name(self._new_path))
+        target = NOTES_DIR / self._new_path
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        ctx.refresh_tree()
+        ctx.select_first_or_none()
+
+
 class RenameNoteCmd(UndoCommand):
     def __init__(self, old_name: str, new_name: str, parent_folder: str,
                  old_leaf: str, new_leaf: str) -> None:

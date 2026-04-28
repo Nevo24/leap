@@ -39,7 +39,8 @@ from leap.monitor.dialogs.notes_undo import (
     BatchDeleteCmd, ChecklistAddItemCmd, ChecklistDeleteItemCmd,
     ChecklistReorderCmd, ChecklistToggleCmd,
     CreateFolderCmd, CreateNoteCmd, DeleteFolderCmd,
-    DeleteNoteCmd, ModeSwitchCmd, MoveFolderCmd, MoveNoteCmd,
+    DeleteNoteCmd, DuplicateFolderCmd, DuplicateNoteCmd,
+    ModeSwitchCmd, MoveFolderCmd, MoveNoteCmd,
     NoteContentChangeCmd, NotesCmdContext, NotesUndoStack,
     RenameFolderCmd, RenameNoteCmd, ReorderCmd,
 )
@@ -3052,6 +3053,8 @@ class _NotesTreeWidget(QTreeWidget):
     # target_folder '' = root.  before_path '' = append at end.
     item_dropped = pyqtSignal(str, str, str, str)
     rename_requested = pyqtSignal()
+    copy_requested = pyqtSignal()
+    paste_requested = pyqtSignal()
 
     _ROLE_PATH = Qt.UserRole
     _ROLE_TYPE = Qt.UserRole + 1
@@ -3068,6 +3071,14 @@ class _NotesTreeWidget(QTreeWidget):
         if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
                 and self.currentItem() is not None):
             self.rename_requested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key_C and event.modifiers() == Qt.ControlModifier:
+            self.copy_requested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key_V and event.modifiers() == Qt.ControlModifier:
+            self.paste_requested.emit()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -3298,6 +3309,8 @@ class NotesDialog(QDialog):
         self._current_name: Optional[str] = None
         self._saved_text: str = ''
         self._switching_mode: bool = False
+        self._clipboard_path: Optional[str] = None
+        self._clipboard_type: Optional[str] = None
         # Font sizes — persisted separately in monitor prefs
         prefs = load_monitor_prefs()
         default_pt = current_theme().font_size_base
@@ -3362,6 +3375,8 @@ class NotesDialog(QDialog):
         self._tree.currentItemChanged.connect(self._on_item_changed)
         self._tree.item_dropped.connect(self._on_tree_drop)
         self._tree.rename_requested.connect(self._on_rename)
+        self._tree.copy_requested.connect(self._on_copy)
+        self._tree.paste_requested.connect(self._on_paste)
         left_layout.addWidget(self._tree, 1)
 
         # Button row
@@ -3853,6 +3868,7 @@ class NotesDialog(QDialog):
 
             if item_type == 'note':
                 menu.addAction('Rename', self._on_rename)
+                menu.addAction('Copy', lambda checked=False, i=item: self._on_copy(i))
                 # "Move to" submenu
                 note_name = item.data(0, self._ROLE_PATH) or ''
                 current_note_folder = (
@@ -3871,8 +3887,13 @@ class NotesDialog(QDialog):
                     move_menu.setEnabled(False)
             else:
                 menu.addAction('Rename Folder', self._on_rename)
+                menu.addAction('Copy Folder', lambda checked=False, i=item: self._on_copy(i))
 
             menu.addAction('Delete', self._on_delete)
+
+        if self._clipboard_path is not None:
+            menu.addSeparator()
+            menu.addAction('Paste', self._on_paste)
 
         menu.exec_(self._tree.viewport().mapToGlobal(pos))
 
@@ -4193,7 +4214,8 @@ class NotesDialog(QDialog):
 
         reply = QMessageBox.question(
             self, 'Delete', f'Delete {" and ".join(parts)}?',
-            QMessageBox.Yes | QMessageBox.No)
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes)
         if reply != QMessageBox.Yes:
             return
 
@@ -4291,6 +4313,97 @@ class NotesDialog(QDialog):
                 self._undo_stack.push(batch, self._cmd_ctx)
         finally:
             self._undoing = False
+
+    def _on_copy(self, item: Optional[QTreeWidgetItem] = None) -> None:
+        """Copy *item* (or the current tree item) to the internal clipboard."""
+        if item is None:
+            item = self._tree.currentItem()
+        if not item:
+            return
+        self._clipboard_path = item.data(0, self._ROLE_PATH)
+        self._clipboard_type = item.data(0, self._ROLE_TYPE)
+
+    def _unique_leaf(self, folder: str, leaf: str, is_folder: bool) -> str:
+        """Return a unique leaf name inside *folder*, appending ' copy' or ' copy N'."""
+        def exists(name: str) -> bool:
+            full = f'{folder}/{name}' if folder else name
+            if is_folder:
+                return (NOTES_DIR / full).exists()
+            return _note_path(full).exists()
+
+        base = leaf[:MAX_NOTE_NAME_LEN - 5]  # leave room for ' copy'
+        if not exists(leaf):
+            return leaf
+        candidate = f'{base} copy'
+        if not exists(candidate):
+            return candidate
+        n = 2
+        while exists(f'{base} copy {n}'):
+            n += 1
+        return f'{base} copy {n}'
+
+    def _on_paste(self) -> None:
+        """Paste the copied note or folder into the current target folder."""
+        if self._clipboard_path is None or self._clipboard_type is None:
+            return
+
+        src = self._clipboard_path
+        src_leaf = src.rsplit('/', 1)[-1] if '/' in src else src
+        if self._clipboard_type == 'folder':
+            target_folder = src.rsplit('/', 1)[0] if '/' in src else ''
+        else:
+            target_folder = self._current_folder()
+        new_leaf = self._unique_leaf(target_folder, src_leaf,
+                                     is_folder=self._clipboard_type == 'folder')
+        new_full = f'{target_folder}/{new_leaf}' if target_folder else new_leaf
+
+        self._save_current()
+
+        if self._clipboard_type == 'note':
+            try:
+                content = _note_path(src).read_text(encoding='utf-8')
+            except OSError:
+                content = ''
+            meta = _load_notes_meta()
+            note_meta = dict(meta[src]) if src in meta else {}
+            cmd = DuplicateNoteCmd(src_name=src, new_name=new_full, content=content,
+                                   metadata=note_meta, folder=target_folder)
+            self._undo_stack.push(cmd, self._cmd_ctx)
+        else:
+            # Collect all notes under the folder
+            prefix = src + '/'
+            folder_notes: dict[str, str] = {}
+            folder_meta_entries: dict[str, dict] = {}
+            meta = _load_notes_meta()
+            for n in _list_notes():
+                if n.startswith(prefix):
+                    suffix = n[len(src):]  # e.g. '/sub/note'
+                    new_note_name = new_full + suffix
+                    try:
+                        content = _note_path(n).read_text(encoding='utf-8')
+                    except OSError:
+                        content = ''
+                    folder_notes[new_note_name] = content
+                    if n in meta:
+                        folder_meta_entries[new_note_name] = dict(meta[n])
+            # Collect subfolders
+            subfolder_paths = []
+            for sf in _list_folders():
+                if sf.startswith(prefix):
+                    subfolder_paths.append(new_full + sf[len(src):])
+            # Remap order entries
+            order = _load_order()
+            new_order_entries: dict[str, list[str]] = {}
+            for k, v in order.items():
+                if k == src or k.startswith(prefix):
+                    new_key = new_full + k[len(src):]
+                    new_order_entries[new_key] = list(v)
+            cmd = DuplicateFolderCmd(
+                src_path=src, new_path=new_full,
+                notes=folder_notes, metadata_entries=folder_meta_entries,
+                order_entries=new_order_entries, subfolder_paths=subfolder_paths,
+                parent_folder=target_folder)
+            self._undo_stack.push(cmd, self._cmd_ctx)
 
     # ── Action toolbar helpers ─────────────────────────────────────
 
