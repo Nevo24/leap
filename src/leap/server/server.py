@@ -541,7 +541,13 @@ class LeapServer:
         Args:
             message: Message to send.
         """
-        self._capture_stale_char_count = 0
+        # Only reset outside capture mode — if _send_to_cli fires for an
+        # older queued message while the user is still in capture mode
+        # (auto-sender + Enter held in _queue_sending_held), clobbering
+        # this count would prevent _clear_stale_cli_input from running
+        # when the Enter is replayed, leaving pre-capture text on the CLI.
+        if not self._queue_capture_mode:
+            self._capture_stale_char_count = 0
 
         # Pop per-message clear flag (set by Enter handler when
         # stale text exists during RUNNING).  This fixes the bug
@@ -1144,6 +1150,25 @@ class LeapServer:
                 # Hide cursor to prevent ghost cursors during the gap
                 # between capture-end and the CLI's TUI repaint.
                 hide = '\x1b[?25l'
+                # The generic `clear` built above walks UP from the
+                # cursor position, so it misses wrapped lines that lie
+                # BELOW the cursor (e.g. after the user pressed Home).
+                # Move down to the last wrapped line first so every
+                # overlay line is erased.
+                if self._capture_prev_lines > 0:
+                    try:
+                        cols = shutil.get_terminal_size(
+                            fallback=(80, 24)).columns
+                        cursor_abs = len('[Leap Q] ') + self._capture_cursor_pos
+                        cursor_line = (cursor_abs // cols
+                                       if cols > 0 else 0)
+                        down_lines = self._capture_prev_lines - cursor_line
+                        if down_lines > 0:
+                            clear = (f'\x1b[{down_lines}B\r\x1b[K'
+                                     + f'\x1b[A\r\x1b[K'
+                                     * self._capture_prev_lines)
+                    except Exception:
+                        pass
                 os.write(sys.stdout.fileno(),
                          (hide + (clear or '\r\x1b[K')).encode())
                 self._capture_prev_lines = 0
