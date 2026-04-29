@@ -2,14 +2,14 @@
 Route Slack messages to Leap sessions via Unix sockets.
 
 Looks up the Leap session tag from the Slack thread_ts, queries the
-server's current state, and sends the message as either a queued
-message or a direct PTY input.
+server's current state, and sends the message via the appropriate type.
 
 Routing rules:
 - Digit reply in any WAITING state → select_option (numbered dialog choice)
 - Free-form text in NEEDS_INPUT → custom_answer (direct typed input)
-- Free-form text in NEEDS_PERMISSION/INTERRUPTED → queue (do not auto-select
-  "Type something." — the user likely wants to send a regular message)
+- Free-form text in NEEDS_PERMISSION/INTERRUPTED → queue, UNLESS the
+  previous reply triggered type_text_instead (user was told to type their
+  answer as text) — in that case custom_answer is used once, then cleared.
 """
 
 import time
@@ -30,6 +30,9 @@ class MessageRouter:
     def __init__(self) -> None:
         self._sessions_cache: Optional[dict[str, Any]] = None
         self._sessions_cache_ts: float = 0.0
+        # thread_ts values where the user was told to reply with typed text
+        # (type_text_instead flow) — next free-form reply uses custom_answer.
+        self._pending_custom_answer: set[str] = set()
 
     def route_message(self, thread_ts: str, text: str) -> Optional[str]:
         """Route a Slack thread reply to the matching Leap session.
@@ -64,7 +67,10 @@ class MessageRouter:
         if cli_state in WAITING_STATES:
             normalized = text.strip()
             if normalized.isdigit():
-                # Digit reply — select a numbered option in the dialog.
+                # Any digit attempt clears the pending-custom-answer flag; it
+                # is re-set below only if this specific reply triggers the
+                # type_text_instead path.
+                self._pending_custom_answer.discard(thread_ts)
                 response = send_socket_request(
                     socket_path,
                     {'type': 'select_option', 'message': normalized},
@@ -73,12 +79,19 @@ class MessageRouter:
                     return 'sent'
                 if response and response.get('status') == 'error':
                     if 'type your answer' in response.get('error', ''):
+                        # The user picked the "Type something." option.  Mark
+                        # this thread so the next free-form reply uses
+                        # custom_answer instead of being queued.
+                        self._pending_custom_answer.add(thread_ts)
                         return 'type_text_instead'
                     return 'invalid_permission'
                 return None
-            elif cli_state == CLIState.NEEDS_INPUT:
-                # Free-form text only goes directly when Claude Code is
-                # explicitly waiting for typed input (not a numbered menu).
+            elif cli_state == CLIState.NEEDS_INPUT or thread_ts in self._pending_custom_answer:
+                # Free-form text goes directly to the dialog when:
+                # (a) Claude is explicitly waiting for typed input, or
+                # (b) the user was just told to reply with text after selecting
+                #     the "Type something." option (one-shot, then cleared).
+                self._pending_custom_answer.discard(thread_ts)
                 response = send_socket_request(
                     socket_path,
                     {'type': 'custom_answer', 'message': text},
