@@ -2,8 +2,14 @@
 Route Slack messages to Leap sessions via Unix sockets.
 
 Looks up the Leap session tag from the Slack thread_ts, queries the
-server's current state, and sends the message as either a queue
-message (idle) or a direct PTY input (needs_permission / needs_input).
+server's current state, and sends the message as either a queued
+message or a direct PTY input.
+
+Routing rules:
+- Digit reply in any WAITING state → select_option (numbered dialog choice)
+- Free-form text in NEEDS_INPUT → custom_answer (direct typed input)
+- Free-form text in NEEDS_PERMISSION/INTERRUPTED → queue (do not auto-select
+  "Type something." — the user likely wants to send a regular message)
 """
 
 import time
@@ -58,6 +64,7 @@ class MessageRouter:
         if cli_state in WAITING_STATES:
             normalized = text.strip()
             if normalized.isdigit():
+                # Digit reply — select a numbered option in the dialog.
                 response = send_socket_request(
                     socket_path,
                     {'type': 'select_option', 'message': normalized},
@@ -69,8 +76,9 @@ class MessageRouter:
                         return 'type_text_instead'
                     return 'invalid_permission'
                 return None
-            else:
-                # Free-form text — select "Type something." and enter it.
+            elif cli_state == CLIState.NEEDS_INPUT:
+                # Free-form text only goes directly when Claude Code is
+                # explicitly waiting for typed input (not a numbered menu).
                 response = send_socket_request(
                     socket_path,
                     {'type': 'custom_answer', 'message': text},
@@ -79,6 +87,16 @@ class MessageRouter:
                     return 'sent'
                 if response and response.get('status') == 'error':
                     return 'invalid_permission'
+                return None
+            else:
+                # NEEDS_PERMISSION / INTERRUPTED: queue free-form text rather
+                # than auto-selecting "Type something." in the dialog. The user
+                # can reply with a digit to pick an option explicitly.
+                response = send_socket_request(
+                    socket_path, {'type': 'queue', 'message': text},
+                )
+                if response and response.get('status') == 'queued':
+                    return 'queued'
                 return None
         else:
             # Queue the message

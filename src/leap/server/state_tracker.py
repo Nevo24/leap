@@ -167,21 +167,32 @@ class CLIStateTracker:
         screen may be empty or may contain only partial TUI redraws
         without the full dialog.  Fall back to ``_last_running_snapshot``
         (saved at running→idle time) whenever it has more non-blank
-        lines than the live screen.
+        lines than the live screen — BUT only when the live screen does
+        not already contain dialog content.  If the dialog is on the live
+        screen, use it regardless of line counts: the saved snapshot may
+        be denser (full Claude TUI with conversation history) but won't
+        contain the actual dialog options the user needs to answer.
 
         Must be called with _screen_lock held.
         """
         snapshot = self._get_display_lines()
         if self._last_running_snapshot:
-            live_filled = sum(1 for ln in snapshot if ln.strip())
-            saved_filled = sum(1 for ln in self._last_running_snapshot if ln.strip())
-            if saved_filled > live_filled:
+            live_text = ''.join(snapshot).replace(' ', '').replace('\n', '')
+            live_has_dialog = self._provider.has_dialog_indicator(live_text)
+            if live_has_dialog:
                 _log.debug(
-                    'prompt snapshot sparse (%d lines vs %d saved), '
-                    'using last running snapshot',
-                    live_filled, saved_filled,
+                    'prompt snapshot: live screen has dialog — using live screen',
                 )
-                snapshot = self._last_running_snapshot
+            else:
+                live_filled = sum(1 for ln in snapshot if ln.strip())
+                saved_filled = sum(1 for ln in self._last_running_snapshot if ln.strip())
+                if saved_filled > live_filled:
+                    _log.debug(
+                        'prompt snapshot sparse (%d lines vs %d saved), '
+                        'using last running snapshot',
+                        live_filled, saved_filled,
+                    )
+                    snapshot = self._last_running_snapshot
         self._last_running_snapshot = []
         return snapshot
 
