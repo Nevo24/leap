@@ -946,15 +946,19 @@ class MonitorWindow(
                 ns_window.setTitlebarAppearsTransparent_(True)
                 mask = ns_window.styleMask()
                 ns_window.setStyleMask_(mask | NSWindowStyleMaskFullSizeContentView)
-                # Restore the exact NSWindow frame saved on close
+                # Restore the exact NSWindow frame saved on close.
+                # Guard with screenAt so a window saved on an external monitor
+                # that is no longer connected is not restored offscreen.
                 saved_geom = self._prefs.get('window_geometry')
                 if self._prefs.get('window_geometry_ns_frame') and saved_geom and len(saved_geom) == 4:
                     qt_x, qt_y, w, h = saved_geom
-                    screen = ns_window.screen()
-                    if screen:
-                        screen_h = screen.frame().size.height
-                        cocoa_y = screen_h - qt_y - h
-                        ns_window.setFrame_display_(NSMakeRect(qt_x, cocoa_y, w, h), True)
+                    center = QPoint(qt_x + w // 2, qt_y + h // 2)
+                    if QApplication.screenAt(center) is not None:
+                        screen = ns_window.screen()
+                        if screen:
+                            screen_h = screen.frame().size.height
+                            cocoa_y = screen_h - qt_y - h
+                            ns_window.setFrame_display_(NSMakeRect(qt_x, cocoa_y, w, h), True)
         except Exception:
             pass  # Non-macOS or pyobjc not available
 
