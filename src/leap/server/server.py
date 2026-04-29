@@ -69,7 +69,7 @@ def _extract_menu_options(
     pattern = (
         provider.menu_option_regex
         if provider and provider.menu_option_regex
-        else re.compile(r'\s*(?:[^\d\s]\s*)?(\d+)\.\s+(.+)')
+        else re.compile(r'\s*(?:[^\d\s]\s*)?(\d+)\.[^\w\n]+(.+)')
     )
 
     all_matches: list[tuple[int, str]] = []
