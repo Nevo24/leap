@@ -20,7 +20,7 @@ from AppKit import (
     NSAppearance, NSApplication, NSEvent,
     NSImage, NSKeyDownMask, NSWindowStyleMaskFullSizeContentView,
 )
-from Foundation import NSDate, NSRunLoop
+from Foundation import NSDate, NSMakeRect, NSRunLoop
 from PyQt5.QtWidgets import (
     QAction, QApplication, QComboBox, QDialog, QFrame, QMainWindow, QMenu,
     QScrollBar, QShortcut, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
@@ -232,6 +232,7 @@ class MonitorWindow(
         self._local_event_monitor: Optional[object] = None
         self._notes_focused_monitor: Optional[object] = None
         self._notes_global_monitor: Optional[object] = None
+        self._ns_window: Optional[Any] = None  # cached NSWindow, set in _apply_window_effects
 
         # Main-window font zoom (Cmd+scroll / Cmd+±/0)
         self._main_font_size: int = self._prefs.get(
@@ -321,18 +322,6 @@ class MonitorWindow(
                 self._center_on_screen()
         else:
             self._center_on_screen()
-
-        # If a full Qt window-state blob is also saved, restore that on
-        # top — it carries the maximised/fullscreen flag that
-        # ``[x, y, w, h]`` alone can't represent, so a window closed
-        # maximised reopens maximised instead of "almost fullscreen".
-        geom_state = self._prefs.get('window_geometry_state')
-        if isinstance(geom_state, str) and geom_state:
-            try:
-                data = base64.b64decode(geom_state.encode('ascii'))
-                self.restoreGeometry(QByteArray(data))
-            except (ValueError, UnicodeEncodeError):
-                pass
 
         # Set app icon
         self._set_window_icon()
@@ -924,33 +913,48 @@ class MonitorWindow(
     #  Core utilities
     # ------------------------------------------------------------------
 
-    def _apply_window_effects(self) -> None:
-        """Apply macOS-specific visual effects (titlebar blending)."""
+    def _get_ns_window(self) -> Optional[Any]:
+        """Return the NSWindow backing this Qt window, or None.
+
+        Returns the cached reference set during _apply_window_effects so that
+        closeEvent always operates on the same NSWindow even if a dialog has
+        stolen mainWindow/keyWindow focus.
+        """
+        if self._ns_window is not None:
+            return self._ns_window
         try:
-            # Make the window titlebar transparent and blend with content
-            ns_window = None
-            win_handle = self.windowHandle()
-            if win_handle:
-                # Get the NSWindow from the QWindow
-                view = int(win_handle.winId())
-                for w in NSApplication.sharedApplication().windows():
-                    if w.contentView() and int(w.contentView().window().windowNumber()) == int(
-                        NSApplication.sharedApplication().keyWindow().windowNumber()
-                        if NSApplication.sharedApplication().keyWindow() else -1
-                    ):
-                        ns_window = w
-                        break
-            if ns_window is None:
-                # Fallback: get the last window
-                windows = NSApplication.sharedApplication().windows()
-                if windows:
-                    ns_window = windows[-1]
+            app = NSApplication.sharedApplication()
+            mw = app.mainWindow()
+            if mw:
+                return mw
+            kw = app.keyWindow()
+            if kw:
+                return kw
+            windows = app.windows()
+            if windows:
+                return windows[-1]
+        except Exception:
+            pass
+        return None
+
+    def _apply_window_effects(self) -> None:
+        """Apply macOS-specific visual effects (titlebar blending) and restore saved frame."""
+        try:
+            ns_window = self._get_ns_window()
             if ns_window:
-                # Transparent titlebar that blends with content
+                self._ns_window = ns_window  # cache for closeEvent lookup
                 ns_window.setTitlebarAppearsTransparent_(True)
-                # Use full-size content view so content extends behind titlebar
                 mask = ns_window.styleMask()
                 ns_window.setStyleMask_(mask | NSWindowStyleMaskFullSizeContentView)
+                # Restore the exact NSWindow frame saved on close
+                saved_geom = self._prefs.get('window_geometry')
+                if self._prefs.get('window_geometry_ns_frame') and saved_geom and len(saved_geom) == 4:
+                    qt_x, qt_y, w, h = saved_geom
+                    screen = ns_window.screen()
+                    if screen:
+                        screen_h = screen.frame().size.height
+                        cocoa_y = screen_h - qt_y - h
+                        ns_window.setFrame_display_(NSMakeRect(qt_x, cocoa_y, w, h), True)
         except Exception:
             pass  # Non-macOS or pyobjc not available
 
@@ -2691,17 +2695,32 @@ class MonitorWindow(
         self._unregister_notes_shortcut()
         self._clear_dock_badge()
 
-        # Save window geometry and column widths.  ``normalGeometry``
-        # gives the un-maximised rect (so the saved [x, y, w, h] is
-        # sensible whether the window was maximised or not), and the
-        # full state blob captures maximised/fullscreen so reopening
-        # restores the same window mode.
+        # Save window geometry via NSWindow frame (exact Cocoa coordinates),
+        # bypassing Qt's geometry() which can return the pre-zoom restore point
+        # instead of the actual current size when Rectangle or macOS zoom is used.
         try:
-            geom = self.normalGeometry()
-            self._prefs['window_geometry'] = [
-                geom.x(), geom.y(), geom.width(), geom.height()]
-            self._prefs['window_geometry_state'] = base64.b64encode(
-                bytes(self.saveGeometry())).decode('ascii')
+            ns_window = self._get_ns_window()
+            if ns_window:
+                frame = ns_window.frame()
+                screen = ns_window.screen()
+            else:
+                frame = None
+                screen = None
+            if frame is not None and screen is not None:
+                screen_h = screen.frame().size.height
+                cocoa_y = frame.origin.y
+                qt_y = int(screen_h - cocoa_y - frame.size.height)
+                self._prefs['window_geometry'] = [
+                    int(frame.origin.x), qt_y,
+                    int(frame.size.width), int(frame.size.height),
+                ]
+                self._prefs['window_geometry_ns_frame'] = True
+            else:
+                geom = self.geometry()
+                self._prefs['window_geometry'] = [
+                    geom.x(), geom.y(), geom.width(), geom.height()]
+                self._prefs.pop('window_geometry_ns_frame', None)
+            self._prefs.pop('window_geometry_state', None)
             self._prefs['column_widths'] = [
                 self.table.columnWidth(col) for col in range(self.table.columnCount())
             ]
