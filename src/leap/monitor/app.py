@@ -2981,6 +2981,17 @@ def main() -> None:
         col_count = window.table.columnCount()
         if not saved_widths or len(saved_widths) != col_count:
             window._apply_equal_column_widths()
+        else:
+            # If saved widths overflow the current viewport (e.g. window was
+            # closed on a larger external screen), redistribute equally so
+            # columns aren't truncated off the right edge.
+            viewport_w = window.table.viewport().width()
+            total_visible = sum(
+                saved_widths[col] for col in range(col_count)
+                if not window.table.isColumnHidden(col)
+            )
+            if total_visible > viewport_w:
+                window._apply_equal_column_widths()
         window._ui_ready = True
 
     QTimer.singleShot(0, _finalize_ui)
