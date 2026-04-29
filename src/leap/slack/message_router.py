@@ -7,9 +7,11 @@ server's current state, and sends the message via the appropriate type.
 Routing rules:
 - Digit reply in any WAITING state → select_option (numbered dialog choice)
 - Free-form text in NEEDS_INPUT → custom_answer (direct typed input)
-- Free-form text in NEEDS_PERMISSION/INTERRUPTED → queue, UNLESS the
-  previous reply triggered type_text_instead (user was told to type their
-  answer as text) — in that case custom_answer is used once, then cleared.
+- Free-form text in NEEDS_PERMISSION/INTERRUPTED → queue, UNLESS:
+  state is NEEDS_PERMISSION AND the previous reply triggered type_text_instead
+  (user was told to type their answer as text) — in that case custom_answer
+  is used once, then cleared.  The flag is also cleared when state is not
+  WAITING, preventing stale routing for a future dialog.
 """
 
 import time
@@ -86,7 +88,7 @@ class MessageRouter:
                         return 'type_text_instead'
                     return 'invalid_permission'
                 return None
-            elif cli_state == CLIState.NEEDS_INPUT or thread_ts in self._pending_custom_answer:
+            elif cli_state == CLIState.NEEDS_INPUT or (cli_state == CLIState.NEEDS_PERMISSION and thread_ts in self._pending_custom_answer):
                 # Free-form text goes directly to the dialog when:
                 # (a) Claude is explicitly waiting for typed input, or
                 # (b) the user was just told to reply with text after selecting
@@ -112,7 +114,9 @@ class MessageRouter:
                     return 'queued'
                 return None
         else:
-            # Queue the message
+            # Non-WAITING state: clear any stale pending flag so it doesn't
+            # misroute a future NEEDS_PERMISSION dialog for this thread.
+            self._pending_custom_answer.discard(thread_ts)
             response = send_socket_request(
                 socket_path, {'type': 'queue', 'message': text},
             )
