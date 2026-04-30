@@ -1153,6 +1153,18 @@ class CLIStateTracker:
             and not self._provider.cursor_hidden_while_idle
             and not self._trust_dialog_phase
             and self._last_output_time > 0
+            # Require output AFTER entering the waiting state.  When the
+            # state is entered via the cursor+silence heuristic (or via a
+            # Notification hook signal), _reset_screen() is called and the
+            # fresh pyte screen is empty.  The Ink TUI does not re-render
+            # the dialog because it is already on screen from its own
+            # perspective.  Without this guard, the very next poll sees an
+            # empty screen (no dialog indicator) and falsely concludes the
+            # dialog was dismissed.  Only trigger dismissal detection once
+            # the TUI has emitted at least one byte after we entered this
+            # state — that proves the screen represents a real update.
+            and self._waiting_since is not None
+            and self._last_output_time > self._waiting_since
             and (self._clock() - self._last_output_time) > 5.0
         ):
             with self._screen_lock:

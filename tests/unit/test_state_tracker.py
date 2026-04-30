@@ -1269,6 +1269,81 @@ class TestStaleScreenContent:
             screen_text = tracker._get_screen_text()
         assert 'Some running output' not in screen_text
 
+    def test_needs_permission_no_false_idle_after_screen_reset(
+        self, tmp_path: Path,
+    ) -> None:
+        """Entering NEEDS_PERMISSION resets the pyte screen.  The Ink TUI
+        does not re-render the dialog after the reset (it is already
+        displayed from its own perspective).  The indicator-gone fallback
+        must NOT fire on the very next poll — an empty fresh screen is not
+        evidence that the dialog was dismissed.
+
+        Regression test for the bug observed in the state log:
+            19:29:51.559 running→needs_permission (dialog on screen)
+            19:29:52.065 NEEDS_PERMISSION→idle (indicator gone + cursor)
+            19:29:52.575 signal=needs_permission ignored (stale)
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')  # seen user input
+        tracker.on_send()       # → running
+
+        # Dialog appears after running for a while; last output was at t=0.
+        # Simulate 5.1 seconds of silence with the dialog on screen.
+        # Cursor must be visible for the cursor+silence path to fire.
+        t[0] = 0.1
+        feed_with_visible_cursor(tracker, '❯ 1. Yes\n2. No\nEsc to cancel')
+        t[0] = 5.2  # 5.1s of silence since last output
+
+        # get_state detects dialog via cursor+silence → NEEDS_PERMISSION.
+        # Screen is reset immediately on entering the state.
+        state = tracker.get_state(pty_alive=True)
+        assert state == CLIState.NEEDS_PERMISSION
+
+        # 0.5s later (next poll cycle): NO new output has arrived.
+        # _last_output_time (0.1) < _waiting_since (5.2) so the
+        # indicator-gone check must be suppressed.
+        t[0] = 5.7
+        state = tracker.get_state(pty_alive=True)
+        assert state == CLIState.NEEDS_PERMISSION, (
+            'indicator-gone check fired too early on empty post-reset screen'
+        )
+
+    def test_needs_permission_self_dismiss_detected_after_new_output(
+        self, tmp_path: Path,
+    ) -> None:
+        """When the CLI genuinely self-dismisses the dialog it sends new
+        PTY output to update the screen.  After that output settles, the
+        indicator-gone check is allowed to fire and return IDLE.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+
+        # Dialog appears with visible cursor (required for cursor+silence path).
+        t[0] = 0.1
+        feed_with_visible_cursor(tracker, '❯ 1. Yes\n2. No\nEsc to cancel')
+        t[0] = 5.2
+
+        # Enter NEEDS_PERMISSION via cursor+silence.
+        state = tracker.get_state(pty_alive=True)
+        assert state == CLIState.NEEDS_PERMISSION
+        waiting_since = tracker._waiting_since
+        assert waiting_since is not None
+
+        # CLI self-dismisses: new output arrives AFTER _waiting_since,
+        # replacing the dialog with a plain idle prompt (no dialog indicator).
+        t[0] = 5.5
+        feed_screen_text(tracker, 'Claude is ready')   # no dialog patterns
+
+        # After 5s of silence since the new output, indicator-gone fires.
+        t[0] = 10.6  # 5.1s after the post-state output at t=5.5
+        state = tracker.get_state(pty_alive=True)
+        assert state == CLIState.IDLE, (
+            'indicator-gone should fire after new output shows dialog is gone'
+        )
+
 
 # ---------------------------------------------------------------------------
 # Pasted text with Enter (bundled bytes)
