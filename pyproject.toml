@@ -49,6 +49,8 @@ slack-sdk = "^3.27"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning:pty"]
 
 [build-system]
 requires = ["poetry-core"]

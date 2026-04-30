@@ -44,7 +44,8 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
               '_pending_caret', '_pending_caret_flush',
               '_in_bracketed_paste', '_user_has_typed',
               '_pending_resize', '_capture_show_saved_hint',
-              '_stale_text_pending', '_queue_sending']:
+              '_stale_text_pending', '_queue_sending',
+              '_capture_force_confirm']:
         setattr(srv, a, False)
     for a in ['_capture_stale_char_count', '_capture_cursor_pos',
               '_capture_prev_lines', '_capture_image_counter',

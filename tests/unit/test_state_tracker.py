@@ -136,6 +136,53 @@ class TestEnterInIdle:
 
 
 # ---------------------------------------------------------------------------
+# Enter in waiting states → running (Fix 2)
+# ---------------------------------------------------------------------------
+
+class TestEnterInWaitingStates:
+    """Enter in NEEDS_PERMISSION/NEEDS_INPUT immediately transitions to RUNNING.
+
+    Before Fix 2, the monitor showed "Permission" for the entire duration
+    of the subsequent task (until the Stop hook fired).
+    """
+
+    def test_needs_permission_enter_triggers_running_immediately(
+        self, tmp_path: Path,
+    ) -> None:
+        """Enter at a permission dialog flips state to running without
+        waiting for the Stop hook."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)  # → needs_permission
+
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+
+    def test_needs_input_enter_triggers_running_immediately(
+        self, tmp_path: Path,
+    ) -> None:
+        """Enter at an input elicitation dialog flips state to running."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'What should I name this?  Enter to select  Esc to cancel',
+        )
+        write_signal(tracker, 'needs_input')
+        tracker.get_state(pty_alive=True)  # → needs_input
+
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+
+
+# ---------------------------------------------------------------------------
 # Signal file transitions
 # ---------------------------------------------------------------------------
 
@@ -1727,6 +1774,42 @@ class TestLateNotificationGuard:
 
         write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'needs_input'
+
+    def test_stale_notification_rejected_after_enter_from_permission(
+        self, tmp_path: Path,
+    ) -> None:
+        """After Enter answers a permission dialog (→ RUNNING via Fix 2),
+        a stale Notification hook signal is rejected by the Late Notification
+        Guard.
+
+        The Enter transition clears _last_running_snapshot and resets the
+        pyte screen, so the guard finds no dialog patterns and blocks the
+        stale needs_permission signal.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()  # → running
+
+        # Permission dialog appears via hook signal
+        feed_screen_text(
+            tracker,
+            'Allow tool?  Enter to select  Esc to cancel',
+        )
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+        # User presses Enter → immediately RUNNING, screen+snapshot cleared
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+        assert tracker._last_running_snapshot == []
+
+        # Stale Notification hook fires for the dialog that was already answered
+        write_signal(tracker, 'needs_permission')
+
+        # Guard rejects: live screen is empty (reset) and snapshot is empty
+        assert tracker.get_state(pty_alive=True) == 'running'
+        assert not tracker._signal_file.exists()
 
 
 # ---------------------------------------------------------------------------

@@ -909,7 +909,7 @@ class TestPickerMainExitCodes:
         # Stub the picker to pick the newest row without interactive I/O.
         rows = picker._load_tag_entries()
         assert rows  # sanity
-        monkeypatch.setattr(picker, "_pick_tag", lambda rows: rows[0])
+        monkeypatch.setattr(picker, "_pick_tag", lambda rows: (rows[0], 1))
         # Mark tag-a as live — it holds the session.
         picker._live_tag_cli_map = lambda: {"tag-a": "claude"}
         picker._server_alive = lambda tag: tag == "tag-a"
@@ -936,7 +936,7 @@ class TestPickerMainExitCodes:
                        session_id="s", transcript_path=str(transcript),
                        cwd="/this/path/does/not/exist/xyz")
         rows = picker._load_tag_entries()
-        monkeypatch.setattr(picker, "_pick_tag", lambda rows: rows[0])
+        monkeypatch.setattr(picker, "_pick_tag", lambda rows: (rows[0], 1))
         # Tag is not live — we reach the cwd check.
         picker._live_tag_cli_map = lambda: {}
         picker._server_alive = lambda tag: False
@@ -977,7 +977,7 @@ class TestPickerEnvHandoff:
                        session_id="sess-xyz", transcript_path=str(transcript),
                        cwd=str(cwd))
         rows = picker._load_tag_entries()
-        monkeypatch.setattr(picker, "_pick_tag", lambda rows: rows[0])
+        monkeypatch.setattr(picker, "_pick_tag", lambda rows: (rows[0], 1))
         picker._live_tag_cli_map = lambda: {}
         picker._server_alive = lambda tag: False
 
