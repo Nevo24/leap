@@ -1668,11 +1668,14 @@ class TestLateNotificationGuard:
         # User answers → user_responded
         tracker.on_input(b'1\r')
 
-        # Stop hook → idle (should clear snapshot)
+        # Stop hook → idle (snapshot must not retain stale dialog content)
         write_signal(tracker, 'idle')
         t[0] = 5.0
         assert tracker.get_state(pty_alive=True) == 'idle'
-        assert tracker._last_running_snapshot == []
+        # Snapshot may be empty list or list of blank rows — either way
+        # no dialog indicator should be present in it.
+        snapshot_text = ''.join(tracker._last_running_snapshot).replace(' ', '')
+        assert not tracker._provider.has_dialog_indicator(snapshot_text)
 
         # Late stale Notification — must be rejected
         write_signal(tracker, 'needs_permission')

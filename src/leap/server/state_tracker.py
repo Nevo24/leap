@@ -395,16 +395,18 @@ class CLIStateTracker:
             self._user_responded = True
             _log.debug('ON_INPUT _user_responded=True')
 
-        # Enter in idle or interrupted → RUNNING.  Covers:
+        # Enter in idle, interrupted, or waiting states → RUNNING.  Covers:
         # * server-terminal typing in idle (slash commands, new prompts)
         # * typing a reply into Claude's "What should Claude do?"
         #   interrupt dialog — without this path the user stays stuck
         #   in interrupted until the 60s safety timeout.
-        # NEEDS_PERMISSION/NEEDS_INPUT deliberately excluded: Enter
-        # there is a dialog answer, not a new submission, and must
-        # not unconditionally force running.
+        # * answering a permission/input dialog — the monitor would
+        #   otherwise show "Permission" for the entire task duration
+        #   (until the Stop hook fires) instead of flipping to Running
+        #   as soon as the user submits their answer.
         if has_enter and self._state in (
             CLIState.IDLE, CLIState.INTERRUPTED,
+            CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT,
         ):
             _log.debug(
                 'ON_INPUT Enter in %s → running', self._state,
