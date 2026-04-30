@@ -285,7 +285,9 @@ def _get_key() -> str:
             return 'quit'
         if ch == 'q':
             return 'quit'
-        if ch.isdigit():
+        if ch in ('\x7f', '\x08'):  # DEL / Backspace
+            return 'backspace'
+        if ch.isprintable():
             return ch
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
@@ -300,12 +302,29 @@ def _truncate(plain: str, term_cols: int) -> str:
 
 def _viewport(idx: int, total: int, term_rows: int) -> tuple[int, int]:
     """Return (start, end) slice of rows that keeps *idx* visible."""
-    # Budget: header(1) + top-indicator(1) + rows + bottom-indicator(1) + footer(1) = rows + 4
-    visible = max(1, term_rows - 4)
+    # Budget: header(1) + search(1) + top-ind(1) + rows + bottom-ind(1) + footer(1) = rows + 5
+    visible = max(1, term_rows - 5)
     if total <= visible:
         return 0, total
     start = max(0, min(idx - visible // 2, total - visible))
     return start, start + visible
+
+
+def _filter_rows(rows: list, query: str) -> list:
+    if not query:
+        return rows
+    q = query.lower()
+    return [r for r in rows if q in r.tag.lower()
+            or q in r.cli.lower()
+            or q in _shorten_cwd(r.sessions[0].cwd).lower()]
+
+
+def _filter_sessions(sessions: list, query: str) -> list:
+    if not query:
+        return sessions
+    q = query.lower()
+    return [s for s in sessions if q in s.session_id[:8].lower()
+            or q in _shorten_cwd(s.cwd).lower()]
 
 
 def _write_row(plain: str, is_selected: bool, split_at: int) -> None:
@@ -338,7 +357,8 @@ def _cli_label(cli: str) -> str:
     return f"[{label}]"
 
 
-def _render_tags(rows: list, idx: int, first: bool, last_n: int = 0) -> int:
+def _render_tags(rows: list, idx: int, first: bool, last_n: int = 0,
+                 query: str = "") -> int:
     """Render the top-level tag picker inside a scrolling viewport.
 
     Each row is a ``(tag, cli)`` pair prefixed with a ``[cli]`` badge so
@@ -358,34 +378,42 @@ def _render_tags(rows: list, idx: int, first: bool, last_n: int = 0) -> int:
         sys.stderr.write(f"\033[{last_n + 2}A")
     sys.stderr.write("\033[J")
     sys.stderr.write(f"  {BOLD}Select a Leap session to resume:{RESET}\n")
-    n = 0
-    if start > 0:
-        sys.stderr.write(f"  {DIM}↑ {start} more{RESET}\n")
+    n = 1  # search line is always rendered
+    if query:
+        sys.stderr.write(f"  {CYAN}/ {query}{DIM}_{RESET}\n")
+    else:
+        sys.stderr.write(f"  {DIM}/ type to filter…{RESET}\n")
+    if not rows:
+        sys.stderr.write(f"  {DIM}No matches.{RESET}\n")
         n += 1
-    for i in range(start, end):
-        row = rows[i]
-        marker = "❯" if i == idx else " "
-        label = _cli_label(row.cli)
-        newest = row.sessions[0]
-        age = _format_age(newest.last_seen)
-        cwd_display = _shorten_cwd(newest.cwd)
-        nsess = len(row.sessions)
-        if nsess > 1:
-            meta = f"{nsess} sessions · {age} · {cwd_display}"
-            first_meta_token = f"{nsess} sessions · "
-        else:
-            meta = f"{age} · {newest.session_id[:8]} · {cwd_display}"
-            first_meta_token = f"{age} · "
-        plain = _truncate(f"  {marker} {label} {row.tag}  {meta}", term_cols)
-        split = plain.find(first_meta_token)
-        if split < 0:
-            split = len(plain)
-        _write_row(plain, is_selected=(i == idx), split_at=split)
-        n += 1
-    below = len(rows) - end
-    if below > 0:
-        sys.stderr.write(f"  {DIM}↓ {below} more{RESET}\n")
-        n += 1
+    else:
+        if start > 0:
+            sys.stderr.write(f"  {DIM}↑ {start} more{RESET}\n")
+            n += 1
+        for i in range(start, end):
+            row = rows[i]
+            marker = "❯" if i == idx else " "
+            label = _cli_label(row.cli)
+            newest = row.sessions[0]
+            age = _format_age(newest.last_seen)
+            cwd_display = _shorten_cwd(newest.cwd)
+            nsess = len(row.sessions)
+            if nsess > 1:
+                meta = f"{nsess} sessions · {age} · {cwd_display}"
+                first_meta_token = f"{nsess} sessions · "
+            else:
+                meta = f"{age} · {newest.session_id[:8]} · {cwd_display}"
+                first_meta_token = f"{age} · "
+            plain = _truncate(f"  {marker} {label} {row.tag}  {meta}", term_cols)
+            split = plain.find(first_meta_token)
+            if split < 0:
+                split = len(plain)
+            _write_row(plain, is_selected=(i == idx), split_at=split)
+            n += 1
+        below = len(rows) - end
+        if below > 0:
+            sys.stderr.write(f"  {DIM}↓ {below} more{RESET}\n")
+            n += 1
     footer = _truncate("  ↑/↓ navigate · Enter to resume · Esc/q to cancel", term_cols)
     sys.stderr.write(f"{DIM}{footer}{RESET}\n")
     sys.stderr.flush()
@@ -393,7 +421,7 @@ def _render_tags(rows: list, idx: int, first: bool, last_n: int = 0) -> int:
 
 
 def _render_sessions(tag: str, cli: str, sessions: list, idx: int, first: bool,
-                     last_n: int = 0) -> int:
+                     last_n: int = 0, query: str = "") -> int:
     """Render the per-tag session sub-picker inside a scrolling viewport.
 
     Returns the number of body lines rendered (excluding header/footer).
@@ -406,72 +434,110 @@ def _render_sessions(tag: str, cli: str, sessions: list, idx: int, first: bool,
     sys.stderr.write("\033[J")
     header = _truncate(f"  Sessions for {_cli_label(cli)} '{tag}':", term_cols)
     sys.stderr.write(f"{BOLD}{header}{RESET}\n")
-    n = 0
-    if start > 0:
-        sys.stderr.write(f"  {DIM}↑ {start} more{RESET}\n")
+    n = 1  # search line is always rendered
+    if query:
+        sys.stderr.write(f"  {CYAN}/ {query}{DIM}_{RESET}\n")
+    else:
+        sys.stderr.write(f"  {DIM}/ type to filter…{RESET}\n")
+    if not sessions:
+        sys.stderr.write(f"  {DIM}No matches.{RESET}\n")
         n += 1
-    for i in range(start, end):
-        s = sessions[i]
-        marker = "❯" if i == idx else " "
-        short_id = s.session_id[:8]
-        age = _format_age(s.last_seen)
-        size = _format_size(s.size)
-        cwd_display = _shorten_cwd(s.cwd)
-        plain = _truncate(f"  {marker} {short_id}  {age} · {size} · {cwd_display}", term_cols)
-        split = plain.find(f"{age} · ")
-        if split < 0:
-            split = len(plain)
-        _write_row(plain, is_selected=(i == idx), split_at=split)
-        n += 1
-    below = len(sessions) - end
-    if below > 0:
-        sys.stderr.write(f"  {DIM}↓ {below} more{RESET}\n")
-        n += 1
+    else:
+        if start > 0:
+            sys.stderr.write(f"  {DIM}↑ {start} more{RESET}\n")
+            n += 1
+        for i in range(start, end):
+            s = sessions[i]
+            marker = "❯" if i == idx else " "
+            short_id = s.session_id[:8]
+            age = _format_age(s.last_seen)
+            size = _format_size(s.size)
+            cwd_display = _shorten_cwd(s.cwd)
+            plain = _truncate(f"  {marker} {short_id}  {age} · {size} · {cwd_display}", term_cols)
+            split = plain.find(f"{age} · ")
+            if split < 0:
+                split = len(plain)
+            _write_row(plain, is_selected=(i == idx), split_at=split)
+            n += 1
+        below = len(sessions) - end
+        if below > 0:
+            sys.stderr.write(f"  {DIM}↓ {below} more{RESET}\n")
+            n += 1
     footer = _truncate("  ↑/↓ navigate · Enter to resume · Esc to go back · q to cancel", term_cols)
     sys.stderr.write(f"{DIM}{footer}{RESET}\n")
     sys.stderr.flush()
     return n
 
 
-def _pick_tag(rows: list) -> tuple:
+def _pick_tag(all_rows: list) -> tuple:
+    query = ""
+    filtered = all_rows
     idx = 0
-    n = _render_tags(rows, idx, first=True)
+    n = _render_tags(filtered, idx, first=True, query=query)
     while True:
         key = _get_key()
         if key == 'up':
-            idx = (idx - 1) % len(rows)
-            n = _render_tags(rows, idx, first=False, last_n=n)
+            if filtered:
+                idx = (idx - 1) % len(filtered)
+            n = _render_tags(filtered, idx, first=False, last_n=n, query=query)
         elif key == 'down':
-            idx = (idx + 1) % len(rows)
-            n = _render_tags(rows, idx, first=False, last_n=n)
+            if filtered:
+                idx = (idx + 1) % len(filtered)
+            n = _render_tags(filtered, idx, first=False, last_n=n, query=query)
         elif key == 'enter':
-            return rows[idx], n
+            if filtered:
+                return filtered[idx], n
         elif key in ('quit', 'escape'):
             return None, n
+        elif key == 'backspace':
+            query = query[:-1]
+            filtered = _filter_rows(all_rows, query)
+            idx = 0
+            n = _render_tags(filtered, idx, first=False, last_n=n, query=query)
+        elif len(key) == 1 and key.isprintable():
+            query += key
+            filtered = _filter_rows(all_rows, query)
+            idx = 0
+            n = _render_tags(filtered, idx, first=False, last_n=n, query=query)
 
 
 # Sentinel for "user cancelled the whole picker from the sub-view"
 _ABORT = object()
 
 
-def _pick_session(tag: str, cli: str, sessions: list) -> tuple:
+def _pick_session(tag: str, cli: str, all_sessions: list) -> tuple:
     """Return ``(SessionRecord, n)``, ``(None, n)`` to go back, or ``(_ABORT, n)``."""
+    query = ""
+    filtered = all_sessions
     idx = 0
-    n = _render_sessions(tag, cli, sessions, idx, first=True)
+    n = _render_sessions(tag, cli, filtered, idx, first=True, query=query)
     while True:
         key = _get_key()
         if key == 'up':
-            idx = (idx - 1) % len(sessions)
-            n = _render_sessions(tag, cli, sessions, idx, first=False, last_n=n)
+            if filtered:
+                idx = (idx - 1) % len(filtered)
+            n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
         elif key == 'down':
-            idx = (idx + 1) % len(sessions)
-            n = _render_sessions(tag, cli, sessions, idx, first=False, last_n=n)
+            if filtered:
+                idx = (idx + 1) % len(filtered)
+            n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
         elif key == 'enter':
-            return sessions[idx], n
+            if filtered:
+                return filtered[idx], n
         elif key == 'escape':
             return None, n  # back to tag picker
         elif key == 'quit':
             return _ABORT, n
+        elif key == 'backspace':
+            query = query[:-1]
+            filtered = _filter_sessions(all_sessions, query)
+            idx = 0
+            n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
+        elif len(key) == 1 and key.isprintable():
+            query += key
+            filtered = _filter_sessions(all_sessions, query)
+            idx = 0
+            n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
 
 
 def main() -> int:
