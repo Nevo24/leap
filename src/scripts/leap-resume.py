@@ -298,6 +298,16 @@ def _truncate(plain: str, term_cols: int) -> str:
     return plain
 
 
+def _viewport(idx: int, total: int, term_rows: int) -> tuple[int, int]:
+    """Return (start, end) slice of rows that keeps *idx* visible."""
+    # Budget: header(1) + top-indicator(1) + rows + bottom-indicator(1) + footer(1) = rows + 4
+    visible = max(1, term_rows - 4)
+    if total <= visible:
+        return 0, total
+    start = max(0, min(idx - visible // 2, total - visible))
+    return start, start + visible
+
+
 def _write_row(plain: str, is_selected: bool, split_at: int) -> None:
     """Emit a picker row, colouring the selection marker + head.
 
@@ -328,30 +338,41 @@ def _cli_label(cli: str) -> str:
     return f"[{label}]"
 
 
-def _render_tags(rows: list, idx: int, first: bool) -> None:
-    """Render the top-level tag picker.
+def _render_tags(rows: list, idx: int, first: bool, last_n: int = 0) -> int:
+    """Render the top-level tag picker inside a scrolling viewport.
 
     Each row is a ``(tag, cli)`` pair prefixed with a ``[cli]`` badge so
     users can tell at a glance which CLI owns each recorded session.
     Tags with more than one recorded session show ``N sessions`` in the
     meta column instead of the UUID — the UUID becomes meaningful only
     in the sub-picker where each session is listed individually.
+
+    Returns the number of body lines rendered (excluding header/footer)
+    so the caller can move the cursor up by exactly that amount + 2 on
+    the next redraw.
     """
-    term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+    term = shutil.get_terminal_size(fallback=(80, 24))
+    term_cols, term_rows = term.columns, term.lines
+    start, end = _viewport(idx, len(rows), term_rows)
     if not first:
-        sys.stderr.write(f"\033[{len(rows) + 2}A")
+        sys.stderr.write(f"\033[{last_n + 2}A")
     sys.stderr.write("\033[J")
     sys.stderr.write(f"  {BOLD}Select a Leap session to resume:{RESET}\n")
-    for i, row in enumerate(rows):
+    n = 0
+    if start > 0:
+        sys.stderr.write(f"  {DIM}↑ {start} more{RESET}\n")
+        n += 1
+    for i in range(start, end):
+        row = rows[i]
         marker = "❯" if i == idx else " "
         label = _cli_label(row.cli)
         newest = row.sessions[0]
         age = _format_age(newest.last_seen)
         cwd_display = _shorten_cwd(newest.cwd)
-        n = len(row.sessions)
-        if n > 1:
-            meta = f"{n} sessions · {age} · {cwd_display}"
-            first_meta_token = f"{n} sessions · "
+        nsess = len(row.sessions)
+        if nsess > 1:
+            meta = f"{nsess} sessions · {age} · {cwd_display}"
+            first_meta_token = f"{nsess} sessions · "
         else:
             meta = f"{age} · {newest.session_id[:8]} · {cwd_display}"
             first_meta_token = f"{age} · "
@@ -360,20 +381,37 @@ def _render_tags(rows: list, idx: int, first: bool) -> None:
         if split < 0:
             split = len(plain)
         _write_row(plain, is_selected=(i == idx), split_at=split)
+        n += 1
+    below = len(rows) - end
+    if below > 0:
+        sys.stderr.write(f"  {DIM}↓ {below} more{RESET}\n")
+        n += 1
     footer = _truncate("  ↑/↓ navigate · Enter to resume · Esc/q to cancel", term_cols)
     sys.stderr.write(f"{DIM}{footer}{RESET}\n")
     sys.stderr.flush()
+    return n
 
 
-def _render_sessions(tag: str, cli: str, sessions: list, idx: int, first: bool) -> None:
-    """Render the per-tag session sub-picker."""
-    term_cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+def _render_sessions(tag: str, cli: str, sessions: list, idx: int, first: bool,
+                     last_n: int = 0) -> int:
+    """Render the per-tag session sub-picker inside a scrolling viewport.
+
+    Returns the number of body lines rendered (excluding header/footer).
+    """
+    term = shutil.get_terminal_size(fallback=(80, 24))
+    term_cols, term_rows = term.columns, term.lines
+    start, end = _viewport(idx, len(sessions), term_rows)
     if not first:
-        sys.stderr.write(f"\033[{len(sessions) + 2}A")
+        sys.stderr.write(f"\033[{last_n + 2}A")
     sys.stderr.write("\033[J")
     header = _truncate(f"  Sessions for {_cli_label(cli)} '{tag}':", term_cols)
     sys.stderr.write(f"{BOLD}{header}{RESET}\n")
-    for i, s in enumerate(sessions):
+    n = 0
+    if start > 0:
+        sys.stderr.write(f"  {DIM}↑ {start} more{RESET}\n")
+        n += 1
+    for i in range(start, end):
+        s = sessions[i]
         marker = "❯" if i == idx else " "
         short_id = s.session_id[:8]
         age = _format_age(s.last_seen)
@@ -384,50 +422,56 @@ def _render_sessions(tag: str, cli: str, sessions: list, idx: int, first: bool) 
         if split < 0:
             split = len(plain)
         _write_row(plain, is_selected=(i == idx), split_at=split)
+        n += 1
+    below = len(sessions) - end
+    if below > 0:
+        sys.stderr.write(f"  {DIM}↓ {below} more{RESET}\n")
+        n += 1
     footer = _truncate("  ↑/↓ navigate · Enter to resume · Esc to go back · q to cancel", term_cols)
     sys.stderr.write(f"{DIM}{footer}{RESET}\n")
     sys.stderr.flush()
+    return n
 
 
-def _pick_tag(rows: list):
+def _pick_tag(rows: list) -> tuple:
     idx = 0
-    _render_tags(rows, idx, first=True)
+    n = _render_tags(rows, idx, first=True)
     while True:
         key = _get_key()
         if key == 'up':
             idx = (idx - 1) % len(rows)
-            _render_tags(rows, idx, first=False)
+            n = _render_tags(rows, idx, first=False, last_n=n)
         elif key == 'down':
             idx = (idx + 1) % len(rows)
-            _render_tags(rows, idx, first=False)
+            n = _render_tags(rows, idx, first=False, last_n=n)
         elif key == 'enter':
-            return rows[idx]
+            return rows[idx], n
         elif key in ('quit', 'escape'):
-            return None
+            return None, n
 
 
 # Sentinel for "user cancelled the whole picker from the sub-view"
 _ABORT = object()
 
 
-def _pick_session(tag: str, cli: str, sessions: list):
-    """Return a :class:`SessionRecord`, ``None`` to go back, or ``_ABORT``."""
+def _pick_session(tag: str, cli: str, sessions: list) -> tuple:
+    """Return ``(SessionRecord, n)``, ``(None, n)`` to go back, or ``(_ABORT, n)``."""
     idx = 0
-    _render_sessions(tag, cli, sessions, idx, first=True)
+    n = _render_sessions(tag, cli, sessions, idx, first=True)
     while True:
         key = _get_key()
         if key == 'up':
             idx = (idx - 1) % len(sessions)
-            _render_sessions(tag, cli, sessions, idx, first=False)
+            n = _render_sessions(tag, cli, sessions, idx, first=False, last_n=n)
         elif key == 'down':
             idx = (idx + 1) % len(sessions)
-            _render_sessions(tag, cli, sessions, idx, first=False)
+            n = _render_sessions(tag, cli, sessions, idx, first=False, last_n=n)
         elif key == 'enter':
-            return sessions[idx]
+            return sessions[idx], n
         elif key == 'escape':
-            return None  # back to tag picker
+            return None, n  # back to tag picker
         elif key == 'quit':
-            return _ABORT
+            return _ABORT, n
 
 
 def main() -> int:
@@ -451,8 +495,8 @@ def main() -> int:
     chosen_session = None
     try:
         while True:
-            tag_row = _pick_tag(rows)
-            sys.stderr.write(f"\033[{len(rows) + 2}A\033[J")
+            tag_row, n_tags = _pick_tag(rows)
+            sys.stderr.write(f"\033[{n_tags + 2}A\033[J")
             if tag_row is None:
                 sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
                 return 130
@@ -460,8 +504,8 @@ def main() -> int:
             if len(sessions) == 1:
                 chosen_tag, chosen_session = tag_row, sessions[0]
                 break
-            result = _pick_session(tag_row.tag, tag_row.cli, sessions)
-            sys.stderr.write(f"\033[{len(sessions) + 2}A\033[J")
+            result, n_sessions = _pick_session(tag_row.tag, tag_row.cli, sessions)
+            sys.stderr.write(f"\033[{n_sessions + 2}A\033[J")
             if result is _ABORT:
                 sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
                 return 130
