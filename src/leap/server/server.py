@@ -243,6 +243,9 @@ class LeapServer:
         self._saved_messages: list[str] = self._load_saved_messages()
         self._saved_msg_index: int = -1  # -1 = not browsing
         self._capture_show_saved_hint: bool = False  # "Saved!" hint active
+        self._pending_bang: bool = False          # first '!' held in capture, waiting for second
+        self._pending_bang_time: float = 0.0     # monotonic time of first '!'
+        self._capture_force_confirm: bool = False # showing force-send confirmation, awaiting Enter
         # Bracketed paste detection — terminals wrap pasted text in
         # ESC[200~ ... ESC[201~.  While inside a paste, ^^ is treated
         # as literal text so pasted tracebacks (which contain ^^^^)
@@ -1180,6 +1183,7 @@ class LeapServer:
                 q_size = self.queue.size
                 prefix = '[Leap Q] '
                 hint = (f' \x1b[2m({q_size} queued \u2022 Enter=queue'
+                        f' \u2022 !!=force-send next'
                         f' \u2022 Esc=cancel \u2022 ^^=save'
                         f' \u2022 \u2191\u2193=history \u2022 Ctrl+V=image'
                         f' \u2022 CLI runs in bg)\x1b[33m'
@@ -1300,6 +1304,19 @@ class LeapServer:
         except OSError:
             pass
         self._capture_show_saved_hint = True
+
+    def _capture_display_force_confirm(self) -> None:
+        """Display the force-send confirmation prompt."""
+        try:
+            payload = (
+                '\r\x1b[K'
+                '\x1b[33m[Leap Q] \x1b[0m'
+                'Force-send next queued message'
+                ' \x1b[2m— Enter to confirm • any key to cancel\x1b[0m'
+            ).encode()
+            os.write(sys.stdout.fileno(), payload)
+        except OSError:
+            pass
 
     def _browse_saved_history(self, direction: int) -> None:
         """Browse saved messages. direction: -1=up (older), +1=down (newer)."""
@@ -1907,6 +1924,8 @@ class LeapServer:
         if self._capture_image_map:
             resolved_text = self._capture_resolve_images(resolved_text)
         has_images = bool(self._capture_image_map)
+        self._pending_bang = False
+        self._capture_force_confirm = False
         self._queue_capture_buf.clear()
         self._capture_cursor_pos = 0
         self._capture_utf8_buf.clear()
@@ -2260,6 +2279,11 @@ class LeapServer:
         if self._capture_show_saved_hint:
             self._capture_show_saved_hint = False
             self._capture_display(self._capture_text())
+        if self._capture_force_confirm:
+            self._capture_force_confirm = False
+            self._pending_bang = False
+            self._capture_display(self._capture_text())
+            return
         if seq in (b'\x1bb', b'\x1bf'):
             # Meta word movement (ESC-b / ESC-f)
             self._capture_word_move(-1 if seq == b'\x1bb' else 1)
@@ -2374,6 +2398,15 @@ class LeapServer:
             self._capture_show_saved_hint = False
             self._capture_display(self._capture_text())
 
+        # Dismiss force-send confirm on any non-Enter key; clear pending
+        # bang on any non-'!' key so it only fires on an immediate double.
+        if b not in (0x0d, 0x0a):
+            if self._capture_force_confirm:
+                self._capture_force_confirm = False
+                self._capture_display(self._capture_text())
+            if b != 0x21:
+                self._pending_bang = False
+
         if b in (0x0d, 0x0a):  # Enter / LF
             # Detect pasted newlines: bracketed paste markers or
             # fallback — a typed Enter is a tiny chunk (1–2 bytes);
@@ -2393,6 +2426,23 @@ class LeapServer:
             else:
                 self._user_has_typed = True
                 self._capture_display()  # clear
+                if self._capture_force_confirm:
+                    # !! confirmed — force-send next queued message
+                    self._capture_force_confirm = False
+                    self._pending_bang = False
+                    message = self.queue.pop()
+                    if message:
+                        self._send_to_cli(message)
+                        self.queue.track_sent(message)
+                    self._capture_flush()
+                    self._queue_capture_buf.clear()
+                    self._capture_cursor_pos = 0
+                    self._capture_utf8_buf.clear()
+                    self._queue_capture_mode = False
+                    self._capture_reset_images()
+                    self._terminal_input_buf.clear()
+                    self._terminal_input_cursor = 0
+                    return i + 1, dirty
                 msg = self._capture_text().strip()
                 # Pastes first — a recalled paste may embed image
                 # placeholders that the subsequent image resolution
@@ -2466,6 +2516,29 @@ class LeapServer:
                 self._pending_caret = True
                 self._capture_show_hint = False
                 self._capture_insert('^')
+                _display_or_defer()
+        elif b == 0x21:  # '!' — fast !! triggers force-send confirm (empty buffer only)
+            if self._pending_caret:
+                self._pending_caret = False
+            self._capture_show_hint = False
+            if (self._pending_bang
+                    and not chunk_has_paste
+                    and time.time() - self._pending_bang_time < 0.2
+                    and self._queue_capture_buf == bytearray(b'!')):
+                # Second '!' arrived fast with only '!' in buffer → confirm mode
+                self._pending_bang = False
+                self._queue_capture_buf.clear()
+                self._capture_cursor_pos = 0
+                self._capture_force_confirm = True
+                self._capture_display_force_confirm()
+            else:
+                # Start pending-bang only when buffer was empty before this '!'
+                if not self._queue_capture_buf:
+                    self._pending_bang = True
+                    self._pending_bang_time = time.time()
+                else:
+                    self._pending_bang = False
+                self._capture_insert('!')
                 _display_or_defer()
         elif 0x20 <= b < 0x7f:  # ASCII printable
             if self._pending_caret:

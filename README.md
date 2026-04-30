@@ -52,6 +52,7 @@ leap my-feature         # First run starts a server
 leap my-feature         # Second run connects a client (queue messages here)
 ^^hello world           # Type ^^ (quickly) in the server tab to queue directly
 ^^                      # Inside ^^: save msg to history (↑↓ to browse)
+^^!!                    # Inside ^^: force-send next queued msg (Enter to confirm)
 leap --resume           # Pick a past Leap tag and resume it in its original CLI
 ```
 
