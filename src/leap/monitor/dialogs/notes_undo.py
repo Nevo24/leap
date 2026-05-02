@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -225,6 +226,13 @@ def _save_notes_meta(meta: dict) -> None:
         pass
 
 
+def _set_note_created_at(name: str) -> None:
+    """Stamp the note's created_at timestamp (now) in metadata."""
+    meta = _load_notes_meta()
+    meta.setdefault(name, {})['created_at'] = int(time.time())
+    _save_notes_meta(meta)
+
+
 def _load_order() -> dict[str, list[str]]:
     return _load_notes_meta().get('_order', {})
 
@@ -304,6 +312,7 @@ class CreateNoteCmd(UndoCommand):
         path = _note_path(self._name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('', encoding='utf-8')
+        _set_note_created_at(self._name)
         ctx.select_and_load(name=self._name)
 
     def undo(self, ctx: NotesCmdContext) -> None:
@@ -472,10 +481,11 @@ class DuplicateNoteCmd(UndoCommand):
         path = _note_path(self._new_name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self._content, encoding='utf-8')
-        if self._metadata:
-            meta = _load_notes_meta()
-            meta[self._new_name] = dict(self._metadata)
-            _save_notes_meta(meta)
+        meta = _load_notes_meta()
+        entry = dict(self._metadata) if self._metadata else {}
+        entry['created_at'] = int(time.time())
+        meta[self._new_name] = entry
+        _save_notes_meta(meta)
         ctx.select_and_load(name=self._new_name)
 
     def undo(self, ctx: NotesCmdContext) -> None:
@@ -511,10 +521,13 @@ class DuplicateFolderCmd(UndoCommand):
             path = _note_path(name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding='utf-8')
-        if self._metadata_entries:
+        if self._notes:
+            now = int(time.time())
             meta = _load_notes_meta()
-            for name, entry in self._metadata_entries.items():
-                meta[name] = dict(entry)
+            for name in self._notes:
+                entry = dict(self._metadata_entries.get(name, {}))
+                entry['created_at'] = now
+                meta[name] = entry
             _save_notes_meta(meta)
         if self._order_entries:
             order = _load_order()

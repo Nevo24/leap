@@ -705,11 +705,22 @@ def _list_notes() -> list[str]:
 
 
 def _format_mtime(path: Path) -> str:
-    """Return the file's mtime as a human-readable string (second precision)."""
+    """Return the file's mtime as a human-readable string (minute precision)."""
     try:
         ts = path.stat().st_mtime
-        return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+        return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M')
     except OSError:
+        return ''
+
+
+def _get_note_created_at(name: str) -> str:
+    """Return the note's creation date as a formatted string, or '' if unknown."""
+    ts = _load_notes_meta().get(name, {}).get('created_at')
+    if ts is None:
+        return ''
+    try:
+        return datetime.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M')
+    except (OSError, TypeError, ValueError, OverflowError):
         return ''
 
 
@@ -3423,6 +3434,11 @@ class NotesDialog(QDialog):
         header_row.addStretch()
         right_layout.addLayout(header_row)
 
+        self._dates_label = QLabel('')
+        self._dates_label.setStyleSheet(f'color: {current_theme().text_secondary};')
+        self._dates_label.setVisible(False)
+        right_layout.addWidget(self._dates_label)
+
         # ── Action toolbar row ──
         toolbar_row = QHBoxLayout()
         toolbar_row.setContentsMargins(0, 0, 0, 0)
@@ -3653,8 +3669,27 @@ class NotesDialog(QDialog):
 
         self._tree.blockSignals(False)
 
+    def _refresh_dates_label(self) -> None:
+        """Populate or hide the created/modified label for the current note."""
+        if not self._current_name:
+            self._dates_label.setVisible(False)
+            return
+        path = _note_path(self._current_name)
+        created = _get_note_created_at(self._current_name)
+        modified = _format_mtime(path)
+        parts = []
+        if created:
+            parts.append(f'Created: {created}')
+        if modified:
+            parts.append(f'Modified: {modified}')
+        if parts:
+            self._dates_label.setText('  ·  '.join(parts))
+            self._dates_label.setVisible(True)
+        else:
+            self._dates_label.setVisible(False)
+
     def _update_timestamp(self) -> None:
-        """Update the tooltip for the current note in the tree."""
+        """Update the tooltip and dates label for the current note."""
         if not self._current_name:
             return
         item = self._find_tree_item(self._current_name, 'note')
@@ -3662,6 +3697,7 @@ class NotesDialog(QDialog):
             ts = _format_mtime(_note_path(self._current_name))
             if ts:
                 item.setToolTip(0, f'{self._current_name}\n{ts}')
+        self._refresh_dates_label()
 
     # ── Search ──────────────────────────────────────────────────────
 
@@ -3747,6 +3783,7 @@ class NotesDialog(QDialog):
             self._mode_combo.setVisible(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText('')
+            self._dates_label.setVisible(False)
             self._update_action_visibility(False)
             self._find_bar.setVisible(False)
             return
@@ -3760,6 +3797,7 @@ class NotesDialog(QDialog):
             self._mode_combo.setVisible(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._title_label.setText(current.text(0))
+            self._dates_label.setVisible(False)
             self._update_action_visibility(False)
             self._find_bar.setVisible(False)
             return
@@ -4831,7 +4869,7 @@ class NotesDialog(QDialog):
         # ``_bottom_hint`` has color) — Qt's cascade for font-size on
         # such widgets is unreliable, so bake it into their own QSS.
         size_rule = f'font-size: {pt}pt;'
-        for attr in ('_bottom_hint', '_title_label', '_find_counter'):
+        for attr in ('_bottom_hint', '_title_label', '_find_counter', '_dates_label'):
             w = getattr(self, attr, None)
             if w is None:
                 continue
