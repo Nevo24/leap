@@ -102,7 +102,7 @@ src/
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
     │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)
-    │   │   └── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session
+    │   │   └── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -168,7 +168,7 @@ assets/
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
-| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session |
+| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders |
 | `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
 | `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste + Next/To-End queue-position toggle |
 | `SendPresetDialog` | `monitor/ui/image_text_edit.py` | Picker for a message-bundle preset + Next/To-End queue-position toggle |

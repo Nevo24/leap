@@ -713,6 +713,18 @@ def _format_mtime(path: Path) -> str:
         return ''
 
 
+def _folder_mtime(folder_path: str) -> str:
+    """Return the most recent note mtime under folder_path as a formatted string."""
+    try:
+        folder = NOTES_DIR / folder_path
+        mtimes = [p.stat().st_mtime for p in folder.rglob('*.txt') if p.is_file()]
+        if not mtimes:
+            return ''
+        return datetime.fromtimestamp(int(max(mtimes))).strftime('%Y-%m-%d %H:%M')
+    except OSError:
+        return ''
+
+
 def _get_note_created_at(name: str) -> str:
     """Return the note's creation date as a formatted string, or '' if unknown."""
     ts = _load_notes_meta().get(name, {}).get('created_at')
@@ -3484,6 +3496,13 @@ class NotesDialog(QDialog):
 
         right_layout.addWidget(self._stack, 1)
 
+        # Transparent spacer shown in place of _stack when a folder is
+        # selected — gives the layout a stretch-1 anchor so the title/dates
+        # stay at the top, without rendering any visible editor box.
+        self._folder_spacer = QWidget()
+        self._folder_spacer.setVisible(False)
+        right_layout.addWidget(self._folder_spacer, 1)
+
         # ── In-note find bar (Cmd+F) ──
         self._find_bar = self._build_find_bar()
         right_layout.addWidget(self._find_bar)
@@ -3688,6 +3707,21 @@ class NotesDialog(QDialog):
         else:
             self._dates_label.setVisible(False)
 
+    def _refresh_folder_dates_label(self, folder_path: str) -> None:
+        """Populate or hide the created/modified label for a folder."""
+        created = _get_note_created_at(folder_path)
+        modified = _folder_mtime(folder_path)
+        parts = []
+        if created:
+            parts.append(f'Created: {created}')
+        if modified:
+            parts.append(f'Modified: {modified}')
+        if parts:
+            self._dates_label.setText('  ·  '.join(parts))
+            self._dates_label.setVisible(True)
+        else:
+            self._dates_label.setVisible(False)
+
     def _update_timestamp(self) -> None:
         """Update the tooltip and dates label for the current note."""
         if not self._current_name:
@@ -3780,8 +3814,12 @@ class NotesDialog(QDialog):
             self._saved_text = ''
             self._editor.clear()
             self._editor.setEnabled(False)
+            self._editor.setPlaceholderText(
+                'Select or create a note... (paste images with Cmd+V)')
             self._mode_combo.setVisible(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
+            self._stack.setVisible(True)
+            self._folder_spacer.setVisible(False)
             self._title_label.setText('')
             self._dates_label.setVisible(False)
             self._update_action_visibility(False)
@@ -3789,15 +3827,17 @@ class NotesDialog(QDialog):
             return
 
         if current.data(0, self._ROLE_TYPE) == 'folder':
-            # Folder selected — clear editor, show folder name
+            # Folder selected — hide the editor stack and show a transparent
+            # spacer in its place so the title/dates stay pinned to the top.
             self._current_name = None
             self._saved_text = ''
             self._editor.clear()
             self._editor.setEnabled(False)
             self._mode_combo.setVisible(False)
-            self._stack.setCurrentIndex(self._MODE_TEXT)
+            self._stack.setVisible(False)
+            self._folder_spacer.setVisible(True)
             self._title_label.setText(current.text(0))
-            self._dates_label.setVisible(False)
+            self._refresh_folder_dates_label(current.data(0, self._ROLE_PATH))
             self._update_action_visibility(False)
             self._find_bar.setVisible(False)
             return
@@ -3826,6 +3866,8 @@ class NotesDialog(QDialog):
         self._switching_mode = False
 
         self._mode_combo.setVisible(True)
+        self._stack.setVisible(True)
+        self._folder_spacer.setVisible(False)
         display = name.rsplit('/', 1)[-1] if '/' in name else name
         self._title_label.setText(display)
         self._update_timestamp()
@@ -4298,6 +4340,10 @@ class NotesDialog(QDialog):
             # Snapshot subfolder paths
             subfolder_paths = [f for f in _list_folders()
                                if f.startswith(prefix)]
+            # Include folder and subfolder own metadata (e.g. created_at)
+            for fpath in [fp] + subfolder_paths:
+                if fpath in meta:
+                    folder_meta[fpath] = dict(meta[fpath])
             # Parent order position
             parent = fp.rsplit('/', 1)[0] if '/' in fp else ''
             leaf = fp.rsplit('/', 1)[-1] if '/' in fp else fp

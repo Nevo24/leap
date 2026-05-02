@@ -334,6 +334,7 @@ class CreateFolderCmd(UndoCommand):
 
     def execute(self, ctx: NotesCmdContext) -> None:
         (NOTES_DIR / self._folder_path).mkdir(parents=True, exist_ok=True)
+        _set_note_created_at(self._folder_path)
         ctx.select_and_load(name=self._folder_path, select_type='folder')
 
     def undo(self, ctx: NotesCmdContext) -> None:
@@ -343,6 +344,9 @@ class CreateFolderCmd(UndoCommand):
         parent = _parent_folder(self._folder_path)
         leaf = _leaf_name(self._folder_path)
         _remove_from_order(parent, leaf)
+        meta = _load_notes_meta()
+        if meta.pop(self._folder_path, None) is not None:
+            _save_notes_meta(meta)
         ctx.refresh_tree()
         ctx.select_first_or_none()
 
@@ -412,6 +416,8 @@ class DeleteFolderCmd(UndoCommand):
         meta = _load_notes_meta()
         for name in self._notes:
             meta.pop(name, None)
+        for path in [self._folder_path] + self._subfolder_paths:
+            meta.pop(path, None)
         _save_notes_meta(meta)
         order = _load_order()
         for k in list(order):
@@ -521,14 +527,15 @@ class DuplicateFolderCmd(UndoCommand):
             path = _note_path(name)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding='utf-8')
-        if self._notes:
-            now = int(time.time())
-            meta = _load_notes_meta()
-            for name in self._notes:
-                entry = dict(self._metadata_entries.get(name, {}))
-                entry['created_at'] = now
-                meta[name] = entry
-            _save_notes_meta(meta)
+        now = int(time.time())
+        meta = _load_notes_meta()
+        for fpath in [self._new_path] + self._subfolder_paths:
+            meta.setdefault(fpath, {})['created_at'] = now
+        for name in self._notes:
+            entry = dict(self._metadata_entries.get(name, {}))
+            entry['created_at'] = now
+            meta[name] = entry
+        _save_notes_meta(meta)
         if self._order_entries:
             order = _load_order()
             for k, v in self._order_entries.items():
@@ -546,6 +553,8 @@ class DuplicateFolderCmd(UndoCommand):
         meta = _load_notes_meta()
         for name in self._notes:
             meta.pop(name, None)
+        for fpath in [self._new_path] + self._subfolder_paths:
+            meta.pop(fpath, None)
         _save_notes_meta(meta)
         order = _load_order()
         for k in list(order):
