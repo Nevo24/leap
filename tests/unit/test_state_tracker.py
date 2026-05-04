@@ -1813,6 +1813,63 @@ class TestLateNotificationGuard:
 
 
 # ---------------------------------------------------------------------------
+# Mid-session proactive dialog detection (AskUserQuestion / "Proceed?")
+# ---------------------------------------------------------------------------
+
+class TestProactiveIdleDialogDetection:
+    """Some Claude tools (notably AskUserQuestion / "Proceed?") do NOT fire
+    PreToolUse — only Stop, so the state tracker transitions running→idle
+    while the dialog is still visible.  Without proactive detection,
+    auto-approve never fires.  We use the strict ``is_dialog_certain``
+    check (all dialog_patterns must appear) so single-pattern prose
+    doesn't false-trigger.
+    """
+
+    def test_idle_to_needs_permission_when_full_dialog_on_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        # User has typed at least once (the gating condition that the
+        # original startup-only proactive check excluded us from).
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+        assert tracker._state == 'idle'
+        assert tracker._seen_user_input is True
+
+        # AskUserQuestion-shaped dialog: contains BOTH "Enter to select"
+        # AND "Esc to cancel" — the strict patterns Claude uses.
+        feed_screen_text(
+            tracker,
+            'Do you want to proceed?\n'
+            '> 1. Yes\n'
+            '  2. No\n'
+            'Enter to select · Esc to cancel',
+        )
+        assert tracker._state == 'needs_permission'
+
+    def test_idle_stays_when_only_one_pattern_present(
+        self, tmp_path: Path,
+    ) -> None:
+        # Conversational text mentioning ONE shortcut (not a real dialog)
+        # must NOT trigger the proactive transition.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+
+        feed_screen_text(
+            tracker,
+            'The shortcut is Esc to cancel — useful for aborting.',
+        )
+        assert tracker._state == 'idle'
+
+
+# ---------------------------------------------------------------------------
 # Claude conversation-compaction detection
 # ---------------------------------------------------------------------------
 

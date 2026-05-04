@@ -637,6 +637,27 @@ class CLIStateTracker:
                 pass
             return
 
+        # -- Mid-session proactive dialog detection --
+        # Some Claude tools (notably AskUserQuestion / "Proceed?" prompts)
+        # do NOT fire PreToolUse hook — only Stop, so the state tracker
+        # transitions running→idle while the dialog is still visible and
+        # the auto-sender loop never fires `_try_auto_approve`.
+        # Use the STRICT `is_dialog_certain` check (all dialog_patterns
+        # must be present) — conversational text mentioning a single
+        # shortcut like "Esc to cancel" alone won't false-trigger.
+        if self._provider.is_dialog_certain(compact):
+            _log.debug(
+                'ON_OUTPUT idle→needs_permission '
+                '(proactive dialog detection, mid-session)',
+            )
+            self._prompt_snapshot = self._get_display_lines()
+            self._reset_screen()
+            self._interrupt_pending = False
+            with self._lock:
+                self._state = CLIState.NEEDS_PERMISSION
+                self._waiting_since = self._clock()
+            return
+
         # -- Auto-resume via cursor visibility --
         # Don't check cursor here (on_output) — a mid-render chunk may
         # have cursor hidden but the show-cursor sequence arrives in
