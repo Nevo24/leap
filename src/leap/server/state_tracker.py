@@ -944,6 +944,52 @@ class CLIStateTracker:
                     else:
                         _log.debug('GET_STATE signal transition running→idle')
                     self._interrupt_pending = False
+
+                    # Stop hook fires for some Claude tools (notably
+                    # AskUserQuestion / "Proceed?") that leave a dialog
+                    # awaiting user input — the agent is "done" from the
+                    # hook's perspective but the user still has to answer.
+                    # If a dialog footer is in the bottom 5 rows, treat
+                    # the signal as a running→needs_permission transition.
+                    # Mirrors the cursor+silence proactive check at
+                    # ~line 1300, but for the immediate signal path.
+                    with self._screen_lock:
+                        all_lines = self._get_display_lines()
+                    filled = [ln for ln in all_lines if ln.strip()]
+                    compact_tail = ''.join(filled[-5:]).replace(' ', '')
+                    if self._provider.is_dialog_certain(compact_tail):
+                        _log.debug(
+                            'GET_STATE signal=idle but dialog on '
+                            'screen → needs_permission',
+                        )
+                        # Defensive reset (matches the cursor+silence
+                        # proactive check at ~line 1330): clear any
+                        # stale _user_responded so the next waiting→idle
+                        # signal isn't accepted before the user has
+                        # actually answered THIS dialog.
+                        self._user_responded = False
+                        if self._trust_dialog_phase:
+                            self._seen_user_input = False
+                            self._trust_dialog_phase = False
+                        with self._lock:
+                            self._state = CLIState.NEEDS_PERMISSION
+                            self._waiting_since = self._clock()
+                        self._user_input_since_idle = False
+                        with self._screen_lock:
+                            self._prompt_snapshot = all_lines
+                            # Do NOT reset the screen here.  See
+                            # _handle_idle_output's mid-session proactive
+                            # check for the rationale: the dialog must
+                            # remain in the live buffer so the
+                            # waiting→idle self-dismissal check at
+                            # ~line 1207 can correctly tell whether the
+                            # user has answered.
+                        try:
+                            self._signal_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        return CLIState.NEEDS_PERMISSION
+
                     with self._lock:
                         self._state = CLIState.IDLE
                         self._waiting_since = None

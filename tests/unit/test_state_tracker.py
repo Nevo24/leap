@@ -1533,15 +1533,16 @@ class TestLateNotificationGuard:
     def test_legitimate_notification_accepted_dialog_in_snapshot(
         self, tmp_path: Path,
     ) -> None:
-        """Notification accepted when dialog patterns are in the saved
-        running snapshot (screen was reset but snapshot has the dialog)."""
+        """When the Stop hook fires while a dialog is on screen, the
+        signal-based running→idle handler's proactive check routes the
+        transition directly to needs_permission — no idle flash.  A
+        subsequent (redundant) Notification keeps the state stable."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
         tracker.on_send()  # → running
 
-        # Permission dialog appears — cursor+silence fires running→idle
-        # The snapshot saved on running→idle contains the dialog
+        # Permission dialog appears, then Stop hook fires.
         feed_screen_text(
             tracker,
             'Allow tool?  Enter to select  Esc to cancel',
@@ -1549,11 +1550,11 @@ class TestLateNotificationGuard:
         t[0] = 5.0
         tracker._last_output_time = 2.0
         write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        # Snapshot should contain the dialog text
-        assert tracker._last_running_snapshot
+        # Direct transition to needs_permission (dialog detected on tail).
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        assert tracker._prompt_snapshot
 
-        # Late Notification arrives — dialog in snapshot
+        # Redundant Notification — state stays needs_permission.
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
@@ -1645,14 +1646,14 @@ class TestLateNotificationGuard:
     def test_numbered_menu_permission_accepted_from_snapshot(
         self, tmp_path: Path,
     ) -> None:
-        """Numbered menu dialog in saved running snapshot is accepted
-        after cursor+silence moves to idle."""
+        """Numbered menu dialog visible at Stop-hook time routes directly
+        to needs_permission via the signal-handler proactive check."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
         tracker.on_send()  # → running
 
-        # Numbered menu permission prompt
+        # Numbered menu permission prompt.
         feed_screen_text(
             tracker,
             'Do you want to allow this connection?\n'
@@ -1663,10 +1664,10 @@ class TestLateNotificationGuard:
         t[0] = 5.0
         tracker._last_output_time = 2.0
         write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        assert tracker._last_running_snapshot
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        assert tracker._prompt_snapshot
 
-        # Late Notification arrives — numbered menu in snapshot
+        # Redundant Notification — state stays needs_permission.
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
@@ -1754,7 +1755,9 @@ class TestLateNotificationGuard:
     def test_legitimate_needs_input_accepted_with_dialog(
         self, tmp_path: Path,
     ) -> None:
-        """Elicitation dialog with patterns on screen is accepted."""
+        """Elicitation dialog with patterns on screen at Stop-hook time:
+        signal-handler proactive check routes to needs_permission, then
+        a needs_input signal correctly downgrades to needs_input."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_input(b'x')  # seen user input
@@ -1769,9 +1772,13 @@ class TestLateNotificationGuard:
         t[0] = 5.0
         tracker._last_output_time = 2.0
         write_signal(tracker, 'idle')
-        assert tracker.get_state(pty_alive=True) == 'idle'
-        assert tracker._last_running_snapshot
+        # Dialog visible at Stop time → directly routed to
+        # needs_permission (we don't yet know it's input vs. permission).
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        assert tracker._prompt_snapshot
 
+        # Notification with elicitation_dialog matcher arrives — refines
+        # the kind of waiting state to needs_input.
         write_signal(tracker, 'needs_input')
         assert tracker.get_state(pty_alive=True) == 'needs_input'
 
@@ -1867,6 +1874,69 @@ class TestProactiveIdleDialogDetection:
             'The shortcut is Esc to cancel — useful for aborting.',
         )
         assert tracker._state == 'idle'
+
+    def test_signal_idle_with_dialog_on_screen_routes_to_needs_permission(
+        self, tmp_path: Path,
+    ) -> None:
+        # AskUserQuestion / "Proceed?" tools fire the Stop hook (signal
+        # "idle") even though a dialog is on screen awaiting an answer.
+        # The signal-based running→idle path must check for a dialog
+        # footer in the tail and route to needs_permission instead —
+        # otherwise the screen gets reset and no further output ever
+        # arrives, leaving the state stuck at idle forever.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # Claude renders the dialog while still running (output arrives
+        # before the Stop hook).
+        feed_screen_text(
+            tracker,
+            '□ Coffee\n'
+            'Do you like coffee?\n'
+            '> 1. Yes\n'
+            '  2. No\n'
+            'Enter to select · Esc to cancel',
+        )
+        # Stop hook fires.
+        write_signal(tracker, 'idle')
+        # The signal-based running→idle handler must see the dialog
+        # and route to needs_permission rather than idle.
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_signal_path_transition_survives_dismissal_check(
+        self, tmp_path: Path,
+    ) -> None:
+        # Companion to ``test_proactive_transition_survives_idle_heartbeat``
+        # but for the signal-handler path.  After the Stop-hook signal
+        # routes to needs_permission, an idle TUI heartbeat advances
+        # ``_last_output_time``.  5+ seconds later, the waiting→idle
+        # self-dismissal check at get_state ~line 1207 fires.  The
+        # dialog must remain in the live buffer (we deliberately don't
+        # reset) so the check sees the indicator and does NOT revert.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            '□ Cats vs dogs\n'
+            'Are cats better than dogs?\n'
+            '> 1. Yes\n'
+            '  2. No\n'
+            'Enter to select · Esc to cancel',
+        )
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+        # Idle heartbeat — advances _last_output_time without redrawing
+        # the dialog cells.
+        tracker.on_output(b'\x1b[?25h')
+
+        # 5+ seconds later, dismissal check runs but should see the
+        # dialog still in the live buffer and keep needs_permission.
+        t[0] = 10.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
     def test_proactive_transition_survives_idle_heartbeat(
         self, tmp_path: Path,
