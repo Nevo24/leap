@@ -1868,6 +1868,34 @@ class TestProactiveIdleDialogDetection:
         )
         assert tracker._state == 'idle'
 
+    def test_idle_stays_when_patterns_quoted_above_tail(
+        self, tmp_path: Path,
+    ) -> None:
+        # Both dialog patterns appear above the footer region, but the
+        # last 5 non-blank rows are plain prose (no patterns).  The
+        # tail-only check must reject this — patterns must appear in
+        # the dialog-footer region (last 5 lines) to count.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+
+        feed_screen_text(
+            tracker,
+            'When Claude shows a dialog, you see\n'
+            '"Enter to select · Esc to cancel" in the footer.\n'
+            'It is the standard pattern across all Ink TUIs.\n'
+            'Line four of the response.\n'
+            'Line five of the response.\n'
+            'Line six of the response.\n'
+            'Line seven, well past the tail window.\n'
+            'Line eight is also clean prose.\n'
+            'End of explanation here.\n',
+        )
+        assert tracker._state == 'idle'
+
 
 # ---------------------------------------------------------------------------
 # Claude conversation-compaction detection

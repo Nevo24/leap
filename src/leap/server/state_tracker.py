@@ -642,15 +642,21 @@ class CLIStateTracker:
         # do NOT fire PreToolUse hook — only Stop, so the state tracker
         # transitions running→idle while the dialog is still visible and
         # the auto-sender loop never fires `_try_auto_approve`.
-        # Use the STRICT `is_dialog_certain` check (all dialog_patterns
-        # must be present) — conversational text mentioning a single
-        # shortcut like "Esc to cancel" alone won't false-trigger.
-        if self._provider.is_dialog_certain(compact):
+        # Match the same shape used by the running→needs_permission
+        # proactive check (see ``get_state`` ~line 1300): scan only the
+        # last 5 non-blank rows (the dialog footer/menu region) with the
+        # strict ``is_dialog_certain``.  Restricting to the tail keeps
+        # response text that happens to quote dialog phrases mid-screen
+        # from false-triggering — only patterns at the bottom matter.
+        all_lines = self._get_display_lines()
+        filled = [ln for ln in all_lines if ln.strip()]
+        tail_compact = ''.join(filled[-5:]).replace(' ', '')
+        if self._provider.is_dialog_certain(tail_compact):
             _log.debug(
                 'ON_OUTPUT idle→needs_permission '
                 '(proactive dialog detection, mid-session)',
             )
-            self._prompt_snapshot = self._get_display_lines()
+            self._prompt_snapshot = all_lines
             self._reset_screen()
             self._interrupt_pending = False
             with self._lock:
