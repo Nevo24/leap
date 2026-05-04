@@ -2670,16 +2670,16 @@ class LeapServer:
                 stale_cli_input=bool(self._terminal_input_buf),
                 stale_caret=False)
             i += 1
-        elif self._pending_caret and not self._queue_capture_mode:
-            # Previous chunk held a "^" but this chunk doesn't start
-            # with "^" — it was a literal.  Flush it to CLI now.
-            if self._pending_caret_timer is not None:
-                self._pending_caret_timer.cancel()
-                self._pending_caret_timer = None
-            self._pending_caret = False
-            out.append(0x5e)
-            self._terminal_buf_insert(0x5e)
-            self._chars_sent_to_cli += 1
+        # Note: we used to eagerly flush a held "^" here when the new
+        # chunk didn't start with "^".  That broke ^^ detection under
+        # kitty keyboard protocol (e.g. Codex/Ratatui), where each "^"
+        # press is followed by a CSI-u key-release escape sequence in
+        # its own chunk — the flush ran before the second "^" press
+        # could arrive.  The byte loop's own ``elif self._pending_caret``
+        # at line ~2926 already flushes correctly when a real non-"^"
+        # byte (not an escape sequence) is encountered, and the 200ms
+        # timer + the >0.2s safety-net above handle the
+        # nothing-came-after case.
 
         # If a previous call ended mid-escape, skip continuation bytes.
         if self._partial_escape == 'csi':

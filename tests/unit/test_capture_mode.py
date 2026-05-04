@@ -117,6 +117,26 @@ class TestCaptureSwallows:
             out = srv._input_filter_impl(b'^^hello\r')
         assert b'hello' not in out
 
+    def test_capture_kitty_keyboard_release_between_carets(self):
+        # Codex/Ratatui enables kitty keyboard protocol with key-release
+        # reporting, so each "^" press is followed by a CSI-u release
+        # event in its own input chunk before the next press arrives.
+        # The held first "^" must survive the release event and combine
+        # with the second "^" press to enter capture mode.
+        srv = make_server(CLIState.RUNNING)
+        srv._input_filter_impl(b'^')
+        assert srv._pending_caret is True
+        out_release = srv._input_filter_impl(b'\x1b[54:94;2:3u')
+        assert srv._pending_caret is True, \
+            "release event must not flush the held ^"
+        assert b'^' not in out_release, \
+            "held ^ must not leak to CLI on release event"
+        srv._input_filter_impl(b'^')
+        assert srv._queue_capture_mode is True
+        srv._input_filter_impl(b'hi\r')
+        assert srv.queue.add.called
+        assert srv.queue.add.call_args[0][0] == 'hi'
+
 
 class TestStaleCleanup:
     """Stale CLI input cleared in Enter handler via End + Ctrl+U + N backspaces."""
