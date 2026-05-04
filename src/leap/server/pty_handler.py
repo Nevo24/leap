@@ -5,6 +5,7 @@ Manages spawning and interacting with a CLI process (Claude, Codex, Cursor Agent
 """
 
 import os
+import shlex
 import shutil
 import sys
 import threading
@@ -15,7 +16,20 @@ from typing import Callable, Optional
 import pexpect
 
 from leap.cli_providers.base import CLIProvider
-from leap.cli_providers.registry import get_cli_env, get_provider
+from leap.cli_providers.registry import get_cli_env, get_cli_flags, get_provider
+
+
+def _resolve_cli_flags(provider_name: str, explicit_flags: list[str]) -> list[str]:
+    """Return stored/env default flags prepended to explicit_flags.
+
+    Priority (highest last, so explicit flags win on duplicates):
+      stored (cli_flags.json) < LEAP_<NAME>_FLAGS env var < explicit_flags
+    The env var, if set (even to empty), fully replaces the stored defaults.
+    """
+    env_var = f"LEAP_{provider_name.upper().replace('-', '_')}_FLAGS"
+    flags_str = os.environ.get(env_var) if env_var in os.environ else get_cli_flags(provider_name)
+    stored = shlex.split(flags_str) if flags_str else []
+    return stored + explicit_flags
 
 
 class PTYHandler:
@@ -65,6 +79,8 @@ class PTYHandler:
             print(f"Error: '{self._provider.command}' command not found")
             sys.exit(1)
 
+        all_flags = _resolve_cli_flags(self._provider.name, self.flags)
+
         env = dict(os.environ)
         env.update(self._provider.get_spawn_env(self._tag, self._signal_dir))
         # Apply user-configured env vars (from leap --manage-clis)
@@ -74,7 +90,7 @@ class PTYHandler:
 
         self.process = pexpect.spawn(
             cli_path,
-            args=self.flags,
+            args=all_flags,
             dimensions=(rows, cols),
             env=env,
         )

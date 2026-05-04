@@ -54,6 +54,7 @@ src/
     │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors, is_valid_tag()
     │   ├── terminal.py          # Terminal title, banner
     │   ├── ide_detection.py     # IDE detection, git branch
+    │   ├── line_buffer.py       # Cursor-aware line editing buffer (used by raw-terminal input prompts)
     │   ├── socket_utils.py      # Shared Unix socket send/recv helper
     │   └── resume_store.py      # Shared read/write/prune of `cli_sessions/<cli>/<tag>.json` (used by hook + picker)
     │
@@ -180,6 +181,8 @@ assets/
 | `ensure_contrast()` | `monitor/themes.py` | WCAG contrast safety-net (returns black/white if ratio < 4.5:1) |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |
+| `LineBuffer` | `utils/line_buffer.py` | Cursor-aware line editing buffer (insert, delete, move, home/end, delete-word) used by raw-terminal prompts |
+| `_resolve_cli_flags()` | `server/pty_handler.py` | Merge stored/env-var default flags with explicit CLI flags; used by `PTYHandler.spawn()` |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `resolve_scm_token()` | `monitor/pr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `parse_pr_url()` | `monitor/pr_tracking/git_utils.py` | Parse GitLab/GitHub PR URLs |

@@ -100,30 +100,9 @@ if [ $EXIT_CODE -ne 0 ] || [ -z "$SELECTED" ]; then
     exit 1
 fi
 
-# Append default per-CLI flags: .storage/cli_flags.json, overridden by env var if set
-CLI_UPPER=$(echo "$SELECTED" | tr '[:lower:]-' '[:upper:]_')
-DEFAULT_FLAGS_VAR="LEAP_${CLI_UPPER}_FLAGS"
-ENV_FLAGS="${!DEFAULT_FLAGS_VAR+__SET__}"  # check if env var is set (even if empty)
-if [ "$ENV_FLAGS" = "__SET__" ]; then
-    DEFAULT_FLAGS="${!DEFAULT_FLAGS_VAR}"
-else
-    # Read from .storage/cli_flags.json
-    CLI_FLAGS_FILE="$STORAGE_DIR/cli_flags.json"
-    DEFAULT_FLAGS=""
-    if [ -f "$CLI_FLAGS_FILE" ]; then
-        DEFAULT_FLAGS=$("$PYTHON_CMD" -c "
-import json, sys
-try:
-    data = json.loads(open(sys.argv[1]).read())
-    print(data.get(sys.argv[2], ''))
-except Exception:
-    pass
-" "$CLI_FLAGS_FILE" "$SELECTED" 2>/dev/null)
-    fi
-fi
-# shellcheck disable=SC2086
-CLI_FLAGS=($DEFAULT_FLAGS)
-
-# Launch the selected CLI with tag, default flags, user flags, and any remaining args
+# Launch the selected CLI with tag, user flags, and any remaining args.
 # --cli tells leap-main.sh the user explicitly chose this CLI (via selector).
-exec "$SCRIPT_DIR/leap-main.sh" "$TAG" --cli "$SELECTED" "${CLI_FLAGS[@]}" "${FLAGS[@]}" "${ARGS[@]}"
+# Stored per-CLI flags (cli_flags.json) and LEAP_<CLI>_FLAGS env var overrides
+# are applied by pty_handler.py at spawn time — they must not pass through
+# leap-main.sh's arg parser, which cannot distinguish flag values from messages.
+exec "$SCRIPT_DIR/leap-main.sh" "$TAG" --cli "$SELECTED" "${FLAGS[@]}" "${ARGS[@]}"

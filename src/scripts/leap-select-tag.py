@@ -28,6 +28,12 @@ PROJECT_DIR = SCRIPT_DIR.parent.parent
 STORAGE_DIR = PROJECT_DIR / ".storage"
 HISTORY_FILE = STORAGE_DIR / "tag_history"
 
+_SRC_DIR = SCRIPT_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from leap.utils.line_buffer import LineBuffer  # noqa: E402
+
 
 def load_history() -> list[str]:
     """Load tag history (newest last), deduplicated."""
@@ -63,6 +69,10 @@ def save_history(history: list[str], new_tag: str) -> None:
         pass
 
 
+_PROMPT = "  Session name: "
+_PROMPT_LEN = len(_PROMPT)
+
+
 def get_key() -> str:
     """Read a single keypress, handling special keys.
 
@@ -88,6 +98,16 @@ def get_key() -> str:
                 return 'up'
             if rest.startswith('[B') or rest.startswith('OB'):
                 return 'down'
+            if rest.startswith('[C') or rest.startswith('OC'):
+                return 'right'
+            if rest.startswith('[D') or rest.startswith('OD'):
+                return 'left'
+            if rest.startswith('[H') or rest.startswith('OH') or rest.startswith('[1~') or rest.startswith('[7~'):
+                return 'home'
+            if rest.startswith('[F') or rest.startswith('OF') or rest.startswith('[4~') or rest.startswith('[8~'):
+                return 'end'
+            if rest.startswith('[3~'):
+                return 'delete'
             return ''  # unhandled sequence, already fully drained
         if ch in ('\r', '\n'):
             return 'enter'
@@ -101,6 +121,10 @@ def get_key() -> str:
             return 'clear'
         if ch == '\x17':  # Ctrl+W (delete word)
             return 'delete_word'
+        if ch == '\x01':  # Ctrl+A
+            return 'home'
+        if ch == '\x05':  # Ctrl+E
+            return 'end'
         # Regular printable character
         if ch.isprintable():
             return ch
@@ -109,14 +133,14 @@ def get_key() -> str:
     return ''
 
 
-def render_prompt(text: str, hint: str) -> None:
-    """Render the input prompt with current text."""
-    sys.stderr.write(f"\r\033[K  Session name: {text}")
-    if not text and hint:
-        # Show hint after cursor position
+def render_prompt(lb: LineBuffer, hint: str) -> None:
+    """Render the input prompt with current text and cursor position."""
+    sys.stderr.write(f"\r\033[K{_PROMPT}{lb.text}")
+    if not lb.text and hint:
         sys.stderr.write(f" {DIM}{hint}{RESET}")
-        # Move cursor back to after "Session name: "
-        sys.stderr.write("\r\033[16C")
+        sys.stderr.write(f"\r\033[{_PROMPT_LEN}C")
+    elif lb.pos < len(lb.buf):
+        sys.stderr.write(f"\033[{len(lb.buf) - lb.pos}D")
     sys.stderr.flush()
 
 
@@ -126,11 +150,11 @@ def main() -> None:
     hist_index = -1
     # Reversed history for navigation (index 0 = most recent)
     hist_reversed = list(reversed(history))
-    saved_input = ''  # What the user was typing before navigating history
-    text = ''
+    saved_lb = LineBuffer()  # what the user was typing before navigating history
+    lb = LineBuffer()
 
     hint = '(↑ for recent sessions)' if history else ''
-    render_prompt(text, hint)
+    render_prompt(lb, hint)
 
     while True:
         key = get_key()
@@ -139,25 +163,25 @@ def main() -> None:
             if not hist_reversed:
                 continue
             if hist_index == -1:
-                saved_input = text
+                saved_lb = LineBuffer(lb.text)
             if hist_index < len(hist_reversed) - 1:
                 hist_index += 1
-                text = hist_reversed[hist_index]
-            render_prompt(text, '')
+                lb = LineBuffer(hist_reversed[hist_index])
+            render_prompt(lb, '')
 
         elif key == 'down':
             if hist_index > 0:
                 hist_index -= 1
-                text = hist_reversed[hist_index]
+                lb = LineBuffer(hist_reversed[hist_index])
             elif hist_index == 0:
                 hist_index = -1
-                text = saved_input
-            render_prompt(text, hint if not text else '')
+                lb = LineBuffer(saved_lb.text)
+            render_prompt(lb, hint if not lb.text else '')
 
         elif key == 'enter':
             sys.stderr.write('\n')
             sys.stderr.flush()
-            tag = text.strip()
+            tag = lb.text.strip()
             if not tag:
                 sys.stderr.write('  ❌ Error: Session name is required.\n')
                 sys.exit(1)
@@ -171,45 +195,53 @@ def main() -> None:
             print(tag)
             return
 
-        elif key == 'quit':
-            sys.stderr.write('\n')
-            sys.stderr.flush()
-            sys.exit(130)
-
-        elif key == 'escape':
+        elif key in ('quit', 'escape'):
             sys.stderr.write('\n')
             sys.stderr.flush()
             sys.exit(130)
 
         elif key == 'backspace':
-            if text:
-                text = text[:-1]
-                if not text and hist_index >= 0:
-                    hist_index = -1
-            render_prompt(text, hint if not text else '')
+            lb.backspace()
+            if not lb.text and hist_index >= 0:
+                hist_index = -1
+            render_prompt(lb, hint if not lb.text else '')
+
+        elif key == 'delete':
+            lb.delete()
+            render_prompt(lb, hint if not lb.text else '')
 
         elif key == 'clear':
-            text = ''
+            lb.clear()
             hist_index = -1
-            render_prompt(text, hint)
+            render_prompt(lb, hint)
 
         elif key == 'delete_word':
-            # Delete last word
-            stripped = text.rstrip()
-            space_idx = stripped.rfind(' ')
-            if space_idx >= 0:
-                text = stripped[:space_idx + 1]
-            else:
-                text = ''
-            if not text:
+            lb.delete_word()
+            if not lb.text:
                 hist_index = -1
-            render_prompt(text, hint if not text else '')
+            render_prompt(lb, hint if not lb.text else '')
+
+        elif key == 'left':
+            lb.move_left()
+            render_prompt(lb, hint if not lb.text else '')
+
+        elif key == 'right':
+            lb.move_right()
+            render_prompt(lb, hint if not lb.text else '')
+
+        elif key == 'home':
+            lb.home()
+            render_prompt(lb, hint if not lb.text else '')
+
+        elif key == 'end':
+            lb.end()
+            render_prompt(lb, hint if not lb.text else '')
 
         elif len(key) == 1:
-            text += key
+            lb.insert(key)
             if hist_index >= 0:
                 hist_index = -1
-            render_prompt(text, '')
+            render_prompt(lb, '')
 
 
 if __name__ == '__main__':

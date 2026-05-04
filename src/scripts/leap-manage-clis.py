@@ -22,6 +22,7 @@ _SRC_DIR = _SCRIPT_DIR.parent
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
+from leap.utils.line_buffer import LineBuffer
 from leap.cli_providers.registry import (
     _BUILTIN_PROVIDERS,
     _load_cli_order,
@@ -115,8 +116,15 @@ def read_line_raw(prompt: str, initial: str = "") -> str:
     """
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    buf = list(initial)
-    sys.stderr.write(f"\033[K{prompt}{''.join(buf)}")
+    lb = LineBuffer(initial)
+
+    def redraw() -> None:
+        sys.stderr.write(f"\r\033[K{prompt}{lb.text}")
+        if lb.pos < len(lb.buf):
+            sys.stderr.write(f"\033[{len(lb.buf) - lb.pos}D")
+        sys.stderr.flush()
+
+    sys.stderr.write(f"\033[K{prompt}{lb.text}")
     sys.stderr.flush()
     try:
         tty.setraw(fd)
@@ -125,39 +133,58 @@ def read_line_raw(prompt: str, initial: str = "") -> str:
             if ch in ("\r", "\n"):
                 sys.stderr.write("\n")
                 sys.stderr.flush()
-                return "".join(buf)
-            elif ch == "\x03" or ch == "\x04":  # Ctrl+C / Ctrl+D
+                return lb.text
+            elif ch in ("\x03", "\x04"):       # Ctrl+C / Ctrl+D
                 sys.stderr.write("\n")
                 sys.stderr.flush()
                 raise KeyboardInterrupt
-            elif ch == "\x7f" or ch == "\x08":  # Backspace
-                if buf:
-                    buf.pop()
-                    sys.stderr.write("\b \b")
-                    sys.stderr.flush()
-            elif ch == "\x15":  # Ctrl+U — clear line
-                count = len(buf)
-                buf.clear()
-                sys.stderr.write("\b" * count + " " * count + "\b" * count)
-                sys.stderr.flush()
-            elif ch == "\x17":  # Ctrl+W — delete word
-                deleted = 0
-                while buf and buf[-1] == " ":
-                    buf.pop()
-                    deleted += 1
-                while buf and buf[-1] != " ":
-                    buf.pop()
-                    deleted += 1
-                sys.stderr.write("\b" * deleted + " " * deleted + "\b" * deleted)
-                sys.stderr.flush()
-            elif ch == "\x1b":  # Escape sequences — ignore
-                sys.stdin.read(1)
-                sys.stdin.read(1)
-                continue
-            elif ch >= " ":  # Printable
-                buf.append(ch)
-                sys.stderr.write(ch)
-                sys.stderr.flush()
+            elif ch in ("\x7f", "\x08"):        # Backspace
+                lb.backspace()
+                redraw()
+            elif ch == "\x15":                  # Ctrl+U — clear line
+                lb.clear()
+                redraw()
+            elif ch == "\x17":                  # Ctrl+W — delete word
+                lb.delete_word()
+                redraw()
+            elif ch == "\x01":                  # Ctrl+A — go to start
+                lb.home()
+                redraw()
+            elif ch == "\x05":                  # Ctrl+E — go to end
+                lb.end()
+                redraw()
+            elif ch == "\x1b":                  # Escape sequence
+                nxt = sys.stdin.read(1)
+                if nxt == "[":
+                    seq = sys.stdin.read(1)
+                    if seq == "D":              # Left arrow
+                        lb.move_left()
+                        redraw()
+                    elif seq == "C":            # Right arrow
+                        lb.move_right()
+                        redraw()
+                    elif seq == "H":            # Home
+                        lb.home()
+                        redraw()
+                    elif seq == "F":            # End
+                        lb.end()
+                        redraw()
+                    elif seq == "3":            # Delete key (\x1b[3~)
+                        sys.stdin.read(1)
+                        lb.delete()
+                        redraw()
+                    elif seq in ("1", "7"):     # Home variant
+                        sys.stdin.read(1)
+                        lb.home()
+                        redraw()
+                    elif seq in ("4", "8"):     # End variant
+                        sys.stdin.read(1)
+                        lb.end()
+                        redraw()
+                # bare Esc or unrecognised sequence: ignore
+            elif ch >= " ":                     # Printable — insert at cursor
+                lb.insert(ch)
+                redraw()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
