@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
-
-
-_MENU_OPTION_RE: re.Pattern[str] = re.compile(r'\s*(?:[^\d\s]\s*)?(\d+)\.[^\w\n]+(.+)')
+from leap.utils.menu import MENU_OPTION_RE
 
 
 class ClaudeProvider(CLIProvider):
@@ -95,7 +93,7 @@ class ClaudeProvider(CLIProvider):
 
     @property
     def menu_option_regex(self) -> Optional[re.Pattern[str]]:
-        return _MENU_OPTION_RE
+        return MENU_OPTION_RE
 
     @property
     def free_text_option_prefix(self) -> Optional[str]:

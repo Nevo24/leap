@@ -1453,16 +1453,30 @@ class CLIStateTracker:
     def get_prompt_output(self) -> str:
         """Return PTY output from the last permission/input prompt.
 
-        Reads from the pyte screen snapshot taken when entering the
-        prompt state.  Falls back to the live screen if the snapshot
-        is empty but the state is still a prompt state — this covers
-        the trust dialog case where the snapshot can be overwritten
-        by subsequent output after a screen reset.
+        The pyte screen is reset at the moment of the running→prompt
+        transition, so the live screen accumulates ONLY the dialog's own
+        render bytes from that point on — making it a cleaner source
+        than the pre-reset snapshot, which can mix overlapping TUI
+        frames (Ink doesn't always clear-to-end-of-screen between
+        renders, so cells from earlier frames bleed through).
+
+        Preference order while in a prompt state:
+        1. Live screen, if it already contains the provider's dialog
+           indicator (Claude has rendered the dialog after reset).
+        2. The snapshot captured at transition time (fallback for the
+           moment between reset and Claude's first dialog bytes).
+        3. Live screen, if the snapshot is empty (covers the trust
+           dialog case where the snapshot was overwritten).
         """
         with self._screen_lock:
             snapshot = self._prompt_snapshot
-            if not snapshot and self._state in WAITING_STATES:
-                snapshot = self._get_display_lines()
+            if self._state in WAITING_STATES:
+                live_lines = self._get_display_lines()
+                live_compact = ''.join(live_lines).replace(' ', '')
+                if self._provider.has_dialog_indicator(live_compact):
+                    snapshot = live_lines
+                elif not snapshot:
+                    snapshot = live_lines
         if not snapshot:
             return ''
         _box_chars = set('─━│┃┌┐└┘├┤┬┴┼╔╗╚╝╠╣╦╩╬═║')

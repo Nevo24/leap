@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import subprocess
 import time
 import webbrowser
@@ -35,6 +34,7 @@ from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
 )
 from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
+from leap.utils.menu import extract_menu_options
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
@@ -59,46 +59,6 @@ def _hex_to_rgb_str(hex_color: str) -> str:
     """Convert '#rrggbb' to 'r, g, b' for use in rgba() CSS values."""
     h = hex_color.lstrip('#')
     return f'{int(h[0:2], 16)}, {int(h[2:4], 16)}, {int(h[4:6], 16)}'
-
-
-def _extract_menu_options(prompt_output: str) -> list[tuple[int, str]]:
-    """Extract numbered menu options from prompt output.
-
-    The prompt may contain numbered content (e.g. plan steps) above the
-    actual Ink TUI options.  Both match the ``N. label`` pattern, so we
-    return only the **last** contiguous 1..n sequence — the real menu.
-    """
-    all_matches: list[tuple[int, str]] = []
-    for line in prompt_output.split('\n'):
-        m = re.match(r'\s*(?:[❯›]\s*)?(\d+)\.\s+(.+)', line)
-        if m:
-            all_matches.append((int(m.group(1)), m.group(2).strip()))
-
-    if not all_matches:
-        return []
-
-    # Walk backwards to the last match numbered "1".
-    last_one_idx = -1
-    for i in range(len(all_matches) - 1, -1, -1):
-        if all_matches[i][0] == 1:
-            last_one_idx = i
-            break
-
-    if last_one_idx == -1:
-        return all_matches  # no "1" found — return all as fallback
-
-    # Take the contiguous ascending sequence from that point.
-    result: list[tuple[int, str]] = []
-    expected = 1
-    for i in range(last_one_idx, len(all_matches)):
-        num, label = all_matches[i]
-        if num == expected:
-            result.append((num, label))
-            expected += 1
-        else:
-            break
-
-    return result
 
 
 class TableBuilderMixin(_Base):
@@ -1879,7 +1839,7 @@ class TableBuilderMixin(_Base):
 
         # Parse the actual menu options (last 1..n sequence),
         # ignoring numbered plan/content lines above the menu.
-        options = _extract_menu_options(prompt_output)
+        options = extract_menu_options(prompt_output)
 
         if not options:
             self._show_status(f'No options found in prompt for {tag}')

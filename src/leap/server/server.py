@@ -39,6 +39,7 @@ from leap.utils.constants import (
     STORAGE_DIR, POLL_INTERVAL, TITLE_RESET_INTERVAL,
     atomic_json_write, ensure_storage_dirs, load_settings, save_settings,
 )
+from leap.utils.menu import extract_menu_options
 from leap.utils.terminal import set_terminal_title, print_banner
 from leap.server.pty_handler import PTYHandler
 from leap.server.socket_handler import SocketHandler
@@ -49,60 +50,6 @@ from leap.slack.output_capture import OutputCapture
 from leap.server.validation import validate_pinned_session
 
 
-def _extract_menu_options(
-    prompt_output: str,
-    provider: Optional[CLIProvider] = None,
-) -> list[tuple[int, str]]:
-    """Extract numbered menu options from prompt output.
-
-    The prompt may contain numbered content (e.g. plan steps) above the
-    actual TUI options.  Both match the ``N. label`` pattern, so we
-    return only the **last** contiguous 1..n sequence — the real menu.
-
-    Args:
-        prompt_output: Rendered prompt text.
-        provider: CLI provider (for custom regex). Defaults to default provider.
-    """
-    if provider and not provider.has_numbered_menus:
-        return []
-
-    pattern = (
-        provider.menu_option_regex
-        if provider and provider.menu_option_regex
-        else re.compile(r'\s*(?:[^\d\s]\s*)?(\d+)\.[^\w\n]+(.+)')
-    )
-
-    all_matches: list[tuple[int, str]] = []
-    for line in prompt_output.split('\n'):
-        m = pattern.match(line)
-        if m:
-            all_matches.append((int(m.group(1)), m.group(2).strip()))
-
-    if not all_matches:
-        return []
-
-    # Walk backwards to the last match numbered "1".
-    last_one_idx = -1
-    for i in range(len(all_matches) - 1, -1, -1):
-        if all_matches[i][0] == 1:
-            last_one_idx = i
-            break
-
-    if last_one_idx == -1:
-        return all_matches  # no "1" found — return all as fallback
-
-    # Take the contiguous ascending sequence from that point.
-    result: list[tuple[int, str]] = []
-    expected = 1
-    for i in range(last_one_idx, len(all_matches)):
-        num, label = all_matches[i]
-        if num == expected:
-            result.append((num, label))
-            expected += 1
-        else:
-            break
-
-    return result
 
 
 class LeapServer:
@@ -375,7 +322,7 @@ class LeapServer:
 
             # Parse the actual menu options using the provider's regex.
             prompt = self.state.get_prompt_output()
-            options = _extract_menu_options(prompt, self._provider)
+            options = extract_menu_options(prompt, self._provider)
             options_dict = {num: label for num, label in options}
 
             # Delegate option selection to the provider (handles
@@ -400,7 +347,7 @@ class LeapServer:
                     'error': f'not in permission/input state (state={current})',
                 }
             prompt = self.state.get_prompt_output()
-            options = _extract_menu_options(prompt, self._provider)
+            options = extract_menu_options(prompt, self._provider)
             options_dict = {num: label for num, label in options}
 
             result = self._provider.send_custom_answer(
@@ -653,13 +600,21 @@ class LeapServer:
             True if the permission was successfully approved.
         """
         prompt = self.state.get_prompt_output()
-        options = _extract_menu_options(prompt, self._provider)
+        options = extract_menu_options(prompt, self._provider)
 
         if options:
-            # Numbered menu: require exact "Yes" / "yes" label.
+            # Numbered menu: pick the option whose label is "Yes" when
+            # reduced to letters only.  Tolerates pyte snapshots where
+            # overlapping TUI frames inject non-letter junk into the
+            # cells around the label (spaces, punctuation, box-drawing
+            # chars).  Critically, broader options like "Yes, allow all
+            # edits during this session" reduce to "Yesallowall…" — NOT
+            # "yes" — so they are correctly rejected: auto-approve must
+            # only pick the narrow-scope "Yes".
             yes_num: Optional[int] = None
             for num, label in options:
-                if label in ('Yes', 'yes'):
+                letters = ''.join(c for c in label if c.isalpha())
+                if letters.lower() == 'yes':
                     yes_num = num
                     break
             if yes_num is None:

@@ -1,11 +1,12 @@
-"""Tests for _extract_menu_options — the numbered-option parser used by
+"""Tests for extract_menu_options — the numbered-option parser used by
 both the server (select_option/custom_answer handlers) and the monitor
 (right-click permission menu).
 """
 
 import pytest
 
-from leap.server.server import _extract_menu_options
+from leap.cli_providers import get_provider
+from leap.utils.menu import extract_menu_options
 
 
 class TestExtractMenuOptions:
@@ -18,7 +19,7 @@ class TestExtractMenuOptions:
             "  2. Allow always\n"
             "  3. Deny\n"
         )
-        assert _extract_menu_options(prompt) == [
+        assert extract_menu_options(prompt) == [
             (1, "Allow once"),
             (2, "Allow always"),
             (3, "Deny"),
@@ -47,7 +48,7 @@ class TestExtractMenuOptions:
             "  3. Yes, manually approve edits\n"
             "  4. Type here to tell Claude what to change\n"
         )
-        assert _extract_menu_options(prompt) == [
+        assert extract_menu_options(prompt) == [
             (1, "Yes, clear context (38% used) and bypass permissions"),
             (2, "Yes, and bypass permissions"),
             (3, "Yes, manually approve edits"),
@@ -61,17 +62,17 @@ class TestExtractMenuOptions:
             "❯ 1. Yes\n"
             "  2. No\n"
         )
-        assert _extract_menu_options(prompt) == [
+        assert extract_menu_options(prompt) == [
             (1, "Yes"),
             (2, "No"),
         ]
 
     def test_empty_output(self) -> None:
-        assert _extract_menu_options("") == []
+        assert extract_menu_options("") == []
 
     def test_no_numbered_lines(self) -> None:
         prompt = "Some text without any numbers.\nAnother line.\n"
-        assert _extract_menu_options(prompt) == []
+        assert extract_menu_options(prompt) == []
 
     def test_multiple_restarts_picks_last(self) -> None:
         """Three groups starting from 1 — only the last one counts."""
@@ -86,7 +87,7 @@ class TestExtractMenuOptions:
             "❯ 1. Actual option A\n"
             "  2. Actual option B\n"
         )
-        assert _extract_menu_options(prompt) == [
+        assert extract_menu_options(prompt) == [
             (1, "Actual option A"),
             (2, "Actual option B"),
         ]
@@ -98,7 +99,7 @@ class TestExtractMenuOptions:
             "  2. Option B\n"
             "  5. Option E\n"
         )
-        assert _extract_menu_options(prompt) == [
+        assert extract_menu_options(prompt) == [
             (1, "Option A"),
             (2, "Option B"),
         ]
@@ -109,7 +110,7 @@ class TestExtractMenuOptions:
             "  2. Option B\n"
             "  3. Option C\n"
         )
-        assert _extract_menu_options(prompt) == [
+        assert extract_menu_options(prompt) == [
             (2, "Option B"),
             (3, "Option C"),
         ]
@@ -121,7 +122,7 @@ class TestExtractMenuOptions:
             "❯ 2. Selected\n"
             "  3. Also not selected\n"
         )
-        result = _extract_menu_options(prompt)
+        result = extract_menu_options(prompt)
         assert result == [
             (1, "Not selected"),
             (2, "Selected"),
@@ -135,6 +136,56 @@ class TestExtractMenuOptions:
             "  2. Deny\n"
             "  3. Type something to tell Claude what to change\n"
         )
-        result = _extract_menu_options(prompt)
+        result = extract_menu_options(prompt)
         assert len(result) == 3
         assert result[2] == (3, "Type something to tell Claude what to change")
+
+    def test_missing_period_after_digit(self) -> None:
+        # When the pyte snapshot is corrupted by overlapping TUI frames,
+        # the period after the option number can disappear, leaving just
+        # whitespace.  Auto-approve must still find the "Yes" option.
+        # 2+ spaces is the signature of the corruption: the original cell
+        # gap between digit and label, exposed when the period is gone.
+        prompt = (
+            "Do you want to create __init__.py?\n"
+            " ❯ 1  Yes\n"
+            "   2. Yes, allow all edits during this session (shift+tab)\n"
+            "   3. No\n"
+        )
+        assert extract_menu_options(prompt, get_provider('claude')) == [
+            (1, "Yes"),
+            (2, "Yes, allow all edits during this session (shift+tab)"),
+            (3, "No"),
+        ]
+
+    def test_corrupted_snapshot_partial_options(self) -> None:
+        # Worst-case corruption matching what was observed in the wild:
+        # line 1 missing its period (extractable via the 2-space branch),
+        # line 2 has an "Es" prefix bleeding from the footer (extracted
+        # but with garbage in the label), line 3 clean.  Auto-approve's
+        # letters-only Yes-match correctly picks (1, "Yes") and rejects
+        # (2, "Yes,nallow...") whose letters don't reduce to "yes".
+        prompt = (
+            "Do you want to create __init__.py?\n"
+            " ❯ 1  Yes\n"
+            " Es2. Yes,nallow all editseduring this session (shift+tab)\n"
+            "   3. No\n"
+        )
+        result = extract_menu_options(prompt, get_provider('claude'))
+        assert (1, "Yes") in result
+        # Verify (2, ...) has corrupted label that fails the letters-only
+        # "Yes" check — auto-approve must NOT pick this broader option.
+        for num, label in result:
+            if num == 2:
+                letters = ''.join(c for c in label if c.isalpha()).lower()
+                assert letters != 'yes', (
+                    f'option 2 label {label!r} reduces to {letters!r} '
+                    f'and would be incorrectly picked as Yes'
+                )
+
+    def test_single_space_after_digit_not_a_menu(self) -> None:
+        # Conversational/status text like "1 file changed" must NOT parse
+        # as a menu option (would cause auto-approve to pick the wrong
+        # row when prose appears anywhere in the snapshot).
+        prompt = "1 file changed\n12 minutes remaining\n"
+        assert extract_menu_options(prompt, get_provider('claude')) == []
