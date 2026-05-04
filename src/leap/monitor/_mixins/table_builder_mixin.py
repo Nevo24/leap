@@ -762,7 +762,7 @@ class TableBuilderMixin(_Base):
                         CLIState.IDLE: ('\u25cb  Idle', QColor(t.status_idle)),
                         CLIState.RUNNING: ('\u25cf  Running', QColor(t.status_running)),
                         CLIState.NEEDS_PERMISSION: ('\u25b2  Permission', QColor(t.status_permission)),
-                        CLIState.NEEDS_INPUT: ('\u25c6  Input', QColor(t.status_input)),
+                        CLIState.NEEDS_INPUT: ('\u25c6  Question', QColor(t.status_input)),
                         CLIState.INTERRUPTED: ('\u25c7  Interrupted', QColor(t.status_interrupted)),
                     }
                     text, color = state_display.get(cli_state, (cli_state, QColor(t.status_idle)))
