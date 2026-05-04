@@ -648,6 +648,14 @@ class CLIStateTracker:
         # strict ``is_dialog_certain``.  Restricting to the tail keeps
         # response text that happens to quote dialog phrases mid-screen
         # from false-triggering — only patterns at the bottom matter.
+        # NOTE: deliberately do NOT call _reset_screen() here.  The
+        # waiting→idle self-dismissal check at ``get_state`` ~line 1207
+        # uses ``has_dialog_indicator`` on the LIVE screen to decide
+        # whether the dialog has been answered.  If we wiped the screen,
+        # the next idle TUI heartbeat (cursor blink, partial repaint)
+        # would update _last_output_time without re-rendering the full
+        # dialog — the dismissal check would then see "no patterns" and
+        # falsely revert to idle while the dialog is still on screen.
         all_lines = self._get_display_lines()
         filled = [ln for ln in all_lines if ln.strip()]
         tail_compact = ''.join(filled[-5:]).replace(' ', '')
@@ -657,7 +665,6 @@ class CLIStateTracker:
                 '(proactive dialog detection, mid-session)',
             )
             self._prompt_snapshot = all_lines
-            self._reset_screen()
             self._interrupt_pending = False
             with self._lock:
                 self._state = CLIState.NEEDS_PERMISSION

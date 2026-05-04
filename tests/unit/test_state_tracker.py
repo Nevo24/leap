@@ -1868,6 +1868,47 @@ class TestProactiveIdleDialogDetection:
         )
         assert tracker._state == 'idle'
 
+    def test_proactive_transition_survives_idle_heartbeat(
+        self, tmp_path: Path,
+    ) -> None:
+        # Regression: an earlier version called _reset_screen() right
+        # after the proactive transition, wiping the dialog from the
+        # live pyte buffer.  Then a Claude TUI heartbeat (cursor blink
+        # / partial repaint) would update _last_output_time without
+        # re-rendering the full dialog, so the waiting→idle self-
+        # dismissal check at get_state would see "no dialog patterns"
+        # on the empty screen and revert to idle — even though the
+        # dialog is still on the user's actual terminal.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        tracker.get_state(pty_alive=True)
+
+        # Full AskUserQuestion-style dialog renders.
+        feed_screen_text(
+            tracker,
+            '□ Cats vs dogs\n'
+            'Are cats better than dogs?\n'
+            '> 1. Yes\n'
+            '  2. No\n'
+            'Enter to select · Esc to cancel',
+        )
+        assert tracker._state == 'needs_permission'
+
+        # Idle TUI heartbeat: just toggle cursor visibility.  This is
+        # output (advances _last_output_time) but does NOT redraw the
+        # dialog cells.  Without the fix, the dialog would be lost
+        # because _reset_screen() had wiped it.
+        tracker.on_output(b'\x1b[?25h')
+
+        # 5+ seconds later, get_state runs the self-dismissal check.
+        # Live screen still has the dialog → has_dialog_indicator
+        # returns True → state must remain needs_permission.
+        t[0] = 10.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
     def test_idle_stays_when_patterns_quoted_above_tail(
         self, tmp_path: Path,
     ) -> None:
