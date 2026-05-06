@@ -1411,16 +1411,23 @@ class _ChecklistWidget(QWidget):
 
         # Re-activate the dialog window — on macOS, widget destruction
         # during _clear_layout can shift focus to the parent window.
-        # Synchronous call handles immediate focus steal; deferred call
-        # catches the steal from deleteLater() on the next event loop.
+        # Both calls are gated on ``isActiveWindow()`` so they fire only
+        # when there's an actual deactivation to recover from; calling
+        # ``activateWindow`` on an already-active window on macOS triggers
+        # a redundant deactivate-reactivate cycle, visible to the user as
+        # a rapid flash to the parent monitor window on every checkbox
+        # toggle.  Sync call handles any immediate steal from setParent(None);
+        # deferred call catches the steal from deleteLater on the next loop.
         win = self.window()
         if win:
-            win.activateWindow()
-            win.raise_()
+            if not win.isActiveWindow():
+                win.activateWindow()
+                win.raise_()
             def _deferred_activate() -> None:
                 try:
-                    win.activateWindow()
-                    win.raise_()
+                    if not win.isActiveWindow():
+                        win.activateWindow()
+                        win.raise_()
                 except RuntimeError:
                     pass
             QTimer.singleShot(0, _deferred_activate)
