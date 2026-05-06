@@ -1396,32 +1396,29 @@ class LeapServer:
     def _clear_stale_cli_input(self, n: int) -> None:
         """Clear stale CLI input left on the TUI before ``^^`` entry.
 
-        IDLE fast path: Ctrl+U is reliable when Ink isn't streaming
-        output, so a single End + Ctrl+U is enough (verified
-        empirically).
+        IDLE fast path: Ctrl+U on idle Ink kills the entire wrapped
+        logical line in one shot — single End + Ctrl+U is enough
+        (verified empirically).
 
-        RUNNING / streaming path: each byte can race with Ink's
-        render loop and rarely be dropped, so the sequence is
-        layered with a retry of (End + Ctrl+U) to cover any single
-        drop.  Two rounds of End + Ctrl+U handle every single-drop
-        permutation:
+        RUNNING / streaming path: Ink's Ctrl+U during streaming is
+        ROW-bound, not line-bound — each press kills only one
+        visual row.  Pressing Ctrl+U N times in a row kills N rows
+        (cursor moves up after each kill — verified empirically).
+        So we send one Ctrl+U per visual row of the input, using
+        ``n // cols`` (Lever 1 math) to estimate row count.  An
+        extra ``+1`` covers the cursor row itself, and the layered
+        sequence (End + Ctrl+U + End + Ctrl+U×rows) gives
+        drop-defense for the leading End and first Ctrl+U.
 
-        * First End drops → second End succeeds, then Ctrl+U.
-        * First Ctrl+U drops → second End is a no-op (already at
-          end), second Ctrl+U kills the line.
-        * Both rounds succeed → second End/Ctrl+U on the now-empty
-          line are cheap no-ops in Ink.
+        Total cost is roughly ``rows`` bytes regardless of message
+        length — vs. the original ``n`` backspaces which flooded
+        Ink with re-renders for long pastes.
 
-        Previously the fallback was ``n`` backspaces (one per char
-        on the CLI), which floods Ink with re-renders for long
-        messages — the user's screen would thrash for seconds when
-        ``^^`` was pressed after pasting a multi-row message.  The
-        retry approach defends against the same drop with a fixed
-        4-byte cost regardless of ``n``.
-
-        ``n`` is retained in the signature for compatibility with
-        callers but is no longer used.  End is used instead of
-        Ctrl+E to avoid emacs-style binding ambiguity.
+        End is used instead of Ctrl+E to avoid emacs-style binding
+        ambiguity.  ``n`` is the byte count of pre-capture input;
+        for multi-byte UTF-8 it over-counts row math by a constant
+        factor, harmless because extra Ctrl+U presses on already-
+        empty rows are no-ops.
         """
         if self.state.current_state == CLIState.IDLE:
             self.pty.send('\x1b[F')  # End: cursor to end
@@ -1431,11 +1428,16 @@ class LeapServer:
             return
         self.pty.send('\x1b[F')  # End: cursor to end
         time.sleep(0.02)
-        self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
+        self.pty.send('\x15')  # First Ctrl+U: kill bottom row
         time.sleep(0.02)
         self.pty.send('\x1b[F')  # End again: catch dropped-first-End race
         time.sleep(0.02)
-        self.pty.send('\x15')  # Ctrl+U retry: catch dropped-first-Ctrl+U race
+        try:
+            cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+        except OSError:
+            cols = 80
+        rows = (n // max(1, cols)) + 1  # +1 for cursor row / safety
+        self.pty.send('\x15' * rows)  # One Ctrl+U per remaining row
         time.sleep(0.03)
 
     def _capture_flush(self, cancel: bool = False) -> None:

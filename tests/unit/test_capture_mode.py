@@ -188,6 +188,35 @@ class TestStaleCleanup:
         srv._input_filter_impl(b'^^hello\r')
         srv.pty.send.assert_not_called()
 
+    def test_running_ctrlu_count_scales_with_rows(self):
+        """In RUNNING, Ctrl+U is row-bound — clear sequence sends one
+        Ctrl+U per visual row of typed input (plus a small safety
+        margin), NOT a per-char backspace flood."""
+        import os as _os
+        srv = make_server(CLIState.RUNNING)
+        # Use os.terminal_size so the deferred-resize thread in
+        # _capture_flush can also unpack (cols, rows) without error.
+        with patch('shutil.get_terminal_size',
+                   return_value=_os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'x' * 250)  # ~4 rows at 80 cols
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        # Count total Ctrl+U bytes across all pty.send calls (the
+        # row-batched send is one string of repeated '\x15').
+        total_ctrlu = sum(
+            c.count('\x15') for c in calls if isinstance(c, str)
+        )
+        # Expect at least 4 (one per row of 250 // 80 + 1 = 4 rows,
+        # plus the initial single Ctrl+U → ≥ 5 in practice).
+        assert total_ctrlu >= 4, \
+            f"want >=4 Ctrl+U bytes for 4 rows, got {total_ctrlu}"
+        # And no per-char backspace flood.
+        assert not any(
+            isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
+            for c in calls
+        ), "no backspace flood for long input in RUNNING"
+
 
 class TestScenarioX:
     """Type during RUNNING → ^^ → Enter: stale text cleared robustly."""
