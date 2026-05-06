@@ -100,8 +100,12 @@ class SessionMixin(_Base):
                 merged.append(session)
             elif not (pin.get('remote_project_path')
                       or tag in self._tracked_tags
-                      or tag in self._checking_tags):
-                # Dead row with no PR tracking — schedule for removal
+                      or tag in self._checking_tags
+                      or tag in self._starting_tags):
+                # Dead row with no PR tracking — schedule for removal.
+                # ``_starting_tags`` is honored so a freshly-added row
+                # (From Local Path → Open Directly, From Resume) isn't
+                # wiped between the pin and the launcher reading it.
                 tags_to_remove.append(tag)
                 continue
             else:

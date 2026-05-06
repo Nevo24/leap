@@ -988,8 +988,9 @@ class PRTrackingMixin(_Base):
             save_pinned_sessions(self._pinned_sessions)
             self._show_status(f"Added row '{tag}' from local path: {path.name}")
 
-            self._refresh_and_show_row(tag)
+            # Start before refresh — see _add_row_from_resume for why.
             self._start_server(tag)
+            self._refresh_and_show_row(tag)
 
     def _add_row_from_resume(self) -> None:
         """Add a row by resuming a recorded CLI session.
@@ -1084,12 +1085,17 @@ class PRTrackingMixin(_Base):
             f"(session {sess.session_id[:8]})"
         )
 
-        self._refresh_and_show_row(final_tag)
+        # Start before refresh: ``_start_server`` adds the tag to
+        # ``_starting_tags``, which ``_merge_sessions`` honors as an
+        # exemption from the dead-row auto-cleanup.  Reversing the
+        # order would let the cleanup wipe the just-pinned row
+        # (no live server, no PR tracking yet).
         self._start_server(
             final_tag,
             resume_session_id=sess.session_id,
             resume_cli=cli,
         )
+        self._refresh_and_show_row(final_tag)
 
     # ------------------------------------------------------------------
     #  Shared helpers for add-row flows
