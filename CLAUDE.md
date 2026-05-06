@@ -104,7 +104,20 @@ src/
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
     │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)
-    │   │   └── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders
+    │   │   ├── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders. The `NotesDialog` class itself; helpers + sub-widgets live in `notes/` sub-package and are re-exported here for backward-compat.
+    │   │   ├── notes_undo.py          # Undo/redo command-pattern stack for the Notes dialog (separate file from notes/ sub-package — predates the split; tests live in tests/unit/test_notes_undo.py)
+    │   │   └── notes/                 # Notes-dialog sub-package (extracted from notes_dialog.py)
+    │   │       ├── __init__.py             # Package skeleton
+    │   │       ├── rtl.py                  # `_text_is_rtl`, `_apply_rtl_direction` — directional-text detection for QLineEdits
+    │   │       ├── persistence.py          # FS-touching helpers: note paths, listing, mtime, `_NOTES_META_FILE`, mode get/set, rename/remove meta
+    │   │       ├── ordering.py             # `_load/_save_order`, folder-meta + per-folder child ordering (`_order` key in notes meta JSON)
+    │   │       ├── text_helpers.py         # Markdown link / STX-ETX bold helpers + `_UrlHighlighter` syntax highlighter; pure position-math functions for display↔raw conversion
+    │   │       ├── image_helpers.py        # `_save_note_image`, `_collect_image_refs`, `_cleanup_orphaned_images`, `_ImagePreviewPopup`, `_IMAGE_MARKER_RE`, `_CHECKLIST_PLACEHOLDER_RE`
+    │   │       ├── note_text_edit.py       # `_NoteTextEdit` rich editor (image paste, link rendering, Cmd+B/C); plus `_setup_textedit_url_click` / `_setup_textedit_image_hover` for monkey-patching other QTextEdits
+    │   │       ├── checklist_io.py         # `_parse_checklist` / `_serialize_checklist` round-trip for the on-disk checklist format
+    │   │       ├── checklist_widgets.py    # `_ItemLineEdit` + `_DragGrip` + `_ChecklistItemWidget` + `_ChecklistWidget` — Google Keep-style checklist editor (one file because the four classes have bidirectional inter-references)
+    │   │       ├── tree_widget.py          # `_NotesTreeWidget` — left-panel QTreeWidget with custom drag-drop interception
+    │   │       └── session_picker.py       # `_SessionPickerDialog` — modal picker for the "Run in Session" action
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
