@@ -11,8 +11,11 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
-from leap.utils.constants import is_valid_tag
+from leap.cli_providers.registry import get_display_name
+from leap.utils.constants import STORAGE_DIR, is_valid_tag
+from leap.utils.resume_store import load_raw_tag_rows
 from leap.monitor.dialogs.add_local_dialog import AddLocalDialog
+from leap.monitor.dialogs.resume_session_dialog import ResumeSessionDialog
 from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import (
     load_github_config, load_gitlab_config, save_pinned_sessions,
@@ -734,17 +737,23 @@ class PRTrackingMixin(_Base):
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
 
-        git_action = menu.addAction('From Git URL...')
+        git_action = menu.addAction('From Git URL')
         git_action.setToolTip(
             'Add a row from a PR URL, commit URL,\n'
             'or plain Git project URL')
         git_action.triggered.connect(self._add_row_from_git)
 
-        local_action = menu.addAction('From Local Path...')
+        local_action = menu.addAction('From Local Path')
         local_action.setToolTip(
             'Add a row from a local Git repository —\n'
             'clone to repos dir or open directly')
         local_action.triggered.connect(self._add_row_from_local)
+
+        resume_action = menu.addAction('From Resume')
+        resume_action.setToolTip(
+            'Resume a recorded CLI session — same picker as\n'
+            '`leap --resume`, opened in the default terminal.')
+        resume_action.triggered.connect(self._add_row_from_resume)
 
         menu.exec_(QCursor.pos())
 
@@ -982,6 +991,106 @@ class PRTrackingMixin(_Base):
             self._refresh_and_show_row(tag)
             self._start_server(tag)
 
+    def _add_row_from_resume(self) -> None:
+        """Add a row by resuming a recorded CLI session.
+
+        GUI counterpart of ``leap --resume``.  Opens a flat-list picker
+        of every recorded session, then spawns a server in the user's
+        default terminal with ``LEAP_RESUME_*`` env vars set so the
+        provider's ``resume_args(<id>)`` is prepended to the CLI argv.
+        """
+        if not ResumeSessionDialog.has_resumable_sessions(STORAGE_DIR):
+            QMessageBox.information(
+                self, 'No Resumable Sessions',
+                'No resumable sessions found.\n\n'
+                'Run a CLI through Leap at least once — new sessions '
+                'are recorded automatically and will appear here next '
+                'time.',
+            )
+            return
+
+        dlg = ResumeSessionDialog(STORAGE_DIR, self)
+        if dlg.exec_() != ResumeSessionDialog.Accepted:
+            return
+        picked = dlg.selected_session()
+        if not picked:
+            return
+        cli, original_tag, sess = picked
+
+        # Refuse to resume a session that's already running under a live
+        # Leap server — the same UUID can't be loaded twice.  Ownership
+        # rule mirrors leap-resume.py: a session counts as owned by a
+        # live tag when (a) the tag has a live server (server_pid set),
+        # (b) that server's cli_provider matches the recorded cli, and
+        # (c) the session is the newest one recorded for (cli, tag).
+        live_clis: dict[str, Any] = {
+            s['tag']: s.get('cli_provider')
+            for s in self.sessions
+            if s.get('server_pid') is not None
+        }
+        owners: list[tuple[str, str]] = []
+        for r in load_raw_tag_rows(STORAGE_DIR):
+            if live_clis.get(r.tag) != r.cli:
+                continue
+            if r.sessions and r.sessions[0].session_id == sess.session_id:
+                owners.append((r.cli, r.tag))
+        if owners:
+            tags_str = ', '.join(
+                f"'{t}' ({get_display_name(c)})" for c, t in owners)
+            QMessageBox.warning(
+                self, 'Session Already Running',
+                f"This CLI session is already running under Leap tag "
+                f"{tags_str}.\n\n"
+                f"Open that row in the monitor instead of resuming "
+                f"the same session twice.",
+            )
+            return
+
+        # Some CLIs (Claude Code) store transcripts under a cwd-derived
+        # slug, so a missing cwd makes the session unresumable.
+        if sess.cwd and not Path(sess.cwd).is_dir():
+            QMessageBox.warning(
+                self, 'Working Directory Missing',
+                f"The session's original working directory no longer "
+                f"exists:\n\n{sess.cwd}\n\n"
+                f"Some CLIs (Claude Code) store transcripts per-cwd, "
+                f"so the session can't be resumed without it.",
+            )
+            return
+
+        # If the session's original Leap tag is already in use (pinned
+        # row or live server), prompt for a new tag — the existing
+        # ``_ask_tag`` validator rejects taken tags and bad characters.
+        final_tag = original_tag
+        if final_tag in self._pinned_sessions:
+            final_tag = self._ask_tag([
+                f"Resuming: [{get_display_name(cli)}] {original_tag}",
+                f"Session:  {sess.session_id[:8]}",
+                f"Cwd:      {sess.cwd or '(none)'}",
+                "",
+                f"Tag '{original_tag}' is already in use — pick a new one:",
+            ]) or ''
+            if not final_tag:
+                return
+
+        self._pinned_sessions[final_tag] = {
+            'tag': final_tag,
+            'project_path': sess.cwd or '',
+            'ide': '',
+        }
+        save_pinned_sessions(self._pinned_sessions)
+        self._show_status(
+            f"Resuming [{get_display_name(cli)}] '{final_tag}' "
+            f"(session {sess.session_id[:8]})"
+        )
+
+        self._refresh_and_show_row(final_tag)
+        self._start_server(
+            final_tag,
+            resume_session_id=sess.session_id,
+            resume_cli=cli,
+        )
+
     # ------------------------------------------------------------------
     #  Shared helpers for add-row flows
     # ------------------------------------------------------------------
@@ -1030,8 +1139,3 @@ class PRTrackingMixin(_Base):
             [s for s in self.sessions if s.get('server_pid') is not None]
         )
         self._update_table()
-
-    def _start_server(self, tag: str) -> None:
-        """Start a server for a newly added row."""
-        self._starting_tags.add(tag)
-        self._server_launcher.start_server(tag)

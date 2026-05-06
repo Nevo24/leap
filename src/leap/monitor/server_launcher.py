@@ -84,12 +84,22 @@ class ServerLauncher:
         # GitLab uses oauth2 as the username
         return f"{scheme}oauth2:{encoded_token}@{rest}/{remote_project}.git"
 
-    def start_server(self, tag: str) -> None:
+    def start_server(
+        self, tag: str,
+        resume_session_id: Optional[str] = None,
+        resume_cli: Optional[str] = None,
+    ) -> None:
         """Start a new server for a pinned (dead) row.
 
         For PR-pinned rows (with remote_project_path): find/clone project,
         check branch, checkout if needed, then open Leap.
         For auto-pinned rows (with local project_path): open Leap directly.
+
+        When *resume_session_id*/*resume_cli* are set, the spawned shell
+        gets ``LEAP_RESUME_SESSION_ID``/``LEAP_RESUME_CLI``/``LEAP_CLI``
+        exported before ``leap <tag>`` runs — matching the env hand-off
+        used by ``leap --resume`` so the server prepends the provider's
+        ``resume_args(session_id)`` to the CLI argv.
         """
         pinned = self._w._pinned_sessions.get(tag, {})
 
@@ -127,12 +137,21 @@ class ServerLauncher:
             or None
         )
 
-        self._open_leap_in_terminal(tag, preferred_ide, project_path)
+        self._open_leap_in_terminal(
+            tag, preferred_ide, project_path,
+            resume_session_id=resume_session_id, resume_cli=resume_cli,
+        )
 
     def _open_leap_in_terminal(
         self, tag: str, preferred_ide: Optional[str], project_path: Optional[str],
+        resume_session_id: Optional[str] = None,
+        resume_cli: Optional[str] = None,
     ) -> None:
-        """Open a Leap server in a terminal at the given project path."""
+        """Open a Leap server in a terminal at the given project path.
+
+        If *resume_session_id*/*resume_cli* are provided, ``LEAP_RESUME_*``
+        env vars are exported in the spawned shell before ``leap`` runs.
+        """
         # Guard: if the project directory was deleted, ask the user instead of
         # crashing the IDE (e.g. JetBrains "Could not determine current working directory").
         if project_path and not Path(project_path).is_dir():
@@ -148,7 +167,30 @@ class ServerLauncher:
             if reply != QMessageBox.Yes:
                 return
             project_path = None
-        cmd = f"cd {shlex.quote(project_path)} && leap {shlex.quote(tag)}" if project_path else f"leap {shlex.quote(tag)}"
+        parts: list[str] = []
+        if project_path:
+            parts.append(f"cd {shlex.quote(project_path)}")
+        # Resume hand-off uses the same env vars as leap-resume.py — the
+        # server reads these and calls ``provider.resume_args(<id>)`` to
+        # build the right argv (e.g. ``--resume=<uuid>`` for Claude).
+        # Use the shell's native ``VAR=val cmd`` prefix (NOT ``/usr/bin/env``)
+        # so the assignment is scoped to just this invocation AND ``leap``
+        # is resolved through the shell — which matters because ``leap`` is
+        # typically defined as a shell function in the user's rc file, and
+        # ``/usr/bin/env`` only sees binaries on PATH (it would fail with
+        # "leap: No such file or directory").  Plain ``export`` would work
+        # for the function lookup but would persist in the spawned terminal
+        # and contaminate any later ``leap <other>`` in the same tab.
+        leap_cmd = f"leap {shlex.quote(tag)}"
+        if resume_session_id and resume_cli:
+            leap_cmd = (
+                f"LEAP_RESUME_SESSION_ID={shlex.quote(resume_session_id)} "
+                f"LEAP_RESUME_CLI={shlex.quote(resume_cli)} "
+                f"LEAP_CLI={shlex.quote(resume_cli)} "
+                f"{leap_cmd}"
+            )
+        parts.append(leap_cmd)
+        cmd = " && ".join(parts)
         worker = BackgroundCallWorker(
             lambda: open_terminal_with_command(
                 cmd, preferred_ide=preferred_ide, project_path=project_path,

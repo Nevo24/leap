@@ -420,13 +420,27 @@ class SessionMixin(_Base):
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _start_server(self, tag: str) -> None:
-        """Start a new server for a pinned (dead) row."""
+    def _start_server(
+        self, tag: str,
+        resume_session_id: Optional[str] = None,
+        resume_cli: Optional[str] = None,
+    ) -> None:
+        """Start a new server for a pinned (dead) row.
+
+        When *resume_session_id*/*resume_cli* are set, the launcher
+        exports ``LEAP_RESUME_*`` env vars before running ``leap`` so
+        the server prepends ``provider.resume_args(<id>)`` to the CLI
+        argv (same hand-off as ``leap --resume``).
+        """
         if tag in self._starting_tags:
             return  # Already launching — ignore duplicate click
         self._starting_tags.add(tag)
         self._update_table()  # Immediately show disabled "Starting..." button
-        self._server_launcher.start_server(tag)
+        self._server_launcher.start_server(
+            tag,
+            resume_session_id=resume_session_id,
+            resume_cli=resume_cli,
+        )
 
     def _delete_row(self, tag: str) -> None:
         """Delete a row, always prompting for confirmation."""

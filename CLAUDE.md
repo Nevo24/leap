@@ -101,6 +101,7 @@ src/
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   ├── scm_template_dialog.py # Preset editor dialog (PR context + message bundles)
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
+    │   │   ├── resume_session_dialog.py # GUI counterpart of `leap --resume` — flat-list picker over recorded CLI sessions; returns (cli, tag, SessionRecord)
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
     │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)
@@ -188,6 +189,7 @@ assets/
 | `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste + Next/To-End queue-position toggle |
 | `SendPresetDialog` | `monitor/ui/image_text_edit.py` | Picker for a message-bundle preset + Next/To-End queue-position toggle |
 | `SendCommentsDialog` | `monitor/dialogs/send_comments_dialog.py` | PR-comments picker: filter (all / /leap-tagged — hidden entirely when `auto_fetch_leap` is on), mode (each / combined), context preset |
+| `ResumeSessionDialog` | `monitor/dialogs/resume_session_dialog.py` | GUI counterpart of `leap --resume` — flat-list picker over `load_tag_rows(STORAGE_DIR)`, search filter, returns `(cli, tag, SessionRecord)`. Caller exports `LEAP_RESUME_*` env vars before spawning `leap <tag>`. |
 | `SCMSetupDialog` | `monitor/dialogs/scm_setup_dialog.py` | Base class. Three actions: **Save** (persist fields, preserves `username`), **Connect/Disconnect** (toggle button — Connect validates+saves everything incl. `username`; Disconnect clears only `username`), **Cancel** (no writes) |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
@@ -377,7 +379,12 @@ Rows persist via `pinned_sessions.json`. Key rules:
 
 ### Add Row (+ Button)
 
-Two options: **From Git URL** (PR URLs or plain project URLs → parse, pin, clone/track) and **From Local Path** (clone to repos dir or open directly). Tag validation via shared `_ask_tag()` helper.
+Three options:
+- **From Git URL** — PR URLs or plain project URLs → parse, pin, clone/track.
+- **From Local Path** — clone to repos dir or open directly.
+- **From Resume** — GUI counterpart of `leap --resume`. Opens `ResumeSessionDialog`, a flat-list picker over `load_tag_rows(STORAGE_DIR)`. After the user picks `(cli, tag, SessionRecord)`, `_add_row_from_resume()` (in `pr_tracking_mixin.py`) refuses if the same CLI session UUID is already running under another live tag, requires the recorded cwd to still exist, and prompts for a new tag if the original is in `_pinned_sessions`. Spawns the server in the user's default terminal with `LEAP_RESUME_SESSION_ID` / `LEAP_RESUME_CLI` / `LEAP_CLI` exported via the launcher (`ServerLauncher.start_server(tag, resume_session_id, resume_cli)` → `_open_leap_in_terminal` prepends `export …` clauses to the shell command). The server reads those env vars and prepends `provider.resume_args(<id>)` to the CLI argv — same hand-off as `leap --resume`.
+
+Tag validation via shared `_ask_tag()` helper.
 
 ### New Change Indicator
 
