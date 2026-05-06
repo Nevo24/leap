@@ -13,6 +13,7 @@ Two utility functions also live here:
   ``QTextEdit``, optionally resolving ``[Image #N]`` placeholders.
 """
 
+import textwrap
 from typing import Optional
 
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QUrl, Qt
@@ -242,7 +243,11 @@ class _NoteTextEdit(QTextEdit):
             # inserting a link), reset the format so the pasted plain
             # run doesn't inherit the link styling.
             cursor.setCharFormat(QTextCharFormat())
-            self._insert_text_with_links(cursor, source.text())
+            # Strip the common leading whitespace shared by every line —
+            # terminal copies typically include a 1-col left-margin space
+            # on each line, which would otherwise be inserted verbatim.
+            self._insert_text_with_links(
+                cursor, textwrap.dedent(source.text()))
             # Push the mutated cursor back so the caret + selection
             # reflect the end of the paste, matching Qt's default
             # insertPlainText behaviour.
