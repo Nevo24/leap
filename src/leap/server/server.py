@@ -1396,9 +1396,16 @@ class LeapServer:
     def _clear_stale_cli_input(self, n: int) -> None:
         """Clear stale CLI input left on the TUI before ``^^`` entry.
 
-        Sequence (each byte can race with Ink's render loop during
-        streaming and be dropped, so the steps are layered so any
-        single drop is covered by the others):
+        IDLE fast path: Ctrl+U is reliable when Ink isn't streaming
+        output, so a single End + Ctrl+U is enough.  Skipping the
+        n-backspace fallback avoids a flood of Ink re-renders for
+        long messages (n proportional to char count; verified
+        empirically that Ctrl+U alone clears the line cleanly in
+        IDLE state).
+
+        RUNNING / streaming path: each byte can race with Ink's
+        render loop and rarely be dropped, so the steps are layered
+        so any single drop is covered by the others:
 
         1. End (``\\x1b[F``) — cursor to end of line.
         2. Ctrl+U (``\\x15``) — kill from cursor to start (fast path).
@@ -1415,6 +1422,12 @@ class LeapServer:
         prior input, so multi-byte UTF-8 chars produce extra
         backspaces that Ink safely ignores.
         """
+        if self.state.current_state == CLIState.IDLE:
+            self.pty.send('\x1b[F')  # End: cursor to end
+            time.sleep(0.02)
+            self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
+            time.sleep(0.03)
+            return
         self.pty.send('\x1b[F')  # End: cursor to end
         time.sleep(0.02)
         self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
@@ -2062,6 +2075,31 @@ class LeapServer:
                 pass
         self._pending_caret = False
         self._capture_prev_lines = 0
+        # Clear the wrap rows that the CLI rendered for the pre-capture
+        # text — without this, a long typed message that wrapped across
+        # multiple terminal rows leaves its upper rows visible above
+        # the [Leap Q] line (which only clears its own current row).
+        # Walk up clearing, then walk back down so _capture_display
+        # below draws on the original cursor row, not the top of the
+        # cleared region.  Use ``cursor_chars // cols`` (NOT
+        # ``+ prompt_offset``) so we never over-clear: at exact
+        # wrap-boundary cases this leaves one residual row, which is
+        # preferable to erasing a row of the conversation transcript
+        # above the input box.
+        if self._capture_stale_char_count > 0:
+            try:
+                cols = shutil.get_terminal_size(fallback=(80, 24)).columns
+                if cols > 0:
+                    rows_above = self._capture_cursor_pos // cols
+                    if rows_above > 0:
+                        walk_up = '\x1b[A\r\x1b[K' * rows_above
+                        walk_down = f'\x1b[{rows_above}B'
+                        os.write(
+                            sys.stdout.fileno(),
+                            (walk_up + walk_down).encode(),
+                        )
+            except OSError:
+                pass
         self._saved_msg_index = -1
         self._capture_show_saved_hint = False
         # Inject clipboard images saved by prior Ctrl+V presses.

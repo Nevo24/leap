@@ -233,6 +233,95 @@ class TestCancelReenter:
         assert '\x1b[F' in calls and '\x15' in calls
 
 
+class TestIdleSkipsBackspaceFlood:
+    """In IDLE, _clear_stale_cli_input sends End + Ctrl+U only — no
+    n-backspace fallback.  Ctrl+U is reliable when Ink isn't streaming,
+    so the layered fallback (which floods Ink with re-renders for long
+    messages) is unnecessary and skipped."""
+
+    def test_idle_omits_backspace_fallback(self):
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        srv._input_filter_impl(b'hello')
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(b'^^')
+        srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        assert '\x1b[F' in calls, "End must still be sent"
+        assert '\x15' in calls, "Ctrl+U must still be sent"
+        # Fast path: NO n-backspace flood, NO duplicated End.
+        assert '\x7f' * 5 not in calls, \
+            "n-backspace fallback must be skipped in IDLE"
+        assert calls.count('\x1b[F') == 1, \
+            "End sent only once in IDLE fast path (not twice like RUNNING)"
+
+    def test_idle_skips_flood_for_long_text(self):
+        """Long typed input in IDLE: still no backspace flood."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        long_text = b'x' * 500
+        srv._input_filter_impl(long_text)
+        with patch('termios.tcflush'):
+            srv._input_filter_impl(b'^^')
+        srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        # Crucially: no '\x7f' * 500 — the whole point of Lever 2.
+        assert not any(
+            isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
+            for c in calls
+        ), "no backspace string sent in IDLE"
+
+
+class TestClearWrapRowsAtCaptureEntry:
+    """At ^^ entry, the wrap rows the CLI rendered above the cursor get
+    cleared so [Leap Q] doesn't sit on top of leftover rendering."""
+
+    def test_no_walk_up_for_short_text(self):
+        """Single-row typed text: cursor_pos // cols == 0, no walk-up."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('shutil.get_terminal_size') as mock_size, \
+                patch('os.write') as mock_write, \
+                patch('termios.tcflush'):
+            mock_size.return_value.columns = 80
+            srv._input_filter_impl(b'hello')
+            srv._input_filter_impl(b'^^')
+        all_writes = b''.join(c[0][1] for c in mock_write.call_args_list)
+        assert b'\x1b[A\r\x1b[K' not in all_writes, \
+            "no walk-up for short single-row text"
+
+    def test_walk_up_walk_down_for_wrapped_text(self):
+        """Long typed text wraps across rows: walk_up + walk_down emitted
+        as a contiguous payload at capture entry."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        long_text = b'x' * 250  # 250 // 80 = 3 rows above
+        with patch('shutil.get_terminal_size') as mock_size, \
+                patch('os.write') as mock_write, \
+                patch('termios.tcflush'):
+            mock_size.return_value.columns = 80
+            srv._input_filter_impl(long_text)
+            srv._input_filter_impl(b'^^')
+        all_writes = b''.join(c[0][1] for c in mock_write.call_args_list)
+        # Contiguous walk_up (3x) + walk_down: \x1b[A\r\x1b[K * 3 + \x1b[3B
+        walk_seq = b'\x1b[A\r\x1b[K' * 3 + b'\x1b[3B'
+        assert walk_seq in all_writes, \
+            "walk_up + walk_down sequence missing at capture entry"
+
+    def test_no_walk_up_when_no_stale_text(self):
+        """^^ on empty input (no pre-typing): no walk-up emitted."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('shutil.get_terminal_size') as mock_size, \
+                patch('os.write') as mock_write, \
+                patch('termios.tcflush'):
+            mock_size.return_value.columns = 80
+            srv._input_filter_impl(b'^^')
+        all_writes = b''.join(c[0][1] for c in mock_write.call_args_list)
+        assert b'\x1b[A\r\x1b[K' not in all_writes, \
+            "no walk-up when there was no pre-capture CLI text"
+
+
 class TestPasteCollapse:
     """Large bracketed pastes collapse to [Paste #N] in _terminal_input_buf."""
 
