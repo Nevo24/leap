@@ -1397,30 +1397,31 @@ class LeapServer:
         """Clear stale CLI input left on the TUI before ``^^`` entry.
 
         IDLE fast path: Ctrl+U is reliable when Ink isn't streaming
-        output, so a single End + Ctrl+U is enough.  Skipping the
-        n-backspace fallback avoids a flood of Ink re-renders for
-        long messages (n proportional to char count; verified
-        empirically that Ctrl+U alone clears the line cleanly in
-        IDLE state).
+        output, so a single End + Ctrl+U is enough (verified
+        empirically).
 
         RUNNING / streaming path: each byte can race with Ink's
-        render loop and rarely be dropped, so the steps are layered
-        so any single drop is covered by the others:
+        render loop and rarely be dropped, so the sequence is
+        layered with a retry of (End + Ctrl+U) to cover any single
+        drop.  Two rounds of End + Ctrl+U handle every single-drop
+        permutation:
 
-        1. End (``\\x1b[F``) — cursor to end of line.
-        2. Ctrl+U (``\\x15``) — kill from cursor to start (fast path).
-        3. End again — re-position cursor at end of whatever text
-           remains (covers the case where step 1 was dropped and
-           Ctrl+U only killed the prefix, leaving a suffix at pos 0
-           with cursor also at 0).
-        4. ``n`` backspaces — delete from end backward.  No-op when
-           the line is already empty (common case), so free.
+        * First End drops → second End succeeds, then Ctrl+U.
+        * First Ctrl+U drops → second End is a no-op (already at
+          end), second Ctrl+U kills the line.
+        * Both rounds succeed → second End/Ctrl+U on the now-empty
+          line are cheap no-ops in Ink.
 
-        The End escape is used instead of Ctrl+E to avoid any
-        emacs-style binding ambiguity — Ink's text-input handles it
-        via its keyname system.  ``n`` is the byte count of the
-        prior input, so multi-byte UTF-8 chars produce extra
-        backspaces that Ink safely ignores.
+        Previously the fallback was ``n`` backspaces (one per char
+        on the CLI), which floods Ink with re-renders for long
+        messages — the user's screen would thrash for seconds when
+        ``^^`` was pressed after pasting a multi-row message.  The
+        retry approach defends against the same drop with a fixed
+        4-byte cost regardless of ``n``.
+
+        ``n`` is retained in the signature for compatibility with
+        callers but is no longer used.  End is used instead of
+        Ctrl+E to avoid emacs-style binding ambiguity.
         """
         if self.state.current_state == CLIState.IDLE:
             self.pty.send('\x1b[F')  # End: cursor to end
@@ -1434,7 +1435,7 @@ class LeapServer:
         time.sleep(0.02)
         self.pty.send('\x1b[F')  # End again: catch dropped-first-End race
         time.sleep(0.02)
-        self.pty.send('\x7f' * n)  # backspaces: catch dropped-Ctrl+U race
+        self.pty.send('\x15')  # Ctrl+U retry: catch dropped-first-Ctrl+U race
         time.sleep(0.03)
 
     def _capture_flush(self, cancel: bool = False) -> None:

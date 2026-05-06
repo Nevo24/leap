@@ -139,19 +139,26 @@ class TestCaptureSwallows:
 
 
 class TestStaleCleanup:
-    """Stale CLI input cleared in Enter handler via End + Ctrl+U + N backspaces."""
+    """Stale CLI input cleared in Enter handler via two End + Ctrl+U
+    rounds (no per-char backspace flood)."""
 
     def test_running_sends_full_clear_sequence(self):
-        """During RUNNING: End + Ctrl+U + End + backspaces sequence."""
+        """During RUNNING: End + Ctrl+U + End + Ctrl+U (retry round)."""
         srv = make_server(CLIState.RUNNING)
         srv._input_filter_impl(b'hello')
         srv._input_filter_impl(b'^^')
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        # End must be sent at least twice (belt-and-suspenders).
+        # End sent at least twice (belt-and-suspenders).
         assert calls.count('\x1b[F') >= 2, "End escape must be sent twice"
-        assert '\x15' in calls, "Ctrl+U must be sent"
-        assert '\x7f' * 5 in calls, "N backspaces must be sent as fallback"
+        # Ctrl+U sent at least twice (drop-defense retry replaces the
+        # old n-backspace fallback).
+        assert calls.count('\x15') >= 2, "Ctrl+U must be sent twice"
+        # Crucially: NO per-char backspace flood.
+        assert not any(
+            isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
+            for c in calls
+        ), "no n-backspace flood in RUNNING"
 
     def test_idle_sends_end_then_ctrlu(self):
         """During IDLE, End then Ctrl+U (separate writes)."""
@@ -202,10 +209,14 @@ class TestScenarioX:
         assert srv.queue.add.called
         assert srv.queue.add.call_args[0][0] == 'hello'
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        # Full clear sequence: Ctrl+E + Ctrl+U + N backspaces fallback.
-        assert '\x1b[F' in calls, "End escape must be sent"
-        assert '\x15' in calls, "Ctrl+U must be sent"
-        assert '\x7f' * 5 in calls, "N backspaces fallback must be sent"
+        # Full clear sequence in RUNNING: two rounds of End + Ctrl+U.
+        assert calls.count('\x1b[F') >= 2, "End must be sent twice"
+        assert calls.count('\x15') >= 2, "Ctrl+U must be sent twice"
+        # NO per-char backspace flood — same drop-defense at fixed cost.
+        assert not any(
+            isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
+            for c in calls
+        )
 
 
 class TestCancelReenter:
