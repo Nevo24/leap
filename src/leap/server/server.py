@@ -1396,19 +1396,26 @@ class LeapServer:
     def _clear_stale_cli_input(self, n: int) -> None:
         """Clear stale CLI input left on the TUI before ``^^`` entry.
 
-        IDLE fast path: Ctrl+U on idle Ink kills the entire wrapped
-        logical line in one shot — single End + Ctrl+U is enough
-        (verified empirically).
+        Unified row-counted approach for both states:
 
-        RUNNING / streaming path: Ink's Ctrl+U during streaming is
-        ROW-bound, not line-bound — each press kills only one
-        visual row.  Pressing Ctrl+U N times in a row kills N rows
-        (cursor moves up after each kill — verified empirically).
-        So we send one Ctrl+U per visual row of the input, using
-        ``n // cols`` (Lever 1 math) to estimate row count.  An
-        extra ``+1`` covers the cursor row itself, and the layered
-        sequence (End + Ctrl+U + End + Ctrl+U×rows) gives
-        drop-defense for the leading End and first Ctrl+U.
+        1. End: cursor to end of line.
+        2. Ctrl+U: kill from cursor to start.
+        3. RUNNING only — second End: drop-defense for streaming
+           render race that can swallow the first End.
+        4. Ctrl+U × ``(n // cols + 1)``: one per visual row.
+
+        Ink's Ctrl+U behaves differently in each state:
+
+        * IDLE — line-bound: a single Ctrl+U kills the whole
+          wrapped logical line.  For typical single-line input
+          steps 1-2 already cleared everything; the extra Ctrl+Us
+          in step 4 are cheap no-ops on the empty buffer.  For
+          multi-logical-line input (Shift+Enter typed), each
+          Ctrl+U kills one logical line — step 4 clears the rest.
+        * RUNNING — row-bound: each Ctrl+U kills one visual row
+          with cursor moving up after each kill (verified
+          empirically).  Step 4's row-counted Ctrl+Us clear all
+          remaining rows of the multi-row paste.
 
         Total cost is roughly ``rows`` bytes regardless of message
         length — vs. the original ``n`` backspaces which flooded
@@ -1417,27 +1424,22 @@ class LeapServer:
         End is used instead of Ctrl+E to avoid emacs-style binding
         ambiguity.  ``n`` is the byte count of pre-capture input;
         for multi-byte UTF-8 it over-counts row math by a constant
-        factor, harmless because extra Ctrl+U presses on already-
-        empty rows are no-ops.
+        factor, harmless because extra Ctrl+U presses on empty
+        rows are no-ops.
         """
-        if self.state.current_state == CLIState.IDLE:
-            self.pty.send('\x1b[F')  # End: cursor to end
-            time.sleep(0.02)
-            self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
-            time.sleep(0.03)
-            return
         self.pty.send('\x1b[F')  # End: cursor to end
         time.sleep(0.02)
-        self.pty.send('\x15')  # First Ctrl+U: kill bottom row
+        self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
         time.sleep(0.02)
-        self.pty.send('\x1b[F')  # End again: catch dropped-first-End race
-        time.sleep(0.02)
+        if self.state.current_state != CLIState.IDLE:
+            self.pty.send('\x1b[F')  # End again: drop-defense in RUNNING
+            time.sleep(0.02)
         try:
             cols = shutil.get_terminal_size(fallback=(80, 24)).columns
         except OSError:
             cols = 80
         rows = (n // max(1, cols)) + 1  # +1 for cursor row / safety
-        self.pty.send('\x15' * rows)  # One Ctrl+U per remaining row
+        self.pty.send('\x15' * rows)  # one Ctrl+U per remaining row
         time.sleep(0.03)
 
     def _capture_flush(self, cancel: bool = False) -> None:

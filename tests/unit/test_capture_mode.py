@@ -217,6 +217,36 @@ class TestStaleCleanup:
             for c in calls
         ), "no backspace flood for long input in RUNNING"
 
+    def test_idle_unified_with_row_counted_ctrlu(self):
+        """IDLE shares the row-counted Ctrl+U path with RUNNING.  For
+        single-line wraps the first Ctrl+U kills everything (rest are
+        no-ops); for multi-logical-line input (Shift+Enter typed)
+        each Ctrl+U kills one logical line.  Either way, no backspace
+        flood and only ONE End escape (no RUNNING-style retry)."""
+        import os as _os
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=_os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'x' * 250)  # ~4 rows at 80 cols
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        total_ctrlu = sum(
+            c.count('\x15') for c in calls if isinstance(c, str)
+        )
+        # ≥ 4 Ctrl+U bytes (one per row of 250 // 80 + 1 = 4 rows).
+        assert total_ctrlu >= 4, \
+            f"want >=4 Ctrl+U bytes for 4 rows, got {total_ctrlu}"
+        # IDLE skips the second End (drop-defense is RUNNING-only).
+        assert calls.count('\x1b[F') == 1, \
+            "IDLE sends End exactly once (no RUNNING-style retry)"
+        assert not any(
+            isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
+            for c in calls
+        )
+
 
 class TestScenarioX:
     """Type during RUNNING → ^^ → Enter: stale text cleared robustly."""
