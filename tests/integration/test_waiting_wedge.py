@@ -21,6 +21,23 @@ _DIALOG_BYTES = (
     b'Enter to select  Esc to cancel\r\n'
 )
 
+# Pushes the dialog footer out of the bottom-5 filled rows so the
+# Stop-hook-time dialog guard at state_tracker.py:948 doesn't fire.
+# That guard intercepts running→idle and routes directly to
+# needs_permission when the bottom of the screen still shows a
+# dialog footer.  Tests that want to verify the
+# _last_running_snapshot fallback need this push-out: the dialog
+# still ends up in the snapshot (which captures the full screen
+# buffer, not just the tail) but the bottom-5 check passes.
+_PUSH_OUT = (
+    b'Working...\r\n'
+    b'Step one done\r\n'
+    b'Step two done\r\n'
+    b'Step three done\r\n'
+    b'Step four done\r\n'
+    b'Done.\r\n'
+)
+
 
 class TestWaitingExitPaths:
     """All the supported ways out of needs_permission / needs_input."""
@@ -119,6 +136,9 @@ class TestLateNotificationGuard:
         pty.tracker.on_send()
         # Dialog rendered during running.
         pty.feed_output(_DIALOG_BYTES)
+        # Push the dialog footer out of the bottom-5 filled rows so
+        # the Stop-hook-time dialog guard doesn't intercept idle.
+        pty.feed_output(_PUSH_OUT)
         # Stop hook fires → running→idle, snapshot captured.
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'

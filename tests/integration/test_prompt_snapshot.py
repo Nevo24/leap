@@ -23,6 +23,24 @@ _DIALOG = (
     b'Enter to select  Esc to cancel\r\n'
 )
 
+# Pushes the dialog footer out of the bottom-5 filled rows so the
+# Stop-hook-time dialog guard at state_tracker.py:948 doesn't fire.
+# That guard now (post 8b43750) intercepts running→idle and routes
+# directly to needs_permission when the bottom of the screen still
+# shows a dialog footer.  These tests want to verify the
+# _last_running_snapshot path which only fires when the guard does
+# NOT — i.e. when the dialog has scrolled out of bottom-5.  The
+# dialog still ends up in _last_running_snapshot (which captures
+# the full screen buffer, not just the tail).
+_PUSH_OUT = (
+    b'Working...\r\n'
+    b'Step one done\r\n'
+    b'Step two done\r\n'
+    b'Step three done\r\n'
+    b'Step four done\r\n'
+    b'Done.\r\n'
+)
+
 
 class TestPromptSnapshotCapture:
     def test_snapshot_captured_on_needs_permission(
@@ -79,6 +97,7 @@ class TestLastRunningSnapshot:
     ) -> None:
         pty.tracker.on_send()
         pty.feed_output(_DIALOG)
+        pty.feed_output(_PUSH_OUT)  # roll dialog out of bottom-5
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
         # The dialog was on screen at the transition — snapshot kept.
@@ -93,6 +112,7 @@ class TestLastRunningSnapshot:
         still be accepted if the snapshot contains dialog patterns."""
         pty.tracker.on_send()
         pty.feed_output(_DIALOG)
+        pty.feed_output(_PUSH_OUT)  # roll dialog out of bottom-5
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
         assert pty.tracker._last_running_snapshot
@@ -107,6 +127,7 @@ class TestLastRunningSnapshot:
     ) -> None:
         pty.tracker.on_send()
         pty.feed_output(_DIALOG)
+        pty.feed_output(_PUSH_OUT)  # roll dialog out of bottom-5
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
         assert pty.tracker._last_running_snapshot
