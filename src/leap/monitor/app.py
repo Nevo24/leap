@@ -1644,6 +1644,7 @@ class MonitorWindow(
         'preset_editor_last_name',
         'dialog_splitter_sizes',
         'dialog_geometry_state',
+        'notes_flatten_on_paste',
     })
 
     def _save_prefs(self) -> None:
