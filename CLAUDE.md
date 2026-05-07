@@ -184,7 +184,7 @@ assets/
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
-| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders |
+| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders. "Flatten indent on paste" toolbar checkbox (persisted as `notes_flatten_on_paste`, default ON) controls whether pasted text is dedented to col 0 — applies to both the text editor and the checklist popup editors |
 | `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
 | `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste + Next/To-End queue-position toggle |
 | `SendPresetDialog` | `monitor/ui/image_text_edit.py` | Picker for a message-bundle preset + Next/To-End queue-position toggle |

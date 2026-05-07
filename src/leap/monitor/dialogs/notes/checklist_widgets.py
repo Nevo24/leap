@@ -40,7 +40,8 @@ from leap.monitor.dialogs.notes.image_helpers import (
     _save_note_image,
 )
 from leap.monitor.dialogs.notes.note_text_edit import (
-    _NoteTextEdit, _setup_textedit_image_hover, _setup_textedit_url_click,
+    _NoteTextEdit, _flatten_indent,
+    _setup_textedit_image_hover, _setup_textedit_url_click,
 )
 from leap.monitor.dialogs.notes.rtl import _apply_rtl_direction
 from leap.monitor.dialogs.notes.text_helpers import (
@@ -361,6 +362,7 @@ class _ChecklistItemWidget(QFrame):
         # is what gets persisted + round-tripped through the popup.
         self._raw_text: str = text
         self._popup: Optional[QTextEdit] = None
+        self._flatten_on_paste: bool = True
 
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 2, 4, 2)
@@ -896,6 +898,8 @@ class _ChecklistItemWidget(QFrame):
             if not src.hasText():
                 return
             text = src.text()
+            if self._flatten_on_paste:
+                text = _flatten_indent(text)
             cursor = wrap.textCursor()
             # Reset char format — pasting plain text inside an anchor
             # span would otherwise inherit its underline/colour.
@@ -1133,6 +1137,7 @@ class _ChecklistWidget(QWidget):
         self._focus_add_after_rebuild: bool = False
         self._dragging_index: int = -1
         self._pasted_images: set[str] = set()  # track images pasted in checklist
+        self._flatten_on_paste: bool = True
         self._undo_stack: Optional['NotesUndoStack'] = None
         self._cmd_ctx: Optional['NotesCmdContext'] = None
         self._image_counter: int = 0
@@ -1239,6 +1244,14 @@ class _ChecklistWidget(QWidget):
         """Attach an undo stack so checklist mutations are recorded."""
         self._undo_stack = stack
         self._cmd_ctx = ctx
+
+    def set_flatten_on_paste(self, enabled: bool) -> None:
+        """Update the flatten-on-paste flag and propagate to all items."""
+        self._flatten_on_paste = enabled
+        for i in range(self._layout.count()):
+            w = self._layout.itemAt(i).widget()
+            if isinstance(w, _ChecklistItemWidget):
+                w._flatten_on_paste = enabled
 
     def _register_image(self, filename: str) -> str:
         """Register a filename and return its [Image #N] placeholder."""
@@ -1459,6 +1472,7 @@ class _ChecklistWidget(QWidget):
         w._edit.image_pasted.connect(lambda fn: self._pasted_images.add(fn))
         w._edit._register_image_fn = self._register_image
         w._edit._resolve_placeholder_fn = self._resolve_placeholder
+        w._flatten_on_paste = self._flatten_on_paste
         return w
 
     # ── Drag-and-drop reordering ──────────────────────────────────────
@@ -1802,9 +1816,12 @@ class _ChecklistWidget(QWidget):
         def _paste_with_links(src: QMimeData) -> None:
             if not src.hasText():
                 return
+            text = src.text()
+            if self._flatten_on_paste:
+                text = _flatten_indent(text)
             cursor = wrap.textCursor()
             cursor.setCharFormat(QTextCharFormat())
-            _NoteTextEdit._insert_text_with_links(cursor, src.text())
+            _NoteTextEdit._insert_text_with_links(cursor, text)
             wrap.setTextCursor(cursor)
         wrap.insertFromMimeData = _paste_with_links
         # Render any markdown in the line edit as anchor / bold spans —

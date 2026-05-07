@@ -132,6 +132,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._font_size: int = prefs.get('notes_font_size', default_pt)
         self._sidebar_font_size: int = prefs.get('notes_sidebar_font_size', default_pt)
         self._buttons_font_size: int = prefs.get('notes_buttons_font_size', default_pt)
+        self._flatten_on_paste: bool = bool(prefs.get('notes_flatten_on_paste', True))
         self._zoom_target: str = 'content'  # 'content' | 'sidebar' | 'buttons'
         self._undo_stack = NotesUndoStack(limit=50)
         self._cmd_ctx = NotesCmdContext(self)
@@ -256,6 +257,17 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         toolbar_row.addWidget(self._mode_combo)
 
+        self._flatten_paste_cb = QCheckBox('Flatten indent on paste')
+        self._flatten_paste_cb.setChecked(self._flatten_on_paste)
+        self._flatten_paste_cb.setVisible(False)
+        self._flatten_paste_cb.setToolTip(
+            'When pasting, strip the common leading whitespace so the\n'
+            'content lands flush against the left margin. Useful for\n'
+            'pastes from chat/markdown where the body is indented under\n'
+            'a header. Turn off to paste verbatim.')
+        self._flatten_paste_cb.stateChanged.connect(self._on_flatten_paste_changed)
+        toolbar_row.addWidget(self._flatten_paste_cb)
+
         toolbar_row.addStretch()
 
         self._save_preset_btn = QPushButton('Save as Preset')
@@ -275,6 +287,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._stack = QStackedWidget()
 
         self._editor = _NoteTextEdit()
+        self._editor._flatten_on_paste = self._flatten_on_paste
         self._editor.setPlaceholderText(
             'Select or create a note... (paste images with Cmd+V)')
         self._editor.setEnabled(False)
@@ -284,6 +297,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._checklist = _ChecklistWidget()
         self._checklist.content_changed.connect(self._on_checklist_changed)
         self._checklist.set_undo_stack(self._undo_stack, self._cmd_ctx)
+        self._checklist.set_flatten_on_paste(self._flatten_on_paste)
         self._stack.addWidget(self._checklist)
 
         right_layout.addWidget(self._stack, 1)
@@ -609,6 +623,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             self._editor.setPlaceholderText(
                 'Select or create a note... (paste images with Cmd+V)')
             self._mode_combo.setVisible(False)
+            self._flatten_paste_cb.setVisible(False)
             self._stack.setCurrentIndex(self._MODE_TEXT)
             self._stack.setVisible(True)
             self._folder_spacer.setVisible(False)
@@ -626,6 +641,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             self._editor.clear()
             self._editor.setEnabled(False)
             self._mode_combo.setVisible(False)
+            self._flatten_paste_cb.setVisible(False)
             self._stack.setVisible(False)
             self._folder_spacer.setVisible(True)
             self._title_label.setText(current.text(0))
@@ -658,6 +674,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._switching_mode = False
 
         self._mode_combo.setVisible(True)
+        self._flatten_paste_cb.setVisible(True)
         self._stack.setVisible(True)
         self._folder_spacer.setVisible(False)
         display = name.rsplit('/', 1)[-1] if '/' in name else name
@@ -666,6 +683,15 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._update_action_visibility(True)
 
     # ── Mode switching ──────────────────────────────────────────────
+
+    def _on_flatten_paste_changed(self, state: int) -> None:
+        enabled = state == Qt.Checked
+        self._flatten_on_paste = enabled
+        self._editor._flatten_on_paste = enabled
+        self._checklist.set_flatten_on_paste(enabled)
+        prefs = load_monitor_prefs()
+        prefs['notes_flatten_on_paste'] = enabled
+        save_monitor_prefs(prefs)
 
     def _on_mode_changed(self, index: int) -> None:
         if self._switching_mode or not self._current_name:

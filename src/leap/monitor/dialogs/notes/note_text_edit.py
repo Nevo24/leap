@@ -34,6 +34,25 @@ from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR
 
 
+def _flatten_indent(text: str) -> str:
+    """Flatten leading indentation of pasted text to column 0.
+
+    First runs ``textwrap.dedent`` to strip the common prefix shared by
+    every non-empty line. If nothing was stripped — typical when line 1
+    sits at column 0 but the body below shares an indent — re-runs
+    dedent on lines 2+ alone so the body lands flush-left while line 1
+    is preserved as-is. Called only when the user opted in via the
+    "Flatten indent on paste" checkbox, so no threshold is applied.
+    """
+    dedented = textwrap.dedent(text)
+    if dedented != text:
+        return dedented
+    head, sep, rest = text.partition('\n')
+    if not sep:
+        return text
+    return head + sep + textwrap.dedent(rest)
+
+
 class _NoteTextEdit(QTextEdit):
     """QTextEdit with image paste support for notes.
 
@@ -49,6 +68,7 @@ class _NoteTextEdit(QTextEdit):
         self._pasted_images: set[str] = set()  # all images pasted in this session
         self._url_hl = _UrlHighlighter(self.document())
         self._clearing_anchor = False
+        self._flatten_on_paste: bool = True
         self.cursorPositionChanged.connect(self._clear_anchor_format)
 
     def _clear_anchor_format(self) -> None:
@@ -243,11 +263,10 @@ class _NoteTextEdit(QTextEdit):
             # inserting a link), reset the format so the pasted plain
             # run doesn't inherit the link styling.
             cursor.setCharFormat(QTextCharFormat())
-            # Strip the common leading whitespace shared by every line —
-            # terminal copies typically include a 1-col left-margin space
-            # on each line, which would otherwise be inserted verbatim.
-            self._insert_text_with_links(
-                cursor, textwrap.dedent(source.text()))
+            text = source.text()
+            if self._flatten_on_paste:
+                text = _flatten_indent(text)
+            self._insert_text_with_links(cursor, text)
             # Push the mutated cursor back so the caret + selection
             # reflect the end of the paste, matching Qt's default
             # insertPlainText behaviour.
