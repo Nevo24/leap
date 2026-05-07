@@ -20,7 +20,7 @@ leap                             # Interactive: choose CLI + session name
 src/
 ├── scripts/                     # Entry point scripts
 │   ├── leap-main.sh          # Main launcher (called by 'leap' command)
-│   ├── leap-resume.py        # `leap --resume` picker — CLI-agnostic; each row is shown as `[cli] tag` and resumes via the provider's `resume_args(id)`. When the picked session was recorded under a different cwd than the current shell, calls `provider.relocate_session(...)` to move the on-disk transcript so the resume can run in the *current* cwd without a manual `cd` (Claude only today)
+│   ├── leap-resume.py        # `leap --resume` picker — CLI-agnostic; each row is shown as `[cli] tag` and resumes via the provider's `resume_args(id)`. After picking, when the recorded cwd differs from the current shell cwd, prompts the user to choose between `[1] Original directory` (chdir to recorded) and `[2] Current directory` (calls `provider.relocate_session(...)` for Claude so the transcript ends up at the new cwd's slug). Skipped when the cwds already match.
 │   ├── leap-hook-process.py  # Hook processor invoked by `leap-hook.sh`; shared across all CLIs. Handles stdin parsing, session recording via `provider.extract_session_id()`, and last-assistant-message extraction for Slack
 │   ├── leap-cleanup.sh       # Dead session cleanup
 │   ├── _leap                 # zsh completion for user-facing flags (conditional --slack)
@@ -102,7 +102,7 @@ src/
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   ├── scm_template_dialog.py # Preset editor dialog (PR context + message bundles)
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
-    │   │   ├── resume_session_dialog.py # GUI counterpart of `leap --resume` — flat-list picker over recorded CLI sessions; returns (cli, tag, SessionRecord)
+    │   │   ├── resume_session_dialog.py # GUI counterpart of `leap --resume` — flat-list picker over recorded CLI sessions; returns (cli, tag, SessionRecord). Also exposes a `Use ~/ instead of original directory` checkbox (persisted as `resume_use_homedir` in `monitor_prefs.json`) — when on, `_add_row_from_resume` uses `~/` as the new project_path and silently calls `provider.relocate_session` so the Claude transcript ends up at `~/`'s slug.
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
     │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)

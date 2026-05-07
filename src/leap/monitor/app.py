@@ -1645,6 +1645,7 @@ class MonitorWindow(
         'dialog_splitter_sizes',
         'dialog_geometry_state',
         'notes_flatten_on_paste',
+        'resume_use_homedir',
     })
 
     def _save_prefs(self) -> None:

@@ -545,6 +545,89 @@ def _pick_session(tag: str, cli: str, all_sessions: list) -> tuple:
             n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
 
 
+_CWD_CHOICE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ('original', 'Original working directory'),
+    ('current', 'Current working directory'),
+)
+
+
+def _render_cwd_choice(
+    recorded_cwd: str, current_cwd: str, idx: int,
+    first: bool, last_n: int = 0,
+) -> int:
+    """Draw the cwd-choice picker and return the body-line count.
+
+    Mirrors the redraw protocol used by :func:`_render_tags` so the
+    next call can erase exactly the right region by moving the cursor
+    up ``last_n + 2`` lines (header + footer = 2 framing lines).
+    """
+    if not first:
+        sys.stderr.write(f"\033[{last_n + 2}A")
+    sys.stderr.write("\033[J")
+    sys.stderr.write(f"  {BOLD}Where do you want to resume?{RESET}\n")
+    paths = (_shorten_cwd(recorded_cwd), _shorten_cwd(current_cwd))
+    n = 0
+    for i, (_value, label) in enumerate(_CWD_CHOICE_OPTIONS):
+        marker = "❯" if i == idx else " "
+        path = paths[i]
+        if i == idx:
+            sys.stderr.write(
+                f"  {CYAN}{marker}{RESET} "
+                f"{BOLD}{label}:{RESET}  {DIM}{path}{RESET}\n"
+            )
+        else:
+            sys.stderr.write(
+                f"  {marker} {DIM}{label}:{RESET}  {DIM}{path}{RESET}\n"
+            )
+        n += 1
+    footer = "  ↑/↓ navigate · Enter to confirm · Esc/q to cancel"
+    sys.stderr.write(f"{DIM}{footer}{RESET}\n")
+    sys.stderr.flush()
+    return n
+
+
+def _ask_cwd_choice(
+    recorded_cwd: str, current_cwd: str,
+) -> Optional[str]:
+    """Arrow-key picker: pick between resuming in the recorded or current cwd.
+
+    Returns ``'original'`` / ``'current'`` / ``None`` (cancelled via
+    Esc/q/Ctrl+C/Ctrl+D).  Caller should only invoke when the two
+    cwds actually differ — picking is meaningless otherwise.
+
+    Same UX as the tag/session pickers above: ``❯`` cursor, ↑/↓
+    to move, Enter to confirm.  Falls back gracefully when the keypress
+    reader sees EOF (returns ``None`` so callers can treat it as a
+    Cancel — no caller relies on a specific exit code here).
+    """
+    idx = 0
+    n = _render_cwd_choice(recorded_cwd, current_cwd, idx, first=True)
+    while True:
+        key = _get_key()
+        if key == 'up':
+            idx = (idx - 1) % len(_CWD_CHOICE_OPTIONS)
+            n = _render_cwd_choice(
+                recorded_cwd, current_cwd, idx, first=False, last_n=n,
+            )
+        elif key == 'down':
+            idx = (idx + 1) % len(_CWD_CHOICE_OPTIONS)
+            n = _render_cwd_choice(
+                recorded_cwd, current_cwd, idx, first=False, last_n=n,
+            )
+        elif key == 'enter':
+            # Erase the picker so the subsequent "Resuming…" / "Cancelled."
+            # status line lands on a clean region — same gesture
+            # ``main()`` performs after ``_pick_tag`` / ``_pick_session``.
+            sys.stderr.write(f"\033[{n + 2}A\033[J")
+            sys.stderr.flush()
+            return _CWD_CHOICE_OPTIONS[idx][0]
+        elif key in ('quit', 'escape'):
+            sys.stderr.write(f"\033[{n + 2}A\033[J")
+            sys.stderr.flush()
+            return None
+        # any other key: ignore and stay on the current selection
+
+
 def _try_relocate(
     *,
     cli: str,
@@ -672,8 +755,8 @@ def main() -> int:
         sys.stderr.write(
             f"  {RED}This CLI session is already running under Leap tag "
             f"{tags_str}{RED}.{RESET}\n"
-            f"  {DIM}Check your open terminals — or the Leap Monitor "
-            f"app, if installed — to find it.{RESET}\n"
+            f"  {DIM}Check your open terminals (or use the Leap Monitor "
+            f"app, if installed) to find it.{RESET}\n"
         )
         return 1
 
@@ -687,6 +770,36 @@ def main() -> int:
             return 130
         tag = new_tag
 
+    # Cross-cwd resume: when the recorded cwd differs from the user's
+    # current shell cwd, prompt for which one to use.  Skipped when
+    # they're the same (nothing to choose).  Picking "current" triggers
+    # ``_try_relocate`` (Claude) so the resume still finds the session.
+    current_cwd = os.getcwd()
+    if target_cwd and target_cwd != current_cwd:
+        choice = _ask_cwd_choice(target_cwd, current_cwd)
+        if choice is None:
+            sys.stderr.write(f"  {DIM}Cancelled.{RESET}\n")
+            return 130
+        if choice == 'current':
+            relocated = _try_relocate(
+                cli=cli,
+                session_id=session_id,
+                old_transcript_path=chosen_session.transcript_path,
+                src_cwd=target_cwd,
+                dst_cwd=current_cwd,
+            )
+            if relocated is None:
+                return 1
+            # ``_try_relocate`` returns False when the provider doesn't
+            # support cross-cwd relocation (non-Claude today).  In that
+            # case the resume itself may not find the session, but the
+            # user explicitly opted into the current cwd — accept it
+            # and let the CLI start fresh if it has to.
+            target_cwd = current_cwd
+
+    # Verify the chosen cwd is usable.  When the user picked "current"
+    # this is by definition the current dir (always exists); when they
+    # picked "original", we check the recorded dir is still on disk.
     if target_cwd and not os.path.isdir(target_cwd):
         sys.stderr.write(
             f"  {RED}Session's original directory no longer exists: {target_cwd}{RESET}\n"
@@ -694,25 +807,6 @@ def main() -> int:
             f"cannot locate the session.{RESET}\n"
         )
         return 1
-
-    # Cross-cwd resume: if the picked session was recorded under a
-    # different cwd than the user's current one, try to relocate the
-    # CLI's on-disk state so the resume can run in the *current* cwd
-    # without a manual `cd`.  Provider must support it (today: Claude
-    # only) — otherwise we fall through to the legacy chdir.
-    current_cwd = os.getcwd()
-    if target_cwd and target_cwd != current_cwd:
-        relocated = _try_relocate(
-            cli=cli,
-            session_id=session_id,
-            old_transcript_path=chosen_session.transcript_path,
-            src_cwd=target_cwd,
-            dst_cwd=current_cwd,
-        )
-        if relocated is None:
-            return 1
-        if relocated:
-            target_cwd = current_cwd
 
     sys.stderr.write(
         f"  {GREEN}Resuming{RESET} {_cli_label(cli)} {BOLD}{tag}{RESET} "

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -11,7 +12,8 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
-from leap.cli_providers.registry import get_display_name
+from leap.cli_providers.registry import get_display_name, get_provider
+from leap.utils.claude_session_move import RelocationError
 from leap.utils.constants import STORAGE_DIR, is_valid_tag
 from leap.utils.resume_store import load_raw_tag_rows
 from leap.monitor.dialogs.add_local_dialog import AddLocalDialog
@@ -1017,6 +1019,7 @@ class PRTrackingMixin(_Base):
         if not picked:
             return
         cli, original_tag, sess = picked
+        use_homedir = dlg.use_homedir()
 
         # Refuse to resume a session that's already running under a live
         # Leap server — the same UUID can't be loaded twice.  Ownership
@@ -1048,16 +1051,48 @@ class PRTrackingMixin(_Base):
             return
 
         # Some CLIs (Claude Code) store transcripts under a cwd-derived
-        # slug, so a missing cwd makes the session unresumable.
-        if sess.cwd and not Path(sess.cwd).is_dir():
+        # slug, so a missing cwd makes the session unresumable — unless
+        # the user picked "Use ~/" in which case we silently relocate
+        # the transcript to ``~/``'s slug below and the original cwd's
+        # existence stops being a hard requirement.
+        if not use_homedir and sess.cwd and not Path(sess.cwd).is_dir():
             QMessageBox.warning(
                 self, 'Working Directory Missing',
                 f"The session's original working directory no longer "
                 f"exists:\n\n{sess.cwd}\n\n"
                 f"Some CLIs (Claude Code) store transcripts per-cwd, "
-                f"so the session can't be resumed without it.",
+                f"so the session can't be resumed without it.\n\n"
+                f"Tip: enable \"Use ~/ instead of original directory\" "
+                f"in the picker to resume in your home directory.",
             )
             return
+
+        # Resolve the cwd we'll actually use for this resume.  When
+        # ``use_homedir`` is on we relocate the on-disk transcript
+        # (Claude only; other CLIs will start fresh until cross-cwd
+        # support lands) so the resume picks up the same conversation
+        # at the new path.
+        target_cwd = (
+            os.path.expanduser('~') if use_homedir else (sess.cwd or '')
+        )
+        if use_homedir and sess.cwd and sess.cwd != target_cwd:
+            try:
+                provider = get_provider(cli)
+            except ValueError:
+                provider = None
+            if provider is not None:
+                try:
+                    provider.relocate_session(
+                        sess.session_id, sess.cwd, target_cwd,
+                    )
+                except RelocationError as e:
+                    QMessageBox.warning(
+                        self, 'Could not relocate session',
+                        f"Couldn't move the session transcript to "
+                        f"{target_cwd}:\n\n{e}\n\n"
+                        f"The original session is intact; aborting.",
+                    )
+                    return
 
         # If the session's original Leap tag is already in use (pinned
         # row or live server), prompt for a new tag — the existing
@@ -1076,7 +1111,7 @@ class PRTrackingMixin(_Base):
 
         self._pinned_sessions[final_tag] = {
             'tag': final_tag,
-            'project_path': sess.cwd or '',
+            'project_path': target_cwd,
             'ide': '',
         }
         save_pinned_sessions(self._pinned_sessions)

@@ -16,16 +16,25 @@ from typing import Optional
 
 from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QHeaderView,
-    QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QApplication, QCheckBox, QDialog, QDialogButtonBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QTableWidget,
+    QTableWidgetItem, QVBoxLayout,
 )
 
 from leap.cli_providers.registry import get_display_name
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import (
-    load_dialog_geometry, save_dialog_geometry,
+    load_dialog_geometry, load_monitor_prefs, save_dialog_geometry,
+    save_monitor_prefs,
 )
 from leap.utils.resume_store import SessionRecord, load_tag_rows
+
+
+# Persisted in ``monitor_prefs.json``.  Default unchecked → use the
+# session's recorded directory (preserves pre-existing behaviour).
+# Listed in :data:`MonitorWindow._DIALOG_OWNED_KEYS` so the main
+# window's ``_save_prefs`` doesn't clobber the dialog's writes.
+_PREF_USE_HOMEDIR = 'resume_use_homedir'
 
 
 def _format_age(ts: float) -> str:
@@ -122,12 +131,38 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
 
         layout.addWidget(self._table, 1)
 
-        # OK / Cancel
+        # Bottom row: [ Use ~/ checkbox ]   stretch   [ Cancel ] [ OK ]
+        # The checkbox controls where the resumed session lands —
+        # unchecked uses the session's recorded directory (default,
+        # preserves existing behaviour), checked uses the user's home
+        # directory, in which case the launcher silently relocates the
+        # Claude transcript so the resume actually finds it.  The
+        # value is persisted across launches in ``monitor_prefs.json``.
+        bottom = QHBoxLayout()
+        self._use_homedir_check = QCheckBox(
+            'Use home directory (~/) instead of original working directory')
+        self._use_homedir_check.setToolTip(
+            "When checked, resume the session in your home directory "
+            "(~/) instead of the working directory it was originally "
+            "recorded in.  Useful when the original working directory "
+            "no longer exists or you want a clean working location.\n\n"
+            "For Claude, the transcript is silently relocated to the "
+            "new directory so the resume still works.  For other CLIs "
+            "the resume may start fresh until cross-cwd support lands."
+        )
+        prefs = load_monitor_prefs()
+        self._use_homedir_check.setChecked(
+            bool(prefs.get(_PREF_USE_HOMEDIR, False)))
+        self._use_homedir_check.toggled.connect(self._on_use_homedir_toggled)
+        bottom.addWidget(self._use_homedir_check)
+        bottom.addStretch(1)
+
         self._btn_box = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self._btn_box.accepted.connect(self._accept_if_selected)
         self._btn_box.rejected.connect(self.reject)
-        layout.addWidget(self._btn_box)
+        bottom.addWidget(self._btn_box)
+        layout.addLayout(bottom)
 
         self._populate(self._rows)
         # Focus the search box so the user can start typing immediately —
@@ -249,6 +284,22 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         if not 0 <= idx < len(rows):
             return None
         return rows[idx]
+
+    def use_homedir(self) -> bool:
+        """Return whether the user wants to resume in ``~/`` instead of recorded cwd."""
+        return self._use_homedir_check.isChecked()
+
+    def _on_use_homedir_toggled(self, checked: bool) -> None:
+        """Persist the toggle state immediately so it survives next launch.
+
+        Saved directly to disk (bypassing ``MonitorWindow._prefs``) —
+        the key is registered in ``_DIALOG_OWNED_KEYS`` so the main
+        window's ``_save_prefs`` won't clobber it on the next theme/
+        column-resize/zoom event.
+        """
+        prefs = load_monitor_prefs()
+        prefs[_PREF_USE_HOMEDIR] = bool(checked)
+        save_monitor_prefs(prefs)
 
     @staticmethod
     def has_resumable_sessions(storage_dir: Path) -> bool:

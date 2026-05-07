@@ -20,9 +20,11 @@ from leap.cli_providers.registry import DEFAULT_PROVIDER
 from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
 from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
 from leap.monitor.navigation import (
-    detect_supported_ide_for_move, open_terminal_with_command,
+    detect_supported_ide_for_move, find_terminal_with_title,
+    open_terminal_with_command,
 )
 from leap.monitor.scm_polling import BackgroundCallWorker
+from leap.monitor.session_manager import load_session_metadata
 from leap.utils.constants import STORAGE_DIR
 from leap.utils.resume_store import load_tag_rows
 
@@ -213,6 +215,16 @@ class ActionsMenuMixin(_Base):
             self._just_open_ide(tag, path, project_path)
             return
 
+        # Short-circuit: if the session is already running in this
+        # exact IDE at this exact path, there's nothing to "move" —
+        # skip the popup entirely and just focus the existing leap
+        # terminal tab (same UX as clicking the row's Terminal button).
+        metadata = load_session_metadata(tag) or {}
+        if (metadata.get('ide') == preferred_ide
+                and metadata.get('project_path') == project_path):
+            self._focus_existing_session_tab(tag, preferred_ide, project_path)
+            return
+
         app_label = path.rsplit('/', 1)[-1].removesuffix('.app')
         choice = self._ask_move_to_ide_choice(tag, app_label)
         if choice == 'cancel':
@@ -222,6 +234,29 @@ class ActionsMenuMixin(_Base):
             return
         # 'move'
         self._move_session_to_ide(tag, path, project_path, preferred_ide)
+
+    def _focus_existing_session_tab(
+        self, tag: str, preferred_ide: str, project_path: str,
+    ) -> None:
+        """Bring the leap terminal tab for *tag* to the front in *preferred_ide*.
+
+        Used when the user clicks "Open in IDE" but the session is
+        already running in that exact IDE at that exact path — same
+        navigation as the row's Terminal button.
+        """
+        title = f'lps {tag}'
+        _ide, _proj, _title = preferred_ide, project_path, title
+
+        def _focus() -> None:
+            find_terminal_with_title(_title, _ide, _proj, _title)
+
+        worker = BackgroundCallWorker(_focus, self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        self._show_status(
+            f"Session '{tag}' is already in {preferred_ide} — "
+            f"focusing its terminal tab"
+        )
 
     def _ask_move_to_ide_choice(self, tag: str, app_label: str) -> str:
         """Present the 3-way Move-to-IDE prompt and return the choice.
@@ -338,6 +373,13 @@ class ActionsMenuMixin(_Base):
         ``open_terminal_with_command`` routes on (e.g. ``'PyCharm'``,
         ``'IntelliJ IDEA'``, ``'VS Code'``) — supplied by
         :func:`detect_supported_ide_for_move`.
+
+        Note: callers should consult the row's session metadata
+        first.  When the session is *already* running in
+        ``preferred_ide`` at ``project_path`` they should skip the
+        Move popup and call :meth:`_focus_existing_session_tab`
+        instead.  ``_open_with_ide`` does this short-circuit before
+        reaching this method.
         """
         # Resolve cli + server_pid from the active row.
         session = next((s for s in self.sessions if s.get('tag') == tag), None)
