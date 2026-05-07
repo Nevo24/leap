@@ -63,6 +63,48 @@ _JETBRAINS_APP_DIRS: list[str] = [
 ]
 
 
+def detect_supported_ide_for_move(app_path: str) -> Optional[str]:
+    """Classify a user-picked ``.app`` for the Move-to-IDE flow and
+    return the value to pass as ``preferred_ide`` to
+    :func:`open_terminal_with_command`.
+
+    Returns:
+        * One of ``_IDE_CMD_MAP``'s canonical JetBrains keys (e.g.
+          ``'PyCharm'``, ``'IntelliJ IDEA'``, ``'GoLand'``,
+          ``'WebStorm'``, ``'PhpStorm'``, ``'Android Studio'``) when
+          the picked bundle resolves to a JetBrains IDE we can
+          actually drive — note we only emit canonical keys whose
+          ``ide_cmd`` we know, so ``_open_jetbrains_terminal``'s
+          exact-lookup against ``_IDE_CMD_MAP`` succeeds.
+        * ``'VS Code'`` for any ``Visual Studio Code(*).app``
+          (stable or Insiders).
+        * ``None`` for everything else (Cursor, Sublime, Xcode,
+          Arduino, RubyMine/CLion/DataGrip/Rider/Fleet — not in
+          ``_IDE_CMD_MAP`` so we'd fall back to Terminal.app
+          silently, which would surprise the user).
+
+    The caller uses ``None`` as the signal to fall back to the
+    legacy "just open the .app" behaviour with no popup.
+    """
+    if not app_path:
+        return None
+    bundle = os.path.basename(app_path.rstrip('/'))
+    # JetBrains: only return a canonical key the downstream helper
+    # actually knows how to drive.  Order by length descending so
+    # ``IntelliJ IDEA`` matches before any (hypothetical) shorter
+    # ``IntelliJ`` token.
+    for canonical in sorted(_IDE_CMD_MAP.keys(), key=len, reverse=True):
+        if canonical in bundle:
+            return canonical
+    # VS Code stable bundle = ``Visual Studio Code.app``; Insiders =
+    # ``Visual Studio Code - Insiders.app``.  Cursor is a VS Code
+    # fork but we deliberately exclude it from the move flow per
+    # product decision (treat as 'just open').
+    if bundle.startswith('Visual Studio Code'):
+        return 'VS Code'
+    return None
+
+
 def _jetbrains_env() -> dict[str, str]:
     """Build an env dict with JetBrains CLI tools on PATH.
 

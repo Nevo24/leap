@@ -6,7 +6,7 @@ import logging
 import os
 import signal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Callable, TYPE_CHECKING, Any, Optional
 
 from PyQt5.QtWidgets import QMessageBox
 
@@ -321,7 +321,8 @@ class SessionMixin(_Base):
         find_worker.start()
 
     def _close_server(self, tag: str, server_pid: Optional[int],
-                      _from_delete: bool = False) -> None:
+                      _from_delete: bool = False,
+                      on_done: Optional[Callable[[], None]] = None) -> None:
         """Close a server session (non-blocking).
 
         If the session has no PR tracking, warns that closing the server
@@ -332,6 +333,10 @@ class SessionMixin(_Base):
             server_pid: Server process ID (or None).
             _from_delete: If True, skip confirmation and client prompt
                 (caller already handled those).
+            on_done: Optional callable invoked once the close worker
+                finishes (after the row-bookkeeping in ``_on_closed``).
+                Used by the Move-to-IDE flow to chain the IDE launch
+                only after the original server has actually shut down.
         """
         will_remove = False
         if not _from_delete:
@@ -396,6 +401,8 @@ class SessionMixin(_Base):
         self._set_busy(True)
         worker = BackgroundCallWorker(_do_close, self)
         worker.finished.connect(_on_closed)
+        if on_done is not None:
+            worker.finished.connect(on_done)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 

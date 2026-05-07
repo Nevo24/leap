@@ -85,7 +85,7 @@ src/
     │   ├── permissions.py       # macOS Accessibility + Notifications checks; live state via AXIsProcessTrusted and ncprefs.plist bit 25
     │   │
     │   ├── _mixins/             # MonitorWindow mixin classes
-    │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE)
+    │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE, with Move-to-IDE prompt for JetBrains/VS Code that closes the running server and resumes the session in the IDE's integrated terminal)
     │   │   ├── scm_config_mixin.py    # SCM provider init, setup dialogs, toggles
     │   │   ├── session_mixin.py       # Session merge, navigate, close, delete
     │   │   ├── pr_tracking_mixin.py   # PR tracking, polling, thread send, add-row
@@ -180,7 +180,8 @@ assets/
 | `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow |
 | `GitLabProvider` | `monitor/pr_tracking/gitlab_provider.py` | GitLab PR thread tracking + user notifications |
 | `GitHubProvider` | `monitor/pr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
-| `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu (branch col) + Path menu (Open Terminal/IDE) |
+| `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu (branch col) + Path menu (Open in Terminal/Open in IDE). For JetBrains-family or VS Code .apps, "Open in IDE" shows a 3-button popup (`[Cancel] [Only Open IDE] [Open IDE + Move session]`). Move closes the running server (same path as the row's X button via `_close_server(..., _from_delete=True, on_done=...)`) then opens the IDE on `project_path` and runs `leap <tag>` in the IDE's integrated terminal — with `LEAP_RESUME_SESSION_ID` / `LEAP_RESUME_CLI` / `LEAP_CLI` env vars when a transcript record exists for the tag, or a fresh server when no record exists. |
+| `detect_supported_ide_for_move()` | `monitor/navigation.py` | Classify a user-picked `.app` for the Move-to-IDE flow. Returns `'JetBrains'` for any JetBrains-family bundle (PyCharm, IntelliJ, GoLand, …, Android Studio), `'VS Code'` for `Visual Studio Code(*)`. Anything else (Sublime, Xcode, Arduino, Cursor) returns `None` — caller falls back to the legacy "just open the .app" behaviour. |
 | `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |

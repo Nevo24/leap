@@ -410,7 +410,7 @@ class TableBuilderMixin(_Base):
         """Build the Path column cell: elided label + 3-dot menu button.
 
         The 3-dot button and right-click on the label both open the path
-        actions menu (Open in Terminal, Open with IDE).  Disabled when
+        actions menu (Open in Terminal, Open in IDE).  Disabled when
         path_text is 'N/A'.
         """
         path_state = (path_text, row_color)

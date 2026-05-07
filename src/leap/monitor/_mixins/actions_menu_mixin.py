@@ -4,17 +4,27 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 from typing import TYPE_CHECKING, Optional
 
-from PyQt5.QtWidgets import QFileDialog, QMenu, QMessageBox
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QDialog, QFileDialog, QHBoxLayout, QLabel, QMenu, QMessageBox,
+    QPushButton, QVBoxLayout,
+)
 from PyQt5.QtGui import QCursor
 
+from leap.cli_providers.registry import DEFAULT_PROVIDER
 from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
 from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
-from leap.monitor.navigation import open_terminal_with_command
+from leap.monitor.navigation import (
+    detect_supported_ide_for_move, open_terminal_with_command,
+)
 from leap.monitor.scm_polling import BackgroundCallWorker
+from leap.utils.constants import STORAGE_DIR
+from leap.utils.resume_store import load_tag_rows
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +89,7 @@ class ActionsMenuMixin(_Base):
     # ── Path menu (path 3-dot button / path right-click) ─────────────
 
     def _show_path_menu(self, tag: str) -> None:
-        """Show the path actions menu (Open in Terminal, Open with IDE)."""
+        """Show the path actions menu (Open in Terminal, Open in IDE)."""
         project_path = self._resolve_project_path(tag)
         path_missing = self._last_path_missing
         has_path = bool(project_path)
@@ -98,7 +108,7 @@ class ActionsMenuMixin(_Base):
             else no_path_tip
         )
 
-        ide_action = menu.addAction('Open with IDE')
+        ide_action = menu.addAction('Open in IDE')
         ide_action.setEnabled(has_path)
         ide_action.setToolTip(
             'Open project in a selected .app' if has_path
@@ -167,7 +177,15 @@ class ActionsMenuMixin(_Base):
         self._show_status(f"Opening terminal for '{tag}'")
 
     def _open_with_ide(self, tag: str, project_path: str) -> None:
-        """Open a file dialog to pick an .app, then open the project with it."""
+        """Open a file dialog to pick an .app, then open the project with it.
+
+        For JetBrains-family and VS Code .apps, also offer to *move* the
+        currently-running leap session into the IDE's integrated
+        terminal — the existing server is closed (same close path as
+        the row's X button) and a new ``leap <tag>`` is launched in the
+        IDE's terminal, with ``LEAP_RESUME_*`` env vars when a Claude
+        transcript exists for the tag (otherwise a fresh start).
+        """
         last_app = self._prefs.get('last_ide_app', '')
         if last_app:
             start_dir = str(last_app).rsplit('/', 1)[0]
@@ -187,12 +205,106 @@ class ActionsMenuMixin(_Base):
         self._prefs['last_ide_app'] = path
         self._save_prefs()
 
-        _app_path = path
-        _proj_path = project_path
+        preferred_ide = detect_supported_ide_for_move(path)
+        if preferred_ide is None:
+            # Sublime, Xcode, Arduino, Cursor, RubyMine/CLion/etc. —
+            # no integrated terminal we drive from leap, so fall back
+            # to plain "open the .app".
+            self._just_open_ide(tag, path, project_path)
+            return
 
+        app_label = path.rsplit('/', 1)[-1].removesuffix('.app')
+        choice = self._ask_move_to_ide_choice(tag, app_label)
+        if choice == 'cancel':
+            return
+        if choice == 'only':
+            self._just_open_ide(tag, path, project_path)
+            return
+        # 'move'
+        self._move_session_to_ide(tag, path, project_path, preferred_ide)
+
+    def _ask_move_to_ide_choice(self, tag: str, app_label: str) -> str:
+        """Present the 3-way Move-to-IDE prompt and return the choice.
+
+        Returns one of ``'cancel'``, ``'only'``, ``'move'``.
+
+        Uses a custom :class:`QDialog` instead of ``QMessageBox`` so we
+        can lay buttons out left-to-right in our own order (QMessageBox
+        on macOS forces the platform's role-driven ordering and would
+        put Cancel between the two action buttons, which we want to
+        avoid).  Layout is::
+
+            [ Cancel ]    [ Only Open IDE ]    [ Open IDE + Move session ]
+
+        Cancel sits on the far left as a clear opt-out; the rightmost
+        button is the default action (Mac convention).  Esc routes to
+        Cancel; Enter triggers the default (the full Move).
+        """
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Move session to IDE')
+
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(20, 20, 20, 16)
+        outer.setSpacing(12)
+
+        title = QLabel(f"<b>Move session '{tag}' to {app_label}?</b>")
+        title.setWordWrap(True)
+        title.setTextFormat(Qt.RichText)
+        outer.addWidget(title)
+
+        info = QLabel(
+            f"<b>Open IDE + Move session</b> &mdash; close the current "
+            f"leap server and resume this session inside {app_label}'s "
+            f"integrated terminal.<br><br>"
+            f"<b>Only Open IDE</b> &mdash; open {app_label} on the "
+            f"project; the running session is left alone.<br><br>"
+            f"<b>Cancel</b> &mdash; do nothing."
+        )
+        info.setWordWrap(True)
+        info.setTextFormat(Qt.RichText)
+        outer.addWidget(info)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        cancel_btn = QPushButton('Cancel')
+        only_btn = QPushButton('Only Open IDE')
+        move_btn = QPushButton('Open IDE + Move session')
+        for btn in (cancel_btn, only_btn, move_btn):
+            btn.setMinimumWidth(120)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(only_btn)
+        btn_row.addWidget(move_btn)
+        outer.addLayout(btn_row)
+
+        # Mutable holder so the lambdas can return a string out of the
+        # exec_() loop without a class.
+        result: dict[str, str] = {'choice': 'cancel'}
+
+        def _pick(value: str) -> None:
+            result['choice'] = value
+            dlg.accept()
+
+        cancel_btn.clicked.connect(dlg.reject)
+        only_btn.clicked.connect(lambda: _pick('only'))
+        move_btn.clicked.connect(lambda: _pick('move'))
+
+        # Enter → default (Move); Esc → reject (cancel).
+        move_btn.setDefault(True)
+        move_btn.setAutoDefault(True)
+        cancel_btn.setAutoDefault(False)
+        only_btn.setAutoDefault(False)
+
+        dlg.exec_()  # Cancel (or window-X / Esc) reject() → result stays 'cancel'
+        return result['choice']
+
+    def _just_open_ide(self, tag: str, app_path: str, project_path: str) -> None:
+        """Plain "open the .app on the project" — pre-existing behaviour."""
+        _app = app_path
+        _proj = project_path
         worker = BackgroundCallWorker(
             lambda: subprocess.Popen(
-                ['open', '-a', _app_path, _proj_path],
+                ['open', '-a', _app, _proj],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             ),
@@ -200,7 +312,103 @@ class ActionsMenuMixin(_Base):
         )
         worker.finished.connect(worker.deleteLater)
         worker.start()
-        self._show_status(f"Opening {path.rsplit('/', 1)[-1]} for '{tag}'")
+        self._show_status(f"Opening {app_path.rsplit('/', 1)[-1]} for '{tag}'")
+
+    def _move_session_to_ide(
+        self, tag: str, app_path: str, project_path: str, preferred_ide: str,
+    ) -> None:
+        """Close the running leap server for *tag* and resume it in the IDE.
+
+        Steps:
+          1. Look up the session's CLI provider and most recent
+             ``session_id`` from ``.storage/cli_sessions/<cli>/<tag>.json``.
+             A missing/empty record means no transcript on disk —
+             handled by falling through to a fresh ``leap <tag>``.
+          2. Close the running leap server via the same path the row's
+             X button uses (``_close_server`` with ``_from_delete=True``
+             so it doesn't pop another confirmation), chained with
+             ``on_done`` so we run the IDE launch only after shutdown
+             completes.
+          3. From the on_done callback: open the .app on
+             ``project_path`` and open a terminal inside it that runs
+             the resume command (or a fresh ``leap <tag>`` if there's
+             no transcript).
+
+        ``preferred_ide`` is the canonical key
+        ``open_terminal_with_command`` routes on (e.g. ``'PyCharm'``,
+        ``'IntelliJ IDEA'``, ``'VS Code'``) — supplied by
+        :func:`detect_supported_ide_for_move`.
+        """
+        # Resolve cli + server_pid from the active row.
+        session = next((s for s in self.sessions if s.get('tag') == tag), None)
+        cli = (session or {}).get('cli_provider') or DEFAULT_PROVIDER
+        server_pid = (session or {}).get('server_pid')
+
+        # Most recent recorded session_id for this (cli, tag) — if any.
+        # ``load_tag_rows`` already filters stale entries (transcript
+        # file gone), so ``session_id is None`` means "nothing to
+        # resume → start fresh under the same tag".
+        session_id: Optional[str] = None
+        try:
+            for row in load_tag_rows(STORAGE_DIR):
+                if row.tag == tag and row.cli == cli and row.sessions:
+                    session_id = row.sessions[0].session_id
+                    break
+        except Exception:  # pragma: no cover - best-effort lookup
+            session_id = None
+
+        _app, _proj = app_path, project_path
+        _tag, _cli, _sid = tag, cli, session_id
+        _preferred_ide = preferred_ide
+
+        def _after_close() -> None:
+            # 1) Open the .app on the project so the IDE picks up the
+            # right window for the AppleScript that follows.
+            try:
+                subprocess.Popen(
+                    ['open', '-a', _app, _proj],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as e:
+                logger.warning("Could not open %s for '%s': %s", _app, _tag, e)
+                self._show_status(f"Could not open {_app}: {e}")
+                return
+
+            # 2) Build the leap command (resume vs fresh) and run it
+            # inside the IDE's integrated terminal.  Mirrors
+            # ``ServerLauncher._open_leap_in_terminal`` to stay
+            # consistent with the From-Resume hand-off path.
+            parts: list[str] = []
+            if _proj:
+                parts.append(f"cd {shlex.quote(_proj)}")
+            leap_cmd = f"leap {shlex.quote(_tag)}"
+            if _sid:
+                leap_cmd = (
+                    f"LEAP_RESUME_SESSION_ID={shlex.quote(_sid)} "
+                    f"LEAP_RESUME_CLI={shlex.quote(_cli)} "
+                    f"LEAP_CLI={shlex.quote(_cli)} "
+                    f"{leap_cmd}"
+                )
+            parts.append(leap_cmd)
+            cmd = " && ".join(parts)
+
+            launch_worker = BackgroundCallWorker(
+                lambda: open_terminal_with_command(
+                    cmd, preferred_ide=_preferred_ide, project_path=_proj,
+                ),
+                self,
+            )
+            launch_worker.finished.connect(launch_worker.deleteLater)
+            launch_worker.start()
+            label = _app.rsplit('/', 1)[-1].removesuffix('.app')
+            verb = 'Resuming' if _sid else 'Starting'
+            self._show_status(f"{verb} '{_tag}' in {label}")
+
+        # Close the server (same path as the X button), then run our
+        # follow-up.  ``_from_delete=True`` skips _close_server's own
+        # confirmation popups (we already asked "Move?").
+        self._close_server(_tag, server_pid, _from_delete=True, on_done=_after_close)
 
     def _show_branch_picker(self, project_path: str) -> None:
         """Open branch picker, then run difftool for the selected branch."""

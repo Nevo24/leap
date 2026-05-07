@@ -255,15 +255,19 @@ class PresetEditorDialog(ZoomMixin, QDialog):
 
         self._rebuild_cards()
 
-        # Bottom buttons: New + Cancel at bottom-left
+        # Bottom buttons: Cancel pinned to bottom-left, New pinned to
+        # bottom-right.  ``Cancel`` is the no-op exit so it sits on the
+        # outside-left like a back-button; ``New`` is a forward action
+        # (start a fresh preset) and lands on the right where the eye
+        # falls last.
         btn_layout = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
         new_btn = QPushButton('New')
         new_btn.setToolTip(
             'Clear the editor to start a new preset from scratch.')
-        cancel_btn = QPushButton('Cancel')
-        btn_layout.addWidget(new_btn)
         btn_layout.addWidget(cancel_btn)
         btn_layout.addStretch()
+        btn_layout.addWidget(new_btn)
         dlg_layout.addLayout(btn_layout)
 
         # Connect signals
