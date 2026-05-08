@@ -191,6 +191,7 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         # Notification tracking checkbox
         self.notif_check = QCheckBox('Enable notification tracking')
         self.notif_check.setToolTip(self._notif_tooltip())
+        self.notif_check.setChecked(True)
         layout.addWidget(self.notif_check)
 
         # Status label
@@ -351,7 +352,7 @@ class SCMSetupDialog(ZoomMixin, QDialog):
             self.token_input.setPlaceholderText('e.g. GITLAB_TOKEN')
         self.token_input.setText(config.get(self._config_token_key(), ''))
         self.poll_input.setValue(config.get('poll_interval', SCM_POLL_INTERVAL))
-        self.notif_check.setChecked(config.get('enable_notifications', False))
+        self.notif_check.setChecked(config.get('enable_notifications', True))
         if config.get('username'):
             self._verified_username = config['username']
             self.status_label.setText(f'Connected as: {self._verified_username}')
