@@ -547,15 +547,18 @@ class LeapServer:
                 elif '\n' in message or '\r' in message:
                     # Multi-line content — wrap in bracketed paste
                     # markers so the CLI treats \n as literal paste
-                    # content, not a submit-Enter per line.  Then send
-                    # a single CR to submit the whole thing.  Strip
-                    # any embedded paste markers first so nested
-                    # wraps don't confuse Claude's Ink parser.
+                    # content, not a submit-Enter per line.  Strip any
+                    # embedded paste markers first so nested wraps
+                    # don't confuse Claude's Ink parser.  The combined
+                    # send-paste-and-submit waits for Ink's placeholder
+                    # render to settle before \r — otherwise the
+                    # post-submit chat-history render can race the
+                    # suppression lift and disappear from the user's
+                    # view (model still gets the message).
                     sanitized = message.replace(
                         '\x1b[200~', '').replace('\x1b[201~', '')
-                    self.pty.send('\x1b[200~' + sanitized + '\x1b[201~')
-                    time.sleep(0.1)
-                    self.pty.send('\r')
+                    self.pty.send_paste_and_submit(
+                        '\x1b[200~' + sanitized + '\x1b[201~')
                 else:
                     self.pty.sendline(message)
             finally:

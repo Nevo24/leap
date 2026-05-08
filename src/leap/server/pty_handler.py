@@ -173,6 +173,32 @@ class PTYHandler:
                 self._write_all, self._wait_for_output_settled,
             )
 
+    def send_paste_and_submit(self, paste_content: str) -> None:
+        """Send bracketed-paste content + Enter under a single send lock.
+
+        Used for multi-line queued messages.  Writes the paste payload,
+        waits for the CLI to render its paste placeholder, then submits
+        with ``\\r``.  The settle wait + 100 ms floor stop Ink from
+        racing the ``\\r`` against its own input-line render — without
+        the wait, Claude's post-submit chat-history render can land
+        inside the server's send-suppression window and never reach the
+        user.
+
+        Args:
+            paste_content: Full bracketed-paste payload, already wrapped
+                in ESC[200~ ... ESC[201~ markers.
+        """
+        with self._send_lock:
+            start = time.monotonic()
+            self._write_all(paste_content)
+            self._wait_for_output_settled(
+                settle_time=self._provider.paste_settle_time,
+            )
+            elapsed = time.monotonic() - start
+            if elapsed < 0.1:
+                time.sleep(0.1 - elapsed)
+            self._write_all('\r')
+
     def send_image_message(self, message: str) -> None:
         """Send image attachment message using provider's protocol.
 
