@@ -162,6 +162,7 @@ class ClaudeProvider(CLIProvider):
         src_cwd: str,
         dst_cwd: str,
         *,
+        transcript_path: str = '',  # unused — Claude derives path from slug
         on_committed: Optional[Any] = None,
     ) -> Optional[str]:
         return relocate_claude_session(

@@ -145,20 +145,29 @@ def relocate_records(
     storage_dir: Path,
     cli: str,
     *,
-    old_path: str,
-    new_path: str,
+    session_id: str,
     new_cwd: str,
+    new_transcript_path: str = '',
 ) -> int:
-    """Rewrite every entry whose ``transcript_path == old_path`` to point
-    at ``new_path`` (with ``cwd = new_cwd``).
+    """Rewrite every entry with the given ``session_id`` under ``cli``.
+
+    Always updates ``cwd`` to ``new_cwd``.  Also updates
+    ``transcript_path`` to ``new_transcript_path`` when that argument
+    is non-empty — Cursor's records deliberately keep
+    ``transcript_path: ''`` (cursor's hook doesn't expose one), and
+    rewriting them to a path would lie about what the picker can stat
+    for staleness; passing ``''`` here preserves that.
 
     Walks every ``<storage>/cli_sessions/<cli>/*.json`` file because the
     same CLI session UUID can be recorded under multiple Leap tags
     (forked-resume scenario).  Without this, the un-picked tags would
-    keep entries pointing at a now-vanished transcript path — the
-    picker filters those at read time, but cleaning them up keeps the
-    on-disk state self-consistent and avoids surprises for any future
-    consumer that doesn't go through the stale filter.
+    keep entries pointing at a stale cwd — the picker would still
+    show old data even though the user explicitly relocated.
+
+    Matches by ``session_id`` (always present, always unique within a
+    tag file by construction in :func:`record_session`) rather than by
+    ``transcript_path`` — Cursor records have empty transcript paths,
+    so a path-based match would silently no-op for them.
 
     ``last_seen`` is **not** updated — the SessionStart(resume) hook
     will bump it naturally on the next resume.
@@ -167,9 +176,9 @@ def relocate_records(
     file errors so a single broken file doesn't abort the whole sweep.
     Returns the number of files that were actually rewritten.
     """
-    if not (cli and old_path and new_path):
+    if not (cli and session_id and new_cwd):
         return 0
-    if not _is_safe_id(cli):
+    if not _is_safe_id(cli) or not _is_safe_id(session_id):
         return 0
     cli_dir = _sessions_root(storage_dir) / cli
     if not cli_dir.is_dir():
@@ -185,10 +194,12 @@ def relocate_records(
             continue
         changed = False
         for entry in entries:
-            if entry.get("transcript_path") == old_path:
-                entry["transcript_path"] = new_path
-                entry["cwd"] = new_cwd
-                changed = True
+            if entry.get("session_id") != session_id:
+                continue
+            if new_transcript_path:
+                entry["transcript_path"] = new_transcript_path
+            entry["cwd"] = new_cwd
+            changed = True
         if not changed:
             continue
         tmp = tag_file.with_suffix(".json.tmp")
@@ -197,10 +208,10 @@ def relocate_records(
             os.replace(tmp, tag_file)
             rewritten += 1
         except (OSError, ValueError):
-            # Best-effort: the picker's stale filter will hide any
-            # entry whose transcript path doesn't exist, so a failed
-            # rewrite degrades to silent invisibility rather than data
-            # loss.  Try to clean up the orphan tmp.
+            # Best-effort: a failed rewrite means the record's cwd
+            # stays at the old value; the picker will display the
+            # stale cwd until the next hook fire re-records.  Try to
+            # clean up the orphan tmp.
             try:
                 tmp.unlink()
             except OSError:

@@ -13,6 +13,7 @@ Key differences from Claude Code:
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -149,6 +150,18 @@ class CodexProvider(CLIProvider):
     def supports_resume(self) -> bool:
         return True
 
+    @property
+    def requires_cwd_bound_resume(self) -> bool:
+        # Codex sessions are UUID-keyed (``codex resume <uuid>`` works
+        # from any cwd, no file move required).  We still surface the
+        # "Original / Current" cwd-choice prompt to keep the UX
+        # symmetric with the cwd-bound CLIs and so :meth:`relocate_session`
+        # below can update Leap's recorded cwd in
+        # ``cli_sessions/codex/<tag>.json`` *immediately* on "Stay in
+        # current" — without waiting for the next hook fire to
+        # self-heal the record.
+        return True
+
     def extract_session_id(self, hook_data: dict) -> Optional[str]:
         """Codex passes ``session_id`` directly in the hook payload.
 
@@ -175,20 +188,65 @@ class CodexProvider(CLIProvider):
             return None
 
     def resume_args(self, session_id: str) -> list[str]:
-        # Codex resume is a subcommand, not a flag: `codex resume <uuid>`.
-        # Prepend these two tokens so they stay in front of any user flags.
-        return ['resume', session_id]
+        # Codex resume is a subcommand, not a flag: ``codex resume <uuid>``.
+        #
+        # We also prepend ``-C <cwd>`` (codex's "use this dir as working
+        # root") so codex doesn't ask its own
+        # *"Choose working directory to resume this session"* picker on
+        # startup — that prompt fires whenever codex's recorded
+        # ``session_cwd`` differs from its launch cwd, which would
+        # double-prompt the user after they already answered leap's
+        # *"CD into the original / Stay in the current"* prompt.
+        #
+        # ``os.getcwd()`` is captured here at server-startup time, after
+        # ``leap-resume.py`` has chdir'd to whichever cwd the user
+        # picked.  Passing the same dir to codex via ``-C`` makes
+        # codex's "current" match its "session" → no prompt.  If the
+        # user passes their own ``-C`` in flags, codex uses last-wins
+        # so theirs takes precedence.
+        return ['-C', os.getcwd(), 'resume', session_id]
 
-    # Note: ``relocate_session`` is intentionally NOT overridden —
-    # Codex stores sessions by date + UUID at
-    # ``~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl``,
-    # not cwd-derived path.  ``codex resume <uuid>`` already works
-    # in any cwd, so the base ``return None`` is the right answer:
-    # the leap-resume / monitor callers detect the ``None``, fall
-    # through to ``target_cwd = current_cwd``, and the resume runs
-    # successfully.  The recorded ``cwd`` field in
-    # ``cli_sessions/codex/<tag>.json`` self-heals on the next hook
-    # fire (SessionStart re-records with the new cwd).
+    def relocate_session(
+        self,
+        session_id: str,
+        src_cwd: str,
+        dst_cwd: str,
+        *,
+        transcript_path: str = '',
+        on_committed: Optional[Any] = None,
+    ) -> Optional[str]:
+        """Logical-only relocation: no files move, just bump the recorded cwd.
+
+        Codex stores sessions at
+        ``~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`` —
+        date+UUID-keyed, *not* cwd-derived — so ``codex resume <uuid>``
+        finds the session from any cwd.  No transcript move is needed.
+
+        We still implement this hook (rather than inheriting the base
+        ``return None``) so the picker treats Codex symmetrically with
+        the cwd-bound CLIs: when the user picks "Stay in current",
+        ``on_committed`` is fired with the unchanged transcript path —
+        the caller's bookkeeping callback then rewrites
+        ``cli_sessions/codex/<tag>.json`` to point at ``dst_cwd``.
+        Without this, the recorded cwd would only catch up on the next
+        hook fire after a resumed turn.
+
+        Returns the unchanged transcript path on success; ``None`` if
+        the caller didn't supply one or the file is gone.
+        """
+        if not transcript_path or not os.path.isfile(transcript_path):
+            return None
+        if on_committed is not None:
+            try:
+                on_committed(transcript_path)
+            except Exception:
+                # No actual move happened, so bookkeeping failure isn't
+                # catastrophic — caller gets the path back, the
+                # records will self-heal on next hook fire.  We
+                # deliberately swallow rather than raise so the
+                # "logical move" surface still looks succeeded.
+                pass
+        return transcript_path
 
     # -- Hook configuration ----------------------------------------------
 

@@ -214,6 +214,7 @@ class CursorAgentProvider(CLIProvider):
         src_cwd: str,
         dst_cwd: str,
         *,
+        transcript_path: str = '',  # unused — Cursor locates by chat-dir
         on_committed: Optional[Any] = None,
     ) -> Optional[str]:
         """Move ``~/.cursor/chats/<MD5(src)>/<chatId>/`` to the dst hash.

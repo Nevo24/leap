@@ -469,6 +469,7 @@ class CLIProvider(ABC):
         src_cwd: str,
         dst_cwd: str,
         *,
+        transcript_path: str = '',
         on_committed: Optional[Any] = None,
     ) -> Optional[str]:
         """Move this CLI's on-disk session state from ``src_cwd`` to ``dst_cwd``.
@@ -483,6 +484,14 @@ class CLIProvider(ABC):
         CLI doesn't support cross-cwd relocation (the picker will fall
         back to ``chdir`` into the original cwd).  Raise an exception
         on real failure — callers exit non-zero.
+
+        ``transcript_path`` is the path the picker recorded for this
+        session.  Most providers (Claude/Gemini/Cursor) compute their
+        own source paths from ``src_cwd`` + ``session_id`` and don't
+        need it; Codex stores sessions at a date+UUID path that's not
+        derivable from cwd, so its no-op "logical move" implementation
+        uses this value to pass the unchanged path through to the
+        ``on_committed`` callback.
 
         ``on_committed`` is invoked with the new path *after* the
         destination is verified in-place but *before* the source is

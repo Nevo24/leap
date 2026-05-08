@@ -586,8 +586,16 @@ def _pick_session(tag: str, cli: str, all_sessions: list) -> tuple:
 
 
 _CWD_CHOICE_OPTIONS: tuple[tuple[str, str], ...] = (
-    ('original', 'Original working directory'),
-    ('current', 'Current working directory'),
+    # Action-first labels — make it explicit what each option does to
+    # the user's cwd:
+    #   "original" → leap-resume.py chdirs into the recorded path,
+    #     leaving the session's on-disk state where it is.
+    #   "current"  → leap-resume.py calls provider.relocate_session()
+    #     so the session's on-disk state ends up under the current
+    #     cwd (file moves for cwd-bound CLIs; logical no-op move for
+    #     Codex which only updates Leap's recorded cwd).
+    ('original', 'CD into the original directory'),
+    ('current',  'Stay in the current directory'),
 )
 
 
@@ -683,11 +691,13 @@ def _try_relocate(
     provider doesn't support cross-cwd relocation (caller falls back
     to chdir), or ``None`` on a hard error (caller exits non-zero).
 
-    The provider's ``relocate_session`` is responsible for blocking
-    SIGINT/SIGTERM/etc. while the move is in flight — the user
-    physically cannot Ctrl+C out of a half-committed state.  The
-    bookkeeping callback runs inside the same critical section so the
-    on-disk records stay consistent with the moved files.
+    For providers whose ``relocate_session`` actually moves files
+    (Claude/Gemini/Cursor), the move is signal-blocked so Ctrl+C
+    cannot interrupt a half-committed state, and the bookkeeping
+    callback runs inside that same critical section.  Codex's
+    ``relocate_session`` is a logical no-op (no files move; only the
+    recorded cwd in ``.storage/cli_sessions/codex/<tag>.json`` is
+    bumped) so it doesn't need the signal block.
     """
     if get_provider is None or relocate_records is None:
         return False  # leap module wasn't importable; fall back to chdir
@@ -698,20 +708,33 @@ def _try_relocate(
 
     def _on_committed(new_path: str) -> None:
         # Inside the signal-blocked section: rewrite every
-        # cli_sessions/<cli>/*.json entry that points at the old
-        # transcript path so the picker (and any other consumer)
-        # finds the session at its new home next time.
+        # cli_sessions/<cli>/*.json entry for this session so the
+        # picker (and any other consumer) reflects the new cwd
+        # immediately.  Matches by session_id (always present,
+        # always unique per tag) rather than by transcript_path so
+        # CLIs like Cursor that record an empty transcript_path
+        # still get their cwd bumped.
+        #
+        # ``new_transcript_path=new_path`` updates the stored path
+        # for CLIs that actually move files (Claude/Gemini moves to
+        # new on-disk path; Codex's no-op move passes through the
+        # unchanged path).  Cursor's relocate returns the new chat
+        # dir path but its picker records keep transcript_path
+        # empty by convention — so we explicitly pass an empty
+        # value for cursor-agent to preserve that.
+        nt = '' if cli == 'cursor-agent' else new_path
         relocate_records(
-            STORAGE_DIR,
-            cli,
-            old_path=old_transcript_path,
-            new_path=new_path,
+            STORAGE_DIR, cli,
+            session_id=session_id,
             new_cwd=dst_cwd,
+            new_transcript_path=nt,
         )
 
     try:
         new_path = provider.relocate_session(
-            session_id, src_cwd, dst_cwd, on_committed=_on_committed,
+            session_id, src_cwd, dst_cwd,
+            transcript_path=old_transcript_path,
+            on_committed=_on_committed,
         )
     except RelocationError as e:
         sys.stderr.write(
@@ -945,6 +968,11 @@ def main() -> int:
                 f"  {RED}Could not enter session's directory {target_cwd}: {e}{RESET}\n"
             )
             return 1
+        # Keep ``$PWD`` in sync with the new cwd.  ``os.chdir`` updates
+        # the OS cwd but not the env var; bash usually self-corrects on
+        # startup, but downstream tools that read ``$PWD`` directly
+        # (instead of ``getcwd``) would otherwise see the stale path.
+        env["PWD"] = target_cwd
     # Exec leap-main.sh directly via its shebang — avoids a PATH lookup
     # for `bash` and preserves argv[0] = the real script path.
     os.execvpe(str(LEAP_MAIN), [str(LEAP_MAIN), tag], env)
