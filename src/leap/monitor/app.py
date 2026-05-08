@@ -256,6 +256,14 @@ class MonitorWindow(
             'main_font_size', current_theme().font_size_base)
         self._main_zoom_save_timer: Optional[QTimer] = None
 
+        # Column-width persistence: snapshots happen synchronously in
+        # _on_section_resized, but the disk write is debounced so a
+        # rapid drag (sectionResized fires per-pixel) doesn't hammer
+        # the prefs file.  Without this, only the next unrelated
+        # _save_prefs trigger persists the drag — which means a drag
+        # immediately followed by a hard kill would lose the work.
+        self._column_widths_save_timer: Optional[QTimer] = None
+
         # Row drag-and-drop state
         self._drag_source_row: int = -1
         self._drag_start_pos: QPoint = QPoint()
@@ -1454,13 +1462,85 @@ class MonitorWindow(
         for col in visible_cols:
             self.table.setColumnWidth(col, col_width)
         self._resizing_columns = False
+        # Equal widths is a fresh "intent" — capture so resizeEvent reads it back
+        self._snapshot_widths_to_prefs()
+
+    def _apply_widths_scaled(self, source_widths: list[int]) -> None:
+        """Scale ``source_widths`` proportionally to fit the current viewport.
+
+        Same cumulative-rounding algorithm as ``resizeEvent``, but reading
+        from a passed-in source array rather than current Qt widths.  Used
+        to apply the user's saved-intent widths to a viewport that may be
+        smaller or larger than where they were captured — without ever
+        feeding floor-clipped Qt state back into the proportions.
+        """
+        viewport_w = self.table.viewport().width()
+        if viewport_w <= 0:
+            return
+        col_count = self.table.columnCount()
+        if len(source_widths) != col_count:
+            return
+        delete_w = self.table.columnWidth(self.COL_DELETE)
+        resizable_cols = [
+            c for c in range(col_count)
+            if c != self.COL_DELETE and not self.table.isColumnHidden(c)
+        ]
+        resizable_total = sum(source_widths[c] for c in resizable_cols)
+        if resizable_total <= 0:
+            return
+        available = viewport_w - delete_w
+        self._resizing_columns = True
+        cum_old = 0
+        used = 0
+        for col in resizable_cols:
+            cum_old += source_widths[col]
+            target = round(available * cum_old / resizable_total)
+            w = max(30, target - used)
+            self.table.setColumnWidth(col, w)
+            used += w
+        self._resizing_columns = False
+
+    def _snapshot_widths_to_prefs(self) -> None:
+        """Capture current Qt column widths into ``self._prefs['column_widths']``.
+
+        Called when the user explicitly resizes a column (drag) or when
+        we set a fresh layout (equal widths, reset).  ``resizeEvent``
+        does NOT call this — window resizes are *derivations* of the
+        stored intent, not new intent.  Decoupling lets ``resizeEvent``
+        recover from floor-clipping when the window grows back, and
+        keeps the in-memory copy fresh enough that a force-quit doesn't
+        lose the session's drag-resize work.
+        """
+        if not hasattr(self, 'table') or self.table is None:
+            return
+        self._prefs['column_widths'] = [
+            self.table.columnWidth(col)
+            for col in range(self.table.columnCount())
+        ]
+
+    def _schedule_column_widths_save(self) -> None:
+        """Debounce ``_save_prefs`` after a column drag.
+
+        ``sectionResized`` fires for every pixel of drag movement;
+        writing to disk on each fire would hammer the prefs file.
+        Mirrors the same singleshot-timer pattern used by main-font
+        zoom (``_schedule_main_font_save``).
+        """
+        if self._column_widths_save_timer is None:
+            self._column_widths_save_timer = QTimer(self)
+            self._column_widths_save_timer.setSingleShot(True)
+            self._column_widths_save_timer.timeout.connect(self._save_prefs)
+        self._column_widths_save_timer.start(500)
 
     def _on_section_resized(self, index: int, old_size: int, new_size: int) -> None:
         """Clamp column resizes so total width never exceeds viewport.
 
         When the user drags a column wider, steal space from subsequent
         visible columns (min 30 px each).  If the column was narrowed,
-        give the freed space to the last visible column.
+        give the freed space to the last visible column.  After the
+        clamp, snapshot the result into ``self._prefs['column_widths']``
+        so it represents the user's latest intended sizing — that snapshot
+        is what ``resizeEvent`` rescales from on subsequent window moves.
         """
         if self._resizing_columns or not self._ui_ready:
             return
@@ -1489,27 +1569,32 @@ class MonitorWindow(
                 self.table.setColumnWidth(
                     last, self.table.columnWidth(last) - overflow)
                 self._resizing_columns = False
-            return
+        else:
+            # Overflow: shrink columns *after* the resized one
+            self._resizing_columns = True
+            try:
+                after = [c for c in visible_cols if c > index]
+                # Try to absorb overflow from columns after the resized one
+                for col in after:
+                    if overflow <= 0:
+                        break
+                    cur = self.table.columnWidth(col)
+                    shrink = min(overflow, cur - 30)
+                    if shrink > 0:
+                        self.table.setColumnWidth(col, cur - shrink)
+                        overflow -= shrink
 
-        # Overflow: shrink columns *after* the resized one
-        self._resizing_columns = True
-        try:
-            after = [c for c in visible_cols if c > index]
-            # Try to absorb overflow from columns after the resized one
-            for col in after:
-                if overflow <= 0:
-                    break
-                cur = self.table.columnWidth(col)
-                shrink = min(overflow, cur - 30)
-                if shrink > 0:
-                    self.table.setColumnWidth(col, cur - shrink)
-                    overflow -= shrink
+                # If still overflowing, cap the resized column itself
+                if overflow > 0:
+                    self.table.setColumnWidth(index, max(30, new_size - overflow))
+            finally:
+                self._resizing_columns = False
 
-            # If still overflowing, cap the resized column itself
-            if overflow > 0:
-                self.table.setColumnWidth(index, max(30, new_size - overflow))
-        finally:
-            self._resizing_columns = False
+        # User-driven width change — snapshot as the new "intent",
+        # then debounce-persist to disk so a force-quit immediately
+        # after a drag doesn't lose the work.
+        self._snapshot_widths_to_prefs()
+        self._schedule_column_widths_save()
 
     def _reset_window_size(self) -> None:
         """Reset window geometry, column widths, and dialog sizes.
@@ -1701,36 +1786,22 @@ class MonitorWindow(
     # ------------------------------------------------------------------
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """Scale all resizable columns proportionally on window resize."""
+        """Scale all resizable columns proportionally on window resize.
+
+        Reads from ``self._prefs['column_widths']`` (the user's saved
+        intent) rather than current Qt widths.  That decoupling matters
+        because the cumulative-rounding scaler has a 30-pixel floor —
+        if we read from Qt and a column got floored on a narrow viewport,
+        the lost proportions would never recover when the window grew
+        back.  Reading from saved intent makes a narrow→wide round-trip
+        return to the original widths.
+        """
         super().resizeEvent(event)
         if not self._ui_ready:
             return
-        viewport_w = self.table.viewport().width()
-        if viewport_w <= 0:
-            return
-        col_count = self.table.columnCount()
-        delete_w = self.table.columnWidth(self.COL_DELETE)
-        # Only scale visible columns (skip hidden like Slack)
-        resizable_cols = [
-            c for c in range(col_count)
-            if c != self.COL_DELETE and not self.table.isColumnHidden(c)
-        ]
-        resizable_total = sum(self.table.columnWidth(c) for c in resizable_cols)
-        if resizable_total <= 0:
-            return
-        available = viewport_w - delete_w
-        # Cumulative rounding: compute each column's target from cumulative
-        # proportions so every column shifts evenly, even for tiny changes.
-        self._resizing_columns = True
-        cumulative_old = 0
-        used = 0
-        for col in resizable_cols:
-            cumulative_old += self.table.columnWidth(col)
-            target = round(available * cumulative_old / resizable_total)
-            w = max(30, target - used)
-            self.table.setColumnWidth(col, w)
-            used += w
-        self._resizing_columns = False
+        saved = self._prefs.get('column_widths')
+        if saved and len(saved) == self.table.columnCount():
+            self._apply_widths_scaled(saved)
 
     def changeEvent(self, event: QEvent) -> None:
         """Reset dock badge + tooltip font when window becomes active."""
@@ -3366,9 +3437,15 @@ class MonitorWindow(
                     geom.x(), geom.y(), geom.width(), geom.height()]
                 self._prefs.pop('window_geometry_ns_frame', None)
             self._prefs.pop('window_geometry_state', None)
-            self._prefs['column_widths'] = [
-                self.table.columnWidth(col) for col in range(self.table.columnCount())
-            ]
+            # ``self._prefs['column_widths']`` is kept in sync by
+            # ``_snapshot_widths_to_prefs`` whenever the user actually
+            # changes a column (drag / equal-widths / reset) — so it
+            # already holds the latest user-intended sizing.  We
+            # deliberately do NOT snapshot from the live table here:
+            # if the window was at a narrow viewport on close, the live
+            # widths are scaled-down (and possibly floor-clipped), and
+            # writing those over the saved intent would corrupt the
+            # proportions that ``resizeEvent`` rescales from on next start.
             self._save_prefs()
         except Exception:
             logger.debug("Failed to save monitor prefs on close", exc_info=True)
@@ -3630,24 +3707,19 @@ def main() -> None:
     window.show()
 
     # Enable proportional column scaling after the window is fully shown
-    # and all initial resize events have settled.  Re-apply equal widths
-    # when no saved prefs exist — the viewport is now accurately sized.
+    # and all initial resize events have settled.  Apply the saved widths
+    # via proportional scaling so the user's relative column sizing
+    # survives a close-on-big-screen / reopen-on-small-screen round-trip
+    # (the previous "equalize on overflow" branch wiped out custom
+    # proportions whenever the new viewport was smaller than the saved
+    # widths' total).
     def _finalize_ui() -> None:
         saved_widths = window._prefs.get('column_widths')
         col_count = window.table.columnCount()
         if not saved_widths or len(saved_widths) != col_count:
             window._apply_equal_column_widths()
         else:
-            # If saved widths overflow the current viewport (e.g. window was
-            # closed on a larger external screen), redistribute equally so
-            # columns aren't truncated off the right edge.
-            viewport_w = window.table.viewport().width()
-            total_visible = sum(
-                saved_widths[col] for col in range(col_count)
-                if not window.table.isColumnHidden(col)
-            )
-            if total_visible > viewport_w:
-                window._apply_equal_column_widths()
+            window._apply_widths_scaled(saved_widths)
         window._ui_ready = True
 
     QTimer.singleShot(0, _finalize_ui)
