@@ -86,6 +86,8 @@ src/
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   ├── themes.py            # Visual theme definitions (9 built-in themes, manager API)
     │   ├── permissions.py       # macOS Accessibility + Notifications checks; live state via AXIsProcessTrusted and ncprefs.plist bit 25
+    │   ├── sleep_guard.py       # `SleepGuard` (caffeinate -i -w <pid> child) + `LidCloseGuard` (sudo pmset -a disablesleep 1/0). Drives the toolbar's "Prevent sleep while busy" + "Also block lid-close (admin)" checkboxes. Both are evaluator-driven: any session in RUNNING state activates them; once every session has been out of RUNNING for ≥30 s, both release. Marker file `.storage/disablesleep.marker` survives crashes so next launch can recover the kernel state.
+    │   ├── sudo_manager.py      # Persists the user's sudo password to `.storage/sudo_pass.b64` (mode 0600, base64-encoded — NOT encrypted) so `LidCloseGuard` can run pmset silently. `verify()` invalidates cached creds via `sudo -k` then validates via `sudo -S -v`. `is_auth_failure()` distinguishes "wrong password" (re-prompt) from sudoers / permissions errors (don't re-prompt). Password file is dropped the moment the lid-close checkbox is unticked.
     │   │
     │   ├── _mixins/             # MonitorWindow mixin classes
     │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE, with Move-to-IDE prompt for JetBrains/VS Code that closes the running server and resumes the session in the IDE's integrated terminal)
@@ -201,6 +203,9 @@ assets/
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (9 built-in themes) |
 | `ensure_contrast()` | `monitor/themes.py` | WCAG contrast safety-net (returns black/white if ratio < 4.5:1) |
+| `SleepGuard` | `monitor/sleep_guard.py` | Holds a `caffeinate -i -w <monitor-pid>` child while active. `-w` makes the kernel auto-release the assertion when the monitor process dies, so a crash / `kill -9` / `os._exit` can't leave the Mac stuck awake. `start()` / `stop()` / `is_active` are idempotent. Spawn failure (binary missing, permission denied) degrades silently — checkbox does nothing rather than breaking the monitor. |
+| `LidCloseGuard` | `monitor/sleep_guard.py` | Optional companion to `SleepGuard` that ALSO blocks lid-close sleep via `sudo pmset -a disablesleep 1/0`. Each call goes through `SudoManager.run` with the user's saved password. Writes `.storage/disablesleep.marker` on `start()`, removes it on `stop()` — the marker survives a crashed monitor so the next launch's recovery can clean up the kernel state. `force_inactive()` is the give-up path (clears local state + marker without running pmset; used when the user cancels the re-auth dialog or pmset keeps failing for non-auth reasons). |
+| `SudoManager` | `monitor/sudo_manager.py` | Static helpers for the saved sudo password: `has_saved` / `load` / `save` / `clear` / `verify` / `run` / `is_auth_failure` / `password_path`. Persists to `.storage/sudo_pass.b64` (mode 0600 via `os.open(O_CREAT, 0o600)`, base64 — *not* encrypted; honest threat model is "decoded if anyone reads .storage", same as plain text). `verify` does `sudo -k` first to invalidate the per-user timestamp so we always re-validate the password we just got. `is_auth_failure` distinguishes "wrong password" (re-prompt is appropriate) from sudoers / permissions errors (re-prompt won't help — give up instead). |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |
 | `LineBuffer` | `utils/line_buffer.py` | Cursor-aware line editing buffer (insert, delete, move, home/end, delete-word) used by raw-terminal prompts |
@@ -249,6 +254,8 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Slack sessions | `.storage/slack/sessions.json` |
 | CLI session tracking | `.storage/cli_sessions/<cli>/<tag>.json` (list of `{session_id, transcript_path, cwd, last_seen}` recorded by `leap-hook-process.py`; drives `leap --resume`. One subdir per provider — `claude/`, `codex/`, `cursor-agent/`, `gemini/`, plus any custom CLI that implements the Leap Resume interface) |
 | CLI PID map | `.storage/pid_maps/<cli_pid>.json` (written by server when spawning the CLI: `{tag, signal_dir, python, cli_provider}`. Lets `leap-hook.sh` recover context via a PPID walk when a CLI strips env vars from hook subprocesses — the project dir itself is recovered from `$LEAP_PROJECT_DIR` or the `export LEAP_PROJECT_DIR=` line in `~/.zshrc`/`~/.bashrc`. Swept by `leap-main.sh`'s `cleanup_dead_sockets` using `kill -0`) |
+| Sudo password (lid-close) | `.storage/sudo_pass.b64` (mode 0600, base64-encoded — NOT encrypted; only present while the lid-close override is enabled, deleted the moment the user unticks the box) |
+| Disable-sleep marker | `.storage/disablesleep.marker` (zero-byte sentinel; present iff Leap currently holds `pmset disablesleep=1`. Drives crash recovery on next launch — if the marker is on disk but the monitor isn't running, the next startup attempts a silent `pmset disablesleep 0` using the saved password, or pops a manual-fix dialog if that fails) |
 
 ## Server Queue Shortcut
 

@@ -1532,6 +1532,7 @@ class TableBuilderMixin(_Base):
         self._update_table()
         self._update_slack_bot_button()
         self._check_slack_bot_transition()
+        self._evaluate_sleep_guard()
         dock_enabled = get_dock_enabled(self._prefs)
         events = self._dock_badge.update_sessions(
             sessions, self.isActiveWindow(), dock_enabled,

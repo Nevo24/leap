@@ -22,10 +22,10 @@ from AppKit import (
 )
 from Foundation import NSDate, NSMakeRect, NSRunLoop
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QDialog, QFrame, QMainWindow, QMenu,
-    QScrollBar, QShortcut, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
-    QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
-    QProgressBar,
+    QAction, QApplication, QComboBox, QDialog, QFrame, QInputDialog,
+    QLineEdit, QMainWindow, QMenu, QScrollBar, QShortcut, QToolButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout, QTableWidget,
+    QPushButton, QCheckBox, QHeaderView, QMessageBox, QProgressBar,
 )
 from PyQt5.QtCore import (
     QByteArray, QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QThread,
@@ -37,6 +37,7 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtSvg import QSvgRenderer
 
+from leap.cli_providers.states import CLIState
 from leap.monitor.dialogs.settings_dialog import detect_default_difftool
 from leap.monitor.permissions import (
     check_accessibility, check_notifications,
@@ -44,6 +45,8 @@ from leap.monitor.permissions import (
     _current_bundle_id, _read_notifications_plist_status,
 )
 from leap.monitor.popup_zoom import PopupZoomManager
+from leap.monitor.sleep_guard import LidCloseGuard, SleepGuard
+from leap.monitor.sudo_manager import SudoManager
 from leap.monitor.pr_tracking.base import PRStatus, SCMProvider
 from leap.monitor.pr_tracking.config import (
     clear_all_dialog_geometry, load_auto_fetch_preset_name, load_monitor_prefs,
@@ -82,16 +85,21 @@ logger = logging.getLogger(__name__)
 def _pin_checkbox_min_width(check: QCheckBox) -> None:
     """Pin a QCheckBox's minimum width so its label can never be clipped.
 
-    Computes the width from the text's fontMetrics plus generous room
-    for the checkbox indicator and Qt padding. sizeHint() alone comes up
-    a few pixels short on macOS when the label contains apostrophes or
-    slashes ("Auto '/leap' fetch"), which caused visible truncation
-    when the window was resized narrow.
+    Uses Qt's own ``sizeHint`` as the baseline (it accounts for the
+    indicator, spacing and styled padding correctly across platforms)
+    and adds a small fontMetrics-derived buffer to absorb the few
+    pixels of under-reporting that ``horizontalAdvance`` exhibits on
+    macOS for descender-tipped glyphs (the ``y`` in ``busy``) and
+    apostrophe-bearing labels (``"Auto '/leap' fetch"``).
     """
+    hint = check.sizeHint().width()
     fm = check.fontMetrics()
-    text_width = fm.horizontalAdvance(check.text())
-    # ~22px for the checkbox indicator + ~10px padding on each side.
-    check.setMinimumWidth(text_width + 44)
+    # tightBoundingRect gives the actual ink extent — wider than
+    # horizontalAdvance for glyphs with right side-bearings.
+    ink_width = fm.tightBoundingRect(check.text()).width()
+    advance = fm.horizontalAdvance(check.text())
+    bearing_safety = max(0, ink_width - advance) + 4
+    check.setMinimumWidth(hint + bearing_safety)
 
 
 class _RefreshableComboBox(QComboBox):
@@ -267,6 +275,48 @@ class MonitorWindow(
             k for k, v in raw_seen.items() if v
         }
 
+        # macOS sleep prevention (Prevent sleep while busy checkbox).
+        # ``_last_running_at`` is the monotonic timestamp of the most
+        # recent tick where any session was in ``RUNNING`` state.  The
+        # evaluator only releases the assertion once every session has
+        # stayed out of ``RUNNING`` for >= IDLE_GRACE seconds, so a
+        # brief drop between two RUNNING bursts doesn't bounce sleep.
+        self._sleep_guard = SleepGuard()
+        # Optional companion: ``pmset -a disablesleep`` to ALSO block
+        # lid-close sleep, gated by the second checkbox.
+        self._lid_close_guard = LidCloseGuard()
+        # Re-entrancy guard for the modal sudo-password dialog: every
+        # 1s tick can hit a pmset auth failure; without this flag the
+        # dialog would stack.
+        self._lid_pw_dialog_open: bool = False
+        # Dropdown state for the lid-close sub-row: True means the row
+        # is shown.  Not persisted across sessions — every launch
+        # starts collapsed so the chevron is the discoverable
+        # affordance and the (admin-flavoured) sub-option stays out
+        # of the way until the user asks for it.
+        self._lid_expanded: bool = False
+        self._last_running_at: float = 0.0
+        # Defensive normalisation: ``block_lid_close=True`` is only
+        # meaningful when the parent guard is also on.  A hand-edited
+        # or partially-saved prefs file could leave them inconsistent
+        # (sub renders as "checked but disabled" forever).  If we
+        # detect that, force the sub-pref off.
+        if (
+            self._prefs.get('block_lid_close', False)
+            and not self._prefs.get('prevent_sleep_while_busy', False)
+        ):
+            self._prefs['block_lid_close'] = False
+            self._save_prefs()
+        # Drop any orphan password file when the pref is off — covers
+        # the inconsistency case above, a hard-quit / crash that
+        # escaped the toggle-off cleanup, and hand-edits that turned
+        # the pref off without removing the file.  When the pref is
+        # ON we preserve the saved password so the evaluator can run
+        # ``sudo pmset`` silently this session, just as the user
+        # configured it last time.
+        if not self._prefs.get('block_lid_close', False):
+            SudoManager.clear()
+
         # Setup auto-refresh timer before init_ui
         self.timer = QTimer()
         self.timer.timeout.connect(self._auto_refresh)
@@ -284,6 +334,19 @@ class MonitorWindow(
         self._init_ui()
         self._apply_window_effects()
         self._refresh_permissions_banner()
+        # Belt-and-suspenders: closeEvent already calls
+        # _cleanup_lid_close_on_exit before its os._exit, but Qt's
+        # aboutToQuit fires on shutdown paths that may bypass our
+        # closeEvent (system logout / shutdown sending SIGTERM to a
+        # backgrounded app, some force-quit variants).  The cleanup
+        # is idempotent and self-gates on "did we set disablesleep",
+        # so wiring both is safe and doesn't double-prompt.
+        _qapp = QApplication.instance()
+        if _qapp is not None:
+            _qapp.aboutToQuit.connect(self._cleanup_lid_close_on_exit)
+        # Defer crash-recovery one tick so the main window is up first
+        # (any QMessageBox the recovery shows then has a sensible parent).
+        QTimer.singleShot(0, self._recover_orphaned_disablesleep)
         QTimer.singleShot(3000, self._run_update_check)
         # Synchronous initial load — UI needs sessions before first paint
         self.sessions = self._merge_sessions(get_active_sessions())
@@ -534,6 +597,12 @@ class MonitorWindow(
         #  TABLE TOOLBAR — "+ Add Session" prominent on the left
         # ═══════════════════════════════════════════════════════════════
         toolbar_layout = QHBoxLayout()
+        # No right margin so the chevron's right edge sits flush at
+        # the same x as the "Reset Window Sizes" button's right edge
+        # in the logo bar above (both inherit the main layout's 12px
+        # right margin).  The new sizeHint-based ``_pin_checkbox_min_width``
+        # already includes the bearing safety the descender on 'y'
+        # needs, so the text won't clip without explicit padding here.
         toolbar_layout.setContentsMargins(0, 6, 0, 4)
 
         self._add_btn = QPushButton('  Add Session')
@@ -544,6 +613,101 @@ class MonitorWindow(
         self._add_btn.clicked.connect(self._add_row_menu)
         toolbar_layout.addWidget(self._add_btn)
         toolbar_layout.addStretch()
+
+        # Right-aligned sleep-prevention group, sitting under the
+        # "Reset Window Sizes" button in the logo bar above.  Chevron
+        # is always visible — clicking it expands / collapses the
+        # lid-close sub-row.  Sub-row also auto-opens when the parent
+        # gets checked (per design: "on checking the box it also
+        # opens").  Sub-checkbox stays disabled until the parent is
+        # checked so its state can never disagree with the parent's.
+        sleep_box = QWidget()
+        sleep_box_layout = QVBoxLayout(sleep_box)
+        sleep_box_layout.setContentsMargins(0, 0, 0, 0)
+        sleep_box_layout.setSpacing(2)
+
+        # ── Parent row: [parent checkbox][~2 chars][chevron] ─────────
+        # Chevron sits roughly two character-widths to the right of
+        # the checkbox text (no stretch — we want it tight, not
+        # pinned to the row's right edge).
+        parent_row = QHBoxLayout()
+        parent_row.setContentsMargins(0, 0, 0, 0)
+        parent_row.setSpacing(12)
+
+        self.prevent_sleep_check = QCheckBox('Prevent sleep while busy')
+        self.prevent_sleep_check.setToolTip(
+            "Keep your Mac awake while any session is in 'Running' "
+            "status. Sleep is allowed again once every session has "
+            "stayed out of Running for 30 seconds.\n\n"
+            "Display sleep is unaffected — only idle / system sleep "
+            "is blocked, so battery isn't drained by the screen.\n\n"
+            "Note: closing the lid still puts the Mac to sleep "
+            "regardless. Tick 'Also block lid-close' (click the ▶ "
+            "to reveal it) to override that.")
+        self.prevent_sleep_check.setChecked(
+            self._prefs.get('prevent_sleep_while_busy', False))
+        self.prevent_sleep_check.stateChanged.connect(
+            self._toggle_prevent_sleep)
+        _pin_checkbox_min_width(self.prevent_sleep_check)
+        parent_row.addWidget(self.prevent_sleep_check)
+
+        self._lid_expand_btn = QToolButton()
+        # Default collapsed so the user has to opt in to seeing the
+        # admin-flavoured option.
+        self._lid_expand_btn.setArrowType(
+            Qt.DownArrow if self._lid_expanded else Qt.RightArrow)
+        self._lid_expand_btn.setAutoRaise(True)
+        self._lid_expand_btn.setFixedSize(16, 18)
+        self._lid_expand_btn.setToolTip(
+            "Show or hide the 'Also block lid-close' option.")
+        self._lid_expand_btn.clicked.connect(self._toggle_lid_expanded)
+        parent_row.addWidget(self._lid_expand_btn)
+        sleep_box_layout.addLayout(parent_row)
+
+        # ── Sub row: [sub checkbox] ──────────────────────────────────
+        # No stretch — the sub-checkbox's natural width sets the
+        # sleep_box's width (since this label is the longest), and
+        # parent-row's middle-stretch pushes the chevron out to the
+        # right edge to match.
+        self._lid_row_widget = QWidget()
+        lid_row = QHBoxLayout(self._lid_row_widget)
+        lid_row.setContentsMargins(0, 0, 0, 0)
+        lid_row.setSpacing(0)
+
+        self.lid_close_check = QCheckBox('Also block lid-close (admin)')
+        self.lid_close_check.setToolTip(
+            "Also override macOS clamshell sleep so closing the lid "
+            "doesn't pause your sessions.\n\n"
+            "Runs 'sudo pmset -a disablesleep 1' while the parent "
+            "guard is active and 'disablesleep 0' once everything's "
+            "been Idle for 30 seconds. Each time you tick this Leap "
+            "asks for your macOS account password and saves it to "
+            f"{SudoManager.password_path()} (mode 0600, base64-"
+            "encoded). If the password later stops working — e.g. "
+            "you changed it — Leap will pop a dialog and ask for the "
+            "new one.\n\n"
+            "Trade-off: anyone with read access to your home "
+            "directory as you can decode that file. Don't tick this "
+            "if that bothers you.")
+        self.lid_close_check.setChecked(
+            self._prefs.get('block_lid_close', False))
+        # Sub-checkbox is enabled only while the parent is checked so
+        # its on-state can never disagree with the parent's.
+        self.lid_close_check.setEnabled(
+            self.prevent_sleep_check.isChecked())
+        self.lid_close_check.stateChanged.connect(self._toggle_lid_close)
+        _pin_checkbox_min_width(self.lid_close_check)
+        lid_row.addWidget(self.lid_close_check)
+
+        sleep_box_layout.addWidget(self._lid_row_widget)
+
+        # Initial visibility: sub-row hidden by default; chevron is
+        # always visible regardless of parent state so the affordance
+        # is always discoverable.
+        self._lid_row_widget.setVisible(self._lid_expanded)
+
+        toolbar_layout.addWidget(sleep_box, 0, Qt.AlignVCenter)
+
         layout.addLayout(toolbar_layout)
 
         # Table (with subtle top/bottom border)
@@ -1638,6 +1802,441 @@ class MonitorWindow(
         save_auto_fetch_preset_name(
             '' if text == self._AUTO_LEAP_PRESET_NONE else text)
 
+    # Grace period (seconds) every session must stay out of RUNNING
+    # before the SleepGuard releases its caffeinate assertion.  Picked
+    # deliberately so a brief drop out of RUNNING between two bursts
+    # (e.g. Claude finishes one tool, starts the next) doesn't bounce
+    # the assertion off and on.
+    _SLEEP_GUARD_RUNNING_GRACE_SECONDS: float = 30.0
+
+    def _toggle_prevent_sleep(self, state: int) -> None:
+        """Persist the parent checkbox and (de)activate the SleepGuard.
+
+        Toggling on does NOT start caffeinate immediately if no session
+        is currently RUNNING — the evaluator will start it next tick
+        only when one is.  Toggling off releases the assertion right
+        away.
+
+        Drops the dropdown semantics on the sub-row: ticking the
+        parent auto-expands the sub (per user request, "on checking
+        the box it also opens"); un-ticking hides it.  Force-untick
+        the child too so the child can never be active without the
+        parent.
+        """
+        enabled = state == Qt.Checked
+        self._prefs['prevent_sleep_while_busy'] = enabled
+        self._save_prefs()
+        # Sub-checkbox is only meaningful while the parent is on; gate
+        # interaction (not visibility) on that.
+        self.lid_close_check.setEnabled(enabled)
+        if enabled:
+            # Auto-expand the sub-row when the parent is checked
+            # ("on checking the box it also opens").
+            self._lid_expanded = True
+            self._lid_expand_btn.setArrowType(Qt.DownArrow)
+            self._lid_row_widget.setVisible(True)
+        elif self.lid_close_check.isChecked():
+            # Force-untick child — that path runs ``_toggle_lid_close``
+            # which clears disablesleep + the saved password as
+            # documented for that toggle.
+            self.lid_close_check.setChecked(False)
+        if enabled:
+            # Reset so the 30s grace clock starts now if nothing is
+            # currently RUNNING.  If something IS, the evaluator will
+            # overwrite this with ``time.monotonic()`` immediately.
+            self._last_running_at = 0.0
+            self._evaluate_sleep_guard()
+        else:
+            self._sleep_guard.stop()
+
+    def _toggle_lid_expanded(self) -> None:
+        """Manually flip the sub-row's visibility via the chevron.
+
+        Only meaningful when the parent is checked — the chevron is
+        hidden when the parent is unchecked, so this slot fires only
+        from a click on the visible button.
+        """
+        self._lid_expanded = not self._lid_expanded
+        self._lid_expand_btn.setArrowType(
+            Qt.DownArrow if self._lid_expanded else Qt.RightArrow)
+        self._lid_row_widget.setVisible(self._lid_expanded)
+
+    def _revert_lid_close_to_unchecked(self) -> None:
+        """Force the lid-close checkbox back to unchecked, no signals.
+
+        Called via ``QTimer.singleShot(0, …)`` from the cancel /
+        save-fail / give-up paths so the revert runs *after* Qt has
+        fully processed the user's click.  Doing it inline (during
+        the ``stateChanged`` handler) leaves the next click in an
+        ambiguous state on macOS — the box can become checked
+        without our handler ever running.
+
+        ``blockSignals`` is wrapped in ``try/finally`` so an
+        exception in ``setChecked`` (e.g. widget being destroyed)
+        can't leave the checkbox permanently silenced.
+        """
+        self.lid_close_check.blockSignals(True)
+        try:
+            self.lid_close_check.setChecked(False)
+        finally:
+            self.lid_close_check.blockSignals(False)
+
+    def _toggle_lid_close(self, state: int) -> None:
+        """Persist the lid-close sub-checkbox and (de)activate pmset.
+
+        On the very first enable: prompt for the user's sudo password,
+        validate it via ``sudo -S -v``, and persist it to disk (the
+        dialog text makes the on-disk storage explicit).  If the user
+        cancels or enters a wrong password we silently un-tick the
+        checkbox.
+
+        On disable: clear ``disablesleep`` if we'd set it, then delete
+        the saved password from disk so a previously-stored password
+        can't be replayed by anything reading ``.storage/`` after the
+        feature has been turned off.
+        """
+        enabled = state == Qt.Checked
+        if enabled:
+            # Always prompt on every tick → check transition (even if
+            # a password is already saved on disk).  This guarantees
+            # the user explicitly confirms the feature each time they
+            # turn it on AND re-validates the saved password against
+            # the current macOS account password.
+            pw = self._prompt_sudo_password(first_time=True)
+            if pw is None:
+                # User cancelled or repeatedly mistyped — keep the
+                # checkbox unchecked.  Defer the revert via
+                # singleShot(0): calling setChecked from inside Qt's
+                # own click-processing leaves the next click in an
+                # ambiguous "did the state actually change" state on
+                # macOS, which would then let the user re-check the
+                # box without re-prompting.  Pushing the revert to
+                # the next event-loop iteration finishes the current
+                # click cleanly first.
+                QTimer.singleShot(0, self._revert_lid_close_to_unchecked)
+                return
+            if not self._safe_save_sudo_password(pw):
+                QTimer.singleShot(0, self._revert_lid_close_to_unchecked)
+                return
+
+        self._prefs['block_lid_close'] = enabled
+        self._save_prefs()
+
+        if enabled:
+            # Re-evaluate so disablesleep is set immediately if a
+            # session is already RUNNING (otherwise the evaluator
+            # picks it up on the next tick anyway).
+            self._evaluate_sleep_guard()
+        else:
+            pw = SudoManager.load()
+            if pw is not None and (
+                self._lid_close_guard.is_active
+                or LidCloseGuard.marker_present()
+            ):
+                ok, err = self._lid_close_guard.stop(pw)
+                if not ok and SudoManager.is_auth_failure(1, err):
+                    # Password no longer valid — re-prompt + retry once.
+                    self._handle_lid_auth_failure(intended_active=False)
+            # Drop the saved password the moment the feature is off,
+            # so disabling really does erase the secret from disk.
+            SudoManager.clear()
+
+    # Grace period (seconds) every session must stay out of RUNNING
+    # before the SleepGuard releases its caffeinate assertion.  Picked
+    # deliberately so a brief drop out of RUNNING between two bursts
+    # (e.g. Claude finishes one tool, starts the next) doesn't bounce
+    # the assertion off and on.
+    _SLEEP_GUARD_RUNNING_GRACE_SECONDS: float = 30.0
+
+    def _evaluate_sleep_guard(self) -> None:
+        """Re-decide whether the caffeinate + lid-close guards should hold.
+
+        Called once per session-refresh tick (and once on toggle).  The
+        guards run whenever any session reports ``RUNNING``; they are
+        released only after every session has stayed out of RUNNING for
+        at least ``_SLEEP_GUARD_RUNNING_GRACE_SECONDS``.
+
+        Both guards follow the same activation window — the lid-close
+        guard piggy-backs on the caffeinate one so the user never sees
+        a state where lid-close is blocked but idle-sleep isn't.
+        """
+        # During shutdown the in-flight SessionRefreshWorker may still
+        # emit ``sessions_ready`` after closeEvent stopped the guard;
+        # bail so we don't spawn a child that ``os._exit`` is about to
+        # orphan (caffeinate's ``-w`` would clean it up, but skipping
+        # the spawn is simpler).
+        if self._shutting_down:
+            return
+        if not self._prefs.get('prevent_sleep_while_busy', False):
+            if self._sleep_guard.is_active:
+                self._sleep_guard.stop()
+            self._maybe_lid_stop()
+            return
+
+        any_running = any(
+            s.get('cli_state', CLIState.IDLE) == CLIState.RUNNING
+            for s in self.sessions
+        )
+        now = time.monotonic()
+        if any_running:
+            self._last_running_at = now
+            if not self._sleep_guard.is_active:
+                self._sleep_guard.start()
+            self._maybe_lid_start()
+            return
+
+        # Grace-period release: once 30 s of all-Idle has elapsed, drop
+        # both guards.  We don't gate on ``sleep_guard.is_active`` here
+        # — caffeinate can die externally (OOM kill, ``pkill caffeinate``,
+        # admin-initiated cleanup) while the lid-close guard is still
+        # holding ``disablesleep=1``.  Both ``stop`` calls are idempotent
+        # / self-gating so a no-op pass costs nothing.
+        if (
+            now - self._last_running_at
+                >= self._SLEEP_GUARD_RUNNING_GRACE_SECONDS
+        ):
+            if self._sleep_guard.is_active:
+                self._sleep_guard.stop()
+            self._maybe_lid_stop()
+
+    def _maybe_lid_start(self) -> None:
+        """Start the lid-close guard if the sub-checkbox is enabled.
+
+        Gated on ``_lid_pw_dialog_open`` so a 1s tick doesn't fire a
+        stale ``sudo pmset`` while a re-auth dialog is already up.
+        """
+        if self._lid_pw_dialog_open:
+            return
+        if not self._prefs.get('block_lid_close', False):
+            return
+        if self._lid_close_guard.is_active:
+            return
+        pw = SudoManager.load()
+        if pw is None:
+            # Pref says enabled but the password file vanished —
+            # treat it as a soft auth failure so the user is prompted.
+            self._handle_lid_auth_failure(intended_active=True)
+            return
+        ok, err = self._lid_close_guard.start(pw)
+        if not ok and SudoManager.is_auth_failure(1, err):
+            self._handle_lid_auth_failure(intended_active=True)
+
+    def _maybe_lid_stop(self) -> None:
+        """Stop the lid-close guard if it's active."""
+        if self._lid_pw_dialog_open:
+            return
+        if not (
+            self._lid_close_guard.is_active
+            or LidCloseGuard.marker_present()
+        ):
+            return
+        pw = SudoManager.load()
+        if pw is None:
+            self._handle_lid_auth_failure(intended_active=False)
+            return
+        ok, err = self._lid_close_guard.stop(pw)
+        if not ok and SudoManager.is_auth_failure(1, err):
+            self._handle_lid_auth_failure(intended_active=False)
+
+    def _handle_lid_auth_failure(self, intended_active: bool) -> None:
+        """Re-prompt for the sudo password and retry the failed action.
+
+        Debounced via ``_lid_pw_dialog_open`` so the per-tick
+        evaluator can't stack dialogs.  Three failure paths all funnel
+        into :meth:`_give_up_on_lid_close` so we never recursively
+        re-pop a dialog from inside the same flow:
+
+        * User cancels the prompt or keeps mistyping.
+        * Saving the new password to disk fails (disk full / perms).
+        * Even the freshly-validated password is rejected by sudo
+          (probably a sudoers / permissions issue we can't fix by
+          re-prompting).
+        """
+        if self._lid_pw_dialog_open:
+            return
+        pw = self._prompt_sudo_password(first_time=False)
+        if pw is None:
+            self._give_up_on_lid_close(
+                leftover_state=(
+                    self._lid_close_guard.is_active
+                    or LidCloseGuard.marker_present()),
+                reason='')
+            return
+        if not self._safe_save_sudo_password(pw):
+            self._give_up_on_lid_close(
+                leftover_state=(
+                    self._lid_close_guard.is_active
+                    or LidCloseGuard.marker_present()),
+                reason="Couldn't save the new password.")
+            return
+        if intended_active:
+            ok, err = self._lid_close_guard.start(pw)
+        else:
+            ok, err = self._lid_close_guard.stop(pw)
+        if not ok:
+            # Fresh password didn't help — almost certainly a sudoers /
+            # permissions problem rather than a wrong-password one
+            # (we just validated via sudo -v).  Give up to avoid the
+            # next tick re-popping the dialog forever.
+            self._give_up_on_lid_close(
+                leftover_state=(
+                    self._lid_close_guard.is_active
+                    or LidCloseGuard.marker_present()),
+                reason=f"sudo pmset still failing: "
+                       f"{(err or '').strip()[:120]}")
+
+    def _give_up_on_lid_close(
+        self, *, leftover_state: bool, reason: str,
+    ) -> None:
+        """Disable the lid-close feature locally and warn the user.
+
+        Used as the single end-state for every "we can't keep going"
+        path inside the auth-failure flow.  Clears the pref + saved
+        password + ``LidCloseGuard`` local state so future evaluator
+        ticks short-circuit and don't re-pop the dialog.
+
+        ``leftover_state=True`` means ``disablesleep=1`` was likely
+        still set at the OS level when we gave up — the warning
+        dialog tells the user how to clear it manually.
+        """
+        # Defer the revert (see ``_revert_lid_close_to_unchecked``
+        # for the macOS-click-timing rationale).
+        QTimer.singleShot(0, self._revert_lid_close_to_unchecked)
+        self._prefs['block_lid_close'] = False
+        self._save_prefs()
+        SudoManager.clear()
+        # Clear local state and the marker so we stop trying to
+        # auto-recover.  This costs us next-launch orphan recovery
+        # for this specific situation, but the alternative is an
+        # infinite dialog loop, which is worse.
+        self._lid_close_guard.force_inactive()
+        if leftover_state:
+            body = (
+                "Leap couldn't clear macOS 'disablesleep'.\n\n"
+                "If your Mac doesn't sleep when you close the lid, "
+                "run this in Terminal to restore normal sleep:\n"
+                "    sudo pmset -a disablesleep 0")
+            if reason:
+                body = f"{reason}\n\n{body}"
+            QMessageBox.warning(
+                self, "Lid-close override may still be active", body)
+
+    def _safe_save_sudo_password(self, pw: str) -> bool:
+        """Persist ``pw`` and surface disk errors as a UI warning.
+
+        Returns True on success, False on any I/O failure.  We treat
+        save failure as "feature can't be enabled" rather than letting
+        an exception bubble up and crash the toggle handler.
+        """
+        try:
+            SudoManager.save(pw)
+            return True
+        except OSError as e:
+            logger.exception("Failed to save sudo password")
+            QMessageBox.warning(
+                self, "Couldn't save password",
+                f"Leap could not write to {SudoManager.password_path()}:"
+                f"\n  {e}\n\n"
+                "'Block lid-close' will stay off. Free some disk space "
+                "or check the permissions on .storage/ and try again.")
+            return False
+
+    def _cleanup_lid_close_on_exit(self) -> None:
+        """Best-effort ``pmset -a disablesleep 0`` on app shutdown.
+
+        Idempotent — safe to call from multiple shutdown hooks
+        (``closeEvent`` and Qt's ``aboutToQuit`` signal).  Guards on
+        ``is_active`` / marker presence so we only invoke ``sudo``
+        when WE caused ``disablesleep=1``; if the user never ticked
+        the lid-close box we skip silently and never trigger a
+        password prompt.
+
+        If the saved password is gone (user untoggled the feature
+        but the marker survived a hard-quit) we leave the marker on
+        disk so the next monitor launch's recovery code can prompt
+        the user via the explanatory dialog.
+        """
+        if not (
+            self._lid_close_guard.is_active
+            or LidCloseGuard.marker_present()
+        ):
+            return
+        pw = SudoManager.load()
+        if pw is None:
+            return
+        self._lid_close_guard.stop(pw)
+
+    def _recover_orphaned_disablesleep(self) -> None:
+        """Detect and clear a leftover ``disablesleep=1`` from a crash.
+
+        If the marker file exists at startup, the previous monitor run
+        set ``disablesleep=1`` and didn't clean up — usually a crash
+        or ``kill -9``.  Try a silent fix using the saved password; if
+        that fails (no saved password / password rotated / sudo
+        rejected), pop a one-shot warning telling the user how to
+        reset by hand.
+        """
+        if not LidCloseGuard.marker_present():
+            return
+        pw = SudoManager.load()
+        if pw is not None:
+            ok, _ = self._lid_close_guard.stop(pw)
+            if ok:
+                logger.info(
+                    "Recovered orphaned disablesleep on startup")
+                return
+        QMessageBox.warning(
+            self,
+            "Lid-close override still active",
+            "The previous Leap Monitor session enabled "
+            "'disablesleep' (block lid-close) but didn't clear it — "
+            "likely a crash or hard quit.\n\n"
+            "Run this in Terminal to restore normal sleep:\n"
+            "    sudo pmset -a disablesleep 0\n\n"
+            "Or re-tick 'Also block lid-close' so Leap can manage it "
+            "again.")
+
+    def _prompt_sudo_password(self, *, first_time: bool) -> Optional[str]:
+        """Show a password dialog, validate, return the password.
+
+        ``first_time=True`` pops the explanatory copy with the on-disk
+        path; ``first_time=False`` pops the shorter "your saved
+        password no longer works" copy.  Returns ``None`` if the user
+        cancelled or kept entering a wrong password through the inner
+        retry loop.
+        """
+        self._lid_pw_dialog_open = True
+        try:
+            if first_time:
+                title = "Sudo password — block lid-close"
+                body = (
+                    "Enter your macOS account password. It's saved to "
+                    "disk to run 'sudo pmset' automatically, and "
+                    "deleted when you untick the box."
+                )
+            else:
+                title = "Sudo password — try again"
+                body = (
+                    "Saved password stopped working! Please enter your "
+                    "current macOS account password."
+                )
+            for _ in range(3):
+                pw, ok = QInputDialog.getText(
+                    self, title, body, QLineEdit.Password)
+                if not ok:
+                    return None
+                if not pw:
+                    continue
+                if SudoManager.verify(pw):
+                    return pw
+                QMessageBox.warning(
+                    self, "Wrong password",
+                    "macOS rejected that password. Try again or "
+                    "cancel.")
+            return None
+        finally:
+            self._lid_pw_dialog_open = False
+
     # Keys that dialogs/helpers write directly to disk via
     # ``save_monitor_prefs`` without going through ``self._prefs``.
     # ``_save_prefs`` must refresh these from disk before writing or the
@@ -1836,6 +2435,25 @@ class MonitorWindow(
             }}
             QCheckBox::indicator:hover {{
                 border-color: {t.accent_blue};
+            }}
+            /* --- Disabled state — explicitly grey out so the user
+                   gets a visual cue that the checkbox isn't
+                   clickable.  Without this rule a disabled QCheckBox
+                   looks identical to an enabled one and clicking
+                   silently does nothing. --- */
+            QCheckBox:disabled {{
+                color: {t.text_secondary};
+            }}
+            QCheckBox::indicator:disabled {{
+                border-color: {t.text_secondary};
+                background-color: {btn_bg};
+            }}
+            QCheckBox::indicator:checked:disabled {{
+                background-color: {t.text_secondary};
+                border-color: {t.text_secondary};
+            }}
+            QCheckBox::indicator:hover:disabled {{
+                border-color: {t.text_secondary};
             }}
 
             /* --- Radio buttons --- */
@@ -2754,6 +3372,21 @@ class MonitorWindow(
             self._save_prefs()
         except Exception:
             logger.debug("Failed to save monitor prefs on close", exc_info=True)
+
+        # Release the sleep assertion. ``caffeinate -w <pid>`` would
+        # exit on its own once we die, but stopping it here avoids the
+        # ~1s detection window where the Mac is still kept awake after
+        # the user clicked Quit.
+        self._sleep_guard.stop()
+
+        # Best-effort clear of disablesleep so the Mac doesn't get
+        # stuck never-sleeping after Leap quits.  We do NOT pop a UI
+        # dialog here — closeEvent runs straight into ``os._exit`` and
+        # any modal would freeze the quit.  If the call fails (sudo
+        # rejected, network of a corporate setup, etc.) the marker
+        # file we wrote on start() persists and the next startup
+        # detects + recovers via ``_recover_orphaned_disablesleep``.
+        self._cleanup_lid_close_on_exit()
 
         # Terminate Slack bot if we started it
         if self._slack_bot_process and self._slack_bot_process.state() != QProcess.NotRunning:
