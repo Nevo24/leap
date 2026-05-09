@@ -234,3 +234,83 @@ class TestCompactIndicatorBrittleness:
         pty.feed_output(_CLEAR + b'Note: Compacting conversation is a '
                         b'feature in Claude Code.\r\n')
         assert pty.tracker._screen_has_running_indicator()
+
+
+class TestTranscriptCoversCompactRace:
+    """Reverse-order race: Stop hook writes ``idle`` BEFORE the
+    ``Compacting conversation`` indicator renders.  Without the
+    transcript guard, the auto-sender briefly sees IDLE and fires
+    queued messages into a compacting CLI.  The transcript guard
+    backstops the indicator-on-screen check.
+
+    These tests inject a tool_use entry into the per-session JSONL
+    and assert the IDLE flip is blocked even when no indicator is
+    on screen yet."""
+
+    def _setup(self, pty_factory, tmp_path):
+        """Wire a tracker with an overridden transcript root."""
+        from leap.cli_providers.claude import ClaudeProvider
+        from leap.utils.claude_session_move import slugify
+
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        projects_root = tmp_path / 'projects'
+        slug_dir = projects_root / slugify(str(cwd))
+        slug_dir.mkdir(parents=True)
+        transcript = slug_dir / 'session.jsonl'
+        transcript.touch()
+
+        class _TestClaude(ClaudeProvider):
+            @property
+            def transcript_projects_root(self):
+                return projects_root
+
+        pty = pty_factory(provider=_TestClaude(), tag='compact-race')
+        pty.tracker._cwd = str(cwd)
+        return pty, transcript
+
+    @staticmethod
+    def _write_assistant(transcript, stop_reason: str, ts_offset: float) -> None:
+        import json
+        from datetime import datetime, timezone
+
+        ts = datetime.fromtimestamp(
+            time.time() + ts_offset, tz=timezone.utc,
+        ).isoformat().replace('+00:00', 'Z')
+        with open(transcript, 'a') as f:
+            f.write(json.dumps({
+                'type': 'assistant',
+                'timestamp': ts,
+                'message': {'stop_reason': stop_reason, 'content': []},
+            }) + '\n')
+
+    def test_signal_idle_before_indicator_render_blocked_by_transcript(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        """Stop hook fires → signal=idle arrives → indicator hasn't
+        rendered yet — but transcript already shows the ongoing
+        tool_use, so IDLE is blocked."""
+        pty, transcript = self._setup(pty_factory, tmp_path)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        # No indicator on screen yet (the race window).
+        # Transcript proves agent is still in tool_use.
+        self._write_assistant(transcript, 'tool_use', ts_offset=1.0)
+        pty.write_signal('idle')
+        assert pty.get_state() == 'running'
+        assert not pty.signal_file.exists()
+
+    def test_signal_idle_with_no_transcript_still_works(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        """Sanity check: when transcript is silent (or has only stale
+        entries from a previous turn), idle proceeds — the guard
+        doesn't over-block."""
+        pty, transcript = self._setup(pty_factory, tmp_path)
+        # Stale entry from before on_send (previous turn).
+        self._write_assistant(transcript, 'tool_use', ts_offset=-30.0)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        pty.write_signal('idle')
+        # No fresh tool_use → guard returns False → idle proceeds.
+        assert pty.get_state() == 'idle'

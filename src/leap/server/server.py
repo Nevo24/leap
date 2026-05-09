@@ -125,6 +125,8 @@ class LeapServer:
             signal_file=SOCKET_DIR / f"{tag}.signal",
             auto_send_mode=pinned_mode,
             provider=self._provider,
+            cwd=os.getcwd(),
+            tag=tag,
         )
         self.output_capture = OutputCapture(tag, cli_provider=self._provider.name)
         self._terminal_input_buf: bytearray = bytearray()

@@ -42,12 +42,19 @@ class PTYFixture:
         dimensions: tuple[int, int] = (24, 80),
     ) -> None:
         self.signal_file = signal_file
+        # Pin cwd to the test's tmp_path so the transcript-aware
+        # "still running" check can't accidentally find the
+        # developer's real ~/.claude/projects entries.
+        cwd = str(signal_file.parent)
         if provider is not None:
             self.tracker = ClaudeStateTracker(
                 signal_file=signal_file, provider=provider,
+                cwd=cwd, tag='test',
             )
         else:
-            self.tracker = ClaudeStateTracker(signal_file=signal_file)
+            self.tracker = ClaudeStateTracker(
+                signal_file=signal_file, cwd=cwd, tag='test',
+            )
         self.child = pexpect.spawn(
             '/bin/bash', ['--norc', '--noprofile'],
             dimensions=dimensions,

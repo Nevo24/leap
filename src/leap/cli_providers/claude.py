@@ -8,13 +8,18 @@ import json
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
-from leap.utils.claude_session_move import relocate_claude_session
+from leap.utils.claude_session_move import relocate_claude_session, slugify
 from leap.utils.menu import MENU_OPTION_RE
+
+
+_TRANSCRIPT_TAIL_BYTES = 32768
+_TRANSCRIPT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
 
 class ClaudeProvider(CLIProvider):
@@ -186,7 +191,7 @@ class ClaudeProvider(CLIProvider):
         except OSError:
             return ''
         try:
-            chunk = 32768
+            chunk = _TRANSCRIPT_TAIL_BYTES
             with open(path, 'rb') as f:
                 f.seek(max(0, size - chunk))
                 tail = f.read()
@@ -210,6 +215,148 @@ class ClaudeProvider(CLIProvider):
             joined = '\n'.join(p for p in parts if p)
             if joined:
                 return joined
+        return ''
+
+    # -- Transcript-based "still running" check --------------------------
+
+    @property
+    def transcript_projects_root(self) -> Path:
+        """Root directory for Claude session transcripts.
+
+        Claude stores each session at
+        ``<root>/<slug(cwd)>/<session_id>.jsonl``.  Tests override this
+        property to redirect to a tmp_path; production reads from
+        ``~/.claude/projects/``.
+        """
+        return _TRANSCRIPT_PROJECTS_ROOT
+
+    def transcript_says_running(
+        self,
+        since: float,
+        cwd: str,
+        tag: str = '',
+        storage_dir: Optional[Path] = None,
+    ) -> bool:
+        """True iff the transcript shows an in-flight ``tool_use``
+        from the current turn.
+
+        Hybrid file lookup:
+          1. ``cli_sessions/claude/<tag>.json`` for the most recent
+             recorded ``session_id`` (populated by the Stop hook).
+          2. mtime fallback: most recently modified ``*.jsonl`` in
+             the cwd's slug directory.
+        """
+        project_dir = self.transcript_projects_root / slugify(cwd)
+        if not project_dir.is_dir():
+            return False
+
+        transcript = self._resolve_transcript_path(
+            project_dir, tag, storage_dir,
+        )
+        if transcript is None:
+            return False
+
+        try:
+            size = transcript.stat().st_size
+        except OSError:
+            return False
+        try:
+            with open(transcript, 'rb') as f:
+                f.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
+                tail = f.read()
+        except OSError:
+            return False
+
+        # Walk back to the most recent assistant entry; its stop_reason
+        # tells us whether the agent loop is still in tool-use mode.
+        for raw in reversed(tail.split(b'\n')):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                entry = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if entry.get('type') != 'assistant':
+                continue
+            ts_str = entry.get('timestamp', '')
+            if not ts_str:
+                return False
+            try:
+                ts = datetime.fromisoformat(
+                    ts_str.replace('Z', '+00:00'),
+                ).timestamp()
+            except (ValueError, TypeError):
+                return False
+            # Stale entry from a previous turn — current turn hasn't
+            # produced an assistant entry yet, so we can't tell.
+            if ts <= since:
+                return False
+            stop_reason = entry.get('message', {}).get('stop_reason', '')
+            return stop_reason == 'tool_use'
+        return False
+
+    def _resolve_transcript_path(
+        self,
+        project_dir: Path,
+        tag: str,
+        storage_dir: Optional[Path],
+    ) -> Optional[Path]:
+        """Pick the active transcript: recorded ``session_id`` first,
+        most-recently-modified ``*.jsonl`` second.
+
+        Returns ``None`` when neither yields a readable file.
+        """
+        if tag and storage_dir is not None:
+            tag_file = (
+                storage_dir / 'cli_sessions' / 'claude' / f'{tag}.json'
+            )
+            sid = self._latest_session_id(tag_file)
+            if sid:
+                candidate = project_dir / f'{sid}.jsonl'
+                if candidate.is_file():
+                    return candidate
+
+        # Fallback: most recently modified .jsonl in the slug dir.
+        try:
+            best: Optional[Path] = None
+            best_mtime: float = 0
+            for f in project_dir.iterdir():
+                if f.suffix != '.jsonl':
+                    continue
+                try:
+                    mt = f.stat().st_mtime
+                except OSError:
+                    continue
+                if mt > best_mtime:
+                    best = f
+                    best_mtime = mt
+            return best
+        except OSError:
+            return None
+
+    @staticmethod
+    def _latest_session_id(tag_file: Path) -> str:
+        """Read the most recent recorded session_id from a tag file.
+
+        ``cli_sessions/claude/<tag>.json`` is a list of records ordered
+        oldest-first by Leap's hook.  Walk from the end and return the
+        first entry's ``session_id``.  Empty string on any failure.
+        """
+        if not tag_file.is_file():
+            return ''
+        try:
+            data = json.loads(tag_file.read_text())
+        except (json.JSONDecodeError, OSError, ValueError):
+            return ''
+        if not isinstance(data, list):
+            return ''
+        for entry in reversed(data):
+            if not isinstance(entry, dict):
+                continue
+            sid = entry.get('session_id', '')
+            if isinstance(sid, str) and sid:
+                return sid
         return ''
 
     # -- Hook configuration ----------------------------------------------

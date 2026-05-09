@@ -13,6 +13,7 @@ Safety fallback timeouts (60s) exist only for crash recovery.
 
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -88,11 +89,20 @@ class CLIStateTracker:
         auto_send_mode: AutoSendMode = AutoSendMode.PAUSE,
         clock: Optional[Callable[[], float]] = None,
         provider: Optional[CLIProvider] = None,
+        cwd: Optional[str] = None,
+        tag: str = '',
     ) -> None:
         self._signal_file = signal_file
         self._auto_send_mode = auto_send_mode
         self._clock = clock or time.time
         self._provider = provider or get_provider()
+        # Captured once; immune to runtime chdir.  Used by the
+        # transcript-aware "still running" check to locate the per-cwd
+        # transcript directory for cwd-bound CLIs (Claude/Gemini/Cursor).
+        self._cwd: str = cwd if cwd is not None else os.getcwd()
+        self._tag: str = tag
+        # Storage dir derived from signal_file: <storage>/sockets/<tag>.signal
+        self._storage_dir: Path = signal_file.parent.parent
 
         self._state: str = CLIState.IDLE
         self._lock = threading.Lock()
@@ -254,6 +264,33 @@ class CLIStateTracker:
             p.decode('utf-8', errors='replace') in compact
             for p in patterns
         )
+
+    def _transcript_says_running(self) -> bool:
+        """True iff the provider's transcript proves the agent is still
+        in a tool loop after ``_running_since``.
+
+        Used as a final gate before flipping RUNNING → IDLE: if the
+        screen-based heuristics or hook signal claim idle but the
+        transcript shows an unanswered ``tool_use`` from the current
+        turn, the flip is blocked.
+
+        Lock-free file I/O; caller must NOT hold ``_screen_lock`` or
+        ``_lock`` (avoid pinning state mutation behind disk reads).
+        """
+        try:
+            return self._provider.transcript_says_running(
+                since=self._running_since,
+                cwd=self._cwd,
+                tag=self._tag,
+                storage_dir=self._storage_dir,
+            )
+        except Exception:
+            # Defensive: never let transcript parsing kill the tracker.
+            _log.debug(
+                'transcript_says_running raised; falling back to False',
+                exc_info=True,
+            )
+            return False
 
     # -- Public API -----------------------------------------------------------
 
@@ -916,6 +953,22 @@ class CLIStateTracker:
                         pass
                     return current
 
+                # Transcript guard: provider's per-session transcript
+                # shows an unanswered tool_use from the current turn.
+                # Catches Stop-hook-fires-mid-tool races (the model still
+                # has work pending) that the screen guards above don't
+                # cover.  See ClaudeProvider.transcript_says_running.
+                if self._transcript_says_running():
+                    _log.debug(
+                        'GET_STATE signal=idle but transcript shows '
+                        'unanswered tool_use — keeping running',
+                    )
+                    try:
+                        self._signal_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    return current
+
                 # Only convert to INTERRUPTED if the interrupt pattern
                 # is actually visible on the pyte screen.  The user may
                 # have pressed Escape but the CLI ignored it (busy) and
@@ -1403,6 +1456,19 @@ class CLIStateTracker:
                         self._reset_screen()
                     return CLIState.NEEDS_PERMISSION
 
+                # Transcript guard before falling to idle: a long
+                # silent tool call (Bash, WebFetch with no progress
+                # output) leaves the cursor visible and the screen
+                # quiet without ending the agent loop.  If the
+                # transcript shows an unanswered tool_use, stay
+                # running until the tool actually returns.
+                if self._transcript_says_running():
+                    _log.debug(
+                        'GET_STATE cursor+silence would idle but '
+                        'transcript shows tool_use — keeping running',
+                    )
+                    return current
+
                 _log.debug(
                     'GET_STATE running→idle (cursor visible + '
                     'output silent %.1fs)',
@@ -1433,6 +1499,19 @@ class CLIStateTracker:
                 if running_indicator:
                     # Long-running op still on screen — don't force
                     # idle; wait for the indicator to disappear.
+                    return current
+                # Transcript guard: a tool that runs > silence_timeout
+                # without emitting output (e.g. a slow Bash test, a
+                # WebFetch with no progress reporting) is the canonical
+                # case that fires this safety fallback.  If the
+                # transcript shows we're still in a tool_use, the agent
+                # is genuinely waiting — don't force idle.
+                if self._transcript_says_running():
+                    _log.debug(
+                        'GET_STATE safety timeout %.1fs but transcript '
+                        'shows tool_use — keeping running',
+                        silence,
+                    )
                     return current
                 _log.debug(
                     'GET_STATE safety timeout %.1fs → idle', silence,

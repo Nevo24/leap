@@ -137,3 +137,65 @@ class TestCursorSilenceNeedsCursor:
         )
         _advance(pty, 6.0)
         assert pty.get_state() == 'running'
+
+
+class TestCursorSilenceTranscriptGuard:
+    """If Ink ever leaves the cursor visible during a silent tool wait,
+    the cursor+5 s heuristic would falsely flip running→idle.  The
+    transcript guard is the backstop: a fresh tool_use entry blocks
+    the flip even if cursor is visible and screen is silent."""
+
+    def _setup(self, pty_factory, tmp_path):
+        from leap.cli_providers.claude import ClaudeProvider
+        from leap.utils.claude_session_move import slugify
+
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        projects_root = tmp_path / 'projects'
+        slug_dir = projects_root / slugify(str(cwd))
+        slug_dir.mkdir(parents=True)
+        transcript = slug_dir / 'session.jsonl'
+        transcript.touch()
+
+        class _TestClaude(ClaudeProvider):
+            @property
+            def transcript_projects_root(self):
+                return projects_root
+
+        pty = pty_factory(provider=_TestClaude(), tag='cursor-tx')
+        pty.tracker._cwd = str(cwd)
+        return pty, transcript
+
+    @staticmethod
+    def _write_assistant(transcript, stop_reason: str, ts_offset: float) -> None:
+        import json
+        import time
+        from datetime import datetime, timezone
+
+        ts = datetime.fromtimestamp(
+            time.time() + ts_offset, tz=timezone.utc,
+        ).isoformat().replace('+00:00', 'Z')
+        with open(transcript, 'a') as f:
+            f.write(json.dumps({
+                'type': 'assistant',
+                'timestamp': ts,
+                'message': {'stop_reason': stop_reason, 'content': []},
+            }) + '\n')
+
+    def test_cursor_visible_silence_blocked_by_tool_use(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        pty, transcript = self._setup(pty_factory, tmp_path)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        # Cursor visible (\x1b[?25h) + non-dialog content + silence.
+        pty.feed_output(
+            b'\x1b[?25h'
+            b'Tool result: 42\r\n',
+        )
+        # Fresh tool_use proves agent is still running.
+        self._write_assistant(transcript, 'tool_use', ts_offset=1.0)
+        _advance(pty, 6.0)
+        # Without transcript guard: cursor+5 s silence would flip → idle.
+        # With guard: stays running because tool_use is in flight.
+        assert pty.get_state() == 'running'

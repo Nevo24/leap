@@ -290,6 +290,39 @@ class CLIProvider(ABC):
                 return best
         return None
 
+    def transcript_says_running(
+        self,
+        since: float,
+        cwd: str,
+        tag: str = '',
+        storage_dir: Optional[Path] = None,
+    ) -> bool:
+        """Return True iff the transcript proves the agent is still in
+        a tool loop after ``since``.
+
+        Used as a final gate before flipping RUNNING → IDLE: when a hook
+        signal or screen heuristic claims idle but the transcript shows
+        an unanswered ``tool_use`` block (with timestamp > ``since``),
+        block the flip — the agent is still working.
+
+        Default: False (no transcript awareness).  Providers that have
+        accessible per-session transcripts override this.
+
+        Args:
+            since: Unix timestamp.  Only entries strictly newer than
+                this count.  Typically ``_running_since``.
+            cwd: The session's working directory (used to locate the
+                transcript file for cwd-bound CLIs like Claude).
+            tag: The Leap session tag.  Used together with
+                ``storage_dir`` to look up the recorded ``session_id``
+                in ``<storage_dir>/cli_sessions/<cli>/<tag>.json`` so
+                we can pinpoint the transcript file precisely.  Empty
+                string falls back to mtime-based file selection.
+            storage_dir: The project's ``.storage`` directory.
+                ``None`` falls back to mtime-based file selection.
+        """
+        return False
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

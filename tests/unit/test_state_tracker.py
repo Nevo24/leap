@@ -23,12 +23,19 @@ def make_tracker(
     auto_send_mode: str = 'pause',
     provider: object = None,
 ) -> ClaudeStateTracker:
-    """Create a tracker with fake clock and a signal file in *tmp_path*."""
+    """Create a tracker with fake clock and a signal file in *tmp_path*.
+
+    ``cwd`` is set to *tmp_path* so the transcript-aware "still running"
+    check looks for transcripts under a unique slug with no real files —
+    keeping unit tests hermetic from the developer's actual ``~/.claude``.
+    """
     signal_file = tmp_path / "test.signal"
     kwargs = dict(
         signal_file=signal_file,
         auto_send_mode=auto_send_mode,
         clock=lambda: t[0],
+        cwd=str(tmp_path),
+        tag='test',
     )
     if provider is not None:
         kwargs['provider'] = provider

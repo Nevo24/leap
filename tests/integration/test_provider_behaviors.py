@@ -230,6 +230,205 @@ class TestCodexTranscriptDetection:
         assert pty.get_state() == 'running'
 
 
+class TestClaudeTranscriptBlocksPrematureIdle:
+    """Claude's per-session JSONL transcript is the source of truth for
+    whether the agent loop is still running.  When a hook signal or
+    screen heuristic claims idle but the transcript shows an unanswered
+    ``tool_use`` from the current turn, the IDLE flip must be blocked —
+    these tests pin that contract."""
+
+    @staticmethod
+    def _make_provider(projects_root):
+        from leap.cli_providers.claude import ClaudeProvider
+
+        class _TestClaude(ClaudeProvider):
+            @property
+            def transcript_projects_root(self):
+                return projects_root
+
+        return _TestClaude()
+
+    @staticmethod
+    def _write_assistant_entry(
+        path,
+        stop_reason: str,
+        ts_offset_seconds: float,
+    ) -> None:
+        """Append an ``assistant`` entry whose timestamp is ``time.time()
+        + ts_offset_seconds``."""
+        import json
+        import time
+        from datetime import datetime, timezone
+
+        ts = datetime.fromtimestamp(
+            time.time() + ts_offset_seconds, tz=timezone.utc,
+        ).isoformat().replace('+00:00', 'Z')
+        entry = {
+            'type': 'assistant',
+            'timestamp': ts,
+            'message': {
+                'role': 'assistant',
+                'stop_reason': stop_reason,
+                'content': [],
+            },
+        }
+        with open(path, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+
+    def _setup(self, pty_factory, tmp_path, cwd_path):
+        """Create a tracker bound to a tmp transcript root for ``cwd_path``."""
+        from leap.utils.claude_session_move import slugify
+
+        projects_root = tmp_path / 'projects'
+        slug_dir = projects_root / slugify(str(cwd_path))
+        slug_dir.mkdir(parents=True)
+        transcript = slug_dir / 'session.jsonl'
+        transcript.touch()
+
+        provider = self._make_provider(projects_root)
+        pty = pty_factory(provider=provider, tag='claude-transcript')
+        # The fixture's cwd is signal_file.parent (= tmp_path); rebind
+        # the tracker's cwd to the path whose slug matches our setup.
+        pty.tracker._cwd = str(cwd_path)
+        return pty, transcript
+
+    def test_signal_idle_blocked_when_transcript_shows_tool_use(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        pty, transcript = self._setup(pty_factory, tmp_path, cwd)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        # Transcript writes a fresh assistant entry (post-on_send) with
+        # an unanswered tool_use — agent is still in the loop.
+        self._write_assistant_entry(transcript, 'tool_use', ts_offset_seconds=1.0)
+        pty.write_signal('idle')
+        # Signal alone would flip running→idle; transcript blocks it.
+        assert pty.get_state() == 'running'
+        # And the stale signal is cleaned up so it can't fire again.
+        assert not pty.signal_file.exists()
+
+    def test_signal_idle_allowed_when_transcript_shows_end_turn(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        pty, transcript = self._setup(pty_factory, tmp_path, cwd)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        # Fresh end_turn entry: agent is genuinely done.
+        self._write_assistant_entry(transcript, 'end_turn', ts_offset_seconds=1.0)
+        pty.write_signal('idle')
+        assert pty.get_state() == 'idle'
+
+    def test_stale_tool_use_does_not_block_idle(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        """A tool_use entry from BEFORE on_send (previous turn) must not
+        block the current turn's idle transition."""
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        pty, transcript = self._setup(pty_factory, tmp_path, cwd)
+        # Stale entry first, BEFORE on_send moves _running_since forward.
+        self._write_assistant_entry(transcript, 'tool_use', ts_offset_seconds=-30.0)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        pty.write_signal('idle')
+        # No fresh entry → transcript guard returns False → idle proceeds.
+        assert pty.get_state() == 'idle'
+
+    def test_missing_transcript_falls_through(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        """If the slug directory doesn't exist (fresh session before
+        first hook fire), the guard must return False so existing
+        behaviour is unchanged."""
+        from leap.utils.claude_session_move import slugify
+
+        cwd = tmp_path / 'fresh-project'
+        cwd.mkdir()
+        # NOTE: we deliberately do NOT create the slug dir.
+        provider = self._make_provider(tmp_path / 'projects')
+        pty = pty_factory(provider=provider, tag='claude-fresh')
+        pty.tracker._cwd = str(cwd)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        pty.write_signal('idle')
+        # Transcript guard returns False → idle proceeds.
+        assert pty.get_state() == 'idle'
+
+    def test_safety_silence_timeout_blocked_by_tool_use(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        """A long silent tool call (60 s safety timeout) is blocked
+        when the transcript proves the agent is mid-tool_use."""
+        import time as _t
+
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        pty, transcript = self._setup(pty_factory, tmp_path, cwd)
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        self._write_assistant_entry(transcript, 'tool_use', ts_offset_seconds=1.0)
+        # Force a silent gap > SAFETY_SILENCE_TIMEOUT (60 s) without
+        # touching the actual clock — set _last_output_time to "long ago".
+        pty.tracker._last_output_time = _t.time() - 120.0
+        # No signal — purely the safety silence path firing.
+        assert pty.get_state() == 'running'
+
+    def test_session_id_lookup_picks_right_jsonl(
+        self, pty_factory, tmp_path,
+    ) -> None:
+        """When ``cli_sessions/claude/<tag>.json`` records a session_id,
+        the provider must read THAT file even if a different .jsonl was
+        modified more recently (cross-session bleed protection)."""
+        import json
+        import os
+
+        from leap.utils.claude_session_move import slugify
+
+        cwd = tmp_path / 'project'
+        cwd.mkdir()
+        projects_root = tmp_path / 'projects'
+        slug_dir = projects_root / slugify(str(cwd))
+        slug_dir.mkdir(parents=True)
+
+        # Two transcripts in the same slug dir: ours (older) and a
+        # different session (newer).  The recorded session_id must win.
+        ours = slug_dir / 'aaa-our-session.jsonl'
+        ours.touch()
+        other = slug_dir / 'bbb-other-session.jsonl'
+        other.touch()
+        # Make 'other' the newest by mtime.
+        os.utime(ours, (1, 1))
+        os.utime(other, None)
+        # Write tool_use into 'other' (would falsely block) and end_turn
+        # into 'ours' (correctly allows idle).
+        self._write_assistant_entry(other, 'tool_use', ts_offset_seconds=1.0)
+        self._write_assistant_entry(ours, 'end_turn', ts_offset_seconds=1.0)
+
+        # Record our session_id in cli_sessions.
+        storage_dir = tmp_path / 'storage'
+        sessions = storage_dir / 'cli_sessions' / 'claude'
+        sessions.mkdir(parents=True)
+        (sessions / 'claude-sid.json').write_text(json.dumps([
+            {'session_id': 'aaa-our-session', 'transcript_path': str(ours)},
+        ]))
+
+        # Wire the tracker manually so storage_dir matches.
+        provider = self._make_provider(projects_root)
+        pty = pty_factory(provider=provider, tag='claude-sid')
+        pty.tracker._cwd = str(cwd)
+        pty.tracker._tag = 'claude-sid'
+        pty.tracker._storage_dir = storage_dir
+        pty.tracker.on_input(b'x')
+        pty.tracker.on_send()
+        pty.write_signal('idle')
+        # Provider reads OUR transcript (end_turn) → idle allowed.
+        assert pty.get_state() == 'idle'
+
+
 class TestSignalStateVocabulary:
     def test_all_providers_accept_idle(self) -> None:
         from leap.cli_providers.claude import ClaudeProvider
