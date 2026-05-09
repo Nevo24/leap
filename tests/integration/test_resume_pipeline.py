@@ -712,6 +712,11 @@ class TestServerResumeArgvWiring:
     ):
         # Codex uses `resume <uuid>` — two positional tokens that must
         # stay at the FRONT of argv even when user flags are present.
+        # The provider also prepends ``-C <cwd>`` so codex doesn't fire
+        # its own "Choose working directory to resume" prompt on top
+        # of leap's own cwd-choice prompt (see codex.py:resume_args).
+        # ``cwd`` is captured via ``os.getcwd()`` at server startup,
+        # which is whatever the test process is running from.
         _run_server_main(
             monkeypatch,
             argv=["leap-server", "t", "--verbose"],
@@ -719,7 +724,7 @@ class TestServerResumeArgvWiring:
                  "LEAP_RESUME_CLI": "codex"},
         )
         assert fake_leap_server["flags"] == [
-            "resume", "codex-uuid", "--verbose",
+            "-C", os.getcwd(), "resume", "codex-uuid", "--verbose",
         ]
         assert fake_leap_server["cli"] == "codex"
 
@@ -751,24 +756,32 @@ class TestServerResumeArgvWiring:
         assert fake_leap_server["flags"] == ["--resume=x"]
         assert fake_leap_server["cli"] == "claude"
 
-    def test_explicit_cli_mismatching_resume_cli_skips_resume(
-        self, monkeypatch, fake_leap_server,
+    def test_explicit_cli_mismatching_resume_cli_refuses_to_start(
+        self, monkeypatch, fake_leap_server, capsys,
     ):
         """If the user explicitly asked for --cli=codex but the env
-        says LEAP_RESUME_CLI=claude, the user's explicit choice wins:
-        resume is not applied (the resumed session is for a different
-        CLI).  The env vars are still popped so they can't leak.
+        says LEAP_RESUME_CLI=claude, the resume is for a different
+        CLI than the one being launched — silently dropping it would
+        confuse the user (looks like a normal start but their history
+        is gone).  ``_apply_resume_or_fail`` exits non-zero with a
+        clear stderr message instead.
         """
-        _run_server_main(
-            monkeypatch,
-            argv=["leap-server", "t", "--cli=codex"],
-            env={"LEAP_RESUME_SESSION_ID": "x",
-                 "LEAP_RESUME_CLI": "claude"},
-        )
-        assert fake_leap_server["flags"] == []
-        assert fake_leap_server["cli"] == "codex"
+        with pytest.raises(SystemExit) as exc_info:
+            _run_server_main(
+                monkeypatch,
+                argv=["leap-server", "t", "--cli=codex"],
+                env={"LEAP_RESUME_SESSION_ID": "x",
+                     "LEAP_RESUME_CLI": "claude"},
+            )
+        assert exc_info.value.code == 1
+        _, err = capsys.readouterr()
+        assert "Refusing to start" in err
+        # Env vars were already popped before the validation fires, so
+        # they can't leak into a future test in the same process.
         assert "LEAP_RESUME_SESSION_ID" not in os.environ
         assert "LEAP_RESUME_CLI" not in os.environ
+        # LeapServer should NOT have been instantiated.
+        assert fake_leap_server.get("tag") is None
 
     def test_resume_infers_cli_when_not_explicit(
         self, monkeypatch, fake_leap_server,
@@ -783,29 +796,44 @@ class TestServerResumeArgvWiring:
         assert fake_leap_server["cli"] == "gemini"
         assert fake_leap_server["flags"] == ["--resume", "u"]
 
-    def test_unknown_resume_cli_is_ignored(
-        self, monkeypatch, fake_leap_server,
+    def test_unknown_resume_cli_refuses_to_start(
+        self, monkeypatch, fake_leap_server, capsys,
     ):
-        _run_server_main(
-            monkeypatch,
-            argv=["leap-server", "t"],
-            env={"LEAP_RESUME_SESSION_ID": "x",
-                 "LEAP_RESUME_CLI": "does-not-exist"},
-        )
-        # No flags added; cli stays unset (defaults to provider lookup
-        # in LeapServer, which we've stubbed)
-        assert fake_leap_server["flags"] == []
-        assert fake_leap_server["cli"] is None
+        # An unknown LEAP_RESUME_CLI means the resume hand-off was
+        # constructed for a provider that no longer exists (renamed
+        # or removed in an update).  ``_apply_resume_or_fail`` exits
+        # rather than silently starting a fresh session of whatever
+        # default provider takes over.
+        with pytest.raises(SystemExit) as exc_info:
+            _run_server_main(
+                monkeypatch,
+                argv=["leap-server", "t"],
+                env={"LEAP_RESUME_SESSION_ID": "x",
+                     "LEAP_RESUME_CLI": "does-not-exist"},
+            )
+        assert exc_info.value.code == 1
+        _, err = capsys.readouterr()
+        assert "Refusing to start" in err
+        assert "does-not-exist" in err
+        assert fake_leap_server.get("tag") is None
 
-    def test_resume_id_without_cli_is_ignored(
-        self, monkeypatch, fake_leap_server,
+    def test_resume_id_without_cli_refuses_to_start(
+        self, monkeypatch, fake_leap_server, capsys,
     ):
-        _run_server_main(
-            monkeypatch,
-            argv=["leap-server", "t"],
-            env={"LEAP_RESUME_SESSION_ID": "x"},
-        )
-        assert fake_leap_server["flags"] == []
+        # Same hard-fail rationale: a session id without a CLI name
+        # can't be applied to anything, so refuse rather than start
+        # a fresh default-provider session.
+        with pytest.raises(SystemExit) as exc_info:
+            _run_server_main(
+                monkeypatch,
+                argv=["leap-server", "t"],
+                env={"LEAP_RESUME_SESSION_ID": "x"},
+            )
+        assert exc_info.value.code == 1
+        _, err = capsys.readouterr()
+        assert "Refusing to start" in err
+        assert "LEAP_RESUME_CLI is empty" in err
+        assert fake_leap_server.get("tag") is None
 
     def test_resume_cli_without_id_is_ignored(
         self, monkeypatch, fake_leap_server,
@@ -827,13 +855,15 @@ class TestServerResumeArgvWiring:
         assert fake_leap_server["flags"] == ["--dangerously-skip-permissions"]
         assert fake_leap_server["cli"] is None
 
-    def test_provider_without_resume_support_is_skipped(
-        self, monkeypatch, fake_leap_server,
+    def test_provider_without_resume_support_refuses_to_start(
+        self, monkeypatch, fake_leap_server, capsys,
     ):
         """A custom CLI whose base provider doesn't declare
-        ``supports_resume`` must not have its env-vars applied.
-        (All four built-ins do support resume — we simulate the
-        negative case by monkey-patching the provider's flag.)
+        ``supports_resume`` must hard-fail when the user asks to
+        resume — silently starting fresh would lose the user's
+        history without warning.  (All four built-ins do support
+        resume; we simulate the negative case by monkey-patching
+        the provider's flag.)
         """
         from leap.cli_providers import claude as claude_mod
         original = claude_mod.ClaudeProvider.supports_resume
@@ -842,13 +872,18 @@ class TestServerResumeArgvWiring:
             claude_mod.ClaudeProvider.supports_resume = property(
                 lambda self: False,
             )
-            _run_server_main(
-                monkeypatch,
-                argv=["leap-server", "t"],
-                env={"LEAP_RESUME_SESSION_ID": "x",
-                     "LEAP_RESUME_CLI": "claude"},
-            )
-            assert fake_leap_server["flags"] == []
+            with pytest.raises(SystemExit) as exc_info:
+                _run_server_main(
+                    monkeypatch,
+                    argv=["leap-server", "t"],
+                    env={"LEAP_RESUME_SESSION_ID": "x",
+                         "LEAP_RESUME_CLI": "claude"},
+                )
+            assert exc_info.value.code == 1
+            _, err = capsys.readouterr()
+            assert "Refusing to start" in err
+            assert "does not support resume" in err
+            assert fake_leap_server.get("tag") is None
         finally:
             claude_mod.ClaudeProvider.supports_resume = original
 
@@ -859,10 +894,22 @@ class TestServerResumeArgvWiring:
 
 
 class TestPickerMainExitCodes:
+    # The picker now calls ``argparse.parse_args()`` inside ``main()``
+    # for the GUI's pre-pick mode (--cli=… --tag=… --session=…).
+    # argparse reads from ``sys.argv``, which under pytest contains
+    # the runner's command line — so without a monkeypatch every test
+    # would hit ``unrecognized arguments`` and exit before reaching
+    # the picker logic we're trying to verify.
+    @staticmethod
+    def _stub_argv(picker, monkeypatch):
+        monkeypatch.setattr(picker.sys, "argv", ["leap-resume.py"],
+                            raising=False)
+
     def test_empty_storage_exits_1_with_message(
         self, tmp_path, capsys, monkeypatch,
     ):
         picker = _load_picker_module(tmp_path)
+        self._stub_argv(picker, monkeypatch)
         # Force the isatty check to pass so we reach the "no rows" branch.
         monkeypatch.setattr(picker.sys.stdin, "isatty", lambda: True,
                             raising=False)
@@ -874,6 +921,7 @@ class TestPickerMainExitCodes:
     def test_non_tty_stdin_exits_1(self, tmp_path, capsys, monkeypatch):
         """Picker requires an interactive terminal — pipe stdin → refuse."""
         picker = _load_picker_module(tmp_path)
+        self._stub_argv(picker, monkeypatch)
         # Seed a single session so the "no rows" branch doesn't fire first.
         transcript = tmp_path / "t.jsonl"
         transcript.write_text("x")
@@ -895,6 +943,7 @@ class TestPickerMainExitCodes:
         returns 1 without exec'ing into leap-main.sh.
         """
         picker = _load_picker_module(tmp_path)
+        self._stub_argv(picker, monkeypatch)
         monkeypatch.setattr(picker.sys.stdin, "isatty", lambda: True,
                             raising=False)
         transcript = tmp_path / "t.jsonl"
@@ -928,6 +977,7 @@ class TestPickerMainExitCodes:
         refuse to resume with a helpful error.
         """
         picker = _load_picker_module(tmp_path)
+        self._stub_argv(picker, monkeypatch)
         monkeypatch.setattr(picker.sys.stdin, "isatty", lambda: True,
                             raising=False)
         transcript = tmp_path / "t.jsonl"
@@ -940,6 +990,11 @@ class TestPickerMainExitCodes:
         # Tag is not live — we reach the cwd check.
         picker._live_tag_cli_map = lambda: {}
         picker._server_alive = lambda tag: False
+        # The cwd-choice prompt fires when target_cwd != current_cwd
+        # for cwd-bound CLIs (Claude is one).  Stub it to pick
+        # 'original' so we exercise the existence-check path.
+        monkeypatch.setattr(picker, "_ask_cwd_choice",
+                            lambda *a, **kw: 'original', raising=False)
 
         # execvpe would run leap-main.sh; patch it so a path-check bail
         # is observable instead of actually replacing our process.
@@ -967,6 +1022,10 @@ class TestPickerEnvHandoff:
         # module via a relative path, which would break silently).
         original_cwd = os.getcwd()
         picker = _load_picker_module(tmp_path)
+        # Stub argv so argparse (added for the GUI's pre-pick mode)
+        # doesn't see pytest's own command-line args.
+        monkeypatch.setattr(picker.sys, "argv", ["leap-resume.py"],
+                            raising=False)
         monkeypatch.setattr(picker.sys.stdin, "isatty", lambda: True,
                             raising=False)
         cwd = tmp_path / "workdir"
@@ -980,6 +1039,11 @@ class TestPickerEnvHandoff:
         monkeypatch.setattr(picker, "_pick_tag", lambda rows: (rows[0], 1))
         picker._live_tag_cli_map = lambda: {}
         picker._server_alive = lambda tag: False
+        # Claude is cwd-bound — recorded cwd != current cwd triggers
+        # the prompt.  Stub it to pick 'original' so we chdir into
+        # the recorded cwd (matching the original test's expectation).
+        monkeypatch.setattr(picker, "_ask_cwd_choice",
+                            lambda *a, **kw: 'original', raising=False)
 
         captured: dict = {}
 
