@@ -51,18 +51,19 @@ else
     exit 1
 fi
 
-# Separate tag from flags and messages
-# First non-flag argument is the tag, rest are passed through
+# Extract the tag (first non-flag arg) and forward EVERYTHING else
+# verbatim to leap-main.sh, preserving original order.  Reordering args
+# here (e.g. flags-before-positionals) would break leap-main.sh's
+# `--flag value` pair detection.
 TAG=""
-FLAGS=()
-ARGS=()
+REMAINING=()
+tag_taken=0
 for arg in "$@"; do
-    if [ -z "$TAG" ] && [[ "$arg" != --* ]]; then
+    if [ "$tag_taken" -eq 0 ] && [[ "$arg" != --* ]]; then
         TAG="$arg"
-    elif [[ "$arg" == --* ]]; then
-        FLAGS+=("$arg")
+        tag_taken=1
     else
-        ARGS+=("$arg")
+        REMAINING+=("$arg")
     fi
 done
 
@@ -70,7 +71,7 @@ SOCKET_DIR="$STORAGE_DIR/sockets"
 
 # If a server is already running for this tag, skip CLI selector — just connect
 if [ -n "$TAG" ] && [ -S "$SOCKET_DIR/${TAG}.sock" ]; then
-    exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${FLAGS[@]}" "${ARGS[@]}"
+    exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${REMAINING[@]}"
 fi
 
 # If no tag provided, prompt for one first (before CLI selector).
@@ -83,7 +84,7 @@ if [ -z "$TAG" ]; then
     fi
     # Check again: if a server is already running for this tag, skip CLI selector
     if [ -S "$SOCKET_DIR/${TAG}.sock" ]; then
-        exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${FLAGS[@]}" "${ARGS[@]}"
+        exec "$SCRIPT_DIR/leap-main.sh" "$TAG" "${REMAINING[@]}"
     fi
 else
     # Tag provided as argument — validate and record in history
@@ -118,7 +119,8 @@ fi
 
 # Launch the selected CLI with tag, user flags, and any remaining args.
 # --cli tells leap-main.sh the user explicitly chose this CLI (via selector).
-# Stored per-CLI flags (cli_flags.json) and LEAP_<CLI>_FLAGS env var overrides
-# are applied by pty_handler.py at spawn time — they must not pass through
-# leap-main.sh's arg parser, which cannot distinguish flag values from messages.
-exec "$SCRIPT_DIR/leap-main.sh" "$TAG" --cli "$SELECTED" "${FLAGS[@]}" "${ARGS[@]}"
+# Stored per-CLI flags (cli_flags.json) and LEAP_<CLI>_FLAGS env var
+# overrides are applied by pty_handler.py at spawn time — they don't
+# travel through this script.  REMAINING preserves original arg order so
+# leap-main.sh's `--flag value` pair detection works.
+exec "$SCRIPT_DIR/leap-main.sh" "$TAG" --cli "$SELECTED" "${REMAINING[@]}"

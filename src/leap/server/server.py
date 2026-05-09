@@ -3250,17 +3250,42 @@ def main() -> None:
     flags: list[str] = []
     i = 0
     while i < len(remaining_args):
-        if remaining_args[i] == '--cli' and i + 1 < len(remaining_args):
+        tok = remaining_args[i]
+        if tok == '--cli':
+            # Bare ``--cli`` (or ``--cli`` followed by another ``--flag``,
+            # or ``--cli ""``) used to leak through as a literal flag on
+            # the CLI / silently fall back to the default provider.
+            # Treat all three as hard errors so the misuse surfaces
+            # immediately instead of as an opaque "unknown flag" or a
+            # surprise default-provider session.
+            if (
+                i + 1 >= len(remaining_args)
+                or not remaining_args[i + 1]
+                or remaining_args[i + 1].startswith('--')
+            ):
+                _release_server_lock(tag)
+                print(
+                    "Error: --cli requires a value (e.g. --cli claude)",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             cli_name = remaining_args[i + 1]
             i += 2
-        elif remaining_args[i].startswith('--cli='):
-            cli_name = remaining_args[i].split('=', 1)[1]
+        elif tok.startswith('--cli='):
+            cli_name = tok.split('=', 1)[1]
+            if not cli_name:
+                _release_server_lock(tag)
+                print(
+                    "Error: --cli= requires a value (e.g. --cli=claude)",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             i += 1
         else:
             # Forward every other token to the CLI, not just `--*` prefixed
             # ones — `--flag value` pairs and subcommand forms (e.g. Codex
             # `resume <uuid>`) need the value to come through intact.
-            flags.append(remaining_args[i])
+            flags.append(tok)
             i += 1
 
     # `leap --resume` hands us a session id + CLI via env vars.  Ask the

@@ -122,11 +122,19 @@ EOF
     cat << 'EOF'
 
 FLAGS (server only):
-    Flags starting with -- are passed directly to the CLI when starting a server.
-    They are NOT supported for clients (connecting to existing server).
+    Flags starting with -- are passed directly to the CLI when starting
+    a server.  They are silently ignored when connecting to an existing
+    server.
 
-    Example:
-        leap my-tag --dangerously-skip-permissions
+    Three forms are supported:
+        leap my-tag --dangerously-skip-permissions   (boolean)
+        leap my-tag --model=opus                     (key=value)
+        leap my-tag --model opus                     (space-separated value)
+
+    Use `--` to end flag parsing — useful when a message starts with `--`,
+    or to pass a literal positional after a boolean flag:
+        leap my-tag -- "--this is a literal message"
+        leap my-tag --boolean -- "this is a message, not the flag value"
 
 EXAMPLES:
     # Interactive selector (choose CLI + session name)
@@ -179,38 +187,103 @@ fi
 
 shift
 
-# Parse arguments to separate flags from messages
-# Flags (starting with --) are passed to server only
-# Messages are passed to client only
-# --cli <name> overrides LEAP_CLI env var (set by claude-leap-main.sh / codex-leap-main.sh / cursor-agent-leap-main.sh / gemini-leap-main.sh)
-FLAGS=()
-ARGS=()
+# Parse arguments into three arrays:
+#   * OPT_FLAGS — flags forwarded to leap-server.py.  A `--flag` token
+#                 without `=` is paired with the next non-`--` token as
+#                 its value (so `leap mytag --model opus` works).
+#   * OPT_ARGS  — bare positionals — tokens that are NEITHER a flag NOR
+#                 a flag's value.  Used to gate the "Server not running"
+#                 error: a bare positional with no live server means the
+#                 user wanted to send a message but there's nowhere to
+#                 send it.
+#   * PESS_ARGS — every non-flag token, including ones the optimistic
+#                 view paired with a flag.  Used as messages for the
+#                 client-connect path so `leap mytag --boolean "msg"`
+#                 against an existing server still routes "msg" as a
+#                 message even though "msg" looks pairable.
+#
+# `--` terminates flag parsing in both views (everything after it is a
+# message, GNU convention).
+#
+# `--cli <name>` and `--cli=<name>` are consumed by Leap itself and never
+# forwarded to the underlying CLI.  `--cli` with no value (or with a
+# value that starts with `--` or is empty) is a hard error.
+OPT_FLAGS=()
+OPT_ARGS=()
+PESS_ARGS=()
 CLI_FROM_ARG=""
+opt_prev_was_flag=0
+sep_seen=0
 while [ $# -gt 0 ]; do
-    if [ "$1" = "--cli" ] && [ -n "$2" ]; then
-        CLI_FROM_ARG="$2"
-        FLAGS+=("--cli" "$2")
-        shift 2
-    elif [[ "$1" == --cli=* ]]; then
-        CLI_FROM_ARG="${1#--cli=}"
-        FLAGS+=("$1")
+    if [ "$sep_seen" -eq 1 ]; then
+        OPT_ARGS+=("$1")
+        PESS_ARGS+=("$1")
         shift
-    elif [[ "$1" == --* ]]; then
-        FLAGS+=("$1")
-        shift
-    else
-        ARGS+=("$1")
-        shift
+        continue
     fi
+    if [ "$1" = "--" ]; then
+        sep_seen=1
+        shift
+        continue
+    fi
+    if [ "$1" = "--cli" ]; then
+        if [ $# -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+            echo "Error: --cli requires a value (e.g. --cli claude)" >&2
+            exit 1
+        fi
+        CLI_FROM_ARG="$2"
+        OPT_FLAGS+=("--cli" "$2")
+        shift 2
+        opt_prev_was_flag=0
+        continue
+    fi
+    if [[ "$1" == --cli=* ]]; then
+        CLI_FROM_ARG="${1#--cli=}"
+        if [ -z "$CLI_FROM_ARG" ]; then
+            echo "Error: --cli= requires a value (e.g. --cli=claude)" >&2
+            exit 1
+        fi
+        OPT_FLAGS+=("$1")
+        shift
+        opt_prev_was_flag=0
+        continue
+    fi
+    if [[ "$1" == --* ]]; then
+        OPT_FLAGS+=("$1")
+        # `--flag=value` is self-contained; `--flag` may pair with the next token.
+        if [[ "$1" == *=* ]]; then
+            opt_prev_was_flag=0
+        else
+            opt_prev_was_flag=1
+        fi
+        shift
+        continue
+    fi
+    # Non-flag token.
+    if [ "$opt_prev_was_flag" -eq 1 ]; then
+        # Optimistic: pair with previous flag (forwarded to CLI).
+        # Pessimistic: still a bare positional (message for client mode).
+        OPT_FLAGS+=("$1")
+        PESS_ARGS+=("$1")
+        opt_prev_was_flag=0
+    else
+        OPT_ARGS+=("$1")
+        PESS_ARGS+=("$1")
+    fi
+    shift
 done
 
-# Apply LEAP_CLI env var if --cli was not explicitly passed
+# Apply LEAP_CLI env var if --cli was not explicitly passed.
+# Validate it the same way we validate explicit --cli values, so a
+# misconfigured env var (e.g. ``LEAP_CLI=--foo``) doesn't trip a
+# misleading "--cli requires a value" error from leap-server.py later.
 if [ -z "$CLI_FROM_ARG" ] && [ -n "$LEAP_CLI" ]; then
-    FLAGS+=("--cli" "$LEAP_CLI")
+    if [[ "$LEAP_CLI" == --* ]]; then
+        echo "Error: LEAP_CLI must not start with '--' (got: '$LEAP_CLI')" >&2
+        exit 1
+    fi
+    OPT_FLAGS=("--cli" "$LEAP_CLI" "${OPT_FLAGS[@]}")
 fi
-
-# Restore positional parameters with non-flag arguments
-set -- "${ARGS[@]}"
 
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -361,11 +434,14 @@ if [ -S "$SOCKET_PATH" ]; then
             fi
         fi
 
-        # Flags are silently ignored for clients (only used by server)
+        # Flags are silently ignored for clients (only used by server).
+        # Use the pessimistic ARGS view so a value that *could* have been
+        # paired with a `--flag` (in server-start mode) is still routed
+        # as a message here.
 
         # Set terminal tab name (OSC for native terminals; VS Code rename is done from Python)
         echo -ne "\033]0;lpc ${TAG}\007"
-        exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "$@"
+        exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "${PESS_ARGS[@]}"
     else
         # Stale socket - remove it and continue to server check below
         echo "🧹 Removing stale socket for '$TAG'" >&2
@@ -373,9 +449,12 @@ if [ -S "$SOCKET_PATH" ]; then
     fi
 fi
 
-# No socket or stale socket removed - decide server vs error
-if [ $# -gt 0 ]; then
-    # Has arguments but no server - error
+# No socket or stale socket removed - decide server vs error.
+# Use the optimistic view: a token that *could* be a flag-value pair
+# (e.g. `opus` after `--model`) does NOT count as a bare positional and
+# must not block server startup.
+if [ ${#OPT_ARGS[@]} -gt 0 ]; then
+    # Bare positional arguments with no server — user wanted to send a message.
     echo "Error: Server not running for tag '$TAG'"
     echo "Start server first in another terminal:"
     echo "  Terminal 1: leap $TAG"
@@ -397,7 +476,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
         if [ -S "$SOCKET_PATH" ] && test_socket_alive; then
             echo "✓ Server is now running - launching client" >&2
             echo -ne "\033]0;lpc ${TAG}\007"
-            exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "$@"
+            exec "$PYTHON_CMD" "$CLIENT_SCRIPT" "$TAG" "${PESS_ARGS[@]}"
         fi
     done
     echo "❌ Timed out waiting for server '$TAG'" >&2
@@ -435,4 +514,4 @@ HISTORY_FILE.write_text('\n'.join(history) + '\n')
 # Start server
 # Set terminal tab name (OSC for native terminals; VS Code rename is done from Python)
 echo -ne "\033]0;lps ${TAG}\007"
-exec "$PYTHON_CMD" "$SERVER_SCRIPT" "$TAG" "${FLAGS[@]}"
+exec "$PYTHON_CMD" "$SERVER_SCRIPT" "$TAG" "${OPT_FLAGS[@]}"

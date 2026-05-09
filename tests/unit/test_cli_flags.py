@@ -62,3 +62,35 @@ def test_no_env_var_falls_back_to_stored(monkeypatch: pytest.MonkeyPatch) -> Non
     with patch('leap.server.pty_handler.get_cli_flags', return_value='--stored-flag'):
         result = _resolve_cli_flags('claude', [])
     assert result == ['--stored-flag']
+
+
+def test_malformed_stored_flags_do_not_crash(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unclosed quotes in stored flags must warn and skip — not crash."""
+    with patch('leap.server.pty_handler.get_cli_flags', return_value='--foo="unclosed'):
+        result = _resolve_cli_flags('claude', ['--explicit'])
+    assert result == ['--explicit']
+    err = capsys.readouterr().err
+    assert 'malformed' in err.lower()
+    assert 'cli_flags.json' in err
+
+
+def test_malformed_env_var_flags_do_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unclosed quotes in env var must warn and skip — not crash."""
+    monkeypatch.setenv('LEAP_CLAUDE_FLAGS', '--foo="unclosed')
+    result = _resolve_cli_flags('claude', ['--explicit'])
+    assert result == ['--explicit']
+    err = capsys.readouterr().err
+    assert 'malformed' in err.lower()
+    assert 'LEAP_CLAUDE_FLAGS' in err
+
+
+def test_non_string_stored_value_treated_as_empty() -> None:
+    """A non-string value (from a hand-edited JSON) shouldn't TypeError."""
+    with patch('leap.server.pty_handler.get_cli_flags', return_value=['--foo']):
+        result = _resolve_cli_flags('claude', ['--explicit'])
+    assert result == ['--explicit']

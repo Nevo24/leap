@@ -22,14 +22,34 @@ from leap.cli_providers.registry import get_cli_env, get_cli_flags, get_provider
 def _resolve_cli_flags(provider_name: str, explicit_flags: list[str]) -> list[str]:
     """Return stored/env default flags prepended to explicit_flags.
 
-    Priority (highest last, so explicit flags win on duplicates):
-      stored (cli_flags.json) < LEAP_<NAME>_FLAGS env var < explicit_flags
-    The env var, if set (even to empty), fully replaces the stored defaults.
+    The "default" flags come from one of two sources:
+      * ``LEAP_<NAME>_FLAGS`` env var if set (even to empty), OR
+      * the ``cli_flags.json`` file otherwise.
+    The env var fully replaces the stored defaults — they don't merge.
+    Defaults are prepended to ``explicit_flags`` so the CLI's last-wins
+    rule typically applies on duplicates.
+
+    Malformed stored/env flags (e.g. unbalanced quotes) are warned about
+    and skipped — they must NOT crash the server before spawn.
     """
     env_var = f"LEAP_{provider_name.upper().replace('-', '_')}_FLAGS"
-    flags_str = os.environ.get(env_var) if env_var in os.environ else get_cli_flags(provider_name)
-    stored = shlex.split(flags_str) if flags_str else []
-    return stored + explicit_flags
+    if env_var in os.environ:
+        flags_str = os.environ.get(env_var)
+        source = f"env var {env_var}"
+    else:
+        flags_str = get_cli_flags(provider_name)
+        source = f"cli_flags.json[{provider_name!r}]"
+    if not flags_str or not isinstance(flags_str, str):
+        return list(explicit_flags)
+    try:
+        stored = shlex.split(flags_str)
+    except ValueError as e:
+        sys.stderr.write(
+            f"\033[33m⚠ Ignoring malformed default flags from {source}: {e}\n"
+            f"  Value was: {flags_str!r}\033[0m\n"
+        )
+        stored = []
+    return stored + list(explicit_flags)
 
 
 class PTYHandler:

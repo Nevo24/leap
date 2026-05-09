@@ -11,6 +11,7 @@ Provides a menu to:
 import os
 import re
 import select
+import shlex
 import sys
 import termios
 import tty
@@ -426,6 +427,21 @@ def overview_menu() -> None:
                 prev_lines = render_overview(items, cursor)
                 continue
 
+            # Validate shell-quoting up front so a typo like `--foo="bar`
+            # doesn't get persisted and then crash the server at spawn
+            # time inside ``_resolve_cli_flags``.
+            if new_flags:
+                try:
+                    shlex.split(new_flags)
+                except ValueError as e:
+                    sys.stderr.write(
+                        f"  {YELLOW}✗ Invalid shell quoting: {e}{RESET}\n"
+                        f"  {DIM}Not saved.  Re-enter to fix.{RESET}\n\n"
+                    )
+                    items = build_list()
+                    prev_lines = render_overview(items, cursor)
+                    continue
+
             if new_flags != current:
                 if new_flags:
                     all_flags[name] = new_flags
@@ -774,11 +790,22 @@ def create_custom_cli() -> None:
 
     # Step 5: default flags
     sys.stderr.write(f"\n  {BOLD}Default flags{RESET} {DIM}(include -- prefix, empty for none):{RESET}\n")
-    try:
-        flags = read_line_raw("  flags: ", "")
-    except KeyboardInterrupt:
-        sys.stderr.write(f"  {DIM}Cancelled{RESET}\n\n")
-        return
+    while True:
+        try:
+            flags = read_line_raw("  flags: ", "")
+        except KeyboardInterrupt:
+            sys.stderr.write(f"  {DIM}Cancelled{RESET}\n\n")
+            return
+        flags = flags.strip()
+        if not flags:
+            break
+        try:
+            shlex.split(flags)
+            break
+        except ValueError as e:
+            sys.stderr.write(
+                f"  {YELLOW}✗ Invalid shell quoting: {e} — try again.{RESET}\n"
+            )
 
     # Save
     entry = {
@@ -791,7 +818,6 @@ def create_custom_cli() -> None:
     save_custom_clis(existing)
 
     # Save flags if provided
-    flags = flags.strip()
     if flags:
         all_flags = load_cli_flags()
         all_flags[custom_id] = flags

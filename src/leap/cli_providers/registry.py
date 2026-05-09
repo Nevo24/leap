@@ -155,12 +155,18 @@ def save_cli_order(order: list[str]) -> None:
 
 
 def load_cli_flags() -> dict[str, str]:
-    """Load per-CLI default flags from storage. Returns {provider_name: flags_string}."""
+    """Load per-CLI default flags from storage. Returns {provider_name: flags_string}.
+
+    Silently drops entries whose value isn't a string — defensive against
+    a hand-edited ``cli_flags.json`` that put a list/null/object where a
+    string is expected.  Without this guard, ``shlex.split`` in
+    ``_resolve_cli_flags`` would TypeError at spawn time.
+    """
     try:
         if CLI_FLAGS_FILE.exists():
             data = json.loads(CLI_FLAGS_FILE.read_text())
             if isinstance(data, dict):
-                return data
+                return {k: v for k, v in data.items() if isinstance(v, str)}
     except (json.JSONDecodeError, OSError):
         pass
     return {}
