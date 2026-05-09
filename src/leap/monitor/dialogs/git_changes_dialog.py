@@ -1,12 +1,14 @@
 """Git changes dialog — local diff, commit diff, diff vs main."""
 
+import html
 import logging
 import subprocess
 from typing import Callable, Optional
 
 from PyQt5.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel,
-    QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QToolButton,
+    QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, QSize, Qt
 from PyQt5.QtGui import QColor, QPainter, QPen, QTextDocument
@@ -51,6 +53,9 @@ class _CommitItemWidget(QWidget):
         refs: str,
         files: list,
         parent: Optional[QWidget] = None,
+        *,
+        show_more_info: bool = False,
+        project_path: str = '',
     ) -> None:
         super().__init__(parent)
         self.setObjectName('commit_item')
@@ -115,6 +120,70 @@ class _CommitItemWidget(QWidget):
         subj_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(subj_label)
 
+        # Optional "More info" button — lazy-fetches the commit body via
+        # `git show -s --format=%B <sha>` and shows it in a QMessageBox.
+        if show_more_info and project_path:
+            info_row = QHBoxLayout()
+            info_row.setContentsMargins(16, 2, 0, 0)
+            info_row.setSpacing(0)
+            more_info_btn = QToolButton()
+            more_info_btn.setText('ⓘ  More info')
+            more_info_btn.setCursor(Qt.PointingHandCursor)
+            more_info_btn.setStyleSheet(
+                f"QToolButton {{"
+                f"  color: {t.accent_blue};"
+                f"  background: {t.popup_bg};"
+                f"  border: 1px solid {t.accent_blue};"
+                f"  border-radius: {t.border_radius}px;"
+                f"  padding: 2px 8px;"
+                f"  font-weight: bold;"
+                f"}}"
+                f"QToolButton:hover {{"
+                f"  color: {t.popup_bg};"
+                f"  background: {t.accent_blue};"
+                f"}}"
+            )
+            full_sha_local = full_sha
+            project_path_local = project_path
+            btn_local = more_info_btn
+            body_cache: dict = {'value': None}
+
+            def _fetch_body() -> str:
+                if body_cache['value'] is not None:
+                    return body_cache['value']
+                try:
+                    r = subprocess.run(
+                        ['git', 'show', '-s', '--format=%B', full_sha_local],
+                        cwd=project_path_local,
+                        capture_output=True, text=True,
+                        encoding='utf-8', errors='replace',
+                        timeout=5,
+                    )
+                    body = (r.stdout if r.returncode == 0 else r.stderr).strip()
+                except Exception as exc:
+                    body = f'Error: {exc}'
+                if not body:
+                    body = '(no commit message body)'
+                body_cache['value'] = body
+                return body
+
+            def _show_body() -> None:
+                body = _fetch_body()
+                # QMessageBox is unconditionally visible — sidesteps any
+                # global QSS/tooltip-styling that might be hiding the
+                # native QToolTip rendering on this setup.
+                msg = QMessageBox(btn_local.window())
+                msg.setWindowTitle('Commit message')
+                msg.setIcon(QMessageBox.NoIcon)
+                msg.setText(f'<pre style="white-space: pre-wrap; font-family: Menlo, Monaco, Courier;">{html.escape(body)}</pre>')
+                msg.setStandardButtons(QMessageBox.Ok)
+                msg.exec_()
+
+            more_info_btn.clicked.connect(_show_body)
+            info_row.addWidget(more_info_btn)
+            info_row.addStretch()
+            layout.addLayout(info_row)
+
         # Line 5+: Changed files
         if files:
             files_html = '<br>'.join(
@@ -131,25 +200,34 @@ class _CommitItemWidget(QWidget):
         # doesn't redistribute it as gaps between rich-text labels.
         layout.addStretch()
 
-        # Compute true width from richtext labels for proper horizontal scroll
+        # Compute true width from richtext labels for proper horizontal scroll.
+        # Walk both top-level layout items AND nested layouts (e.g. the
+        # "More info" row's QHBoxLayout) so labels in sub-layouts contribute.
         margins = layout.contentsMargins()
         pad = margins.left() + margins.right() + 20  # extra for frame border/padding
         max_w = 0
-        for i in range(layout.count()):
-            w = layout.itemAt(i).widget()
-            if isinstance(w, QLabel) and not w.wordWrap():
-                doc = QTextDocument()
-                doc.setHtml(w.text())
-                doc.setDefaultFont(w.font())
-                max_w = max(max_w, int(doc.idealWidth()))
+
+        def _walk_labels(lay: object):
+            for i in range(lay.count()):
+                it = lay.itemAt(i)
+                w = it.widget()
+                if isinstance(w, QLabel) and not w.wordWrap():
+                    doc = QTextDocument()
+                    doc.setHtml(w.text())
+                    doc.setDefaultFont(w.font())
+                    yield int(doc.idealWidth())
+                sub = it.layout()
+                if sub is not None:
+                    yield from _walk_labels(sub)
+
+        for w_int in _walk_labels(layout):
+            max_w = max(max_w, w_int)
         self._ideal_width = max_w + pad
 
         # Install event filter on all child labels so clicks also select the
         # parent QListWidget row (labels with TextSelectableByMouse eat clicks).
-        for i in range(layout.count()):
-            child = layout.itemAt(i).widget()
-            if isinstance(child, QLabel):
-                child.installEventFilter(self)
+        for child in self.findChildren(QLabel):
+            child.installEventFilter(self)
 
     def eventFilter(self, obj: object, event: QEvent) -> bool:
         """On mouse press inside a child label, also select the list row."""
@@ -195,7 +273,12 @@ class _CommitItemWidget(QWidget):
 
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()
-        return QSize(max(hint.width(), self._ideal_width), hint.height())
+        # Vertical safety buffer: the QSS box-model (padding/border/margin)
+        # set in `_commit_item_style()` isn't always reflected in
+        # `super().sizeHint()` on every Qt version, which can clip the
+        # last file row of cards with long file lists. Buffer covers
+        # CSS padding (20) + border (2) + margin (4) = 26.
+        return QSize(max(hint.width(), self._ideal_width), hint.height() + 26)
 
 
 class CommitListDialog(ZoomMixin, QDialog):
@@ -226,6 +309,10 @@ class CommitListDialog(ZoomMixin, QDialog):
 
         self._list = QListWidget()
         self._list.setSpacing(6)
+        # Add a small top viewport margin so the first card's border isn't
+        # flush with the QListWidget's top edge (Qt's QListView starts the
+        # first item at viewport y=0, so without this it looks truncated).
+        self._list.setViewportMargins(0, 12, 0, 0)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._list.setResizeMode(QListWidget.Fixed)
         t = current_theme()
@@ -335,6 +422,8 @@ class CommitListDialog(ZoomMixin, QDialog):
                 widget = _CommitItemWidget(
                     sha, full_sha, subject, author_name,
                     author_email, date_abs, date_rel, refs, files,
+                    show_more_info=True,
+                    project_path=self._project_path,
                 )
                 item = QListWidgetItem(self._list)
                 item.setSizeHint(widget.sizeHint() + QSize(0, 6))

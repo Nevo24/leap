@@ -37,6 +37,7 @@ class WhatsNewDialog(ZoomMixin, QDialog):
 
         self._list = QListWidget()
         self._list.setSpacing(6)
+        self._list.setViewportMargins(0, 12, 0, 0)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._list.setResizeMode(QListWidget.Fixed)
         self._list.setSelectionMode(QListWidget.NoSelection)
