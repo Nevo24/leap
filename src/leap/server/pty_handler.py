@@ -204,6 +204,16 @@ class PTYHandler:
         inside the server's send-suppression window and never reach the
         user.
 
+        ``timeout=2.0`` (vs the helper's 5.0 s default) bounds dispatch
+        latency: Ink emits low-rate periodic output (cursor blink,
+        idle hints) that prevents Phase-2 from ever observing the
+        configured 0.15 s quiet period, so without a tighter cap the
+        wait runs to the full deadline on every send.  Two seconds
+        is comfortably enough for typical paste-echo render to settle
+        before submit on small/medium content; very large pastes may
+        race the submit but that's a worthwhile tradeoff vs adding
+        ~3 s to every queued multi-line message.
+
         Args:
             paste_content: Full bracketed-paste payload, already wrapped
                 in ESC[200~ ... ESC[201~ markers.
@@ -213,6 +223,7 @@ class PTYHandler:
             self._write_all(paste_content)
             self._wait_for_output_settled(
                 settle_time=self._provider.paste_settle_time,
+                timeout=2.0,
             )
             elapsed = time.monotonic() - start
             if elapsed < 0.1:

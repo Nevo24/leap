@@ -124,6 +124,24 @@ class CLIStateTracker:
         # True after user typed since entering idle (gates auto-resume
         # cursor detection — don't auto-resume if user just typed).
         self._user_input_since_idle: bool = False
+        # True iff there's a real in-flight query — set on
+        # ``on_send`` (Leap-dispatched message) and on ``on_input``
+        # Enter (user typed Enter directly into Claude's input).
+        # Reset on every transition to IDLE.  Distinct from
+        # ``_seen_user_input`` (which is set for ANY input, including
+        # paste echoes) — this flag is the clean "Claude is
+        # processing a real submitted query" signal that the
+        # dispatcher uses to decide whether the current RUNNING
+        # state is real or phantom (paste-echo / cursor blink).
+        self._query_in_flight: bool = False
+        # Tracks whether ``on_input`` is currently scanning bytes
+        # inside a bracketed paste (between ``\x1b[200~`` and
+        # ``\x1b[201~``).  Persists across ``on_input`` calls because
+        # the input filter chunks at arbitrary boundaries — a paste
+        # can start in one ``on_input`` and finish in the next.
+        # Used to skip Enter-detection on ``\r`` / ``\n`` bytes that
+        # are paste content, not real submits.
+        self._in_bracketed_paste: bool = False
 
         # -- Trust dialog phase --
         self._trust_dialog_phase: bool = False
@@ -320,11 +338,31 @@ class CLIStateTracker:
         has_enter = False
         has_real_input = False  # printable chars, Enter, or Ctrl+C
         has_non_interrupt_input = False  # printable or Enter (not just Esc/Ctrl+C)
+        # Bracketed-paste awareness: ``\r`` / ``\n`` between
+        # ``\x1b[200~`` and ``\x1b[201~`` is paste content, not a
+        # real Enter submit.  Persists across calls (paste can span
+        # multiple ``on_input`` chunks).
+        in_paste = self._in_bracketed_paste
 
         # Scan the data byte-by-byte for interrupt signals and content.
         i = 0
         while i < len(data):
             b = data[i]
+
+            # Inside bracketed paste, all bytes count as "input"
+            # but \r / \n / Esc / Ctrl+C are paste data, not real
+            # keypresses — don't fire Enter / interrupt detection.
+            if in_paste:
+                # Watch for the end marker.
+                if (b == 0x1b and i + 5 < len(data)
+                        and data[i:i + 6] == b'\x1b[201~'):
+                    in_paste = False
+                    i += 6
+                    continue
+                has_real_input = True
+                has_non_interrupt_input = True
+                i += 1
+                continue
 
             if b == 0x03:  # Ctrl+C
                 is_interrupt = True
@@ -338,6 +376,12 @@ class CLIStateTracker:
                 i += 1
 
             elif b == 0x1b:  # Escape byte
+                # Bracketed paste start? — switch to in-paste mode.
+                if (i + 5 < len(data)
+                        and data[i:i + 6] == b'\x1b[200~'):
+                    in_paste = True
+                    i += 6
+                    continue
                 if i + 1 >= len(data):
                     # Standalone Escape at end of data
                     is_interrupt = True
@@ -398,6 +442,11 @@ class CLIStateTracker:
                 has_real_input = True
                 has_non_interrupt_input = True
                 i += 1
+
+        # Persist bracketed-paste state for the next call — pastes
+        # can span ``on_input`` chunk boundaries, so the in-paste
+        # flag carries over.
+        self._in_bracketed_paste = in_paste
 
         # Pure terminal events (focus, mouse) with no real user input
         # — skip entirely to avoid false flag updates.
@@ -469,6 +518,7 @@ class CLIStateTracker:
             self._interrupt_pending = False
             self._user_responded = False
             self._user_input_since_idle = False
+            self._query_in_flight = True
             with self._screen_lock:
                 self._reset_screen()
                 self._prompt_snapshot = []
@@ -492,6 +542,7 @@ class CLIStateTracker:
             self._suppress_stale_interrupt = False
         _log.debug('ON_SEND → running')
         self._seen_user_input = True
+        self._query_in_flight = True
         self._running_since = self._clock()
         self._interrupt_pending = False
         self._user_responded = False

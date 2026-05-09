@@ -9,6 +9,8 @@ Covers:
 """
 
 import hashlib
+import os
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,6 +31,8 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv.state = MagicMock()
     srv.state.current_state = state
     srv.state._state = state
+    srv.state._seen_user_input = False
+    srv.state._query_in_flight = False
     srv.state.on_input = MagicMock()
     srv.state.on_resize = MagicMock()
     srv.pty = MagicMock()
@@ -44,13 +48,13 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
               '_pending_caret', '_pending_caret_flush',
               '_in_bracketed_paste', '_user_has_typed',
               '_pending_resize', '_capture_show_saved_hint',
-              '_stale_text_pending', '_queue_sending',
-              '_capture_force_confirm']:
+              '_queue_sending', '_capture_force_confirm',
+              '_pending_sigwinch', '_capture_force_dispatch']:
         setattr(srv, a, False)
-    for a in ['_capture_stale_char_count', '_capture_cursor_pos',
-              '_capture_prev_lines', '_capture_image_counter',
-              '_chars_sent_to_cli', '_capture_pre_chars_sent',
-              '_preserved_chars_sent']:
+    for a in ['_capture_stale_visual_rows', '_capture_stale_logical_lines',
+              '_capture_cursor_pos', '_capture_prev_lines',
+              '_capture_image_counter', '_chars_sent_to_cli',
+              '_capture_pre_chars_sent', '_preserved_chars_sent']:
         setattr(srv, a, 0)
     for a in ['_queue_capture_buf', '_capture_pre_input_buf',
               '_capture_utf8_buf', '_terminal_input_buf',
@@ -75,6 +79,7 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._saved_msg_index = -1
     srv._prev_filter_state = None
     srv._send_clear_queue = []
+    srv._dispatch_wake = threading.Event()
     srv.running = True
     return srv
 
@@ -152,8 +157,14 @@ class TestStaleCleanup:
         # End sent at least twice (belt-and-suspenders).
         assert calls.count('\x1b[F') >= 2, "End escape must be sent twice"
         # Ctrl+U sent at least twice (drop-defense retry replaces the
-        # old n-backspace fallback).
-        assert calls.count('\x15') >= 2, "Ctrl+U must be sent twice"
+        # old n-backspace fallback).  Count occurrences across all
+        # send strings — the second batch is now ``'\\x15' * (rows+1)``
+        # rather than a single byte.
+        total_ctrlu = sum(
+            c.count('\x15') for c in calls if isinstance(c, str)
+        )
+        assert total_ctrlu >= 2, \
+            f"Ctrl+U must be sent twice, got {total_ctrlu}"
         # Crucially: NO per-char backspace flood.
         assert not any(
             isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
@@ -161,7 +172,8 @@ class TestStaleCleanup:
         ), "no n-backspace flood in RUNNING"
 
     def test_idle_sends_end_then_ctrlu(self):
-        """During IDLE, End then Ctrl+U (separate writes)."""
+        """During IDLE, End then Ctrl+Us (the Ctrl+Us are batched
+        into a single ``pty.send`` call as ``'\\x15' * N``)."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
         srv._input_filter_impl(b'hello')
@@ -170,7 +182,8 @@ class TestStaleCleanup:
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
         assert '\x1b[F' in calls, "End escape must be sent"
-        assert '\x15' in calls, "Ctrl+U must be sent"
+        ctrlu = sum(c.count('\x15') for c in calls if isinstance(c, str))
+        assert ctrlu >= 1, f"Ctrl+U must be sent, got count {ctrlu}"
 
     def test_idle_sends_ctrlu(self):
         srv = make_server(CLIState.IDLE)
@@ -180,7 +193,9 @@ class TestStaleCleanup:
             srv._input_filter_impl(b'^^')
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        assert '\x1b[F' in calls and '\x15' in calls
+        assert '\x1b[F' in calls
+        ctrlu = sum(c.count('\x15') for c in calls if isinstance(c, str))
+        assert ctrlu >= 1
 
     def test_no_stale_no_clear(self):
         """^^hello (no pre-typing) → no clear sequence needed."""
@@ -217,28 +232,27 @@ class TestStaleCleanup:
             for c in calls
         ), "no backspace flood for long input in RUNNING"
 
-    def test_idle_unified_with_row_counted_ctrlu(self):
-        """IDLE shares the row-counted Ctrl+U path with RUNNING.  For
-        single-line wraps the first Ctrl+U kills everything (rest are
-        no-ops); for multi-logical-line input (Shift+Enter typed)
-        each Ctrl+U kills one logical line.  Either way, no backspace
-        flood and only ONE End escape (no RUNNING-style retry)."""
+    def test_idle_single_logical_line_back_to_back_ctrlus(self):
+        """IDLE with single-logical-line input (no ``\\n``): clear
+        sends ``max(lines, rows) + 3`` Ctrl+Us.  Single line wraps
+        to 4 visual rows on 80 cols → max(1, 4) + 3 = 7 Ctrl+Us.
+        IDLE skips the RUNNING-style second End (drop-defense)."""
         import os as _os
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
         with patch('termios.tcflush'), \
                 patch('shutil.get_terminal_size',
                       return_value=_os.terminal_size((80, 24))):
-            srv._input_filter_impl(b'x' * 250)  # ~4 rows at 80 cols
+            srv._input_filter_impl(b'x' * 250)  # 250 chars, no \n
             srv._input_filter_impl(b'^^')
             srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
         total_ctrlu = sum(
             c.count('\x15') for c in calls if isinstance(c, str)
         )
-        # ≥ 4 Ctrl+U bytes (one per row of 250 // 80 + 1 = 4 rows).
-        assert total_ctrlu >= 4, \
-            f"want >=4 Ctrl+U bytes for 4 rows, got {total_ctrlu}"
+        # 1 line + 4 wrapped rows → max(1, 4) + 3 = 7 Ctrl+Us.
+        assert total_ctrlu >= 7, \
+            f"want >=7 Ctrl+U bytes, got {total_ctrlu}"
         # IDLE skips the second End (drop-defense is RUNNING-only).
         assert calls.count('\x1b[F') == 1, \
             "IDLE sends End exactly once (no RUNNING-style retry)"
@@ -261,7 +275,8 @@ class TestScenarioX:
         # ^^ enters capture
         srv._input_filter_impl(b'^^')
         assert srv._queue_capture_mode
-        assert srv._capture_stale_char_count == 5
+        # 5-char single-line "hello" wraps to 1 visual row on 80 cols.
+        assert srv._capture_stale_visual_rows == 1
 
         # Enter → clear sequence sent, message queued
         srv._input_filter_impl(b'\r')
@@ -270,7 +285,13 @@ class TestScenarioX:
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
         # Full clear sequence in RUNNING: two rounds of End + Ctrl+U.
         assert calls.count('\x1b[F') >= 2, "End must be sent twice"
-        assert calls.count('\x15') >= 2, "Ctrl+U must be sent twice"
+        # Count Ctrl+U occurrences across all sends — second batch is
+        # ``'\\x15' * (rows+1)`` rather than a single byte.
+        total_ctrlu = sum(
+            c.count('\x15') for c in calls if isinstance(c, str)
+        )
+        assert total_ctrlu >= 2, \
+            f"Ctrl+U must be sent twice, got {total_ctrlu}"
         # NO per-char backspace flood — same drop-defense at fixed cost.
         assert not any(
             isinstance(c, str) and c.startswith('\x7f') and len(c) > 1
@@ -286,7 +307,8 @@ class TestCancelReenter:
         srv._input_filter_impl(b'hello')
         with patch('termios.tcflush'):
             srv._input_filter_impl(b'^^')
-        assert srv._capture_stale_char_count == 5
+        # 5-char "hello" wraps to 1 visual row on 80 cols.
+        assert srv._capture_stale_visual_rows == 1
 
         # Escape cancel — restores chars_sent
         srv._input_filter_impl(b'\x1b')
@@ -295,12 +317,14 @@ class TestCancelReenter:
         # Re-enter ^^
         with patch('termios.tcflush'):
             srv._input_filter_impl(b'^^')
-        assert srv._capture_stale_char_count == 5
+        assert srv._capture_stale_visual_rows == 1
 
-        # Enter → Ctrl+E + Ctrl+U
+        # Enter → End + N Ctrl+Us
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
-        assert '\x1b[F' in calls and '\x15' in calls
+        assert '\x1b[F' in calls
+        ctrlu = sum(c.count('\x15') for c in calls if isinstance(c, str))
+        assert ctrlu >= 1
 
 
 class TestIdleSkipsBackspaceFlood:
@@ -318,7 +342,8 @@ class TestIdleSkipsBackspaceFlood:
         srv._input_filter_impl(b'\r')
         calls = [c[0][0] for c in srv.pty.send.call_args_list]
         assert '\x1b[F' in calls, "End must still be sent"
-        assert '\x15' in calls, "Ctrl+U must still be sent"
+        ctrlu = sum(c.count('\x15') for c in calls if isinstance(c, str))
+        assert ctrlu >= 1, f"Ctrl+U must still be sent, got count {ctrlu}"
         # Fast path: NO n-backspace flood, NO duplicated End.
         assert '\x7f' * 5 not in calls, \
             "n-backspace fallback must be skipped in IDLE"
@@ -365,14 +390,15 @@ class TestClearWrapRowsAtCaptureEntry:
         as a contiguous payload at capture entry."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
-        long_text = b'x' * 250  # 250 // 80 = 3 rows above
-        with patch('shutil.get_terminal_size') as mock_size, \
+        long_text = b'x' * 250  # 250 chars on 80-col → 4 visual rows
+        with patch('shutil.get_terminal_size',
+                   return_value=os.terminal_size((80, 24))), \
                 patch('os.write') as mock_write, \
                 patch('termios.tcflush'):
-            mock_size.return_value.columns = 80
             srv._input_filter_impl(long_text)
             srv._input_filter_impl(b'^^')
         all_writes = b''.join(c[0][1] for c in mock_write.call_args_list)
+        # 4 visual rows total → 3 rows above the cursor row.
         # Contiguous walk_up (3x) + walk_down: \x1b[A\r\x1b[K * 3 + \x1b[3B
         walk_seq = b'\x1b[A\r\x1b[K' * 3 + b'\x1b[3B'
         assert walk_seq in all_writes, \
@@ -644,6 +670,295 @@ class TestPasteCollapse:
             srv._browse_saved_history(-1)
         assert srv._queue_capture_buf == b'hello world'
         assert srv._paste_text_map == {}
+
+    def test_idle_clear_sends_n_back_to_back_ctrlus(self):
+        """In IDLE, ``_clear_stale_cli_input`` must send enough
+        Ctrl+Us to clear multi-line content.  Empirical question:
+        does Ink's IDLE Ctrl+U progress the cursor up after killing
+        a line?  If yes, N Ctrl+Us clear N logical lines.  We
+        send ``max(lines, rows) + 3`` for safety in either case."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(
+                b'\x1b[200~line1\nline2\nline3\x1b[201~')
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        ctrlu = sum(c.count('\x15') for c in calls if isinstance(c, str))
+        # 3-line paste → max(3 lines, 3 rows) + 3 = 6 Ctrl+Us.
+        assert ctrlu >= 6, \
+            f"want >=6 Ctrl+Us for 3-line paste in IDLE, got {ctrlu}"
+
+    def test_clear_after_multiline_paste_kills_all_rows_idle(self):
+        """Multi-line paste (4 lines) → ^^ → Enter: in IDLE, the clear
+        sends ``max(lines, rows) + 3`` back-to-back Ctrl+Us.  Whether
+        Ink's Ctrl+U is line-bound (one per logical line, progressing
+        cursor up) or row-bound (one per visual row), the count
+        covers both interpretations.
+        """
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(
+                b'\x1b[200~line1\nline2\nline3\nline4\x1b[201~')
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        ctrlu = sum(c.count('\x15') for c in calls if isinstance(c, str))
+        # 4 lines paste → max(4, 4) + 3 = 7 Ctrl+Us.
+        assert ctrlu >= 7, \
+            f"want >=7 Ctrl+Us for 4-line paste in IDLE, got {ctrlu}"
+
+    def test_clear_after_multiline_paste_kills_all_rows_running(self):
+        """Same regression in RUNNING — Ctrl+U is row-bound, so the
+        paste-row count drives correctness here."""
+        srv = make_server(CLIState.RUNNING)
+        with patch('shutil.get_terminal_size',
+                   return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(
+                b'\x1b[200~line1\nline2\nline3\nline4\x1b[201~')
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        total = sum(
+            c.count('\x15') for c in calls if isinstance(c, str)
+        )
+        assert total >= 5, \
+            f"want >=5 Ctrl+U for 4-row paste in RUNNING, got {total}"
+
+    def test_clear_after_wide_char_paste_counts_cells_in_running(self):
+        """Multi-line paste containing CJK Wide characters in RUNNING:
+        visual-row count must use cell width (CJK = 2 cells) not char
+        count, otherwise long CJK lines undercount wraps and the
+        topmost row is left on the CLI input box.
+
+        RUNNING-mode clear is row-bound, so the Ctrl+U count == row
+        count.  IDLE-mode is line-bound (Ctrl+U + Backspace pattern,
+        N Ctrl+Us for N logical lines) which wouldn't exercise the
+        cell-width math the same way."""
+        srv = make_server(CLIState.RUNNING)
+        # Each Hiragana char is 2 cells.  41 wide chars × 2 cells =
+        # 82 cells → wraps to 2 visual rows on 80 cols.  Two such
+        # lines pasted → 4 visual rows total.  With the old
+        # len()-based math: 41 chars < 80 cols → 1 row per line → 2
+        # visual rows total — undercount.
+        wide_line = ('あ' * 41).encode('utf-8')
+        content = wide_line + b'\n' + wide_line
+        with patch('shutil.get_terminal_size',
+                   return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'\x1b[200~' + content + b'\x1b[201~')
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        calls = [c[0][0] for c in srv.pty.send.call_args_list]
+        total = sum(
+            c.count('\x15') for c in calls if isinstance(c, str)
+        )
+        # 4 visual rows → at least 5 Ctrl+Us (rows + 1 safety + 1 initial).
+        assert total >= 5, \
+            f"want >=5 Ctrl+U for 4-row CJK paste in RUNNING, got {total}"
+
+    def test_queue_add_in_capture_signals_dispatch_wake(self):
+        """^^ + Enter must result in the dispatch-wake Event being
+        set so the auto-sender wakes immediately instead of waiting
+        out the current POLL_INTERVAL sleep.  The SIGWINCH thread
+        (not the Enter handler directly) is the producer of this
+        signal — that ordering ensures the CLI has repainted before
+        the dispatch writes paste content."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        srv._dispatch_wake.clear()
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'\x1b[200~line1\nline2\x1b[201~')
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+            # Wait long enough for the SIGWINCH thread to fire and
+            # set the wake-event.
+            import time as _time
+            _time.sleep(0.2)
+        assert srv._dispatch_wake.is_set(), \
+            "SIGWINCH thread must signal dispatch-wake post-resize"
+
+    def test_paste_text_map_gc_drops_orphans_on_enter(self):
+        """`_paste_text_map` must shed entries on Enter outside capture
+        when their placeholders are no longer referenced anywhere —
+        otherwise the dict grows for the lifetime of the server.
+        """
+        srv = make_server(CLIState.IDLE)
+        srv._input_filter_impl(b'\x1b[200~line1\nline2\nline3\x1b[201~')
+        # Sanity: paste collapsed to placeholder, map has the entry.
+        assert srv._paste_text_map, \
+            "paste must populate the text map"
+        assert b'[Paste #' in bytes(srv._terminal_input_buf)
+        # User submits: map should be GC'd since no live buffer
+        # references the placeholder anymore.
+        srv._input_filter_impl(b'\r')
+        assert srv._paste_text_map == {}, \
+            "Enter outside capture must GC orphan paste-map entries"
+
+    def test_paste_text_map_gc_keeps_referenced_entries(self):
+        """GC must NOT drop entries whose placeholder is still in a
+        live buffer (preserved input, capture buf, etc.)."""
+        srv = make_server(CLIState.IDLE)
+        srv._input_filter_impl(b'\x1b[200~line1\nline2\x1b[201~')
+        ph_bytes = bytes(srv._terminal_input_buf)
+        # Force the live buffer to retain a reference, then GC.
+        srv._gc_paste_text_map()
+        assert srv._paste_text_map, \
+            "still-referenced entries must survive GC"
+        assert ph_bytes.decode('utf-8') in srv._paste_text_map
+
+    def test_with_msg_enter_signals_dispatch_wake_directly(self):
+        """With-msg Enter must signal ``_dispatch_wake`` directly so
+        the auto-sender wakes within ~10 ms.  SIGWINCH still fires
+        (in a separate thread) for visual cleanup — Ink needs the
+        resize to maintain its full-screen layout, otherwise the TUI
+        fragments over the Leap server welcome screen."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'\x1b[200~line1\nline2\x1b[201~')
+            srv._input_filter_impl(b'^^')
+            srv._input_filter_impl(b'\r')
+        # Dispatch wake must be set immediately, not via SIGWINCH.
+        assert srv._dispatch_wake.is_set(), \
+            "with-msg Enter must signal _dispatch_wake directly"
+
+    def test_empty_enter_still_triggers_sigwinch_repaint(self):
+        """Empty ^^ + Enter (no queued message) must still SIGWINCH —
+        no dispatch follows, so the CLI needs an explicit repaint to
+        clean any visual residue from the [Leap Q] overlay."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        srv.pty.resize = MagicMock()
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            # ^^ on empty CLI, then ^^ inside (saves), then Enter.
+            srv._input_filter_impl(b'hello')  # so something is "stale"
+            srv._input_filter_impl(b'^^')
+            # Clear the buffer so Enter takes the empty path.
+            srv._queue_capture_buf.clear()
+            srv._capture_cursor_pos = 0
+            srv._input_filter_impl(b'\r')
+            import time as _time
+            _time.sleep(0.2)
+        # Two resize calls (shrink + restore) make up the SIGWINCH.
+        assert srv.pty.resize.call_count >= 1, \
+            "empty Enter must trigger SIGWINCH repaint"
+
+    def test_image_then_csi_u_newline_then_image_counts_all_rows(self):
+        """User's reported flow: paste image, Cmd/Shift+Enter for a
+        newline, paste another image, then ^^ + Enter.  Visual-row
+        count must include all 3 rows (image1 + newline + image2).
+
+        Pre-fix: Shift+Enter was an opaque escape sequence, no trace
+        in ``_terminal_input_buf``.  Image rows were counted via
+        ``len(_pending_paste_images)`` only.  Result: 2 rows
+        (2 images) — undercount by 1.  CLI input box would retain
+        the top image row after Enter clear.
+        """
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        # Save_clipboard_image returns None on this test runner
+        # (no pyobjc/macOS), so simulate by directly populating
+        # _pending_paste_images at the same offsets the real flow
+        # would.  The newline path is fully exercised via CSI u.
+        srv._pending_paste_images = [(0, '/tmp/img1.png')]
+        # Cmd+Enter (kitty CSI u: codepoint 13, modifier 9 = Meta).
+        with patch('shutil.get_terminal_size',
+                   return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'\x1b[13;9u')
+        # Confirm the newline was mirrored into the buf.
+        assert b'\n' in bytes(srv._terminal_input_buf), \
+            "CSI u newline must be mirrored into _terminal_input_buf"
+        # Now simulate the second image and capture entry.
+        srv._pending_paste_images.append(
+            (len(srv._terminal_input_buf), '/tmp/img2.png'))
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'^^')
+        # 2 image rows + 2 lines from the buf split on \n (one before
+        # the \n, one after — even if both are empty content-wise,
+        # they each occupy a visual row in Ink's input box).
+        assert srv._capture_stale_visual_rows >= 3, (
+            f"want >=3 visual rows for img+\\n+img flow, "
+            f"got {srv._capture_stale_visual_rows}"
+        )
+
+    def test_csi_u_newline_detection(self):
+        """`_is_csi_u_newline` must accept Kitty (\\x1b[13;<mod>u) and
+        legacy xterm (\\x1b[27;<mod>;13~) encodings, with any non-1
+        modifier (1 = no modifier = plain Enter, must NOT match)."""
+        from leap.server.server import LeapServer
+        # Kitty encoding
+        assert LeapServer._is_csi_u_newline(b'\x1b[13;2u')   # Shift
+        assert LeapServer._is_csi_u_newline(b'\x1b[13;9u')   # Cmd / Meta
+        assert LeapServer._is_csi_u_newline(b'\x1b[13;3u')   # Alt
+        assert not LeapServer._is_csi_u_newline(b'\x1b[13;1u')  # plain
+        assert not LeapServer._is_csi_u_newline(b'\x1b[13u')    # no mod
+        # Legacy xterm encoding
+        assert LeapServer._is_csi_u_newline(b'\x1b[27;2;13~')
+        assert not LeapServer._is_csi_u_newline(b'\x1b[27;1;13~')
+        # Wrong codepoint / final byte
+        assert not LeapServer._is_csi_u_newline(b'\x1b[14;2u')
+        assert not LeapServer._is_csi_u_newline(b'\x1b[200~')
+
+    def test_pending_image_rows_added_to_stale_visual_rows(self):
+        """Ctrl+V outside capture stores the image in
+        ``_pending_paste_images`` without inserting bytes into
+        ``_terminal_input_buf``, but the CLI still renders an
+        image-attachment row.  ``_capture_stale_visual_rows`` at
+        capture entry must include those rows so the post-Enter
+        Ctrl+U sequence clears them too."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        # Simulate two Ctrl+V images already pending and a single-line
+        # of plain text typed.
+        srv._terminal_input_buf = bytearray(b'hello')
+        srv._terminal_input_cursor = 5
+        srv._chars_sent_to_cli = 5
+        srv._pending_paste_images = [(5, '/tmp/a.png'), (5, '/tmp/b.png')]
+        with patch('termios.tcflush'), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            srv._input_filter_impl(b'^^')
+        # 1 row for "hello" + 2 rows for the two image attachments.
+        assert srv._capture_stale_visual_rows == 3, (
+            f"want 3 visual rows (1 text + 2 images), "
+            f"got {srv._capture_stale_visual_rows}"
+        )
+
+    def test_walkup_safety_cap_half_screen(self):
+        """A huge multi-line paste must not walk up more than half the
+        terminal viewport — bounds the worst-case cosmetic blank-out
+        before SIGWINCH self-heals."""
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        writes: list[bytes] = []
+        with patch('termios.tcflush'), \
+                patch('os.write',
+                      side_effect=lambda fd, data: writes.append(data)), \
+                patch('shutil.get_terminal_size',
+                      return_value=os.terminal_size((80, 24))):
+            content = b'\n'.join(
+                f'line{i}'.encode() for i in range(100))
+            srv._input_filter_impl(b'\x1b[200~' + content + b'\x1b[201~')
+            srv._input_filter_impl(b'^^')
+        joined = b''.join(writes)
+        up_count = joined.count(b'\x1b[A')
+        # Cap is term.lines // 2 = 12 for 24-row viewport.
+        assert up_count <= 12, \
+            f"walk-up exceeded half-screen cap, got {up_count}"
 
 
 class TestPasteCancelWithTypedText:

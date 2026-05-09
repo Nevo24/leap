@@ -16,8 +16,9 @@ import termios
 import threading
 import time
 import traceback
+import unicodedata
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 try:
     from AppKit import (
@@ -154,7 +155,15 @@ class LeapServer:
         self._queue_capture_mode: bool = False
         self._queue_capture_buf: bytearray = bytearray()
         self._capture_stale_caret: bool = False  # cross-chunk ^^ left a literal ^ in CLI
-        self._capture_stale_char_count: int = 0  # chars to backspace on flush
+        # Visual rows + logical lines occupied by pre-capture CLI
+        # input (placeholders expanded via _paste_text_map, plus
+        # Ctrl+V image attachments).  > 0 on either field means
+        # "the CLI has stale text that needs clearing".  Visual rows
+        # drive the row-bound Ctrl+U sequence in RUNNING mode;
+        # logical lines drive the line-bound Ctrl+U + Backspace
+        # pattern in IDLE mode.
+        self._capture_stale_visual_rows: int = 0
+        self._capture_stale_logical_lines: int = 0
         self._chars_sent_to_cli: int = 0  # printable chars actually on CLI's input
         self._capture_pre_input_buf: bytearray = bytearray()  # snapshot for cancel
         self._capture_pre_chars_sent: int = 0  # snapshot for cancel
@@ -213,7 +222,24 @@ class LeapServer:
         # repeats and keeps the ID stable across save/recall cycles.
         self._paste_text_map: dict[str, str] = {}
         self._last_output_time: float = 0.0  # timestamp of last CLI output
-        self._stale_text_pending: bool = False  # Enter handler set; _send_to_cli clears
+        # Wake-up signal for the auto-sender — set when a message
+        # is queued so dispatch is near-instant instead of waiting
+        # out the current POLL_INTERVAL sleep.
+        self._dispatch_wake: threading.Event = threading.Event()
+        # When the with-msg ^^ + Enter path defers SIGWINCH so the
+        # Ink full repaint doesn't block dispatch, this flag tells
+        # ``_send_to_cli`` to fire the resize itself once the
+        # paste-and-submit is done.
+        self._pending_sigwinch: bool = False
+        # Bypass the auto-sender's "IDLE-only" dispatch gate for the
+        # next dispatch.  Set by capture-mode ^^ + Enter so the user's
+        # explicit message goes through even when the state tracker
+        # is mis-classifying RUNNING (Ink cursor blink / render
+        # afterglow keeps emitting low-rate output, which can hold
+        # state in RUNNING for 10+ seconds on long transcripts even
+        # when Claude itself is idle).  Still gated on WAITING_STATES
+        # — never dispatch through a permission / input prompt.
+        self._capture_force_dispatch: bool = False
         self._send_clear_queue: list[bool] = []  # per-message clear flags (FIFO)
         self._suppress_send_until: float = 0.0  # suppress output until monotonic time
         # Preserved user input: when a queue message interrupts typing,
@@ -281,6 +307,10 @@ class LeapServer:
 
         if msg_type == 'queue':
             size = self.queue.add(message)
+            # Wake the auto-sender immediately so socket-queued
+            # messages dispatch near-instantly instead of waiting
+            # out the current POLL_INTERVAL sleep.
+            self._dispatch_wake.set()
             return {
                 'status': 'queued',
                 'queue_size': size,
@@ -292,6 +322,7 @@ class LeapServer:
             if not messages:
                 return {'status': 'error', 'error': 'no messages'}
             size = self.queue.prepend(messages)
+            self._dispatch_wake.set()
             return {
                 'status': 'queued',
                 'queue_size': size,
@@ -495,7 +526,8 @@ class LeapServer:
         # this count would prevent _clear_stale_cli_input from running
         # when the Enter is replayed, leaving pre-capture text on the CLI.
         if not self._queue_capture_mode:
-            self._capture_stale_char_count = 0
+            self._capture_stale_visual_rows = 0
+            self._capture_stale_logical_lines = 0
 
         # Pop per-message clear flag (set by Enter handler when
         # stale text exists during RUNNING).  This fixes the bug
@@ -518,19 +550,20 @@ class LeapServer:
                     self._preserved_input_buf = bytearray(
                         self._terminal_input_buf)
                     self._preserved_chars_sent = self._chars_sent_to_cli
-            self._stale_text_pending = False
             self._terminal_input_buf.clear()
             self._terminal_input_cursor = 0
 
             if needs_clear:
-                # Use the robust clear helper — under RUNNING streaming,
-                # Ctrl+U alone can be dropped by Ink's render loop, so
-                # _clear_stale_cli_input adds End + N backspaces as an
-                # idempotent fallback.  chars_sent might over-count
-                # for pastes (placeholder counts as 1 visual token),
-                # but extra backspaces are no-ops on an empty line.
-                chars = self._preserved_chars_sent or 1
-                self._clear_stale_cli_input(chars)
+                # Compute logical lines + visual rows of the user's
+                # preserved text so multi-line pastes are fully
+                # cleared from the CLI input box (placeholders
+                # expanded via _paste_text_map).  Fall back to 1/1
+                # when no preserved buffer is available — extra
+                # Ctrl+Us / Backspaces on empty input are no-ops.
+                buf = self._preserved_input_buf
+                lines = self._stale_logical_lines(buf) or 1
+                rows = self._stale_visual_rows(buf) or 1
+                self._clear_stale_cli_input(lines, rows)
                 time.sleep(0.1)
 
             # Suppress from here — hides message echo only.
@@ -568,6 +601,20 @@ class LeapServer:
                 self._restore_preserved_input()
         finally:
             self._queue_sending = False
+        # Drop any paste-map entries the message and live buffers
+        # no longer reference — caps the dict's memory footprint
+        # over long-running sessions.
+        self._gc_paste_text_map()
+        # Clear the capture-mode gate-bypass flag — it was only
+        # meant to cover the dispatch we just performed.
+        self._capture_force_dispatch = False
+        # Fire the deferred capture-exit SIGWINCH now that the
+        # message is dispatched — ``_capture_flush(defer_sigwinch=True)``
+        # set this flag to keep the resize-driven Ink full repaint
+        # out of the paste-and-submit window.
+        if self._pending_sigwinch:
+            self._pending_sigwinch = False
+            self._trigger_sigwinch_repaint()
 
     def _restore_preserved_input(self) -> None:
         """Restore user's partial input that was interrupted by a queue send.
@@ -895,10 +942,24 @@ class LeapServer:
         delayed_queue_has_next: bool = False
         delayed_target_state: str = ''
         while self.running:
-            # Fast-poll when stale text pending — Ctrl+C must fire
-            # quickly after IDLE so stale text is cleared fast.
-            time.sleep(0.01 if self._stale_text_pending
-                       else POLL_INTERVAL)
+            # Wait for a producer's wake-up signal or for the periodic
+            # state-poll timeout — whichever comes first.  Short wait
+            # (200 ms) when we have queued work, long wait
+            # (POLL_INTERVAL) when fully idle.  The short wait bounds
+            # the worst-case impact of a wake-event race (a
+            # producer's ``set()`` consumed by ``clear()`` between
+            # ``wait()`` returning and ``clear()`` running) so
+            # back-to-back queued messages still dispatch reasonably
+            # fast.  200 ms is chosen to comfortably exceed the
+            # ~60 ms SIGWINCH-completion delay used by capture-mode
+            # ``signal_dispatch`` — without that margin, the
+            # auto-sender's short-poll timeout can race-fire BEFORE
+            # the SIGWINCH thread sets the wake-event, restoring the
+            # paste-write/Ink-repaint race that the SIGWINCH-first
+            # ordering exists to prevent.
+            wait = 0.2 if not self.queue.is_empty else POLL_INTERVAL
+            self._dispatch_wake.clear()
+            self._dispatch_wake.wait(timeout=wait)
 
             try:
                 current_state = self.state.get_state(self.pty.is_alive())
@@ -912,6 +973,15 @@ class LeapServer:
                         and current_state == CLIState.IDLE
                         and self.state.auto_send_mode in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS)
                     )
+                    # Any transition to IDLE means whatever real query
+                    # was running (if any) has finished — clear the
+                    # ``_query_in_flight`` flag so the dispatcher's
+                    # next phantom-RUNNING check correctly reads as
+                    # "no real query in flight".  Centralising the
+                    # reset here avoids touching all ~10 call sites
+                    # in state_tracker that flip to IDLE.
+                    if current_state == CLIState.IDLE:
+                        self.state._query_in_flight = False
                     if current_state in WAITING_STATES:
                         # Delay writing: let PTY output accumulate so the
                         # full permission dialog / input prompt is captured.
@@ -973,7 +1043,17 @@ class LeapServer:
                         prev_state = CLIState.RUNNING
                     continue
 
-                if self.queue.is_empty or not self.state.is_ready_for_state(current_state):
+                if self.queue.is_empty:
+                    continue
+                # Never dispatch through a permission / input prompt
+                # or an interrupted state — those are real "waiting
+                # for the user" states.  RUNNING is allowed when
+                # ``_capture_force_dispatch`` is set (user typed
+                # ^^ + Enter); otherwise stick to IDLE-only.
+                if current_state in WAITING_STATES:
+                    continue
+                if (not self._capture_force_dispatch
+                        and not self.state.is_ready_for_state(current_state)):
                     continue
 
                 # Flush pending Slack write BEFORE sending the next
@@ -1345,6 +1425,36 @@ class LeapServer:
             pass
         return False
 
+    @staticmethod
+    def _is_csi_u_newline(seq: bytes) -> bool:
+        """Check if a CSI sequence is Shift/Cmd+Enter (newline-in-input).
+
+        Kitty: ``\\x1b[13;<mod>u`` with mod != 1 (mod 1 = no modifier
+        i.e. plain Enter).  Legacy xterm: ``\\x1b[27;<mod>;13~``.
+        These sequences are emitted by terminals (iTerm2, WezTerm,
+        VS Code via the Leap extension) when CSI u keyboard
+        encoding is active and the user wants to insert a newline
+        in the CLI's input box without submitting.
+        """
+        if len(seq) < 4:
+            return False
+        final = seq[-1]
+        params = seq[2:-1]
+        parts = params.split(b';')
+        try:
+            if final == 0x75:  # Kitty: \x1b[13;<mod>u
+                cp = int(parts[0].split(b':')[0])
+                mod = int(parts[1].split(b':')[0]) if len(parts) > 1 else 1
+                return cp == 13 and mod != 1
+            if final == 0x7e and len(parts) >= 3:  # \x1b[27;<mod>;13~
+                prefix = int(parts[0].split(b':')[0])
+                mod = int(parts[1].split(b':')[0])
+                keycode = int(parts[2].split(b':')[0])
+                return prefix == 27 and keycode == 13 and mod != 1
+        except (ValueError, IndexError):
+            pass
+        return False
+
     def _capture_backspace(self) -> bool:
         """Delete character before cursor. Returns False if at start.
 
@@ -1394,77 +1504,156 @@ class LeapServer:
             text = text[:self._capture_cursor_pos] + text[self._capture_cursor_pos + 1:]
             self._queue_capture_buf = bytearray(text.encode('utf-8'))
 
-    def _clear_stale_cli_input(self, n: int) -> None:
-        """Clear stale CLI input left on the TUI before ``^^`` entry.
+    def _gc_paste_text_map(self) -> None:
+        """Drop ``_paste_text_map`` entries no longer referenced by
+        any live buffer.
 
-        Unified row-counted approach for both states:
-
-        1. End: cursor to end of line.
-        2. Ctrl+U: kill from cursor to start.
-        3. RUNNING only — second End: drop-defense for streaming
-           render race that can swallow the first End.
-        4. Ctrl+U × ``(n // cols + 1)``: one per visual row.
-
-        Ink's Ctrl+U behaves differently in each state:
-
-        * IDLE — line-bound: a single Ctrl+U kills the whole
-          wrapped logical line.  For typical single-line input
-          steps 1-2 already cleared everything; the extra Ctrl+Us
-          in step 4 are cheap no-ops on the empty buffer.  For
-          multi-logical-line input (Shift+Enter typed), each
-          Ctrl+U kills one logical line — step 4 clears the rest.
-        * RUNNING — row-bound: each Ctrl+U kills one visual row
-          with cursor moving up after each kill (verified
-          empirically).  Step 4's row-counted Ctrl+Us clear all
-          remaining rows of the multi-row paste.
-
-        Total cost is roughly ``rows`` bytes regardless of message
-        length — vs. the original ``n`` backspaces which flooded
-        Ink with re-renders for long pastes.
-
-        End is used instead of Ctrl+E to avoid emacs-style binding
-        ambiguity.  ``n`` is the byte count of pre-capture input;
-        for multi-byte UTF-8 it over-counts row math by a constant
-        factor, harmless because extra Ctrl+U presses on empty
-        rows are no-ops.
+        Without this, the dict accumulates entries for the lifetime of
+        the server — every paste >200 chars or with embedded newlines
+        gets a permanent entry, so a long-running session leaks paste
+        content.  Called at known-safe points (Enter / Ctrl+C outside
+        capture, after each ``_send_to_cli``) where the live buffers
+        have just settled, so anything not referenced is genuinely
+        orphaned.
         """
-        self.pty.send('\x1b[F')  # End: cursor to end
-        time.sleep(0.02)
-        self.pty.send('\x15')  # Ctrl+U: kill from cursor to start
-        time.sleep(0.02)
-        if self.state.current_state != CLIState.IDLE:
-            self.pty.send('\x1b[F')  # End again: drop-defense in RUNNING
-            time.sleep(0.02)
+        if not self._paste_text_map:
+            return
+        live = b''.join(
+            bytes(b)
+            for b in (
+                self._terminal_input_buf,
+                self._capture_pre_input_buf,
+                self._preserved_input_buf,
+                self._queue_capture_buf,
+            )
+        )
+        for ph in list(self._paste_text_map.keys()):
+            if ph.encode('utf-8') not in live:
+                del self._paste_text_map[ph]
+
+    @staticmethod
+    def _line_cells(line: str) -> int:
+        """Approximate terminal cell width of a single line of text.
+
+        Uses ``unicodedata.east_asian_width`` to give CJK Wide/Fullwidth
+        characters two cells.  Most emoji are classified Neutral and
+        return 1 cell — that under-counts in the safe direction (the
+        Ctrl+U clear over-shoots, extra presses are no-ops on an empty
+        line), so a stdlib-only approximation is fine here without
+        pulling in the ``wcwidth`` package.
+        """
+        cells = 0
+        for ch in line:
+            eaw = unicodedata.east_asian_width(ch)
+            cells += 2 if eaw in ('F', 'W') else 1
+        return cells
+
+    def _stale_buf_text(
+        self, buf: Optional[Union[bytes, bytearray]] = None,
+    ) -> str:
+        """Decoded buffer with ``[Paste #N]`` placeholders expanded.
+
+        Defaults to ``_capture_pre_input_buf``.  Returns ``''`` for
+        an empty buffer.  Snapshots ``_paste_text_map`` via ``list()``
+        because other threads (input thread via
+        ``_finalize_paste_capture``, auto-sender via
+        ``_gc_paste_text_map``) can mutate it concurrently and
+        iterating during mutation raises RuntimeError.
+        """
+        if buf is None:
+            buf = self._capture_pre_input_buf
+        if not buf:
+            return ''
+        text = bytes(buf).decode('utf-8', errors='replace')
+        for placeholder, raw in list(self._paste_text_map.items()):
+            text = text.replace(placeholder, raw)
+        return text
+
+    def _stale_visual_rows(
+        self, buf: Optional[Union[bytes, bytearray]] = None,
+    ) -> int:
+        """Visual rows the CLI is rendering for the given input buffer.
+
+        Counts wrapped rows per ``\\n``-separated line at the current
+        terminal width.  Cell widths come from ``_line_cells`` so
+        CJK Wide/Fullwidth chars contribute two cells each.
+
+        Returns 0 for an empty buffer.
+        """
+        text = self._stale_buf_text(buf)
+        if not text:
+            return 0
         try:
             cols = shutil.get_terminal_size(fallback=(80, 24)).columns
         except OSError:
             cols = 80
-        rows = (n // max(1, cols)) + 1  # +1 for cursor row / safety
-        self.pty.send('\x15' * rows)  # one Ctrl+U per remaining row
+        cols = max(1, cols)
+        rows = 0
+        for line in text.split('\n'):
+            line = line.rstrip('\r')
+            cells = self._line_cells(line)
+            rows += 1 + max(0, (cells - 1) // cols)
+        return rows
+
+    def _stale_logical_lines(
+        self, buf: Optional[Union[bytes, bytearray]] = None,
+    ) -> int:
+        """Logical line count of stale CLI input (``\\n``-separated).
+
+        Drives the Ctrl+U + Backspace pattern in
+        ``_clear_stale_cli_input``: in IDLE, Ink's Ctrl+U is line-bound
+        and does NOT cross newlines, so we need one Ctrl+U per logical
+        line plus a Backspace between each pair to delete the joining
+        ``\\n`` and place the cursor at the end of the previous line.
+
+        Returns 0 for an empty buffer.
+        """
+        text = self._stale_buf_text(buf)
+        if not text:
+            return 0
+        return text.count('\n') + 1
+
+    def _clear_stale_cli_input(self, lines: int, rows: int) -> None:
+        """Clear stale CLI input left on the TUI before ``^^`` entry.
+
+        Sends ``End`` (cursor to end of input) followed by N
+        back-to-back Ctrl+Us, where N covers both interpretations
+        of Ink's Ctrl+U behavior plus safety:
+
+        * If Ctrl+U is **line-bound and progresses cursor up after
+          each kill**: N Ctrl+Us clears N logical lines.
+        * If Ctrl+U is **row-bound** (RUNNING-mode streaming): N
+          Ctrl+Us kills N visual rows.
+
+        Either way, ``max(lines, rows) + 3`` Ctrl+Us is enough to
+        clear everything plus margin.  Extra Ctrl+Us on empty input
+        are no-ops in both Ink and Ratatui.
+
+        RUNNING gets a second ``End`` for drop-defense against the
+        streaming render race that can swallow the first.
+        """
+        if lines <= 0 and rows <= 0:
+            return
+        self.pty.send('\x1b[F')  # End: cursor to end of input
+        time.sleep(0.02)
+        if self.state.current_state != CLIState.IDLE:
+            self.pty.send('\x1b[F')  # second End: drop-defense
+            time.sleep(0.02)
+        n = max(lines, rows) + 3
+        self.pty.send('\x15' * n)
         time.sleep(0.03)
 
-    def _capture_flush(self, cancel: bool = False) -> None:
-        """End capture mode: handle stale CLI input, force TUI redraw."""
-        # Handle stale ^ from cross-chunk ^^ entry.
-        if self._capture_stale_caret:
-            self._capture_stale_caret = False
-            if cancel:
-                self.pty.send('\x7f')  # best-effort backspace
-            # On send: _send_to_cli's Ctrl+C clears the full line.
-        # On cancel (Escape/Ctrl+C), discard the stale count so the
-        # text stays on the CLI — the user wants to keep it.
-        if cancel:
-            self._capture_stale_char_count = 0
-        # Clear pending caret so a single ^ after exit doesn't
-        # accidentally trigger capture mode.
-        self._pending_caret = False
-        self._queue_capture_mode = False
-        # Force the Ink TUI to do an immediate full-screen repaint.
-        # macOS only sends SIGWINCH when the size actually changes, so
-        # we shrink by one row, let the child handle it, then restore.
-        # Force TUI repaint via deferred SIGWINCH.  Ctrl+U already
-        # cleared stale text in the Enter handler, so the CLI repaints
-        # with clean input.
+    def _trigger_sigwinch_repaint(self) -> None:
+        """Force Ink to do an immediate full-screen repaint via a
+        same-cycle terminal resize.  macOS only sends SIGWINCH when
+        the size actually changes, so we shrink by one row, let the
+        child handle it, then restore.
+
+        Required for Ink to clear visual residue from the [Leap Q]
+        overlay AND to maintain the alternate-screen / full-screen
+        layout — without a SIGWINCH after capture exit, Claude's TUI
+        fragments over the Leap server welcome screen.
+        """
         def _deferred_resize() -> None:
             try:
                 cols, rows = shutil.get_terminal_size(fallback=(80, 24))
@@ -1474,6 +1663,41 @@ class LeapServer:
             except OSError:
                 pass
         threading.Thread(target=_deferred_resize, daemon=True).start()
+
+    def _capture_flush(
+        self, cancel: bool = False, defer_sigwinch: bool = False,
+    ) -> None:
+        """End capture mode: handle stale CLI input, force TUI redraw.
+
+        When ``defer_sigwinch=True`` the SIGWINCH-driven Ink full
+        repaint is NOT fired here.  Instead, ``_send_to_cli`` fires
+        it after the auto-sender's paste-and-submit completes.  This
+        keeps the SIGWINCH-induced render output out of the dispatch
+        window — without that, the render storm keeps Ink emitting
+        bytes that hold ``_wait_for_output_settled`` busy and flip
+        Leap's state tracker to RUNNING (gating dispatch), which
+        adds many seconds of latency to every queued message on a
+        long conversation transcript.
+        """
+        # Handle stale ^ from cross-chunk ^^ entry.
+        if self._capture_stale_caret:
+            self._capture_stale_caret = False
+            if cancel:
+                self.pty.send('\x7f')  # best-effort backspace
+            # On send: _send_to_cli's Ctrl+C clears the full line.
+        # On cancel (Escape/Ctrl+C), discard the stale count so the
+        # text stays on the CLI — the user wants to keep it.
+        if cancel:
+            self._capture_stale_visual_rows = 0
+            self._capture_stale_logical_lines = 0
+        # Clear pending caret so a single ^ after exit doesn't
+        # accidentally trigger capture mode.
+        self._pending_caret = False
+        self._queue_capture_mode = False
+        if defer_sigwinch:
+            self._pending_sigwinch = True
+            return
+        self._trigger_sigwinch_repaint()
 
     def _save_clipboard_image(self) -> Optional[str]:
         """Save clipboard image to disk and return its path.
@@ -1544,7 +1768,9 @@ class LeapServer:
         dispatcher, history) see the full text.  In-place replacement
         preserves ordering with surrounding text and image refs.
         """
-        for placeholder, text in self._paste_text_map.items():
+        # Snapshot via list() — auto-sender thread may GC the dict
+        # concurrently; iterating during mutation raises RuntimeError.
+        for placeholder, text in list(self._paste_text_map.items()):
             message = message.replace(placeholder, text)
         return message
 
@@ -1949,6 +2175,12 @@ class LeapServer:
             self._queue_sending = True
 
         pre_chars = self._capture_pre_chars_sent
+        # Logical lines + visual rows for the cancel slow-path clear.
+        # Compute here (before the thread spawns) so the closure
+        # captures stable values — _capture_pre_input_buf is still
+        # intact at this point (only re-set on the next capture entry).
+        pre_lines = self._stale_logical_lines(self._capture_pre_input_buf)
+        pre_rows = self._stale_visual_rows(self._capture_pre_input_buf)
         # Fast path: if the capture buffer is the initial text
         # surrounded by new prefix/suffix chunks (initial text
         # itself untouched), transfer ONLY the added chunks to the
@@ -2004,7 +2236,7 @@ class LeapServer:
                 # so _clear_stale_cli_input adds N backspaces as an
                 # idempotent fallback.
                 if pre_chars > 0:
-                    self._clear_stale_cli_input(pre_chars)
+                    self._clear_stale_cli_input(pre_lines, pre_rows)
                     time.sleep(0.1)
                 if cancel_text:
                     text_to_send = cancel_text
@@ -2068,12 +2300,25 @@ class LeapServer:
         self._capture_show_hint = True
         self._capture_stale_caret = stale_caret
         # Only count chars actually sent to CLI (not held during RUNNING).
-        self._capture_stale_char_count = (
-            self._chars_sent_to_cli if stale_cli_input else 0
+        # Snapshot pre-capture row + line counts.  Visual rows drive
+        # the walk-up below + RUNNING-mode Ctrl+U sequence; logical
+        # lines drive the IDLE-mode Ctrl+U + Backspace pattern.
+        # Add one per pending Ctrl+V image: those don't appear in
+        # _terminal_input_buf (Ctrl+V outside capture saves the image
+        # to _pending_paste_images without inserting bytes), but the
+        # CLI still rendered an image-attachment row+line for each.
+        n_images = len(self._pending_paste_images)
+        self._capture_stale_visual_rows = (
+            (self._stale_visual_rows() + n_images)
+            if stale_cli_input else 0
+        )
+        self._capture_stale_logical_lines = (
+            (self._stale_logical_lines() + n_images)
+            if stale_cli_input else 0
         )
         self._chars_sent_to_cli = 0
         # tcflush to discard any stale text still in the PTY buffer.
-        if self._capture_stale_char_count > 0:
+        if self._capture_stale_visual_rows > 0:
             try:
                 termios.tcflush(self.pty.process.child_fd,
                                 termios.TCOFLUSH)
@@ -2082,28 +2327,32 @@ class LeapServer:
         self._pending_caret = False
         self._capture_prev_lines = 0
         # Clear the wrap rows that the CLI rendered for the pre-capture
-        # text — without this, a long typed message that wrapped across
-        # multiple terminal rows leaves its upper rows visible above
-        # the [Leap Q] line (which only clears its own current row).
-        # Walk up clearing, then walk back down so _capture_display
-        # below draws on the original cursor row, not the top of the
-        # cleared region.  Use ``cursor_chars // cols`` (NOT
-        # ``+ prompt_offset``) so we never over-clear: at exact
-        # wrap-boundary cases this leaves one residual row, which is
-        # preferable to erasing a row of the conversation transcript
-        # above the input box.
-        if self._capture_stale_char_count > 0:
+        # text — without this, a long typed or pasted message that
+        # spans multiple terminal rows leaves its upper rows visible
+        # above the [Leap Q] line (which only clears its own current
+        # row).  Walk up clearing, then walk back down so
+        # _capture_display below draws on the original cursor row,
+        # not the top of the cleared region.
+        #
+        # ``rows_above`` is the count of visual rows ABOVE the cursor
+        # row, so we subtract 1 from the total visual-row count of the
+        # stale input (the cursor sits on the bottom row).  The
+        # half-viewport safety cap bounds the worst case: a 1000-line
+        # paste can't blank more than half the visible terminal — any
+        # cosmetic over-clear self-heals via the SIGWINCH-triggered
+        # full repaint that ``_capture_flush`` schedules on submit /
+        # cancel.
+        rows_above = max(0, self._capture_stale_visual_rows - 1)
+        if rows_above > 0:
             try:
-                cols = shutil.get_terminal_size(fallback=(80, 24)).columns
-                if cols > 0:
-                    rows_above = self._capture_cursor_pos // cols
-                    if rows_above > 0:
-                        walk_up = '\x1b[A\r\x1b[K' * rows_above
-                        walk_down = f'\x1b[{rows_above}B'
-                        os.write(
-                            sys.stdout.fileno(),
-                            (walk_up + walk_down).encode(),
-                        )
+                term = shutil.get_terminal_size(fallback=(80, 24))
+                rows_above = min(rows_above, max(1, term.lines // 2))
+                walk_up = '\x1b[A\r\x1b[K' * rows_above
+                walk_down = f'\x1b[{rows_above}B'
+                os.write(
+                    sys.stdout.fileno(),
+                    (walk_up + walk_down).encode(),
+                )
             except OSError:
                 pass
         self._saved_msg_index = -1
@@ -2451,14 +2700,37 @@ class LeapServer:
                 if self._capture_image_map:
                     msg = self._capture_resolve_images(msg)
                 if msg:
+                    # Detect REAL RUNNING (an in-flight query the
+                    # user submitted) vs PHANTOM RUNNING (state
+                    # tracker is RUNNING because of paste-echo /
+                    # Ctrl+U render / cursor blink, but no actual
+                    # query is being processed).  ``_query_in_flight``
+                    # is set True only on ``on_send`` (Leap-dispatched
+                    # message) and ``on_input`` Enter (real Enter into
+                    # Claude's input) — NOT on paste echoes.  The
+                    # auto-sender resets it whenever it observes a
+                    # transition to IDLE, so its value here is the
+                    # clean "is there a real query running?" signal.
+                    has_real_query = (
+                        self.state.current_state != CLIState.IDLE
+                        and self.state._query_in_flight
+                    )
                     # Clear stale text typed before ^^.
-                    if self._capture_stale_char_count > 0:
+                    if self._capture_stale_visual_rows > 0:
                         self._clear_stale_cli_input(
-                            self._capture_stale_char_count)
-                        self._capture_stale_char_count = 0
+                            self._capture_stale_logical_lines,
+                            self._capture_stale_visual_rows)
+                        self._capture_stale_visual_rows = 0
+                        self._capture_stale_logical_lines = 0
                     self._send_clear_queue.append(False)
                     self.queue.add(msg)
-                    self._capture_flush()
+                    if not has_real_query:
+                        self._capture_force_dispatch = True
+                    self._dispatch_wake.set()
+                    # Defer SIGWINCH so its Ink full repaint doesn't
+                    # block the dispatch's paste-and-submit; ``_send_to_cli``
+                    # fires the resize itself once the message is on its way.
+                    self._capture_flush(defer_sigwinch=True)
                 else:
                     # Empty Enter — clear stale text unconditionally.
                     # This path is reached when the user saved their
@@ -2466,15 +2738,17 @@ class LeapServer:
                     # the buffer): their original typed text is already
                     # in history, so leaving it on the CLI input line
                     # would just be misleading.
-                    if self._capture_stale_char_count > 0:
+                    if self._capture_stale_visual_rows > 0:
                         try:
                             termios.tcflush(self.pty.process.child_fd,
                                             termios.TCOFLUSH)
                         except Exception:
                             pass
                         self._clear_stale_cli_input(
-                            self._capture_stale_char_count)
-                        self._capture_stale_char_count = 0
+                            self._capture_stale_logical_lines,
+                            self._capture_stale_visual_rows)
+                        self._capture_stale_visual_rows = 0
+                        self._capture_stale_logical_lines = 0
                     self._capture_flush()
                 self._queue_capture_buf.clear()
                 self._capture_cursor_pos = 0
@@ -2827,6 +3101,21 @@ class LeapServer:
                         self._pending_paste_images.append(
                             (self._terminal_input_cursor, path))
                     out.extend(esc_seq)
+                elif (not in_prompt
+                      and not chunk_has_paste
+                      and self._is_csi_u_newline(esc_seq)):
+                    # CSI-u Shift/Cmd+Enter outside capture — the
+                    # CLI's TUI inserts a newline in its input box,
+                    # but the raw escape leaves no trace in
+                    # ``_terminal_input_buf``.  Mirror it as a literal
+                    # ``\n`` at the cursor so ``_stale_visual_rows``
+                    # counts the wrap correctly when the user later
+                    # types ^^ — otherwise multi-line typed input
+                    # (especially mixed with Ctrl+V images) under-
+                    # counts visual rows and leaves residue on Enter.
+                    self._terminal_buf_insert(0x0a)
+                    self._chars_sent_to_cli += 1
+                    out.extend(esc_seq)
                 else:
                     # Mirror cursor motion escapes so our
                     # _terminal_input_buf stays in sync with Claude.
@@ -2958,6 +3247,7 @@ class LeapServer:
                 # across Enter presses causes them to silently
                 # accumulate and get injected into a later ^^ message.
                 self._pending_paste_images.clear()
+                self._gc_paste_text_map()
                 out.append(b)
             elif b == 0x7f:  # Backspace
                 self._terminal_buf_backspace()
@@ -2971,6 +3261,7 @@ class LeapServer:
                 self._preserved_input_buf.clear()
                 self._preserved_chars_sent = 0
                 self._pending_paste_images.clear()
+                self._gc_paste_text_map()
                 out.append(b)
             elif b == 0x16:  # Ctrl+V — save clipboard image for next ^^
                 if not chunk_has_paste:
