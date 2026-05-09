@@ -39,6 +39,7 @@ from PyQt5.QtSvg import QSvgRenderer
 
 from leap.cli_providers.states import CLIState
 from leap.monitor.dialogs.settings_dialog import detect_default_difftool
+from leap.monitor.dialogs.whats_new_dialog import WhatsNewDialog
 from leap.monitor.permissions import (
     check_accessibility, check_notifications,
     prompt_accessibility, prompt_notifications,
@@ -1016,6 +1017,12 @@ class MonitorWindow(
         self._update_text_label.setWordWrap(True)
         row.addWidget(self._update_text_label, 1, Qt.AlignVCenter)
 
+        self._whats_new_btn = QPushButton("See what's new")
+        self._whats_new_btn.setObjectName('_leapWhatsNewBtn')
+        self._whats_new_btn.setToolTip("Show the commits you'll pull in on next update")
+        self._whats_new_btn.clicked.connect(self._on_whats_new_clicked)
+        row.addWidget(self._whats_new_btn, 0, Qt.AlignVCenter)
+
         self._update_btn = QPushButton('Update')
         self._update_btn.setObjectName('_leapUpdateBtn')
         self._update_btn.setToolTip('Open a terminal and run leap --update')
@@ -1054,6 +1061,16 @@ class MonitorWindow(
             f"#_leapUpdateBtn:hover {{"
             f"  background-color: rgba(76, 175, 80, 0.18);"
             f"}}"
+            f"#_leapWhatsNewBtn {{"
+            f"  color: {t.accent_green};"
+            f"  background: transparent;"
+            f"  border: 1px solid {t.accent_green};"
+            f"  border-radius: {t.border_radius}px;"
+            f"  padding: 4px 12px;"
+            f"}}"
+            f"#_leapWhatsNewBtn:hover {{"
+            f"  background-color: rgba(76, 175, 80, 0.18);"
+            f"}}"
         )
 
     def _run_update_check(self) -> None:
@@ -1089,6 +1106,14 @@ class MonitorWindow(
         """Open the user's configured terminal and run leap --update."""
         terminal = self._prefs.get('default_terminal', '')
         open_terminal_with_command('leap --update', preferred_ide=terminal or None)
+
+    def _on_whats_new_clicked(self) -> None:
+        """Show the list of commits in HEAD..origin/main."""
+        repo_path = os.environ.get('LEAP_PROJECT_DIR', '')
+        if not repo_path or not os.path.isdir(os.path.join(repo_path, '.git')):
+            return
+        dlg = WhatsNewDialog(repo_path, parent=self)
+        dlg.exec_()
 
     # ------------------------------------------------------------------
     #  Core utilities

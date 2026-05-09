@@ -90,13 +90,14 @@ class _CommitItemWidget(QWidget):
         commit_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(commit_label)
 
-        # Line 2: Author
-        author_label = QLabel(
-            f'<span style="color: {t.text_secondary}; font-family: {mono};">'
-            f'Author: {author_name} &lt;{author_email}&gt;</span>'
-        )
-        author_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(author_label)
+        # Line 2: Author (skipped when author_name is empty)
+        if author_name:
+            author_label = QLabel(
+                f'<span style="color: {t.text_secondary}; font-family: {mono};">'
+                f'Author: {author_name} &lt;{author_email}&gt;</span>'
+            )
+            author_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            layout.addWidget(author_label)
 
         # Line 3: Date (absolute + relative)
         date_label = QLabel(
@@ -125,6 +126,10 @@ class _CommitItemWidget(QWidget):
             files_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             files_label.setContentsMargins(16, 2, 0, 0)
             layout.addWidget(files_label)
+
+        # Absorb any leftover vertical space at the bottom so QVBoxLayout
+        # doesn't redistribute it as gaps between rich-text labels.
+        layout.addStretch()
 
         # Compute true width from richtext labels for proper horizontal scroll
         margins = layout.contentsMargins()

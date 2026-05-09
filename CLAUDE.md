@@ -115,6 +115,7 @@ src/
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
     │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)
+    │   │   ├── whats_new_dialog.py    # Read-only "See what's new" dialog — lists commits in `HEAD..origin/main` with sha/refs/date/subject/body. Reuses `_CommitItemWidget` from `git_changes_dialog.py` (passes empty author + empty files). Reachable from the new "See what's new" button in the update-available banner (next to "Update")
     │   │   ├── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders. The `NotesDialog` class itself; helpers + sub-widgets live in `notes/` sub-package and are re-exported here for backward-compat.
     │   │   ├── notes_undo.py          # Undo/redo command-pattern stack for the Notes dialog (separate file from notes/ sub-package — predates the split; tests live in tests/unit/test_notes_undo.py)
     │   │   └── notes/                 # Notes-dialog sub-package (extracted from notes_dialog.py)
@@ -193,6 +194,7 @@ assets/
 | `detect_supported_ide_for_move()` | `monitor/navigation.py` | Classify a user-picked `.app` for the Move-to-IDE flow. Returns `'JetBrains'` for any JetBrains-family bundle (PyCharm, IntelliJ, GoLand, …, Android Studio), `'VS Code'` for `Visual Studio Code(*)`. Anything else (Sublime, Xcode, Arduino, Cursor) returns `None` — caller falls back to the legacy "just open the .app" behaviour. |
 | `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
 | `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison |
+| `WhatsNewDialog` | `monitor/dialogs/whats_new_dialog.py` | Read-only viewer launched from the "See what's new" button in the update banner. Runs `git log HEAD..origin/main` with `%h%H%an%ae%ad%ar%s%D%b` and renders each commit via `_CommitItemWidget` (with `author_name=''` so the Author line is suppressed; `files=[]` so the file list is suppressed). Body text is appended to the subject as HTML so it renders in normal weight + secondary color under the bold subject. Geometry persisted under `whats_new`; zoom under `whats_new_font_size` / `whats_new_text_font_size`. |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
 | `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders. "Flatten indent on paste" toolbar checkbox (persisted as `notes_flatten_on_paste`, default ON) controls whether pasted text is dedented to col 0 — applies to both the text editor and the checklist popup editors |
