@@ -100,6 +100,7 @@ COLORS: Final[dict[str, str]] = {
     "yellow": "\033[33m",
     "green": "\033[32m",
     "red": "\033[31m",
+    "cyan": "\033[36m",
     "reset": "\033[0m",
 }
 

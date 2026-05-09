@@ -10,8 +10,7 @@ Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any t
 - **Real-time GUI monitoring** — See all sessions, jump across IDEs and projects
 - **PR tracking** — GitLab & GitHub comment detection with `/leap` tag support
 - **Slack integration** — Bidirectional messaging between Slack and Leap sessions
-- **Prevent sleep while busy** — Optional toolbar checkbox keeps your Mac awake while any session is Running, releases automatically once everything's been idle for 30 s. An admin-flavoured sub-option also blocks lid-close sleep.
-- **Zoom anywhere** — `Cmd+Scroll` or `Cmd+±/0` zooms the area under your mouse independently (text, buttons, sidebar, tooltips, popups).
+- **Prevent sleep while busy** — Mac stays awake until every session is idle (optional lid-close override)
 
 ## Installation
 

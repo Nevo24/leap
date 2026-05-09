@@ -24,10 +24,10 @@ leap --reconfigure               # After installing a new CLI/IDE/terminal post-
 src/
 ├── scripts/                     # Entry point scripts
 │   ├── leap-main.sh          # Main launcher (called by 'leap' command)
-│   ├── leap-resume.py        # `leap --resume` picker — CLI-agnostic; each row is shown as `[cli] tag` and resumes via the provider's `resume_args(id)`. Two modes: **interactive** (default) opens the arrow-key tag picker → optional session sub-picker; **pre-pick** (`--cli=… --tag=… --session=…`, used by the GUI) skips the picker and runs only the post-pick steps. After the pick, when `provider.requires_cwd_bound_resume` is True (Claude/Gemini/Cursor) and the recorded cwd differs from the current shell cwd, prompts the user to choose between `Original directory` (chdir to recorded) and `Current directory` (calls `provider.relocate_session(...)` so the transcript ends up at the new cwd's slug). Skipped when the cwds already match or for non-cwd-bound CLIs (Codex).
-│   ├── leap-hook-process.py  # Hook processor invoked by `leap-hook.sh`; shared across all CLIs. Handles stdin parsing, session recording via `provider.extract_session_id()`, and last-assistant-message extraction for Slack
+│   ├── leap-resume.py        # `leap --resume` picker (interactive + pre-pick GUI modes; cwd-choice for cwd-bound CLIs)
+│   ├── leap-hook-process.py  # Hook processor (session recording, Slack last-message extraction)
 │   ├── leap-cleanup.sh       # Dead session cleanup
-│   ├── _leap                 # zsh completion for user-facing flags (conditional --slack)
+│   ├── _leap                 # zsh completion for user-facing flags
 │   ├── leap-server.py        # Thin launcher → LeapServer
 │   ├── leap-client.py        # Thin launcher → LeapClient
 │   ├── leap-monitor.py       # Thin launcher → MonitorWindow
@@ -36,8 +36,8 @@ src/
 │   ├── setup-slack-app.sh       # Interactive Slack app setup wizard
 │   ├── configure_jetbrains_xml.py   # JetBrains IDE auto-configuration
 │   ├── configure_hooks.py           # Unified hook config (delegates to provider.configure_hooks())
-│   ├── configure_claude_hooks.py    # Legacy Claude hook config (kept for reference)
-│   ├── configure_codex_hooks.py     # Legacy Codex hook config (kept for reference)
+│   ├── configure_claude_hooks.py    # Legacy Claude hook config
+│   ├── configure_codex_hooks.py     # Legacy Codex hook config
 │   └── leap-hook.sh             # CLI hook script (writes state to signal file)
 │
 └── leap/                     # Main Python package
@@ -58,14 +58,14 @@ src/
     │   ├── constants.py         # QUEUE_DIR, SOCKET_DIR, timing, colors, is_valid_tag()
     │   ├── terminal.py          # Terminal title, banner
     │   ├── ide_detection.py     # IDE detection, git branch
-    │   ├── line_buffer.py       # Cursor-aware line editing buffer (used by raw-terminal input prompts)
-    │   ├── menu.py              # `MENU_OPTION_RE` + `extract_menu_options()` — single source of truth for parsing numbered TUI menus from corrupted pyte snapshots; used by both server (auto-approve / select_option) and monitor (right-click options menu)
+    │   ├── line_buffer.py       # Cursor-aware line editing buffer (raw-terminal prompts)
+    │   ├── menu.py              # Numbered-menu parser (extract_menu_options, shared by server + monitor)
     │   ├── socket_utils.py      # Shared Unix socket send/recv helper
-    │   ├── resume_store.py      # Shared read/write/prune of `cli_sessions/<cli>/<tag>.json` (used by hook + picker); plus `relocate_records()` for rewriting transcript paths after a cross-cwd move and a provider-staleness pass that calls `provider.session_exists(...)` to drop records pointing at on-disk state that's been deleted (used today for Cursor's empty-`transcript_path` records)
-    │   ├── relocation.py        # Shared primitives for cross-cwd session relocation: `RelocationError`, `signals_blocked` context manager (blocks SIGINT/SIGTERM/SIGHUP/SIGQUIT/SIGTSTP via `pthread_sigmask`), `stage_copy_file/_tree` (copy + fsync + SHA-256 verify), `commit_file/_tree` (atomic rename), `verify_files/trees_match`, `snapshot_tree`/`stat_snapshot` (rogue-writer detection), `must_remove_tree` (raises on failure with "both copies exist" message), `best_effort_remove`, `make_tmp_path`. Used by the three per-CLI movers below — single source of truth so the safety properties (source intact until dst verified, signals blocked, atomic commit) don't drift across CLIs
-    │   ├── claude_session_move.py  # Claude-specific: relocates `~/.claude/projects/<slug>/<uuid>.jsonl` (+ optional `<uuid>/` sidecar dir) across cwds; orchestrates the primitives in `relocation.py`
-    │   ├── gemini_session_move.py  # Gemini-specific: relocates `~/.gemini/tmp/<slug>/chats/session-…jsonl` and updates `~/.gemini/projects.json` registry; computes new slug via Gemini's exact `slugify(basename(cwd))` algorithm with `-1`/`-2`/… disambiguation; locates source by parsing first-line `sessionId` (filename only embeds 8-char prefix)
-    │   └── cursor_session_move.py  # Cursor-specific: relocates `~/.cursor/chats/<MD5(cwd)>/<chatId>/` (whole directory tree) across cwds; `find_chat_dir()` falls back to scanning every project hash dir when MD5(recorded_cwd) doesn't match (cursor's workspace-root walk may have hashed a parent of the recorded cwd)
+    │   ├── resume_store.py      # Read/write/prune of cli_sessions/<cli>/<tag>.json (used by hook + picker)
+    │   ├── relocation.py        # Shared primitives for cross-cwd session moves (signals_blocked, stage/commit, verify, snapshots)
+    │   ├── claude_session_move.py  # Claude cross-cwd move (jsonl + optional sidecar dir)
+    │   ├── gemini_session_move.py  # Gemini cross-cwd move (jsonl + projects.json registry)
+    │   └── cursor_session_move.py  # Cursor cross-cwd move (whole chat directory tree)
     │
     ├── server/                  # PTY Server
     │   ├── server.py            # LeapServer - main orchestrator
@@ -85,16 +85,16 @@ src/
     │   ├── server_launcher.py   # PR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers
-    │   ├── leap_sender.py         # Socket sender for /leap commands + message bundles
+    │   ├── leap_sender.py       # Socket sender for /leap commands + message bundles
     │   ├── navigation.py        # IDE terminal navigation
     │   ├── monitor_utils.py     # Utilities (icon finder, lock removal)
     │   ├── themes.py            # Visual theme definitions (9 built-in themes, manager API)
-    │   ├── permissions.py       # macOS Accessibility + Notifications checks; live state via AXIsProcessTrusted and ncprefs.plist bit 25
-    │   ├── sleep_guard.py       # `SleepGuard` (caffeinate -i -w <pid> child) + `LidCloseGuard` (sudo pmset -a disablesleep 1/0). Drives the toolbar's "Prevent sleep while busy" + "Also block lid-close (admin)" checkboxes. Both are evaluator-driven: any session in RUNNING state activates them; once every session has been out of RUNNING for ≥30 s, both release. Marker file `.storage/disablesleep.marker` survives crashes so next launch can recover the kernel state.
-    │   ├── sudo_manager.py      # Persists the user's sudo password to `.storage/sudo_pass.b64` (mode 0600, base64-encoded — NOT encrypted) so `LidCloseGuard` can run pmset silently. `verify()` invalidates cached creds via `sudo -k` then validates via `sudo -S -v`. `is_auth_failure()` distinguishes "wrong password" (re-prompt) from sudoers / permissions errors (don't re-prompt). Password file is dropped the moment the lid-close checkbox is unticked.
+    │   ├── permissions.py       # macOS Accessibility + Notifications permission checks
+    │   ├── sleep_guard.py       # SleepGuard (caffeinate) + LidCloseGuard (pmset disablesleep)
+    │   ├── sudo_manager.py      # Saved sudo password for LidCloseGuard (.storage/sudo_pass.b64, base64 mode 0600)
     │   │
     │   ├── _mixins/             # MonitorWindow mixin classes
-    │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open Terminal/IDE, with Move-to-IDE prompt for JetBrains/VS Code that closes the running server and resumes the session in the IDE's integrated terminal)
+    │   │   ├── actions_menu_mixin.py  # Git menu (branch col) + Path menu (Open in Terminal/IDE, Move-to-IDE)
     │   │   ├── scm_config_mixin.py    # SCM provider init, setup dialogs, toggles
     │   │   ├── session_mixin.py       # Session merge, navigate, close, delete
     │   │   ├── pr_tracking_mixin.py   # PR tracking, polling, thread send, add-row
@@ -104,32 +104,32 @@ src/
     │   │
     │   ├── dialogs/             # Dialog windows
     │   │   ├── git_changes_dialog.py  # Git diff viewer (local, commit, vs main)
-    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, new change indicator, cleanup)
+    │   │   ├── settings_dialog.py     # Settings (terminal, repos dir, diff tool, etc.)
     │   │   ├── notifications_dialog.py # Per-type notification config (dock/banner)
-    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog (URL hidden behind "Self-hosted" toggle; Save / Connect-Disconnect / Cancel buttons)
+    │   │   ├── scm_setup_dialog.py    # Abstract SCM setup base dialog
     │   │   ├── gitlab_setup_dialog.py # GitLab connection dialog
     │   │   ├── github_setup_dialog.py # GitHub connection dialog
     │   │   ├── scm_template_dialog.py # Preset editor dialog (PR context + message bundles)
     │   │   ├── add_local_dialog.py    # Add session from local path dialog
-    │   │   ├── resume_session_dialog.py # GUI counterpart of `leap --resume` — *picking-only* dialog. Tag-level table (one row per `(cli, tag)`); tags with multiple sessions open `_TagSessionPicker` sub-dialog. Search filter prioritises tag/CLI matches over working-directory matches; rows newest-first within each bucket. Returns `(cli, tag, SessionRecord)`. Caller (`_add_row_from_resume`) does the already-running popup, then spawns `leap --resume --cli=… --tag=… --session=…` in a new terminal — cwd-choice and provider hand-off happen there.
+    │   │   ├── resume_session_dialog.py # GUI `leap --resume` picker (returns (cli, tag, SessionRecord))
     │   │   ├── branch_picker_dialog.py # Branch picker for git difftool comparison
     │   │   ├── queue_edit_dialog.py   # Queue message editor dialog
     │   │   ├── send_comments_dialog.py # PR comments picker (filter / mode / context-preset)
-    │   │   ├── whats_new_dialog.py    # Read-only "See what's new" dialog — lists commits in `HEAD..origin/main` with sha/refs/date/subject/body. Reuses `_CommitItemWidget` from `git_changes_dialog.py` (passes empty author + empty files). Reachable from the new "See what's new" button in the update-available banner (next to "Update")
-    │   │   ├── notes_dialog.py        # Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders. The `NotesDialog` class itself; helpers + sub-widgets live in `notes/` sub-package and are re-exported here for backward-compat.
-    │   │   ├── notes_undo.py          # Undo/redo command-pattern stack for the Notes dialog (separate file from notes/ sub-package — predates the split; tests live in tests/unit/test_notes_undo.py)
-    │   │   └── notes/                 # Notes-dialog sub-package (extracted from notes_dialog.py)
+    │   │   ├── whats_new_dialog.py    # "See what's new" dialog (lists HEAD..origin/main commits)
+    │   │   ├── notes_dialog.py        # NotesDialog class (helpers in notes/ sub-package)
+    │   │   ├── notes_undo.py          # Undo/redo command-pattern stack for Notes dialog
+    │   │   └── notes/                 # Notes-dialog sub-package
     │   │       ├── __init__.py             # Package skeleton
-    │   │       ├── rtl.py                  # `_text_is_rtl`, `_apply_rtl_direction` — directional-text detection for QLineEdits
-    │   │       ├── persistence.py          # FS-touching helpers: note paths, listing, mtime, `_NOTES_META_FILE`, mode get/set, rename/remove meta
-    │   │       ├── ordering.py             # `_load/_save_order`, folder-meta + per-folder child ordering (`_order` key in notes meta JSON)
-    │   │       ├── text_helpers.py         # Markdown link / STX-ETX bold helpers + `_UrlHighlighter` syntax highlighter; pure position-math functions for display↔raw conversion
-    │   │       ├── image_helpers.py        # `_save_note_image`, `_collect_image_refs`, `_cleanup_orphaned_images`, `_ImagePreviewPopup`, `_IMAGE_MARKER_RE`, `_CHECKLIST_PLACEHOLDER_RE`
-    │   │       ├── note_text_edit.py       # `_NoteTextEdit` rich editor (image paste, link rendering, Cmd+B/C); plus `_setup_textedit_url_click` / `_setup_textedit_image_hover` for monkey-patching other QTextEdits
-    │   │       ├── checklist_io.py         # `_parse_checklist` / `_serialize_checklist` round-trip for the on-disk checklist format
-    │   │       ├── checklist_widgets.py    # `_ItemLineEdit` + `_DragGrip` + `_ChecklistItemWidget` + `_ChecklistWidget` — Google Keep-style checklist editor (one file because the four classes have bidirectional inter-references)
-    │   │       ├── tree_widget.py          # `_NotesTreeWidget` — left-panel QTreeWidget with custom drag-drop interception
-    │   │       └── session_picker.py       # `_SessionPickerDialog` — modal picker for the "Run in Session" action
+    │   │       ├── rtl.py                  # Directional-text detection for QLineEdits
+    │   │       ├── persistence.py          # FS helpers (note paths, listing, mtime, meta)
+    │   │       ├── ordering.py             # Folder + per-folder child ordering
+    │   │       ├── text_helpers.py         # Markdown link/bold helpers + URL highlighter
+    │   │       ├── image_helpers.py        # Note-image save / refs / cleanup / preview popup
+    │   │       ├── note_text_edit.py       # _NoteTextEdit rich editor (image paste, links, Cmd+B/C)
+    │   │       ├── checklist_io.py         # _parse_checklist / _serialize_checklist round-trip
+    │   │       ├── checklist_widgets.py    # Google Keep-style checklist editor (4 inter-referencing classes)
+    │   │       ├── tree_widget.py          # _NotesTreeWidget — left-panel QTreeWidget with custom DnD
+    │   │       └── session_picker.py       # _SessionPickerDialog — modal picker for "Run in Session"
     │   │
     │   ├── ui/                  # UI components
     │   │   ├── ui_widgets.py    # PulsingLabel, IndicatorLabel
@@ -190,45 +190,45 @@ assets/
 | `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow |
 | `GitLabProvider` | `monitor/pr_tracking/gitlab_provider.py` | GitLab PR thread tracking + user notifications |
 | `GitHubProvider` | `monitor/pr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
-| `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu (branch col) + Path menu (Open in Terminal/Open in IDE). For JetBrains-family or VS Code .apps, "Open in IDE" shows a 3-button popup (`[Cancel] [Only Open IDE] [Open IDE + Move session]`). Move closes the running server (same path as the row's X button via `_close_server(..., _from_delete=True, on_done=...)`) then opens the IDE on `project_path` and runs `leap <tag>` in the IDE's integrated terminal — with `LEAP_RESUME_SESSION_ID` / `LEAP_RESUME_CLI` / `LEAP_CLI` env vars when a transcript record exists for the tag, or a fresh server when no record exists. |
-| `detect_supported_ide_for_move()` | `monitor/navigation.py` | Classify a user-picked `.app` for the Move-to-IDE flow. Returns `'JetBrains'` for any JetBrains-family bundle (PyCharm, IntelliJ, GoLand, …, Android Studio), `'VS Code'` for `Visual Studio Code(*)`. Anything else (Sublime, Xcode, Arduino, Cursor) returns `None` — caller falls back to the legacy "just open the .app" behaviour. |
+| `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu + Path menu (Open in Terminal / Open in IDE / Move session to IDE) |
+| `detect_supported_ide_for_move()` | `monitor/navigation.py` | Classify a `.app` for Move-to-IDE: `'JetBrains'` / `'VS Code'` / `None` |
 | `GitChangesDialog` | `monitor/dialogs/git_changes_dialog.py` | Git diff viewer (local, commit, vs main) |
-| `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison. Each row has an "ⓘ More info" button that lazy-fetches the full commit body (`git show -s --format=%B <sha>`, cached per row) and shows it in a `QMessageBox`. |
-| `WhatsNewDialog` | `monitor/dialogs/whats_new_dialog.py` | Read-only viewer launched from the "See what's new" button in the update banner. Runs `git log HEAD..origin/main` with `%h%H%an%ae%ad%ar%s%D%b` and renders each commit via `_CommitItemWidget` (with `author_name=''` so the Author line is suppressed; `files=[]` so the file list is suppressed). Body text is appended to the subject as HTML so it renders in normal weight + secondary color under the bold subject. Geometry persisted under `whats_new`; zoom under `whats_new_font_size` / `whats_new_text_font_size`. |
+| `CommitListDialog` | `monitor/dialogs/git_changes_dialog.py` | Commit picker for diff comparison (More-info button lazy-fetches full body) |
+| `WhatsNewDialog` | `monitor/dialogs/whats_new_dialog.py` | Read-only commit viewer for `HEAD..origin/main`, launched from update banner |
 | `BranchPickerDialog` | `monitor/dialogs/branch_picker_dialog.py` | Branch picker for difftool comparison |
 | `QueueEditDialog` | `monitor/dialogs/queue_edit_dialog.py` | View/edit queued messages for a session |
-| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folder tree, search (title+content), text/checklist, DnD reorder, save as preset, run in session; created/modified dates for notes and folders. "Flatten indent on paste" toolbar checkbox (persisted as `notes_flatten_on_paste`, default ON) controls whether pasted text is dedented to col 0 — applies to both the text editor and the checklist popup editors |
+| `NotesDialog` | `monitor/dialogs/notes_dialog.py` | Notes with folders, search, text/checklist, DnD reorder, save as preset, run in session |
 | `ImageTextEdit` | `monitor/ui/image_text_edit.py` | QTextEdit with clipboard image paste → `[Image #N]` placeholders |
 | `SendMessageDialog` | `monitor/ui/image_text_edit.py` | Message dialog with image paste + Next/To-End queue-position toggle |
 | `SendPresetDialog` | `monitor/ui/image_text_edit.py` | Picker for a message-bundle preset + Next/To-End queue-position toggle |
-| `SendCommentsDialog` | `monitor/dialogs/send_comments_dialog.py` | PR-comments picker: filter (all / /leap-tagged — hidden entirely when `auto_fetch_leap` is on), mode (each / combined), context preset |
-| `ResumeSessionDialog` | `monitor/dialogs/resume_session_dialog.py` | GUI counterpart of `leap --resume` — *picking only*. Tag-level table over `load_tag_rows(STORAGE_DIR)`, search filter (tag/CLI bucket DESC then cwd bucket DESC), one row per `(cli, tag)` with `N sessions` shown when >1; multi-session tags open `_TagSessionPicker` (sub-dialog with explicit newest-first sort). Returns `(cli, tag, SessionRecord)`. Caller spawns a terminal running `leap --resume --cli=… --tag=… --session=…` so the user finishes the flow there. |
-| `_TagSessionPicker` | `monitor/dialogs/resume_session_dialog.py` | Sub-dialog opened when the picked tag has more than one recorded session. Newest-first table, own geometry/zoom keys (`resume_tag_sessions_*`). Returns the chosen `SessionRecord`; cancelling bounces back to the parent picker. |
-| `SCMSetupDialog` | `monitor/dialogs/scm_setup_dialog.py` | Base class. Three actions: **Save** (persist fields, preserves `username`), **Connect/Disconnect** (toggle button — Connect validates+saves everything incl. `username`; Disconnect clears only `username`), **Cancel** (no writes) |
+| `SendCommentsDialog` | `monitor/dialogs/send_comments_dialog.py` | PR-comments picker (filter / mode / context preset) |
+| `ResumeSessionDialog` | `monitor/dialogs/resume_session_dialog.py` | GUI `leap --resume` picker — returns `(cli, tag, SessionRecord)` |
+| `_TagSessionPicker` | `monitor/dialogs/resume_session_dialog.py` | Sub-dialog for tags with >1 recorded session |
+| `SCMSetupDialog` | `monitor/dialogs/scm_setup_dialog.py` | Abstract base: Save / Connect-Disconnect / Cancel actions |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (9 built-in themes) |
 | `ensure_contrast()` | `monitor/themes.py` | WCAG contrast safety-net (returns black/white if ratio < 4.5:1) |
-| `SleepGuard` | `monitor/sleep_guard.py` | Holds a `caffeinate -i -w <monitor-pid>` child while active. `-w` makes the kernel auto-release the assertion when the monitor process dies, so a crash / `kill -9` / `os._exit` can't leave the Mac stuck awake. `start()` / `stop()` / `is_active` are idempotent. Spawn failure (binary missing, permission denied) degrades silently — checkbox does nothing rather than breaking the monitor. |
-| `LidCloseGuard` | `monitor/sleep_guard.py` | Optional companion to `SleepGuard` that ALSO blocks lid-close sleep via `sudo pmset -a disablesleep 1/0`. Each call goes through `SudoManager.run` with the user's saved password. Writes `.storage/disablesleep.marker` on `start()`, removes it on `stop()` — the marker survives a crashed monitor so the next launch's recovery can clean up the kernel state. `force_inactive()` is the give-up path (clears local state + marker without running pmset; used when the user cancels the re-auth dialog or pmset keeps failing for non-auth reasons). |
-| `SudoManager` | `monitor/sudo_manager.py` | Static helpers for the saved sudo password: `has_saved` / `load` / `save` / `clear` / `verify` / `run` / `is_auth_failure` / `password_path`. Persists to `.storage/sudo_pass.b64` (mode 0600 via `os.open(O_CREAT, 0o600)`, base64 — *not* encrypted; honest threat model is "decoded if anyone reads .storage", same as plain text). `verify` does `sudo -k` first to invalidate the per-user timestamp so we always re-validate the password we just got. `is_auth_failure` distinguishes "wrong password" (re-prompt is appropriate) from sudoers / permissions errors (re-prompt won't help — give up instead). |
+| `SleepGuard` | `monitor/sleep_guard.py` | Holds `caffeinate -i -w <monitor-pid>` child while any session is RUNNING |
+| `LidCloseGuard` | `monitor/sleep_guard.py` | Optional companion to SleepGuard — also runs `sudo pmset -a disablesleep 1/0` |
+| `SudoManager` | `monitor/sudo_manager.py` | Saved sudo password helpers (`.storage/sudo_pass.b64`, base64 mode 0600) |
 | `SlackBot` | `slack/bot.py` | Main Slack bot (Socket Mode + event handlers) |
 | `OutputCapture` | `slack/output_capture.py` | Read hook response from signal file, write .last_response |
-| `LineBuffer` | `utils/line_buffer.py` | Cursor-aware line editing buffer (insert, delete, move, home/end, delete-word) used by raw-terminal prompts |
-| `extract_menu_options()` | `utils/menu.py` | Numbered-menu parser shared by server auto-approve and monitor permission menu — tolerates pyte snapshot corruption (missing periods, garbage cursor prefixes) |
-| `relocation.py` primitives | `utils/relocation.py` | Shared cross-cwd session-relocation building blocks used by every per-CLI mover: `RelocationError`, `signals_blocked` context manager (blocks SIGINT/SIGTERM/SIGHUP/SIGQUIT/SIGTSTP via `pthread_sigmask`), `stage_copy_file/_tree` (copy + fsync + SHA-256 verify, cleans up tmp on failure), `commit_file/_tree` (atomic rename, raises on failure), `verify_files/trees_match`, `snapshot_tree`/`stat_snapshot` (rogue-writer detection), `must_remove_tree` (raises with "both copies exist" message — distinct from `best_effort_remove` which is for cleanup paths), `make_tmp_path`. Single source of truth so the per-CLI movers can't drift apart on safety guarantees. |
-| `relocate_claude_session()` | `utils/claude_session_move.py` | Claude orchestrator atop `relocation.py` primitives: relocates `~/.claude/projects/<slug>/<uuid>.jsonl` plus optional `<uuid>/` sidecar dir; pre-flight slug-encoding sanity check; rogue-writer stat-snapshot guards on both file and sidecar before delete; rolls back JSONL commit if sidecar rename fails; case-insensitive-FS defense via `samefile`. Returns the new transcript path. |
-| `relocate_gemini_session()` | `utils/gemini_session_move.py` | Gemini orchestrator atop `relocation.py` primitives: locates source by parsing first-line `sessionId` of each `session-…jsonl` candidate (filename only embeds 8-char prefix, can collide); claims a fresh dst slug via Gemini's exact `slugify(basename(cwd))` algorithm (lowercase, `[^a-z0-9]→'-'`, collapse `-+`, strip, fallback `'project'`) with `-1`/`-2`/… disambiguation against existing dirs and registry values; atomically updates `~/.gemini/projects.json`; rolls back the dst file commit if the registry write fails. Returns `None` when src cwd isn't in the registry (caller falls back to chdir). |
-| `relocate_cursor_session()` | `utils/cursor_session_move.py` | Cursor orchestrator atop `relocation.py` primitives: relocates the whole `~/.cursor/chats/<MD5(cwd)>/<chatId>/` directory tree across cwds; `find_chat_dir(session_id, prefer_cwd=…)` first tries `MD5(prefer_cwd)`, then falls back to scanning every project hash dir for the chat id (cursor-agent's workspace-root walk may have hashed a parent of the recorded cwd, so the chat may not actually live under MD5(recorded_cwd)); same rogue-writer snapshot guard as Claude's sidecar; prunes empty src project hash dir after move (best-effort). Also exposed for read-only "does this chat still exist?" checks via `CursorAgentProvider.session_exists`. |
-| `relocate_records()` | `utils/resume_store.py` | Walks every `cli_sessions/<cli>/*.json` and rewrites entries whose `transcript_path` matches the old path, without bumping `last_seen` (the SessionStart hook does that on the next resume). Atomic per-file. |
-| `CLIProvider.requires_cwd_bound_resume` | `cli_providers/base.py` | Property — `True` for CLIs whose storage is cwd-derived (Claude, Gemini, Cursor) so `<cli> --resume <id>` only finds the session under the matching cwd. `False` (default) for Codex which keys sessions by UUID alone. Drives whether `leap-resume.py` shows the "Original / Current" cwd-choice prompt. |
-| `CLIProvider.session_exists()` | `cli_providers/base.py` | Hook — `True` (default) for CLIs that record `transcript_path` (the picker filters via existence check on the path). Override returns `False` when the CLI's session is gone from disk; used today only by `CursorAgentProvider` (records have empty `transcript_path`, so we scan `~/.cursor/chats/<hash>/<id>/` directly). Wired into `resume_store.load_raw_tag_rows` via `_filter_provider_stale`. |
-| `CLIProvider.relocate_session()` | `cli_providers/base.py` | Optional provider hook — returns the new transcript path on success, `None` if the CLI doesn't support cross-cwd relocation. Implemented today by `ClaudeProvider`, `GeminiProvider`, and `CursorAgentProvider`. Codex inherits the base `None` (sessions are UUID-keyed, cwd-agnostic). |
-| `CLIProvider.hooks_installed()` | `cli_providers/base.py` | Abstract — return `True` iff Leap's hooks are wired up for this CLI (script in `hook_config_dir` AND a `leap-hook.sh` reference in the CLI's settings file). Mirror image of `configure_hooks()`. Used by the session-start gate (`leap-server.py:_enforce_hooks_installed_or_exit`) to refuse to spawn the server when hooks aren't configured (typically: CLI installed after Leap), pointing the user at `leap --reconfigure`. Custom CLIs inherit via `CustomCLIProvider`'s delegation, so they don't need their own implementation — the gate uses `get_provider(provider.base_type).hooks_installed()`. **Must never raise** — every implementation wraps its body in `try: ... except Exception: return False` to defend against weird-but-valid JSON shapes (a `command: 42` or `hooks: "stringy"` would otherwise crash the gate with `TypeError`). `BaseException` (KeyboardInterrupt, SystemExit) deliberately propagates. |
-| `CLIProvider.base_type` | `cli_providers/base.py` | Property — built-in CLI this provider is a variant of. Built-ins return their own `name` (default impl: `return self.name`). Custom providers (`CustomCLIProvider`) inherit the base's value via `__getattribute__` delegation — so a custom Claude wrapper's `base_type` is automatically `'claude'` because `CustomCLIProvider(_base=ClaudeProvider()).base_type` resolves to `ClaudeProvider().base_type`, which is `'claude'`. The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup automatically. **All custom CLIs are variants of one of the four base CLIs — there is no path for a custom CLI that's not built atop one.** |
-| `atomic_write_json()` | `utils/atomic_write.py` | Write JSON to a temp file in the same dir, fsync, atomic rename. Used by every provider's `configure_hooks()` so a concurrent reader (the session-start gate calling `hooks_installed()`) never sees a half-truncated settings file mid-rewrite. |
-| `_enforce_hooks_installed_or_exit()` | `server/server.py` | Session-start gate — called from `leap-server.py:main()` after `cli_name` is finalised but before `LeapServer(...)` is instantiated. Looks up `provider.base_type` and calls the base's `hooks_installed()`; if False, prints a friendly stderr error pointing at `leap --reconfigure` and exits with code 1. No env-var bypass — the only escape is to actually configure the hooks. |
-| `_resolve_cli_flags()` | `server/pty_handler.py` | Merge stored/env-var default flags with explicit CLI flags; used by `PTYHandler.spawn()` |
+| `LineBuffer` | `utils/line_buffer.py` | Cursor-aware line editing buffer (insert, delete, move, home/end, delete-word) |
+| `extract_menu_options()` | `utils/menu.py` | Numbered-menu parser shared by server auto-approve and monitor permission menu |
+| `relocation.py` primitives | `utils/relocation.py` | Shared cross-cwd move primitives (signals_blocked, stage/commit, verify, snapshot) |
+| `relocate_claude_session()` | `utils/claude_session_move.py` | Claude transcript move (jsonl + optional sidecar dir) |
+| `relocate_gemini_session()` | `utils/gemini_session_move.py` | Gemini transcript move (jsonl + projects.json registry) |
+| `relocate_cursor_session()` | `utils/cursor_session_move.py` | Cursor chat-dir move; also exposes `find_chat_dir()` for `session_exists` |
+| `relocate_records()` | `utils/resume_store.py` | Rewrites transcript paths in `cli_sessions/<cli>/*.json` after a cross-cwd move |
+| `CLIProvider.requires_cwd_bound_resume` | `cli_providers/base.py` | True for Claude/Gemini/Cursor (cwd-derived storage); False for Codex |
+| `CLIProvider.session_exists()` | `cli_providers/base.py` | Existence check for the picker (default: `transcript_path`; Cursor scans chat dir) |
+| `CLIProvider.relocate_session()` | `cli_providers/base.py` | Optional hook — implemented by Claude/Gemini/Cursor; Codex inherits None |
+| `CLIProvider.hooks_installed()` | `cli_providers/base.py` | Whether Leap's hooks are wired up; gate-checked at session start; must never raise |
+| `CLIProvider.base_type` | `cli_providers/base.py` | Built-in CLI this provider is a variant of; custom providers inherit via `__getattribute__` |
+| `atomic_write_json()` | `utils/atomic_write.py` | Write JSON to a temp file in the same dir, fsync, atomic rename |
+| `_enforce_hooks_installed_or_exit()` | `server/server.py` | Session-start gate — exits with code 1 if `hooks_installed()` returns False |
+| `_resolve_cli_flags()` | `server/pty_handler.py` | Merge stored/env-var default flags with explicit CLI flags |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `resolve_scm_token()` | `monitor/pr_tracking/config.py` | Resolve token from config (supports env var mode) |
 | `parse_pr_url()` | `monitor/pr_tracking/git_utils.py` | Parse GitLab/GitHub PR URLs |
@@ -294,8 +294,6 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 
   **All custom CLIs are variants of one of the four base CLIs** (Claude / Codex / Cursor Agent / Gemini). `CustomCLIProvider` (in `registry.py`) wraps a base provider and delegates everything via `__getattribute__` — including `hooks_installed()` and `base_type`. Custom-CLI authors don't set `base_type` themselves; they pass `base_provider=ClaudeProvider()` (or one of the other three) to `CustomCLIProvider.__init__`, and `base_type` follows automatically (it resolves to the base's `name` via the `__getattribute__` delegation). The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup automatically. There is no path for a custom CLI that's not built atop one of the four — design accordingly.
 - **New monitor dialog / window** → See the `.claude/skills/add-dialog.md` skill. Covers `ZoomMixin` setup, dialog geometry persistence, theme integration, the font-size cascade quirk, and — critically — the **prefs persistence model** (`MonitorWindow._DIALOG_OWNED_KEYS` and why `save_monitor_prefs(self._prefs)` must NOT be called outside `_save_prefs`). Skipping that last part is the most common way dialog state silently gets clobbered.
-
-  **`_DIALOG_OWNED_KEYS` rule (read this every time you add a dialog-saved pref):** If a dialog (or any non-`MonitorWindow` code) writes a new key directly to `monitor_prefs.json` via `save_monitor_prefs(prefs)`, you MUST also add that key to `MonitorWindow._DIALOG_OWNED_KEYS` in `app.py` — UNLESS the key ends in `_font_size` or `_font_family` (those are auto-detected by pattern). If you skip this, the dialog's save will appear to work, but `MonitorWindow._save_prefs()` (called on theme change, column resize, window move, zoom, etc.) will overwrite the disk's value with its stale-from-startup cached value. Symptom: "I toggled the checkbox off and reopened the dialog — it's checked again." This has bitten us multiple times. Defaults still aside: for booleans, filters, modes, last-selected names, etc. — explicit list entry is mandatory.
 - **Utils** → `src/leap/utils/`
 - **Server** → `src/leap/server/`, update `LeapServer`
 - **Client** → `src/leap/client/`, update `LeapClient`

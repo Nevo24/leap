@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from leap.utils.constants import TERM_TITLE_PREFIX, TERM_TITLE_SUFFIX
+from leap.utils.constants import COLORS, TERM_TITLE_PREFIX, TERM_TITLE_SUFFIX
 from leap.utils.ide_detection import detect_ide
 
 # VS Code extension watches this file for rename requests
@@ -242,3 +242,5 @@ def print_banner(session_type: str, tag: str, cli_name: str = '') -> None:
     print("=" * 80)
     print(f"  PTY {session_type.upper()} - Session: {tag}")
     print("=" * 80)
+    if session_type == 'server':
+        print(f"  {COLORS['cyan']}Tip: ^^ queues a message, even mid-run{COLORS['reset']}")
