@@ -245,11 +245,20 @@ write-install-metadata: ensure-storage
 	@# that exits 0 with empty stdout (happens when poetry's tracked
 	@# venv was wiped — e.g. by a Homebrew Python upgrade) silently
 	@# blanks .storage/venv-path, breaking every subsequent `leap` call.
-	@TMP_VP="$$(mktemp "$(REPO_PATH)/.storage/.venv-path.XXXXXX")"; \
+	@if ! TMP_VP="$$(mktemp "$(REPO_PATH)/.storage/.venv-path.XXXXXX")"; then \
+	    echo "$(RED)✗ Could not create temp file in .storage/$(NC)" >&2; \
+	    echo "  Existing .storage/venv-path left unchanged." >&2; \
+	    exit 1; \
+	fi; \
 	if poetry env info --path > "$$TMP_VP" 2>/dev/null \
 	   && [ -s "$$TMP_VP" ] \
 	   && [ -x "$$(cat "$$TMP_VP")/bin/python3" ]; then \
-	    mv "$$TMP_VP" "$(REPO_PATH)/.storage/venv-path"; \
+	    if ! mv "$$TMP_VP" "$(REPO_PATH)/.storage/venv-path"; then \
+	        rm -f "$$TMP_VP"; \
+	        echo "$(RED)✗ Could not rename temp venv-path into place$(NC)" >&2; \
+	        echo "  Existing .storage/venv-path left unchanged." >&2; \
+	        exit 1; \
+	    fi; \
 	else \
 	    POETRY_OUT="$$(cat "$$TMP_VP" 2>/dev/null)"; \
 	    rm -f "$$TMP_VP"; \

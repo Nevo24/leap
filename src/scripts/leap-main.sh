@@ -29,16 +29,26 @@ if [ -f "$VENV_PATH_FILE" ]; then
             REPAIRED=$(cd "$PROJECT_DIR" && poetry env info --path 2>/dev/null)
             if [ -n "$REPAIRED" ] && [ -x "$REPAIRED/bin/python3" ]; then
                 # Atomic rewrite — temp file in same dir, then rename.
-                # If we crashed mid-write the old (broken) file would
-                # still be readable; never produce a partially-written
-                # venv-path.
-                mkdir -p "$STORAGE_DIR"
-                TMP_VP="$(mktemp "$STORAGE_DIR/.venv-path.XXXXXX")"
-                printf '%s\n' "$REPAIRED" > "$TMP_VP"
-                mv "$TMP_VP" "$VENV_PATH_FILE"
-                VENV_BASE="$REPAIRED"
-                PYTHON_CMD="$VENV_BASE/bin/python3"
-                echo "↺ Repaired stale venv-path (now: $VENV_BASE)" >&2
+                # Every step is guarded: if mktemp / printf / mv fail
+                # (disk full, perms, etc.), bail out without flipping
+                # PYTHON_CMD or printing the success message, so the
+                # user falls through to the existing error block
+                # instead of seeing a misleading "↺ Repaired".
+                mkdir -p "$STORAGE_DIR" 2>/dev/null
+                if TMP_VP="$(mktemp "$STORAGE_DIR/.venv-path.XXXXXX" 2>/dev/null)" \
+                   && printf '%s\n' "$REPAIRED" > "$TMP_VP" 2>/dev/null \
+                   && [ -s "$TMP_VP" ] \
+                   && mv "$TMP_VP" "$VENV_PATH_FILE" 2>/dev/null; then
+                    VENV_BASE="$REPAIRED"
+                    PYTHON_CMD="$VENV_BASE/bin/python3"
+                    echo "↺ Repaired stale venv-path (now: $VENV_BASE)" >&2
+                else
+                    # Repair attempt failed mid-write; clean up the
+                    # temp file if it still exists.  Fall through —
+                    # the existing error block will surface the
+                    # original "venv-path invalid" diagnostic.
+                    [ -n "$TMP_VP" ] && rm -f "$TMP_VP"
+                fi
             fi
         fi
     fi
