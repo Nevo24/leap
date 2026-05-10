@@ -484,7 +484,22 @@ class ClaudeProvider(CLIProvider):
         Handles special cases:
         - 'Type something' options: return error asking for text input
         - 'Chat about this' options: use arrow-key navigation
-        - Regular options: send the number digit + CR
+        - Regular options: type digit(s) char-by-char + CR
+
+        **Why char-by-char + immediate CR (instead of ``pty_sendline``):**
+        ``pty_sendline`` writes the digit, then runs an output-settle
+        wait (50–200 ms) before writing CR.  For Claude's permission
+        menu that wider gap can let the menu auto-confirm on the digit
+        and dismiss BEFORE the CR arrives — the CR then lands in the
+        now-active composer and submits whatever text the user had
+        typed-but-not-submitted.  Manual digit + Enter from the
+        keyboard doesn't leak (the bytes arrive ~10–30 ms apart, fast
+        enough for the menu's input handler to read both before
+        dismissal renders).  We mimic that by sending the digit(s)
+        char-by-char with 20 ms gaps and the CR immediately after the
+        last digit, with no settle wait.  Multi-digit options
+        (``option_num >= 10``) are handled correctly because each
+        digit lands while the menu is still the focused component.
         """
         label = options.get(option_num)
         if label is not None:
@@ -507,7 +522,11 @@ class ClaudeProvider(CLIProvider):
                 'status': 'error',
                 'error': f'option {option_num} not found in prompt',
             }
-        pty_sendline(str(option_num))
+        digit_str = str(option_num)
+        for ch in digit_str:
+            pty_send(ch)
+            time.sleep(0.02)
+        pty_send('\r')
         return {'status': 'sent'}
 
     def send_custom_answer(

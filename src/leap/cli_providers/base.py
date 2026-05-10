@@ -349,6 +349,33 @@ class CLIProvider(ABC):
         """Label prefix for options below a separator that need arrow-key nav."""
         return None
 
+    @property
+    def custom_answer_targets_composer(self) -> bool:
+        """Whether ``send_custom_answer`` types directly into the CLI composer.
+
+        Drives the server's input-preservation wrap in
+        ``_run_dialog_action``:
+
+        * **True** (default) — answer chars + ``\\r`` are written
+          into the focused composer.  When the user has typed but
+          not submitted text, those chars concatenate onto it and
+          the whole line gets submitted as one message.  The wrap
+          must **pre-clear** the composer before the action types.
+
+        * **False** — answer is routed through a menu first
+          (Claude navigates to the "Type something" option, after
+          which Ink switches the highlighted row into a text-input
+          subdialog that absorbs the chars).  The composer is
+          untouched, so pre-clear isn't needed; the wrap uses the
+          post-clear/restore mode for defense against trailing-CR
+          leaks.
+
+        The default derives from ``free_text_option_prefix``:
+        providers with a free-text menu option route through the
+        menu (Claude); others type into the composer.
+        """
+        return self.free_text_option_prefix is None
+
     # -- Input protocol --------------------------------------------------
 
     @property

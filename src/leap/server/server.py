@@ -249,6 +249,15 @@ class LeapServer:
         self._preserved_chars_sent: int = 0
         self._queue_sending: bool = False  # blocks input filter during send
         self._queue_sending_held: bytearray = bytearray()  # keystrokes buffered during send
+        # Serializes all paths that send keystrokes to the CLI on behalf
+        # of a queued message, an auto-approve, a remote select_option
+        # (Slack / Monitor), or a custom_answer.  Without it, two of
+        # these paths running concurrently would each toggle
+        # ``_queue_sending`` independently — the first to finish flips
+        # it back to False and unblocks the input filter while the
+        # second is still mid-send, allowing user keystrokes to
+        # interleave with our writes and corrupt the dialog/composer.
+        self._action_lock = threading.Lock()
 
         # Clean up old history files
         self._cleanup_old_history_files()
@@ -359,9 +368,16 @@ class LeapServer:
             # Call on_send() only after the provider confirms it will
             # actually send something — on_send() irreversibly clears
             # state tracker buffers.
-            result = self._provider.select_option(
-                option_num, options_dict,
-                self.pty.send, self.pty.sendline,
+            # Wrap in ``_run_dialog_action`` so the user's typed-but-
+            # unsubmitted text in the composer is preserved across the
+            # action — see the helper's docstring for the leak vectors
+            # this covers.
+            result = self._run_dialog_action(
+                lambda: self._provider.select_option(
+                    option_num, options_dict,
+                    self.pty.send, self.pty.sendline,
+                ),
+                target_is_composer=False,
             )
             if result.get('status') != 'error':
                 self.state.on_send()
@@ -379,8 +395,18 @@ class LeapServer:
             options = extract_menu_options(prompt, self._provider)
             options_dict = {num: label for num, label in options}
 
-            result = self._provider.send_custom_answer(
-                message, options_dict, self.pty.send,
+            # ``custom_answer_targets_composer`` is True for CLIs that
+            # type the answer directly into the composer (Codex /
+            # Gemini / Cursor) — pre-clear the composer so the answer
+            # doesn't concatenate onto the user's typed text.  False
+            # for Claude (navigates to "Type something" menu option
+            # whose Ink subdialog absorbs the chars) — post-clear
+            # mode handles any trailing-CR leak defensively.
+            result = self._run_dialog_action(
+                lambda: self._provider.send_custom_answer(
+                    message, options_dict, self.pty.send,
+                ),
+                target_is_composer=self._provider.custom_answer_targets_composer,
             )
             if result.get('status') != 'error':
                 self.state.on_send()
@@ -537,6 +563,10 @@ class LeapServer:
         # Block the input filter for the entire send sequence so user
         # keystrokes can't interleave with the clear/paste/Enter writes
         # and can't modify _terminal_input_buf while we snapshot it.
+        # ``_action_lock`` serializes against ``_try_auto_approve`` and
+        # the remote ``select_option`` / ``custom_answer`` paths so
+        # concurrent paths don't toggle ``_queue_sending`` independently.
+        self._action_lock.acquire()
         self._queue_sending = True
         try:
             # Also clear if user typed after capture exit.
@@ -601,6 +631,7 @@ class LeapServer:
                 self._restore_preserved_input()
         finally:
             self._queue_sending = False
+            self._action_lock.release()
         # Drop any paste-map entries the message and live buffers
         # no longer reference — caps the dict's memory footprint
         # over long-running sessions.
@@ -622,6 +653,13 @@ class LeapServer:
         Types the preserved text back into the CLI's input line right
         after the queue message is sent, so the user can continue
         editing while the CLI processes.
+
+        Multi-line text is wrapped in bracketed-paste markers so Ink
+        treats the whole payload as a single paste rather than
+        submitting once per ``\\n``.  Pre-existing markers are stripped
+        first so a payload that already contains them doesn't break
+        the framing.  This mirrors the technique ``_send_to_cli``
+        already uses for multi-line queue messages.
         """
         text = self._preserved_input_buf.decode('utf-8', errors='replace')
         chars = self._preserved_chars_sent
@@ -632,10 +670,142 @@ class LeapServer:
         self._terminal_input_buf = bytearray(text.encode('utf-8'))
         self._terminal_input_cursor = len(self._terminal_input_buf)
         self._chars_sent_to_cli = chars
+        if '\n' in text or '\r' in text:
+            sanitized = text.replace(
+                '\x1b[200~', '').replace('\x1b[201~', '')
+            payload = '\x1b[200~' + sanitized + '\x1b[201~'
+        else:
+            payload = text
         try:
-            self.pty.send(text)
+            self.pty.send(payload)
         except OSError:
             pass
+
+    def _run_dialog_action(
+        self,
+        fn: Any,
+        *,
+        target_is_composer: bool,
+    ) -> Any:
+        """Run a dialog-answering action with full input preservation.
+
+        Wraps ``fn`` (which sends keystrokes to answer a permission /
+        question dialog) so the user's typed-but-unsubmitted text in
+        ``_terminal_input_buf`` survives the action — even in the
+        worst case where the action's keystrokes leak past the dialog
+        and submit the user's text as a message.
+
+        Two modes, controlled by *target_is_composer*:
+
+        * **target_is_composer=False** (menu-targeted answer — auto-
+          approve, Claude's numbered ``select_option``, Slack/Monitor
+          digit reply, Claude's "Type something" navigation):
+          The dialog has focus, so a pre-clear (Ctrl+E + Ctrl+U) would
+          be absorbed by the dialog and not affect the composer.
+          Snapshot first, run *fn*, then **post-clear** the composer
+          (now reactivated after the dialog dismissed) and re-type the
+          snapshot.  Works in both leak and no-leak cases:
+
+          - No leak: composer still has the user's text → post-clear
+            empties it → re-type restores.  Net: user's text intact.
+          - Leak: trailing ``\\r`` submitted the text → composer is
+            empty → post-clear is a no-op → re-type restores.  Net:
+            agent received the message once (unrecoverable), but the
+            composer view is restored so the user can re-edit.
+
+        * **target_is_composer=True** (composer-targeted answer —
+          Codex/Gemini/Cursor's ``send_custom_answer`` types directly
+          into the composer):
+          The composer has focus.  **Pre-clear** removes the user's
+          typed text BEFORE *fn* types its answer, so the answer is
+          submitted cleanly without prepending to the user's input.
+          Re-type the snapshot afterwards.
+
+        ``_action_lock`` serializes against ``_send_to_cli`` so two
+        paths don't toggle ``_queue_sending`` independently.
+
+        Error path (``result['status'] == 'error'``): providers signal
+        this *before* writing keystrokes, so the composer is unchanged.
+        For ``target_is_composer=True`` we already pre-cleared the
+        composer (the answer was supposed to type into it), so we
+        physically restore.  For ``target_is_composer=False`` we never
+        touched the composer, so we just sync the mirror back to what
+        we snapshotted — no flash, no re-type.
+        """
+        with self._action_lock:
+            self._queue_sending = True
+            try:
+                snapshot_taken = False
+                if (self._terminal_input_buf
+                        and not self._preserved_input_buf):
+                    self._preserved_input_buf = bytearray(
+                        self._terminal_input_buf)
+                    self._preserved_chars_sent = self._chars_sent_to_cli
+                    snapshot_taken = True
+
+                if target_is_composer and self._preserved_input_buf:
+                    buf = self._preserved_input_buf
+                    lines = self._stale_logical_lines(buf) or 1
+                    rows = self._stale_visual_rows(buf) or 1
+                    self._clear_stale_cli_input(lines, rows)
+                    time.sleep(0.1)
+
+                self._terminal_input_buf.clear()
+                self._terminal_input_cursor = 0
+
+                result = fn()
+
+                if result.get('status') == 'error':
+                    if target_is_composer:
+                        # Pre-clear ran; composer is empty.  Restore
+                        # physically so the user's text reappears.
+                        if self._preserved_input_buf:
+                            self._restore_preserved_input()
+                    elif snapshot_taken and self._preserved_input_buf:
+                        # Menu-target error: composer is unchanged
+                        # (we never sent any keystrokes that could
+                        # affect it), but our mirror was cleared.
+                        # Sync mirror back to the snapshot — no flash.
+                        self._terminal_input_buf = bytearray(
+                            self._preserved_input_buf)
+                        self._terminal_input_cursor = len(
+                            self._terminal_input_buf)
+                        self._chars_sent_to_cli = self._preserved_chars_sent
+                        self._preserved_input_buf.clear()
+                        self._preserved_chars_sent = 0
+                    return result
+
+                if (not target_is_composer
+                        and snapshot_taken
+                        and self._preserved_input_buf):
+                    # Post-clear: handles both the no-leak case
+                    # (composer still holds the user's text) and the
+                    # leak case (trailing CR submitted it; composer is
+                    # empty).  Either way, clear + retype yields a
+                    # consistent final state.
+                    #
+                    # Small delay first: ``fn`` returns as soon as the
+                    # last byte hits the PTY, but the CLI may still be
+                    # processing the dismissal — Ctrl+E + Ctrl+U fired
+                    # too early would be absorbed by the still-focused
+                    # dialog (no-op for the composer), then the dialog
+                    # would dismiss with the composer's text intact,
+                    # and our subsequent re-type would land on top of
+                    # it → "hellohello".  150 ms is comfortably longer
+                    # than typical Ink dismissal (~30–80 ms).
+                    time.sleep(0.15)
+                    buf = self._preserved_input_buf
+                    lines = self._stale_logical_lines(buf) or 1
+                    rows = self._stale_visual_rows(buf) or 1
+                    self._clear_stale_cli_input(lines, rows)
+                    time.sleep(0.1)
+
+                if self._preserved_input_buf:
+                    self._restore_preserved_input()
+
+                return result
+            finally:
+                self._queue_sending = False
 
     def _try_auto_approve(self) -> bool:
         """Try to auto-approve a permission prompt (Always-send mode).
@@ -676,8 +846,11 @@ class LeapServer:
             # Has menus but none found yet (prompt still rendering).
             return False
 
-        result = self._provider.select_option(
-            yes_num, options_dict, self.pty.send, self.pty.sendline,
+        result = self._run_dialog_action(
+            lambda: self._provider.select_option(
+                yes_num, options_dict, self.pty.send, self.pty.sendline,
+            ),
+            target_is_composer=False,
         )
         if result.get('status') != 'error':
             self.state.on_send()
