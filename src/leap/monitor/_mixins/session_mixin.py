@@ -154,24 +154,10 @@ class SessionMixin(_Base):
 
         # Remove dead rows without PR tracking
         if tags_to_remove:
-            prefs_changed = False
             for tag in tags_to_remove:
                 self._pinned_sessions.pop(tag, None)
-                if tag in self._row_colors:
-                    del self._row_colors[tag]
-                    prefs_changed = True
-                if tag in self._aliases:
-                    del self._aliases[tag]
-                    prefs_changed = True
-                self._state_changed_at.pop(tag, None)
-                self._dismissed_new_status.discard(tag)
+                self._cleanup_row_state(tag)
             save_pinned_sessions(self._pinned_sessions)
-            if prefs_changed:
-                self._prefs['row_colors'] = self._row_colors
-                self._prefs['aliases'] = self._aliases
-                self._save_prefs()
-                self.table.setProperty('_row_colors', self._row_colors)
-            self._remove_from_row_order(set(tags_to_remove))
 
         # Include any active sessions not yet pinned (shouldn't happen, but safe)
         pinned_tags = set(self._pinned_sessions.keys())
@@ -502,30 +488,18 @@ class SessionMixin(_Base):
         self._deleted_tags.add(tag)
         self._remove_pinned_session(tag)
 
-    def _remove_dead_untracked_row(self, tag: str) -> None:
-        """Silently remove a dead row that has no active PR tracking.
+    def _cleanup_row_state(self, tag: str) -> None:
+        """Clean per-tag UI state for a row being removed.
 
-        Called during silent auto-reconnect when PR tracking fails and
-        no server is running — the row serves no purpose.
+        Does NOT touch ``_pinned_sessions`` (caller's responsibility)
+        or PR-tracking state (caller invokes
+        ``_stop_tracking(_skip_prompt=True)`` for that, if needed).
+        Cleans: row color, alias, row order, status-fire-icon
+        tracking dicts.  Keep all four removal paths
+        (``_merge_sessions`` auto-remove, ``_remove_dead_untracked_row``,
+        ``_stop_tracking`` removal block, ``_remove_pinned_session``)
+        going through here so they can't drift out of sync.
         """
-        session = next((s for s in self.sessions if s['tag'] == tag), None)
-        if not session or session.get('server_pid') is not None:
-            return  # Server is running — keep the row
-        self._pinned_sessions.pop(tag, None)
-        save_pinned_sessions(self._pinned_sessions)
-        self._remove_from_row_order({tag})
-        self._deleted_tags.add(tag)
-        self.sessions = [s for s in self.sessions if s['tag'] != tag]
-        self._state_changed_at.pop(tag, None)
-        self._dismissed_new_status.discard(tag)
-        self._show_status(f"Removed dead row '{tag}' (PR tracking failed, no server)")
-
-    def _remove_pinned_session(self, tag: str) -> None:
-        """Remove a pinned session and clean up all tracking state."""
-        self._pinned_sessions.pop(tag, None)
-        save_pinned_sessions(self._pinned_sessions)
-
-        # Clean up row color and alias
         prefs_changed = False
         if tag in self._row_colors:
             del self._row_colors[tag]
@@ -538,16 +512,38 @@ class SessionMixin(_Base):
         if prefs_changed:
             self._save_prefs()
             self.table.setProperty('_row_colors', self._row_colors)
-
-        # Clean up row order
         self._remove_from_row_order({tag})
+        self._state_changed_at.pop(tag, None)
+        self._dismissed_new_status.discard(tag)
+
+    def _remove_dead_untracked_row(self, tag: str) -> None:
+        """Silently remove a dead row whose PR has been definitively
+        closed/merged remotely (NO_PR result from a one-shot check).
+
+        Only called from ``_on_tracking_result``'s NO_PR branch —
+        transient SCM errors leave the row alone (so the user can
+        retry) and do NOT route through here.
+        """
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if not session or session.get('server_pid') is not None:
+            return  # Server is running — keep the row
+        self._pinned_sessions.pop(tag, None)
+        save_pinned_sessions(self._pinned_sessions)
+        self._deleted_tags.add(tag)
+        self.sessions = [s for s in self.sessions if s['tag'] != tag]
+        self._cleanup_row_state(tag)
+        self._show_status(f"Removed dead row '{tag}' (PR closed/merged, no server)")
+
+    def _remove_pinned_session(self, tag: str) -> None:
+        """Remove a pinned session and clean up all tracking state."""
+        self._pinned_sessions.pop(tag, None)
+        save_pinned_sessions(self._pinned_sessions)
 
         # Clean up PR tracking (skip prompt — _delete_row already prompted)
         self._stop_tracking(tag, _skip_prompt=True)
 
-        # Clean up status fire state
-        self._state_changed_at.pop(tag, None)
-        self._dismissed_new_status.discard(tag)
+        # Clean up per-tag display state
+        self._cleanup_row_state(tag)
 
         # Remove from sessions list and refresh table
         self.sessions = [s for s in self.sessions if s['tag'] != tag]

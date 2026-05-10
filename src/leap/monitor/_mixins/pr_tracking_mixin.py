@@ -236,8 +236,7 @@ class PRTrackingMixin(_Base):
             save_pinned_sessions(self._pinned_sessions)
             self._deleted_tags.add(tag)
             self.sessions = [s for s in self.sessions if s['tag'] != tag]
-            self._state_changed_at.pop(tag, None)
-            self._dismissed_new_status.discard(tag)
+            self._cleanup_row_state(tag)
 
         # Stop poll timer if no tags are being tracked and no notifications enabled
         if (not self._tracked_tags
@@ -250,9 +249,17 @@ class PRTrackingMixin(_Base):
 
     def _clear_pinned_pr_data(self, tag: str) -> None:
         """Clear pinned PR data so Track PR falls back to the server's live git info."""
-        # If server is dead, warn that clearing will remove the row
+        # If clearing will remove the row, warn so the user can confirm.
+        # The clear removes ``remote_project_path``/``pr_tracked`` and
+        # zeroes ``branch`` — so the row vanishes unless something
+        # else keeps it alive (live server or a transient flag).
         session = next((s for s in self.sessions if s['tag'] == tag), None)
-        if session and session.get('server_pid') is None:
+        will_survive = (
+            (session and session.get('server_pid') is not None)
+            or tag in self._starting_tags
+            or tag in self._moving_tags
+        )
+        if not will_survive:
             reply = QMessageBox.question(
                 self, 'Clear Pinned PR Data',
                 f"The server for '{tag}' is not running.\n"
@@ -343,8 +350,12 @@ class PRTrackingMixin(_Base):
         # Row was deleted while the check was in-flight — discard error
         if tag in self._deleted_tags:
             return
-        if silent:
-            self._remove_dead_untracked_row(tag)
+        # Silent errors (auto-reconnect blips, transient 5xx, slow VPN)
+        # used to wipe the row here.  That bypassed the merge keepers
+        # and caused user-visible data loss on every flaky startup.
+        # Now we leave the row alone — it stays via ``pr_tracked`` /
+        # PR Branch keepers, and the user can manually click Track PR
+        # once the SCM provider is healthy again.
         self._update_table()
         self._show_status(f"PR tracking error for '{tag}': {message}")
         if not silent:
