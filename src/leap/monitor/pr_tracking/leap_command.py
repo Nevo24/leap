@@ -19,14 +19,25 @@ class CqCommand:
     old_line: Optional[int] = None
     new_line: Optional[int] = None
     code_snippet: Optional[str] = None
+    # SCM platform identifier — used purely for cosmetic notation
+    # ('!' for GitLab MRs, '#' for GitHub PRs).  Defaults to 'gitlab' so
+    # callers built before this field was added keep the original output
+    # exactly.
+    scm_type: str = 'gitlab'
+
+
+def _pr_prefix(scm_type: str) -> str:
+    """Return the convention-correct PR-number prefix for *scm_type*."""
+    return '#' if scm_type == 'github' else '!'
 
 
 def format_leap_message(cmd: CqCommand) -> str:
     """Format a CqCommand into a plain-text message for the Leap session."""
     parts = []
+    prefix = _pr_prefix(cmd.scm_type)
 
     # Header
-    header = f"PR !{cmd.pr_iid}: \"{cmd.pr_title}\""
+    header = f"PR {prefix}{cmd.pr_iid}: \"{cmd.pr_title}\""
     if cmd.thread_notes:
         first_author = cmd.thread_notes[0].get('author', 'unknown')
         header += f" — Thread from @{first_author}"
@@ -60,7 +71,7 @@ def format_leap_message(cmd: CqCommand) -> str:
         parts.append("")
 
     # Closing instruction
-    parts.append(f"Please address the review feedback above from PR !{cmd.pr_iid}.")
+    parts.append(f"Please address the review feedback above from PR {prefix}{cmd.pr_iid}.")
     parts.append(f"PR URL: {cmd.pr_url}")
 
     return "\n".join(parts)

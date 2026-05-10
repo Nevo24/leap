@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
+import requests
 from github import Github
 
 from leap.monitor.pr_tracking.base import PRDetails, PRState, PRStatus, SCMProvider, UserNotification
@@ -36,9 +38,30 @@ class GitHubProvider(SCMProvider):
         self._username = username
         self._filter_bots = filter_bots
         self._repo_cache: dict[str, object] = {}
-        # Caches to avoid phantom state changes on transient API failures
-        self._approval_cache: dict[tuple[str, str], tuple[bool, list[str], bool]] = {}
-        self._status_cache: dict[tuple[str, str], PRStatus] = {}
+        # Caches keyed by (project_path, branch, pr_iid) so two PRs that
+        # share the same branch (different base targets, or internal+fork
+        # with same head ref) don't share cache slots.
+        self._approval_cache: dict[
+            tuple[str, str, Optional[int]],
+            tuple[bool, list[str], bool],
+        ] = {}
+        self._status_cache: dict[tuple[str, str, Optional[int]], PRStatus] = {}
+        # comment_id -> True iff we know this comment has a reaction by the
+        # current user.  Used as a stale-on-failure fallback (matches the
+        # GitLab provider's emoji_cache semantics).  Bounded growth ignored
+        # for the moment — same trade-off as GitLab.
+        self._reaction_cache: dict[int, bool] = {}
+        # GraphQL endpoint for resolved-thread queries.  github.com uses
+        # /graphql at the API root; GHE uses /api/graphql at the web host
+        # (NOT /api/v3/graphql despite the v3 REST namespace).
+        if base_url:
+            stripped_base = base_url.rstrip('/')
+            if stripped_base.endswith('/api/v3'):
+                self._graphql_url = stripped_base[:-len('/api/v3')] + '/api/graphql'
+            else:
+                self._graphql_url = stripped_base + '/graphql'
+        else:
+            self._graphql_url = 'https://api.github.com/graphql'
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -62,15 +85,59 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to get repo: %s", project_path)
             return None
 
+    def _find_open_prs(self, repo, project_path: str, branch: str,
+                       pr_iid: Optional[int]) -> list:
+        """Find open PR(s) for the given branch — IID-first, head filter as fallback.
+
+        - When *pr_iid* is provided (PR-pinned rows), fetch the PR directly
+          via ``repo.get_pull(iid)``.  This works for **fork PRs** because
+          it doesn't go through the ``head`` filter (which on GitHub
+          requires the head owner — unknown for forks).
+        - Otherwise, list open PRs filtered by ``<base_owner>:<branch>``.
+          This is exact and cheap for internal PRs.  Fork PRs auto-tracked
+          (without going through the +button URL flow) won't match — but
+          that's an explicit limitation we accept rather than scan every
+          open PR each poll cycle.
+        """
+        if pr_iid is not None:
+            try:
+                pr = repo.get_pull(pr_iid)
+                # Confirm it's still open (PRs by IID return any state)
+                if pr.state == 'open':
+                    return [pr]
+                return []
+            except Exception:
+                logger.debug("Failed to fetch PR #%s in %s by IID",
+                             pr_iid, project_path)
+                return []
+
+        owner = project_path.split('/')[0]
+        try:
+            quick = repo.get_pulls(state='open', head=f'{owner}:{branch}')
+            if quick.totalCount > 0:
+                return list(quick)
+            return []
+        except Exception:
+            logger.debug("Failed to list PRs for %s branch %s",
+                         project_path, branch)
+            return []
+
     def get_pr_details(self, project_path: str, pr_iid: int) -> Optional[PRDetails]:
         repo = self._get_repo(project_path)
         if not repo:
             return None
         try:
             pr = repo.get_pull(pr_iid)
+            # For fork PRs the source branch lives in pr.head.repo (the
+            # fork), not in repo (the base).  Querying the wrong repo
+            # would always 404 and falsely flag the branch as deleted.
+            # When pr.head.repo is None, the fork itself has been deleted;
+            # falling back to base repo is a no-op (the branch isn't there
+            # either) and correctly results in branch_deleted=True.
+            head_repo = pr.head.repo or repo
             branch_deleted = False
             try:
-                repo.get_branch(pr.head.ref)
+                head_repo.get_branch(pr.head.ref)
             except Exception:
                 branch_deleted = True
             return PRDetails(
@@ -83,20 +150,21 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to get PR #%s in %s", pr_iid, project_path)
             return None
 
-    def get_pr_status(self, project_path: str, branch: str) -> PRStatus:
-        cache_key = (project_path, branch)
+    def get_pr_status(self, project_path: str, branch: str,
+                      pr_iid: Optional[int] = None) -> PRStatus:
+        # Cache key includes pr_iid so two PRs that share the same branch
+        # (e.g. one targeting main and one targeting develop, or an
+        # internal + fork PR with the same source branch name) don't
+        # clobber each other's cached status on transient API failure.
+        cache_key = (project_path, branch, pr_iid)
         repo = self._get_repo(project_path)
         if not repo:
             return PRStatus(state=PRState.NO_PR)
 
-        try:
-            pulls = repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}')
-            if pulls.totalCount == 0:
-                return PRStatus(state=PRState.NO_PR)
-            pr = pulls[0]
-        except Exception:
-            logger.debug("Failed to list PRs for %s branch %s", project_path, branch)
+        pulls = self._find_open_prs(repo, project_path, branch, pr_iid)
+        if not pulls:
             return PRStatus(state=PRState.NO_PR)
+        pr = pulls[0]
         pr_number = pr.number
         pr_url = pr.html_url
         pr_title = pr.title
@@ -128,9 +196,11 @@ class GitHubProvider(SCMProvider):
                 approved, approved_by = cached_approval[0], list(cached_approval[1])
                 self_approved = cached_approval[2]
 
-        # Count unresponded review comment threads
+        # Count unresponded review comment threads (+ PR conversation)
         try:
-            unresponded, first_comment_id = self._count_unresponded_threads(repo, pr)
+            unresponded, first_comment_id, first_origin = (
+                self._count_unresponded_threads(repo, pr)
+            )
         except Exception:
             logger.debug("Failed to count unresponded threads for PR #%s", pr_number)
             cached = self._status_cache.get(cache_key)
@@ -141,6 +211,7 @@ class GitHubProvider(SCMProvider):
                         unresponded_count=cached.unresponded_count,
                         pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                         first_unresponded_note_id=cached.first_unresponded_note_id,
+                        first_unresponded_url=cached.first_unresponded_url,
                         approved=approved, approved_by=approved_by or None, self_approved=self_approved,
                     )
                 return cached
@@ -151,11 +222,17 @@ class GitHubProvider(SCMProvider):
             )
 
         if unresponded > 0:
+            first_url = (
+                self.build_first_unresponded_url(
+                    pr_url, first_comment_id, origin=first_origin or 'r')
+                if first_comment_id is not None else None
+            )
             result = PRStatus(
                 state=PRState.UNRESPONDED,
                 unresponded_count=unresponded,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 first_unresponded_note_id=first_comment_id,
+                first_unresponded_url=first_url,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
         else:
@@ -168,27 +245,169 @@ class GitHubProvider(SCMProvider):
         self._status_cache[cache_key] = result
         return result
 
-    def _count_unresponded_threads(self, repo, pr) -> tuple[int, Optional[int]]:
-        """Count unresponded review comment threads on a PR.
+    def _count_unresponded_threads(
+        self, repo, pr,
+    ) -> tuple[int, Optional[int], Optional[str]]:
+        """Count unresponded threads — review comments + PR conversation.
 
-        Returns (count, first_unresponded_comment_id).
+        GitHub splits "thread state" between two endpoints that GitLab unifies
+        in /discussions:
+          - ``pr.get_review_comments()`` — file-line annotations, threaded
+            via ``in_reply_to_id``
+          - ``pr.get_issue_comments()`` — top-level PR conversation (flat,
+            no threading)
+        We treat the whole issue-comment stream as one virtual thread so
+        users posting blocking review feedback in the conversation tab
+        aren't silently missed.
+
+        Returns ``(count, first_comment_id, first_origin)`` where
+        ``first_origin`` is ``'r'`` (review) or ``'i'`` (issue) — used to
+        select the right URL anchor and ack endpoint downstream.
         """
-        comments = list(pr.get_review_comments())
-        if not comments:
-            return 0, None
-
-        # Group comments into threads by in_reply_to_id
-        threads = self._group_into_threads(comments)
-
         unresponded = 0
         first_comment_id: Optional[int] = None
-        for thread_comments in threads.values():
-            if self._is_unresponded_thread(thread_comments):
-                unresponded += 1
-                if first_comment_id is None:
-                    first_comment_id = thread_comments[0].id
+        first_origin: Optional[str] = None
 
-        return unresponded, first_comment_id
+        # 1. Review-comment threads.  Fetch resolution status (GraphQL) so
+        # threads that someone already clicked "Resolve conversation" on
+        # don't keep pulsing — REST v3 doesn't expose that flag.
+        try:
+            review_comments = list(pr.get_review_comments())
+        except Exception:
+            logger.debug("Failed to fetch review comments for PR #%s", pr.number)
+            review_comments = []
+        resolved_root_ids: set[int] = set()
+        if review_comments:
+            project_path = repo.full_name
+            fetched = self._fetch_resolved_thread_root_ids(project_path, pr.number)
+            if fetched is not None:
+                resolved_root_ids = fetched
+            threads = self._group_into_threads(review_comments)
+            for root_id, thread_comments in threads.items():
+                if not thread_comments or root_id in resolved_root_ids:
+                    continue
+                if self._is_unresponded_thread(thread_comments):
+                    unresponded += 1
+                    if first_comment_id is None:
+                        first_comment_id = thread_comments[0].id
+                        first_origin = 'r'
+
+        # 2. PR conversation as a single virtual thread
+        try:
+            issue_comments = list(pr.get_issue_comments())
+        except Exception:
+            logger.debug("Failed to fetch issue comments for PR #%s", pr.number)
+            issue_comments = []
+        if issue_comments and self._is_unresponded_thread(issue_comments):
+            unresponded += 1
+            if first_comment_id is None:
+                # Anchor on the most recent non-user comment so the user
+                # lands on the message that needs a response.
+                human = self._filter_human_comments(issue_comments)
+                for c in human:
+                    if c.user and c.user.login != self._username:
+                        first_comment_id = c.id
+                        first_origin = 'i'
+
+        return unresponded, first_comment_id, first_origin
+
+    def _filter_human_comments(self, comments: list) -> list:
+        """Apply the bot filter consistently across review + issue comments."""
+        return [
+            c for c in comments
+            if not c.user or (not self._filter_bots or c.user.type != 'Bot')
+        ]
+
+    # Cap how many GraphQL pages we'll fetch per PR per call.  At 100
+    # threads/page this covers PRs with up to 300 review threads; the
+    # very long-tail case where a PR has more than that is rare and we
+    # accept that some resolved threads may slip through (they'd just
+    # appear as unresponded — no functional harm).
+    _GRAPHQL_THREAD_PAGE_CAP = 3
+
+    def _fetch_resolved_thread_root_ids(
+        self, project_path: str, pr_number: int,
+    ) -> Optional[set[int]]:
+        """Return the set of *root* review-comment ``databaseId`` values for
+        review threads currently marked **resolved** on GitHub.
+
+        Resolution state is GraphQL-only on the GitHub REST v3 API, so we
+        fall back to a direct HTTP call rather than depend on a typed
+        client.  Returns ``None`` on failure so callers can distinguish
+        "no resolved threads" from "couldn't determine" and avoid hiding
+        unresponded threads on transient errors.
+
+        Paginates up to ``_GRAPHQL_THREAD_PAGE_CAP`` pages of 100 threads
+        — enough headroom for typical PRs without unbounded fetches on
+        pathologically large ones.
+        """
+        try:
+            owner, name = project_path.split('/', 1)
+        except ValueError:
+            return None
+
+        query = (
+            'query($owner:String!,$name:String!,$number:Int!,$cursor:String){'
+            ' repository(owner:$owner,name:$name){'
+            '  pullRequest(number:$number){'
+            '   reviewThreads(first:100,after:$cursor){'
+            '    pageInfo{hasNextPage endCursor}'
+            '    nodes{isResolved comments(first:1){nodes{databaseId}}}'
+            '   }'
+            '  }'
+            ' }'
+            '}'
+        )
+        resolved: set[int] = set()
+        cursor: Optional[str] = None
+        for _ in range(self._GRAPHQL_THREAD_PAGE_CAP):
+            try:
+                resp = requests.post(
+                    self._graphql_url,
+                    headers={'Authorization': f'bearer {self._token}'},
+                    json={'query': query,
+                          'variables': {'owner': owner, 'name': name,
+                                        'number': pr_number,
+                                        'cursor': cursor}},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    return None
+                payload = resp.json()
+            except Exception:
+                logger.debug("GraphQL reviewThreads query failed for %s#%s",
+                             project_path, pr_number, exc_info=True)
+                return None
+
+            if 'errors' in payload:
+                logger.debug("GraphQL errors for %s#%s: %s",
+                             project_path, pr_number, payload['errors'])
+                return None
+            try:
+                review_threads = (
+                    payload['data']['repository']['pullRequest']['reviewThreads']
+                )
+                threads = review_threads['nodes']
+                page_info = review_threads['pageInfo']
+            except (KeyError, TypeError):
+                return None
+
+            for thread in threads or []:
+                if not thread.get('isResolved'):
+                    continue
+                comment_nodes = (thread.get('comments', {}) or {}).get('nodes', [])
+                if comment_nodes:
+                    root_id = comment_nodes[0].get('databaseId')
+                    if isinstance(root_id, int):
+                        resolved.add(root_id)
+
+            if not page_info.get('hasNextPage'):
+                break
+            cursor = page_info.get('endCursor')
+            if not cursor:
+                break
+
+        return resolved
 
     def _group_into_threads(self, comments: list) -> dict[int, list]:
         """Group review comments into threads.
@@ -215,17 +434,15 @@ class GitHubProvider(SCMProvider):
         return threads
 
     def _is_unresponded_thread(self, comments: list) -> bool:
-        """Check if a thread of review comments is unresponded.
+        """Check if a thread of review/issue comments is unresponded.
 
         A thread is "unresponded" if:
         - It has comments from someone other than the user
-        - The last human comment is from someone else (user hasn't replied after it)
+        - The last human comment is from someone else, AND
+        - The user hasn't replied after it AND hasn't reacted to it
+          with an emoji (matching GitLab's award-emoji ack semantics).
         """
-        # Filter out bot comments if enabled
-        human_comments = [
-            c for c in comments
-            if not c.user or (not self._filter_bots or c.user.type != 'Bot')
-        ]
+        human_comments = self._filter_human_comments(comments)
         if not human_comments:
             return False
 
@@ -250,32 +467,80 @@ class GitHubProvider(SCMProvider):
                     and (comment.body or '').strip() != '/leap':
                 return False
 
+        # Emoji reaction on the last other-user comment counts as ack —
+        # mirrors GitLab's award-emoji semantics so cross-platform users
+        # get the same UX.
+        if self._user_reacted_to_comment(human_comments[last_other_idx]):
+            return False
+
         return True
 
-    def scan_leap_commands(self, project_path: str, branch: str) -> list[CqCommand]:
-        """Scan open PRs for /leap commands from the configured user."""
+    def _user_reacted_to_comment(self, comment) -> bool:
+        """Whether the configured user has any reaction on *comment*.
+
+        Caches per-comment results.  On transient API failure, returns the
+        cached value if present (and ``False`` if not) — same flapping
+        protection the GitLab provider uses for its award-emoji check.
+        """
+        comment_id = getattr(comment, 'id', None)
+        if comment_id is None:
+            return False
+        try:
+            for reaction in comment.get_reactions():
+                user = getattr(reaction, 'user', None)
+                if user is not None and user.login == self._username:
+                    self._reaction_cache[comment_id] = True
+                    return True
+            self._reaction_cache[comment_id] = False
+            return False
+        except Exception:
+            return self._reaction_cache.get(comment_id, False)
+
+    def scan_leap_commands(self, project_path: str, branch: str,
+                           pr_iid: Optional[int] = None) -> list[CqCommand]:
+        """Scan open PRs for /leap commands — review threads + PR conversation."""
         repo = self._get_repo(project_path)
         if not repo:
             return []
 
-        try:
-            pulls = list(repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}'))
-        except Exception:
-            logger.debug("Failed to list PRs for /leap scan: %s branch %s", project_path, branch)
-            return []
+        pulls = self._find_open_prs(repo, project_path, branch, pr_iid)
 
         commands: list[CqCommand] = []
         for pr in pulls:
+            # Review-comment threads (file-line annotations)
             try:
-                comments = list(pr.get_review_comments())
+                review_comments = list(pr.get_review_comments())
             except Exception:
                 logger.debug("Failed to fetch review comments for PR #%s", pr.number)
-                continue
+                review_comments = []
 
-            threads = self._group_into_threads(comments)
+            # Skip threads someone already resolved on the PR — clicking
+            # "Resolve conversation" on a /leap thread should dismiss it.
+            resolved_root_ids: set[int] = set()
+            if review_comments:
+                fetched = self._fetch_resolved_thread_root_ids(project_path, pr.number)
+                if fetched is not None:
+                    resolved_root_ids = fetched
+
+            threads = self._group_into_threads(review_comments)
             for root_id, thread_comments in threads.items():
+                if root_id in resolved_root_ids:
+                    continue
                 cmd = self._check_thread_for_leap(
                     repo, project_path, pr, root_id, thread_comments, branch
+                )
+                if cmd:
+                    commands.append(cmd)
+
+            # PR conversation — single virtual thread, may contain its own /leap
+            try:
+                issue_comments = list(pr.get_issue_comments())
+            except Exception:
+                logger.debug("Failed to fetch issue comments for PR #%s", pr.number)
+                issue_comments = []
+            if issue_comments:
+                cmd = self._check_issue_comments_for_leap(
+                    project_path, pr, issue_comments
                 )
                 if cmd:
                     commands.append(cmd)
@@ -336,12 +601,62 @@ class GitHubProvider(SCMProvider):
             pr_iid=pr.number,
             pr_title=pr.title,
             pr_url=pr.html_url,
-            discussion_id=str(root_id),
+            # 'r:' prefix marks this as a review-comment thread so
+            # acknowledge_leap_command routes to create_review_comment_reply.
+            discussion_id=f'r:{root_id}',
             thread_notes=thread_notes,
             file_path=file_path,
             old_line=old_line,
             new_line=new_line,
             code_snippet=code_snippet,
+            scm_type='github',
+        )
+
+    def _check_issue_comments_for_leap(
+        self, project_path: str, pr, issue_comments: list,
+    ) -> Optional[CqCommand]:
+        """Check the PR's conversation tab for an unacked ``/leap`` from us.
+
+        GitHub issue comments are flat (no in_reply_to threading), so the
+        whole conversation is treated as a single virtual thread.  Behaviour
+        mirrors the review-thread path: a ``/leap`` only counts if it has
+        no ``[Leap bot] on it!`` ack posted *after* it.
+        """
+        if not issue_comments:
+            return None
+
+        last_leap_index = -1
+        last_ack_index = -1
+        for i, comment in enumerate(issue_comments):
+            body = (comment.body or '').strip()
+            author = comment.user.login if comment.user else ''
+            if body == '/leap' and author == self._username:
+                last_leap_index = i
+            if LEAP_ACK_MESSAGE in (comment.body or ''):
+                last_ack_index = i
+
+        if last_leap_index < 0 or last_leap_index < last_ack_index:
+            return None
+
+        thread_notes = []
+        for comment in issue_comments:
+            author = comment.user.login if comment.user else ''
+            thread_notes.append({
+                'author': author,
+                'body': comment.body or '',
+                'created_at': str(comment.created_at) if comment.created_at else '',
+            })
+
+        return CqCommand(
+            project_path=project_path,
+            pr_iid=pr.number,
+            pr_title=pr.title,
+            pr_url=pr.html_url,
+            # 'i:' prefix → issue-comment ack uses pr.create_issue_comment().
+            # Anchor the (single) command to the most recent issue comment id.
+            discussion_id=f'i:{issue_comments[-1].id}',
+            thread_notes=thread_notes,
+            scm_type='github',
         )
 
     def _fetch_code_snippet(
@@ -363,39 +678,76 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to fetch code snippet for %s:%s", file_path, target_line)
             return None
 
-    def acknowledge_leap_command(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
-        """Post '[Leap bot] on it!' reply to the review comment thread."""
+    @staticmethod
+    def _split_discussion_id(discussion_id: str) -> tuple[str, int]:
+        """Parse a CqCommand.discussion_id into (origin, comment_id).
+
+        - ``'r:<int>'``  → review-comment thread root id
+        - ``'i:<int>'``  → issue-comment id (anchor only — issue comments
+                           don't form threads)
+        - bare ``'<int>'`` → backward-compat: treat as review thread root.
+        """
+        if discussion_id.startswith('r:'):
+            return 'r', int(discussion_id[2:])
+        if discussion_id.startswith('i:'):
+            return 'i', int(discussion_id[2:])
+        return 'r', int(discussion_id)
+
+    def _post_leap_reply(self, project_path: str, pr_iid: int,
+                        discussion_id: str, body: str) -> bool:
+        """Shared writer for ack + no-session messages.
+
+        Routes to ``create_review_comment_reply`` for review threads or
+        ``create_issue_comment`` for PR conversation comments.
+        """
         repo = self._get_repo(project_path)
         if not repo:
             return False
         try:
+            origin, comment_id = self._split_discussion_id(discussion_id)
+        except (ValueError, AttributeError):
+            logger.debug("Bad discussion_id %r on PR #%s", discussion_id, pr_iid)
+            return False
+        try:
             pr = repo.get_pull(pr_iid)
-            # Reply to the root comment of the thread
-            root_comment = pr.get_review_comment(int(discussion_id))
-            pr.create_review_comment_reply(root_comment.id, LEAP_ACK_MESSAGE)
+            if origin == 'i':
+                # Issue comments are flat — post a new top-level comment.
+                # We could try to "reply" by quoting the original, but plain
+                # post matches GitLab's behaviour for general discussions.
+                pr.create_issue_comment(body)
+            else:
+                root_comment = pr.get_review_comment(comment_id)
+                pr.create_review_comment_reply(root_comment.id, body)
             return True
         except Exception:
-            logger.debug("Failed to acknowledge /leap on PR #%s thread %s",
-                         pr_iid, discussion_id, exc_info=True)
+            logger.debug("Failed to post %r on PR #%s discussion %s",
+                         body, pr_iid, discussion_id, exc_info=True)
             return False
+
+    def acknowledge_leap_command(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
+        """Post '[Leap bot] on it!' reply to the review thread or PR conversation."""
+        return self._post_leap_reply(project_path, pr_iid, discussion_id, LEAP_ACK_MESSAGE)
 
     def report_no_session(self, project_path: str, pr_iid: int, discussion_id: str) -> bool:
         """Post error reply when no matching Leap session is found."""
-        repo = self._get_repo(project_path)
-        if not repo:
-            return False
-        try:
-            pr = repo.get_pull(pr_iid)
-            root_comment = pr.get_review_comment(int(discussion_id))
-            pr.create_review_comment_reply(root_comment.id, LEAP_NO_SESSION_MESSAGE)
-            return True
-        except Exception:
-            logger.debug("Failed to post no-session reply on PR #%s thread %s",
-                         pr_iid, discussion_id, exc_info=True)
-            return False
+        return self._post_leap_reply(project_path, pr_iid, discussion_id, LEAP_NO_SESSION_MESSAGE)
 
     def supports_notifications(self) -> bool:
         return True
+
+    def build_first_unresponded_url(self, pr_url: str, comment_id: int,
+                                    origin: str = 'r') -> str:
+        """Anchor format depends on which endpoint the comment came from.
+
+        - Review comments (file-line annotations): ``#discussion_r<id>``
+        - Issue/conversation comments: ``#issuecomment-<id>``
+
+        ``comment_id`` is the comment's database id (``comment.id`` on the
+        PyGithub object) for both kinds.
+        """
+        if origin == 'i':
+            return f'{pr_url}#issuecomment-{comment_id}'
+        return f'{pr_url}#discussion_r{comment_id}'
 
     def get_user_notifications(self) -> list[UserNotification]:
         """Fetch pending GitHub notifications as user notifications."""
@@ -422,7 +774,12 @@ class GitHubProvider(SCMProvider):
             title = (subject.title or '') if subject else ''
             target_url = self._resolve_notification_url(n)
             repo = n.repository
-
+            # GitHub's /notifications endpoint does not expose the actor on
+            # the notification object — actor lives only on the underlying
+            # issue/PR/comment resource, fetching which would cost an extra
+            # API call per notification (≤50 per poll).  We accept the gap
+            # rather than burn rate-limit budget; callers must treat
+            # author='' as "unknown" (matching the dataclass default).
             notifications.append(UserNotification(
                 id=str(n.id),
                 scm_type='github',
@@ -430,6 +787,7 @@ class GitHubProvider(SCMProvider):
                 title=title,
                 target_url=target_url,
                 project_name=repo.full_name if repo else '',
+                author='',
                 created_at=str(n.updated_at) if n.updated_at else '',
             ))
         return notifications
@@ -448,61 +806,96 @@ class GitHubProvider(SCMProvider):
 
     @staticmethod
     def _resolve_notification_url(notification) -> str:
-        """Convert a GitHub notification's API URL to an HTML URL."""
+        """Convert a GitHub notification's API URL to an HTML URL.
+
+        Handles the path segments that differ between API and web URLs:
+        ``/pulls/`` → ``/pull/``, ``/commits/<sha>`` → ``/commit/<sha>``.
+        Releases use IDs in the API but tag names in the web URL; we can't
+        translate that without an extra fetch, so we fall the user to the
+        repo's releases page instead of leaving them on a 404.
+
+        For subject types we don't recognise (workflow runs, discussions,
+        check suites, …), we fall back to the repository's HTML URL so the
+        user lands somewhere navigable.
+        """
+        repo_html = ''
+        repo = getattr(notification, 'repository', None)
+        if repo is not None:
+            repo_html = getattr(repo, 'html_url', '') or ''
+
         subject = notification.subject
-        if not subject:
-            return ''
-        api_url = subject.url or ''
+        api_url = (subject.url or '') if subject else ''
         if not api_url:
-            return ''
-        # Convert API URL to HTML URL:
-        # github.com:  https://api.github.com/repos/owner/repo/pulls/123
-        #           -> https://github.com/owner/repo/pull/123
-        # GHE:        https://ghe.example.com/api/v3/repos/owner/repo/pulls/123
-        #           -> https://ghe.example.com/owner/repo/pull/123
+            return repo_html
+
         try:
-            # Handle github.com API URLs
-            url = api_url.replace('https://api.github.com/repos/', 'https://github.com/')
-            # Handle GitHub Enterprise API URLs (/api/v3/repos/)
+            # github.com → github.com web host
+            url = api_url.replace('https://api.github.com/repos/',
+                                  'https://github.com/')
+            # GHE Enterprise: /api/v3/repos/ → /
             if '/api/v3/repos/' in url:
                 url = url.replace('/api/v3/repos/', '/')
+            # Path segments that differ between API and web
             url = url.replace('/pulls/', '/pull/')
+            url = url.replace('/commits/', '/commit/')
+            # Releases: API uses numeric ID, web uses tag — fall back to /releases
+            url = re.sub(r'/releases/\d+(?:/.*)?$', '/releases', url)
+
+            # If the URL still looks API-shaped, the subject type isn't one
+            # we know how to translate.  Fall back to the repo URL.
+            if 'api.github.com' in url or '/api/v3/' in url:
+                return repo_html
             return url
         except Exception:
-            return ''
+            return repo_html
 
-    def collect_unresponded_threads(self, project_path: str, branch: str) -> list[CqCommand]:
-        """Collect all unresponded review comment threads from a PR as CqCommand objects."""
+    def collect_unresponded_threads(self, project_path: str, branch: str,
+                                    pr_iid: Optional[int] = None) -> list[CqCommand]:
+        """Collect all unresponded threads — review threads + PR conversation."""
         repo = self._get_repo(project_path)
         if not repo:
             return []
 
-        try:
-            pulls = list(repo.get_pulls(state='open', head=f'{project_path.split("/")[0]}:{branch}'))
-        except Exception:
-            logger.debug("Failed to list PRs for collect_unresponded: %s branch %s",
-                         project_path, branch)
-            return []
-
+        pulls = self._find_open_prs(repo, project_path, branch, pr_iid)
         if not pulls:
             return []
 
         pr = pulls[0]
-        try:
-            comments = list(pr.get_review_comments())
-        except Exception:
-            logger.debug("Failed to fetch review comments for PR #%s", pr.number)
-            return []
-
-        threads = self._group_into_threads(comments)
 
         commands: list[CqCommand] = []
+
+        # Review-comment threads
+        try:
+            review_comments = list(pr.get_review_comments())
+        except Exception:
+            logger.debug("Failed to fetch review comments for PR #%s", pr.number)
+            review_comments = []
+        resolved_root_ids: set[int] = set()
+        if review_comments:
+            fetched = self._fetch_resolved_thread_root_ids(project_path, pr.number)
+            if fetched is not None:
+                resolved_root_ids = fetched
+        threads = self._group_into_threads(review_comments)
         for root_id, thread_comments in threads.items():
+            if root_id in resolved_root_ids:
+                continue
             if not self._is_unresponded_thread(thread_comments):
                 continue
-
             cmd = self._build_leap_command_from_thread(
                 repo, project_path, pr, root_id, thread_comments, branch
+            )
+            if cmd:
+                commands.append(cmd)
+
+        # PR conversation as a single virtual thread
+        try:
+            issue_comments = list(pr.get_issue_comments())
+        except Exception:
+            logger.debug("Failed to fetch issue comments for PR #%s", pr.number)
+            issue_comments = []
+        if issue_comments and self._is_unresponded_thread(issue_comments):
+            cmd = self._build_leap_command_from_issue_comments(
+                project_path, pr, issue_comments
             )
             if cmd:
                 commands.append(cmd)
@@ -547,10 +940,37 @@ class GitHubProvider(SCMProvider):
             pr_iid=pr.number,
             pr_title=pr.title,
             pr_url=pr.html_url,
-            discussion_id=str(root_id),
+            discussion_id=f'r:{root_id}',
             thread_notes=thread_notes,
             file_path=file_path,
             old_line=old_line,
             new_line=new_line,
             code_snippet=code_snippet,
+            scm_type='github',
+        )
+
+    def _build_leap_command_from_issue_comments(
+        self, project_path: str, pr, issue_comments: list,
+    ) -> Optional[CqCommand]:
+        """Build a CqCommand from the PR's issue-comment conversation."""
+        if not issue_comments:
+            return None
+
+        thread_notes = []
+        for comment in issue_comments:
+            author = comment.user.login if comment.user else ''
+            thread_notes.append({
+                'author': author,
+                'body': comment.body or '',
+                'created_at': str(comment.created_at) if comment.created_at else '',
+            })
+
+        return CqCommand(
+            project_path=project_path,
+            pr_iid=pr.number,
+            pr_title=pr.title,
+            pr_url=pr.html_url,
+            discussion_id=f'i:{issue_comments[-1].id}',
+            thread_notes=thread_notes,
+            scm_type='github',
         )

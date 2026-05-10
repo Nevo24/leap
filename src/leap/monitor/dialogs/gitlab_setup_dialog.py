@@ -37,6 +37,9 @@ class GitLabSetupDialog(SCMSetupDialog):
     def _token_placeholder(self) -> str:
         return 'glpat-...'
 
+    def _env_var_placeholder(self) -> str:
+        return 'e.g. GITLAB_TOKEN'
+
     def _config_url_key(self) -> str:
         return 'gitlab_url'
 

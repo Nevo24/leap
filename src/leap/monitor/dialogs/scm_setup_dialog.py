@@ -96,6 +96,10 @@ class SCMSetupDialog(ZoomMixin, QDialog):
     def _token_placeholder(self) -> str:
         """Return the placeholder text for the token input."""
 
+    def _env_var_placeholder(self) -> str:
+        """Return the placeholder shown when the user picks env-var token mode."""
+        return 'e.g. SCM_TOKEN'
+
     @abstractmethod
     def _do_test_connection(self, url: str, token: str) -> ConnectionTestResult:
         """Test the connection and return a ConnectionTestResult."""
@@ -301,7 +305,7 @@ class SCMSetupDialog(ZoomMixin, QDialog):
             self.token_input.setPlaceholderText(self._token_placeholder())
         else:
             self.token_input.setEchoMode(QLineEdit.Normal)
-            self.token_input.setPlaceholderText('e.g. GITLAB_TOKEN')
+            self.token_input.setPlaceholderText(self._env_var_placeholder())
 
     @staticmethod
     def _is_valid_env_var_name(name: str) -> bool:
@@ -334,14 +338,23 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         if not checked:
             self.url_input.clear()
 
+    def _is_default_url(self, saved_url: str) -> bool:
+        """True if *saved_url* is equivalent to the default (no expand-needed).
+
+        Subclasses can extend this to treat e.g. ``'https://api.github.com'`` as
+        equivalent to the empty string for GitHub, so a user who explicitly
+        typed the API URL on github.com doesn't see "Self-hosted" auto-checked
+        on the next dialog open.
+        """
+        return saved_url == self._url_default()
+
     def _load_existing(self) -> None:
         config = self._load_config()
         if not config:
             return
         saved_url = config.get(self._config_url_key(), '')
-        default_url = self._url_default()
         # Auto-expand URL field if a non-default URL is saved
-        if saved_url and saved_url != default_url:
+        if saved_url and not self._is_default_url(saved_url):
             self._url_check.setChecked(True)
             self.url_input.setText(saved_url)
         if config.get('token_mode') == 'env_var':
@@ -349,7 +362,7 @@ class SCMSetupDialog(ZoomMixin, QDialog):
             # Explicitly set Normal echo mode — radio signal may not fire
             # during construction, and plaintext makes it clear no token is stored
             self.token_input.setEchoMode(QLineEdit.Normal)
-            self.token_input.setPlaceholderText('e.g. GITLAB_TOKEN')
+            self.token_input.setPlaceholderText(self._env_var_placeholder())
         self.token_input.setText(config.get(self._config_token_key(), ''))
         self.poll_input.setValue(config.get('poll_interval', SCM_POLL_INTERVAL))
         self.notif_check.setChecked(config.get('enable_notifications', True))

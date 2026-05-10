@@ -487,9 +487,11 @@ class PRTrackingMixin(_Base):
         self._leap_only_collect = False
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        pr_iid = self._pinned_sessions.get(tag, {}).get('pr_iid')
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
-            project_path, self._scm_providers, self.sessions, target_tag=tag
+            project_path, self._scm_providers, self.sessions, target_tag=tag,
+            pr_iid=pr_iid,
         )
         self._combined_send = False
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
@@ -654,9 +656,11 @@ class PRTrackingMixin(_Base):
         self._combined_send = True
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        pr_iid = self._pinned_sessions.get(tag, {}).get('pr_iid')
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
-            project_path, self._scm_providers, self.sessions, target_tag=tag
+            project_path, self._scm_providers, self.sessions, target_tag=tag,
+            pr_iid=pr_iid,
         )
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
@@ -718,10 +722,11 @@ class PRTrackingMixin(_Base):
         self._combined_send = combined
         self._set_busy(True)
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        pr_iid = self._pinned_sessions.get(tag, {}).get('pr_iid')
         self._collect_threads_worker = CollectThreadsWorker(self)
         self._collect_threads_worker.configure(
             project_path, self._scm_providers, self.sessions, leap_only=True,
-            target_tag=tag,
+            target_tag=tag, pr_iid=pr_iid,
         )
         self._collect_threads_worker.collected.connect(self._on_threads_collected)
         self._collect_threads_worker.error.connect(self._on_send_threads_error)
@@ -863,6 +868,7 @@ class PRTrackingMixin(_Base):
             'branch': details.source_branch,
             'pr_title': details.pr_title,
             'pr_url': details.pr_url,
+            'pr_iid': parsed.pr_iid,
             'scm_type': parsed.scm_type.value,
             'project_path': '',
             'ide': '',

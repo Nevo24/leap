@@ -32,6 +32,11 @@ class PRStatus:
     pr_title: Optional[str] = None
     pr_iid: Optional[int] = None
     first_unresponded_note_id: Optional[int] = None
+    # Pre-built deep-link to the first unresponded comment.  Provider-specific
+    # anchor format (``#note_<id>`` for GitLab, ``#discussion_r<id>`` for
+    # GitHub).  When None and we want a deep-link, render code falls back to
+    # ``pr_url`` so users still land on the PR root.
+    first_unresponded_url: Optional[str] = None
     approved: bool = False
     approved_by: Optional[list[str]] = None
     self_approved: bool = False  # True if the current user is among the approvers
@@ -86,24 +91,31 @@ class SCMProvider(ABC):
         """
 
     @abstractmethod
-    def get_pr_status(self, project_path: str, branch: str) -> PRStatus:
+    def get_pr_status(self, project_path: str, branch: str,
+                      pr_iid: Optional[int] = None) -> PRStatus:
         """Get PR status for a project/branch combination.
 
         Args:
             project_path: The project path (e.g., 'user/repo').
             branch: The source branch name.
+            pr_iid: Optional PR number. When supplied, providers MAY
+                bypass branch-based listing and fetch the PR directly —
+                required to track GitHub fork PRs (whose source branch
+                lives in a different repo from the base).
 
         Returns:
             PRStatus with current state and details.
         """
 
     @abstractmethod
-    def scan_leap_commands(self, project_path: str, branch: str) -> list:
+    def scan_leap_commands(self, project_path: str, branch: str,
+                           pr_iid: Optional[int] = None) -> list:
         """Scan for /leap commands in PR discussion threads.
 
         Args:
             project_path: The project path (e.g., 'user/repo').
             branch: The source branch name.
+            pr_iid: Optional PR number — see ``get_pr_status``.
 
         Returns:
             List of CqCommand instances found.
@@ -126,12 +138,14 @@ class SCMProvider(ABC):
         """
 
     @abstractmethod
-    def collect_unresponded_threads(self, project_path: str, branch: str) -> list:
+    def collect_unresponded_threads(self, project_path: str, branch: str,
+                                    pr_iid: Optional[int] = None) -> list:
         """Collect all unresponded discussion threads from a PR as CqCommand objects.
 
         Args:
             project_path: The project path (e.g., 'user/repo').
             branch: The source branch name.
+            pr_iid: Optional PR number — see ``get_pr_status``.
 
         Returns:
             List of CqCommand instances for each unresponded thread.
@@ -148,3 +162,17 @@ class SCMProvider(ABC):
             List of UserNotification instances.
         """
         return []
+
+    def build_first_unresponded_url(self, pr_url: str, comment_id: int,
+                                    origin: str = 'r') -> str:
+        """Build a deep-link URL that scrolls to *comment_id* on *pr_url*.
+
+        ``origin`` is provider-specific: GitHub uses ``'r'`` for review
+        comments (anchor ``#discussion_r<id>``) and ``'i'`` for issue
+        comments (anchor ``#issuecomment-<id>``).  GitLab ignores it.
+
+        Subclasses override with the platform-specific anchor format.
+        Default returns the bare *pr_url* — never raises.
+        """
+        del comment_id, origin
+        return pr_url

@@ -168,6 +168,10 @@ class SCMPollerWorker(QThread):
         # keeps tracking the correct PR even when the user switches
         # branches locally.
         branch = session.get('pr_branch') or session.get('branch')
+        # PR-pinned rows added via the +button know the IID up front.
+        # Providers that need it (GitHub, for fork-PR support) use it to
+        # bypass branch-based listing.  Auto-tracked rows pass None.
+        pr_iid = session.get('pr_iid')
 
         if remote_project and scm_type_str and branch and branch != 'N/A':
             # Use pinned PR data directly
@@ -196,10 +200,10 @@ class SCMPollerWorker(QThread):
             logger.debug("Poll skip: no provider for tag %s", session.get('tag'))
             return PRStatus(state=PRState.NO_PR), []
 
-        logger.debug("Polling PR for tag %s: project=%s branch=%s",
-                      session.get('tag'), scm_project_path, scm_branch)
+        logger.debug("Polling PR for tag %s: project=%s branch=%s iid=%s",
+                      session.get('tag'), scm_project_path, scm_branch, pr_iid)
         try:
-            status = provider.get_pr_status(scm_project_path, scm_branch)
+            status = provider.get_pr_status(scm_project_path, scm_branch, pr_iid=pr_iid)
         except Exception:
             logger.debug("Error polling PR for tag %s", session['tag'], exc_info=True)
             status = PRStatus(state=PRState.NO_PR)
@@ -208,7 +212,7 @@ class SCMPollerWorker(QThread):
         if self._auto_fetch_leap:
             try:
                 raw_commands = provider.scan_leap_commands(
-                    scm_project_path, scm_branch
+                    scm_project_path, scm_branch, pr_iid=pr_iid
                 )
                 leap_commands = [(cmd, provider) for cmd in raw_commands]
             except Exception:
@@ -283,6 +287,7 @@ class CollectThreadsWorker(QThread):
         self._scm_providers: dict[str, SCMProvider] = {}
         self._sessions: list[dict[str, Any]] = []
         self._target_tag: Optional[str] = None
+        self._pr_iid: Optional[int] = None
         self.provider: Optional[SCMProvider] = None  # set during run()
 
     def configure(
@@ -292,6 +297,7 @@ class CollectThreadsWorker(QThread):
         sessions: list[dict[str, Any]],
         leap_only: bool = False,
         target_tag: Optional[str] = None,
+        pr_iid: Optional[int] = None,
     ) -> None:
         """Configure the worker.
 
@@ -301,12 +307,15 @@ class CollectThreadsWorker(QThread):
             sessions: List of session dicts (need 'project_path' and 'tag' keys).
             leap_only: If True, collect only threads with unacknowledged /leap commands.
             target_tag: If set, skip session matching and use this tag directly.
+            pr_iid: Optional PR number — passed through to provider methods so
+                GitHub can bypass branch listing (required for fork PRs).
         """
         self._project_path = project_path
         self._scm_providers = dict(scm_providers)
         self._sessions = list(sessions)
         self._leap_only = leap_only
         self._target_tag = target_tag
+        self._pr_iid = pr_iid
 
     def run(self) -> None:
         try:
@@ -326,11 +335,13 @@ class CollectThreadsWorker(QThread):
             # Collect threads (heavy HTTP calls)
             if self._leap_only:
                 commands = self.provider.scan_leap_commands(
-                    remote_info.project_path, remote_info.branch
+                    remote_info.project_path, remote_info.branch,
+                    pr_iid=self._pr_iid,
                 )
             else:
                 commands = self.provider.collect_unresponded_threads(
-                    remote_info.project_path, remote_info.branch
+                    remote_info.project_path, remote_info.branch,
+                    pr_iid=self._pr_iid,
                 )
 
             if self._target_tag:

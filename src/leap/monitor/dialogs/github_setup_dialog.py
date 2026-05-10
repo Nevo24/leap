@@ -38,6 +38,26 @@ class GitHubSetupDialog(SCMSetupDialog):
     def _token_placeholder(self) -> str:
         return 'ghp_...'
 
+    def _env_var_placeholder(self) -> str:
+        return 'e.g. GITHUB_TOKEN'
+
+    def _is_default_url(self, saved_url: str) -> bool:
+        """Treat the canonical github.com / api.github.com URLs as default.
+
+        Users who explicitly typed ``https://api.github.com`` (or the web URL)
+        shouldn't see the dialog re-open with "Self-hosted (custom URL)"
+        auto-checked — those values mean "default github.com" to PyGithub.
+        """
+        if super()._is_default_url(saved_url):
+            return True
+        normalized = saved_url.lower().rstrip('/')
+        return normalized in (
+            'https://api.github.com',
+            'http://api.github.com',
+            'https://github.com',
+            'http://github.com',
+        )
+
     def _config_url_key(self) -> str:
         return 'github_url'
 
@@ -107,8 +127,15 @@ class GitHubSetupDialog(SCMSetupDialog):
 def _verify_github_server(base_url: str, token: str) -> bool:
     """Verify the server is actually GitHub using a direct HTTP request.
 
-    Calls /meta which is a GitHub-specific endpoint.  GitLab and other
-    servers will return 404 or a non-matching response.
+    Calls /meta — a GitHub-specific endpoint.  GitLab and other servers
+    return 404 or non-matching response bodies.
+
+    A 401/403 from /meta is treated as proof-of-GitHub even though we
+    couldn't read the body: GitHub Enterprise in "Private mode" requires
+    auth on /meta, and github.com itself returns 401 for any request
+    bearing an invalid token.  In both cases the server *is* GitHub —
+    the downstream auth call will then surface the real error message
+    (e.g. "Bad credentials") rather than masking it as "not GitHub".
     """
     try:
         resp = _requests.get(
@@ -116,6 +143,8 @@ def _verify_github_server(base_url: str, token: str) -> bool:
             headers={'Authorization': f'token {token}'},
             timeout=10,
         )
+        if resp.status_code in (401, 403):
+            return True
         if resp.status_code != 200:
             return False
         data = resp.json()
@@ -148,9 +177,12 @@ def _check_github_scopes(gh: Any) -> list[str]:
         )
         return warnings
 
-    # Classic PAT — check for required scopes
+    # Classic PAT — check for required scopes.
+    # 'repo' covers public + private; 'public_repo' is sufficient for public repos
+    # only.  If a user has just 'public_repo' and tries to track a private repo,
+    # the API call fails with 404, which is informative enough on its own.
     scope_set = set(scopes)
-    if 'repo' not in scope_set:
+    if 'repo' not in scope_set and 'public_repo' not in scope_set:
         warnings.append(
             'Missing repo scope — PR tracking, code snippets, '
             'and /leap replies will not work'

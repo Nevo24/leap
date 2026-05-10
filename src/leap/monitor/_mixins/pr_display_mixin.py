@@ -303,11 +303,12 @@ class PRDisplayMixin(_Base):
             approval_line = self._format_approval_line(status)
             widget.setToolTip('')
             widget.set_pulsing(True)
-            # Jump directly to first unresolved comment thread
-            url = status.pr_url
-            if url and status.first_unresponded_note_id:
-                url = f'{url}#note_{status.first_unresponded_note_id}'
-            widget.set_pr_url(url)
+            # Jump directly to first unresolved comment thread.  The provider
+            # pre-builds the URL with the correct anchor format for its
+            # platform (``#note_<id>`` for GitLab, ``#discussion_r<id>`` for
+            # GitHub); we just consume it.  Falls back to bare pr_url when
+            # the provider didn't (or couldn't) build one.
+            widget.set_pr_url(status.first_unresponded_url or status.pr_url)
             widget.set_indicator_help(
                 f'PR !{status.pr_iid}: {status.pr_title}\n'
                 f'{status.unresponded_count} unresponded '

@@ -75,7 +75,13 @@ class GitLabProvider(SCMProvider):
             logger.debug("Failed to get PR !%s in %s", pr_iid, project_path)
             return None
 
-    def get_pr_status(self, project_path: str, branch: str) -> PRStatus:
+    def get_pr_status(self, project_path: str, branch: str,
+                      pr_iid: Optional[int] = None) -> PRStatus:
+        # pr_iid is accepted for SCMProvider symmetry but ignored here:
+        # GitLab's mergerequests.list(source_branch=...) on the base project
+        # already returns fork-originated MRs, since GitLab merges them
+        # into the same MR list as internal MRs.
+        del pr_iid
         cache_key = (project_path, branch)
         project = self._get_project(project_path)
         if not project:
@@ -179,6 +185,7 @@ class GitLabProvider(SCMProvider):
                         unresponded_count=cached.unresponded_count,
                         pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                         first_unresponded_note_id=cached.first_unresponded_note_id,
+                        first_unresponded_url=cached.first_unresponded_url,
                         approved=approved, approved_by=approved_by or None, self_approved=self_approved,
                     )
                 return cached
@@ -199,11 +206,14 @@ class GitLabProvider(SCMProvider):
                         first_note_id = notes[0].get('id')
 
         if unresponded > 0:
+            first_url = (self.build_first_unresponded_url(pr_url, first_note_id)
+                         if first_note_id is not None else None)
             result = PRStatus(
                 state=PRState.UNRESPONDED,
                 unresponded_count=unresponded,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 first_unresponded_note_id=first_note_id,
+                first_unresponded_url=first_url,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
             )
         else:
@@ -354,8 +364,10 @@ class GitLabProvider(SCMProvider):
             return author.get('username', '')
         return getattr(author, 'username', '')
 
-    def scan_leap_commands(self, project_path: str, branch: str) -> list[CqCommand]:
+    def scan_leap_commands(self, project_path: str, branch: str,
+                           pr_iid: Optional[int] = None) -> list[CqCommand]:
         """Scan open PRs for /leap commands from the configured user."""
+        del pr_iid  # see get_pr_status — GitLab listing already covers forks
         project = self._get_project(project_path)
         if not project:
             return []
@@ -487,8 +499,10 @@ class GitLabProvider(SCMProvider):
                          pr_iid, discussion_id, exc_info=True)
             return False
 
-    def collect_unresponded_threads(self, project_path: str, branch: str) -> list[CqCommand]:
+    def collect_unresponded_threads(self, project_path: str, branch: str,
+                                    pr_iid: Optional[int] = None) -> list[CqCommand]:
         """Collect all unresponded discussion threads from a PR as CqCommand objects."""
+        del pr_iid  # see get_pr_status — GitLab listing already covers forks
         project = self._get_project(project_path)
         if not project:
             return []
@@ -595,6 +609,15 @@ class GitLabProvider(SCMProvider):
 
     def supports_notifications(self) -> bool:
         return True
+
+    def build_first_unresponded_url(self, pr_url: str, comment_id: int,
+                                    origin: str = 'r') -> str:
+        """GitLab MR notes are anchored with ``#note_<note_id>`` regardless
+        of whether they're code-anchored or top-level (the GitLab API
+        returns them in the same /discussions endpoint, so we never need
+        the *origin* discriminator GitHub does)."""
+        del origin
+        return f'{pr_url}#note_{comment_id}'
 
     def get_user_notifications(self) -> list[UserNotification]:
         """Fetch pending GitLab Todos as user notifications."""
