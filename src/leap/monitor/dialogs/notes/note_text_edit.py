@@ -13,6 +13,7 @@ Two utility functions also live here:
   ``QTextEdit``, optionally resolving ``[Image #N]`` placeholders.
 """
 
+import re
 import textwrap
 from typing import Optional
 
@@ -34,23 +35,61 @@ from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR
 
 
-def _flatten_indent(text: str) -> str:
-    """Flatten leading indentation of pasted text to column 0.
+# A line that, after dedent, looks like a fresh list item (bullet or
+# enumerated) must NOT be merged into the line above — it begins a new
+# row. Anything else that starts with whitespace is treated as a
+# soft-wrapped continuation.
+_LIST_MARKER_RE = re.compile(r'^\s*(?:[-*+•]|\d+[.)]|[A-Za-z][.)])\s')
 
-    First runs ``textwrap.dedent`` to strip the common prefix shared by
-    every non-empty line. If nothing was stripped — typical when line 1
-    sits at column 0 but the body below shares an indent — re-runs
-    dedent on lines 2+ alone so the body lands flush-left while line 1
-    is preserved as-is. Called only when the user opted in via the
-    "Flatten indent on paste" checkbox, so no threshold is applied.
+
+def _unwrap_continuations(text: str) -> str:
+    """Join soft-wrapped continuation lines onto their parent.
+
+    A continuation line is a non-blank line that starts with whitespace
+    and is not itself a list item. It is merged with the preceding
+    non-blank line using a single space separator. Blank lines act as
+    paragraph breaks and are preserved.
+    """
+    lines = text.split('\n')
+    result: list[str] = []
+    for line in lines:
+        if (
+            result
+            and line
+            and line[0] in ' \t'
+            and not _LIST_MARKER_RE.match(line)
+            and result[-1].strip()
+        ):
+            result[-1] = result[-1].rstrip() + ' ' + line.strip()
+        else:
+            result.append(line)
+    return '\n'.join(result)
+
+
+def _flatten_indent(text: str) -> str:
+    """Flatten leading indentation and rejoin soft-wrapped lines.
+
+    Two passes:
+
+    1. **Dedent** — runs ``textwrap.dedent`` to strip the common prefix
+       shared by every non-empty line. If nothing was stripped — typical
+       when line 1 sits at column 0 but the body below shares an indent —
+       re-runs dedent on lines 2+ alone so the body lands flush-left
+       while line 1 is preserved as-is.
+    2. **Unwrap** — merges continuation lines (lines that start with
+       whitespace and aren't list items) onto the previous line with a
+       single space, undoing soft-wraps from terminal renderers, editor
+       word-wrap, etc.
+
+    Called only when the user opted in via the "Flatten indent on paste"
+    checkbox, so no threshold is applied.
     """
     dedented = textwrap.dedent(text)
-    if dedented != text:
-        return dedented
-    head, sep, rest = text.partition('\n')
-    if not sep:
-        return text
-    return head + sep + textwrap.dedent(rest)
+    if dedented == text:
+        head, sep, rest = text.partition('\n')
+        if sep:
+            dedented = head + sep + textwrap.dedent(rest)
+    return _unwrap_continuations(dedented)
 
 
 class _NoteTextEdit(QTextEdit):
