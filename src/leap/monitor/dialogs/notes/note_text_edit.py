@@ -35,34 +35,57 @@ from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR
 
 
-# A line that, after dedent, looks like a fresh list item (bullet or
-# enumerated) must NOT be merged into the line above — it begins a new
-# row. Anything else that starts with whitespace is treated as a
-# soft-wrapped continuation.
+# A line that looks like a fresh list item (bullet or enumerated) must
+# NOT be merged into the line above — it begins a new row.
 _LIST_MARKER_RE = re.compile(r'^\s*(?:[-*+•]|\d+[.)]|[A-Za-z][.)])\s')
 
 
 def _unwrap_continuations(text: str) -> str:
     """Join soft-wrapped continuation lines onto their parent.
 
-    A continuation line is a non-blank line that starts with whitespace
-    and is not itself a list item. It is merged with the preceding
-    non-blank line using a single space separator. Blank lines act as
-    paragraph breaks and are preserved.
+    Walks the original (un-dedented) lines and decides each one against
+    its parent using *relative* indent. Line ``N`` is a continuation of
+    line ``N-1`` when:
+
+    * ``N`` is non-blank and not itself a list item,
+    * ``N-1`` doesn't end with ``:`` (which marks a section header — its
+      body forms a separate block, never folds into the header),
+    * AND either ``indent(N) > parent`` (classic deeper-indent
+      soft-wrap) OR ``indent(N) == parent`` when the parent itself sits
+      under a section header (so same-indent siblings are soft-wrap
+      neighbours, not separate items).
+
+    Blank lines reset the merge state.
     """
     lines = text.split('\n')
     result: list[str] = []
+    parent_indent: Optional[int] = None
+    accepts_same_indent = False
     for line in lines:
-        if (
-            result
-            and line
-            and line[0] in ' \t'
-            and not _LIST_MARKER_RE.match(line)
-            and result[-1].strip()
-        ):
+        if not line.strip():
+            result.append(line)
+            parent_indent = None
+            accepts_same_indent = False
+            continue
+        cur_indent = len(line) - len(line.lstrip())
+        is_list = bool(_LIST_MARKER_RE.match(line))
+        prev = result[-1] if result else None
+        prev_ends_section = prev is not None and prev.rstrip().endswith(':')
+        is_continuation = (
+            parent_indent is not None
+            and not is_list
+            and not prev_ends_section
+            and (
+                cur_indent > parent_indent
+                or (accepts_same_indent and cur_indent == parent_indent)
+            )
+        )
+        if is_continuation:
             result[-1] = result[-1].rstrip() + ' ' + line.strip()
         else:
             result.append(line)
+            parent_indent = cur_indent
+            accepts_same_indent = prev_ends_section
     return '\n'.join(result)
 
 
@@ -71,25 +94,22 @@ def _flatten_indent(text: str) -> str:
 
     Two passes:
 
-    1. **Dedent** — runs ``textwrap.dedent`` to strip the common prefix
-       shared by every non-empty line. If nothing was stripped — typical
-       when line 1 sits at column 0 but the body below shares an indent —
-       re-runs dedent on lines 2+ alone so the body lands flush-left
-       while line 1 is preserved as-is.
-    2. **Unwrap** — merges continuation lines (lines that start with
-       whitespace and aren't list items) onto the previous line with a
-       single space, undoing soft-wraps from terminal renderers, editor
-       word-wrap, etc.
+    1. **Unwrap** — merges continuation lines onto their parent using
+       relative-indent comparison (see :func:`_unwrap_continuations`).
+       Runs *before* dedent so original indentation is still available
+       as a merge signal.
+    2. **Dedent** — strips leading whitespace by dedenting line 1 and
+       the remainder separately, so a header that's less indented than
+       the body doesn't drag residual body indent into the header line.
 
-    Called only when the user opted in via the "Flatten indent on paste"
-    checkbox, so no threshold is applied.
+    Called only when the user opted in via the "Flatten indent on
+    paste" checkbox, so no threshold is applied.
     """
-    dedented = textwrap.dedent(text)
-    if dedented == text:
-        head, sep, rest = text.partition('\n')
-        if sep:
-            dedented = head + sep + textwrap.dedent(rest)
-    return _unwrap_continuations(dedented)
+    text = _unwrap_continuations(text)
+    head, sep, rest = text.partition('\n')
+    if sep:
+        return textwrap.dedent(head) + sep + textwrap.dedent(rest)
+    return textwrap.dedent(head)
 
 
 class _NoteTextEdit(QTextEdit):
