@@ -395,7 +395,7 @@ Left-click the PR status label (when any comment is unresponded) for a 2-item me
 
 ### Environment Variable Token Mode
 
-SCM tokens support two modes: `token_mode: "direct"` (stored in config) or `"env_var"` (resolved from `os.environ`). Resolution via `resolve_scm_token()` in `config.py`. On startup, env var tokens are validated — invalid ones disable the provider until re-tested via the setup dialog. PR-pinned rows survive provider disconnection (they retain `remote_project_path` in `pinned_sessions.json`).
+SCM tokens support two modes: `token_mode: "direct"` (stored in config) or `"env_var"` (resolved from `os.environ`). Resolution via `resolve_scm_token()` in `config.py`. On startup, env var tokens are validated — invalid ones disable the provider until re-tested via the setup dialog. Tracked rows survive provider disconnection (they retain `pr_tracked: True` in `pinned_sessions.json` and auto-reconnect once the provider is restored).
 
 ### User Notifications
 
@@ -405,9 +405,9 @@ Per-provider enable/disable via setup dialog. Polls `get_user_notifications()` e
 
 Rows persist via `pinned_sessions.json`. Key rules:
 - Every active session is auto-pinned on discovery
-- Row survives if it has a running server OR `remote_project_path` (PR-pinned) OR active PR tracking
-- Dead rows without PR info are auto-removed
-- PR auto-reconnects on monitor restart for rows with `pr_tracked: True`
+- Row survives if it has a running server OR `pr_tracked: True` set in pinned data OR an in-flight transient flag (`_tracked_tags`, `_checking_tags`, `_starting_tags`, `_moving_tags`)
+- Dead rows that are no longer being tracked are auto-removed on the next merge tick (so a row with no PR + no PR Branch + no server never appears in the table)
+- PR auto-reconnects on monitor restart for rows with `pr_tracked: True` — that flag is also what keeps the row alive across the startup window before `_auto_track_pr_pinned` populates `_tracked_tags`/`_checking_tags`
 - `_deleted_tags` set prevents auto-refresh from re-pinning just-deleted rows
 
 ### Add Row (+ Button)

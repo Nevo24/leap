@@ -98,18 +98,24 @@ class SessionMixin(_Base):
                 if pin.get('remote_project_path') and pin.get('branch'):
                     session['pr_branch'] = pin['branch']
                 merged.append(session)
-            elif not (pin.get('remote_project_path')
-                      or tag in self._tracked_tags
+            elif not (tag in self._tracked_tags
                       or tag in self._checking_tags
                       or tag in self._starting_tags
-                      or tag in self._moving_tags):
-                # Dead row with no PR tracking — schedule for removal.
+                      or tag in self._moving_tags
+                      or pin.get('pr_tracked')):
+                # Dead row with no active PR tracking — schedule for removal.
                 # Several escape hatches honor in-flight transitions:
                 # ``_starting_tags`` covers freshly-added rows (From
-                # Local Path → Open Directly, From Resume); ``_moving_tags``
-                # covers Move-to-IDE where the old server is being killed
-                # to start a new one under the same tag — we want the
+                # Local Path → Open Directly, From Resume, and the
+                # From Git URL flows); ``_moving_tags`` covers
+                # Move-to-IDE where the old server is being killed to
+                # start a new one under the same tag — we want the
                 # row's color/alias/order preserved across that gap.
+                # ``pr_tracked`` is the persisted "tracking this PR"
+                # intent — keeps the row alive across the startup
+                # window before ``_auto_track_pr_pinned`` populates
+                # ``_tracked_tags``/``_checking_tags`` (and across
+                # transient SCM provider unavailability).
                 tags_to_remove.append(tag)
                 continue
             else:
@@ -347,9 +353,9 @@ class SessionMixin(_Base):
             # Check if this row will survive without a server
             pin = self._pinned_sessions.get(tag, {})
             has_pr = (
-                pin.get('remote_project_path')
-                or tag in self._tracked_tags
+                tag in self._tracked_tags
                 or tag in self._checking_tags
+                or pin.get('pr_tracked')
             )
             if not has_pr:
                 reply = QMessageBox.question(

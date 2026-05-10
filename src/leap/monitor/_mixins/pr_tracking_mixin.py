@@ -171,15 +171,11 @@ class PRTrackingMixin(_Base):
             _skip_prompt: If True, skip the confirmation prompt for dead rows
                 (used when called from _remove_pinned_session which has its own).
         """
-        # If server is dead and row is NOT PR-pinned, warn that stopping
-        # tracking will remove the row.  PR-pinned rows survive without
-        # active tracking (they still have remote_project_path).
+        # If server is dead, stopping tracking will remove the row.
+        # Warn so the user can confirm.
         if not _skip_prompt:
             session = next((s for s in self.sessions if s['tag'] == tag), None)
-            pin = self._pinned_sessions.get(tag, {})
-            is_pr_pinned = bool(pin.get('remote_project_path'))
-            if (session and session.get('server_pid') is None
-                    and not is_pr_pinned):
+            if session and session.get('server_pid') is None:
                 reply = QMessageBox.question(
                     self, 'Stop PR Tracking',
                     f"The server for '{tag}' is not running.\n"
@@ -208,12 +204,10 @@ class PRTrackingMixin(_Base):
             pin['pr_tracked'] = False
             save_pinned_sessions(self._pinned_sessions)
 
-        # If server is dead and not PR-pinned, remove the row entirely
+        # If server is dead, remove the row entirely
         session = next((s for s in self.sessions if s['tag'] == tag), None)
         is_dead = session and session.get('server_pid') is None
-        pin = self._pinned_sessions.get(tag, {})
-        is_pr_pinned = bool(pin.get('remote_project_path'))
-        if is_dead and not _skip_prompt and not is_pr_pinned:
+        if is_dead and not _skip_prompt:
             # Offer to close the client too
             if session and session.get('has_client', False):
                 client_reply = QMessageBox.question(
@@ -943,7 +937,11 @@ class PRTrackingMixin(_Base):
         if not tag:
             return
 
-        # Pin the session with remote info and auto-start PR tracking
+        # Pin the session with remote info and auto-start PR tracking.
+        # ``pr_tracked: True`` records the user's intent to track this
+        # PR — keeps the row alive across the initial refresh and any
+        # transient tracking errors (so the user can retry Track PR
+        # without re-adding from scratch).
         self._pinned_sessions[tag] = {
             'tag': tag,
             'remote_project_path': parsed.project_path,
@@ -953,12 +951,12 @@ class PRTrackingMixin(_Base):
             'pr_url': details.pr_url,
             'pr_iid': parsed.pr_iid,
             'scm_type': parsed.scm_type.value,
+            'pr_tracked': True,
             'project_path': '',
             'ide': '',
         }
         save_pinned_sessions(self._pinned_sessions)
         self._show_status(f"Added row '{tag}' from PR: {details.source_branch}")
-
         self._refresh_and_show_row(tag)
         self._start_tracking(tag)
 
@@ -1005,8 +1003,10 @@ class PRTrackingMixin(_Base):
         commit_suffix = f" @ {parsed.commit[:8]}" if parsed.commit else ""
         self._show_status(f"Added row '{tag}' from project: {project_name}{commit_suffix}")
 
-        self._refresh_and_show_row(tag)
+        # Start before refresh — _start_server populates _starting_tags,
+        # which keeps the row alive across the merge in _refresh_and_show_row.
         self._start_server(tag)
+        self._refresh_and_show_row(tag)
 
     def _add_row_from_local(self) -> None:
         """Add a row from a local directory path."""
@@ -1058,8 +1058,9 @@ class PRTrackingMixin(_Base):
             save_pinned_sessions(self._pinned_sessions)
             self._show_status(f"Added row '{tag}' (clone from {remote_info.project_path})")
 
-            self._refresh_and_show_row(tag)
+            # Start before refresh — see _add_row_from_project_url for why.
             self._start_server(tag)
+            self._refresh_and_show_row(tag)
         else:
             # Open directly mode
             tag = self._ask_tag([
