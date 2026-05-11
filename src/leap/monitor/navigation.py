@@ -209,6 +209,7 @@ def open_terminal_with_command(
     outcome: Optional[dict] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
     project_already_open: bool = False,
+    ide_app_path: Optional[str] = None,
 ) -> bool:
     """
     Open a new terminal tab and run a command in it.
@@ -237,6 +238,12 @@ def open_terminal_with_command(
             fallback chain.  Used to plumb in row-removal signals so
             a user clicking the X mid-move doesn't leave a 10-min
             worker spinning against a dead IDE.
+        ide_app_path: Path to the specific ``.app`` bundle the user
+            picked (Move-to-IDE flow only).  When set, JetBrains CLI
+            subprocesses are run from that bundle's
+            ``Contents/MacOS/`` directly rather than via PATH —
+            avoids ``ideScript`` landing in a *different* PyCharm
+            installation than the one ``open -a`` activated.
 
     Returns:
         True if a new terminal was opened successfully.
@@ -261,6 +268,7 @@ def open_terminal_with_command(
                 preferred_ide, project_path, command,
                 should_cancel=should_cancel,
                 project_already_open=project_already_open,
+                ide_app_path=ide_app_path,
             ):
                 return _record(preferred_ide)
         elif preferred_ide in ('VS Code', 'Cursor'):
@@ -1598,6 +1606,7 @@ def _open_jetbrains_terminal(
     command: str,
     should_cancel: Optional[Callable[[], bool]] = None,
     project_already_open: bool = False,
+    ide_app_path: Optional[str] = None,
 ) -> bool:
     """Open a new terminal tab in JetBrains IDE and run a command.
 
@@ -1624,10 +1633,28 @@ def _open_jetbrains_terminal(
     second instance and the activation is unreliable; ``open -a`` on
     the exact ``.app`` path the user picked bypasses that and is
     guaranteed to focus the right window).
+
+    If ``ide_app_path`` is given, the per-call CLI binary is resolved
+    *inside that .app's* ``Contents/MacOS/`` directory — not via
+    ``_jetbrains_env()``'s PATH walk.  Important when the user has
+    multiple PyCharm installs (e.g. CE + Pro, or several Toolbox
+    versions): otherwise ``open -a`` opens the picked instance, but
+    the ``[ide_cmd, ...]`` subprocess invocations end up talking to
+    whichever installation comes first on PATH — typically a
+    different instance, leading to ``ideScript`` landing in the
+    wrong IDE and the poll ``WAITING`` until it times out.
     """
     ide_cmd = _IDE_CMD_MAP.get(ide)
     if not ide_cmd:
         return False
+
+    # Pin the CLI binary to the user-picked .app when we have it,
+    # falling back to PATH-resolution otherwise (callers without an
+    # .app context).
+    if ide_app_path:
+        candidate = os.path.join(ide_app_path, 'Contents', 'MacOS', ide_cmd)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            ide_cmd = candidate
 
     # Result file the Groovy script writes to.  We use this — *not*
     # ideScript's exit code — to detect success, because:

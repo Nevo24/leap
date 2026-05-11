@@ -485,6 +485,12 @@ class ActionsMenuMixin(_Base):
                     outcome=outcome,
                     should_cancel=_should_cancel,
                     project_already_open=True,
+                    # Pin the JetBrains CLI to *this* .app's binary —
+                    # the friend's "opens twice" report could resurface
+                    # if multiple PyCharm installs are on PATH and
+                    # ``ideScript`` lands in a different instance than
+                    # the one ``open -a`` activated.
+                    ide_app_path=_app,
                 ))
                 result_holder['ok'] = ok
                 result_holder['used'] = outcome.get('used')
