@@ -264,7 +264,10 @@ def open_terminal_with_command(
             ):
                 return _record(preferred_ide)
         elif preferred_ide in ('VS Code', 'Cursor'):
-            if _open_vscode_terminal(project_path, command, ide=preferred_ide):
+            if _open_vscode_terminal(
+                project_path, command, ide=preferred_ide,
+                should_cancel=should_cancel,
+            ):
                 return _record(preferred_ide)
         elif preferred_ide == 'iTerm2':
             if _open_iterm2_terminal(command):
@@ -428,7 +431,21 @@ def _navigate_jetbrains(
     project_path: Optional[str],
     terminal_title: Optional[str]
 ) -> bool:
-    """Navigate to terminal in JetBrains IDE."""
+    """Navigate to a terminal tab in a JetBrains IDE.
+
+    Polls ``ideScript`` until the Groovy template (which is
+    instrumented to write a ``QUEUED``/``WAITING`` sentinel to a
+    temp file — see ``resources/activate_terminal.groovy``) reports
+    success or the budget runs out.
+
+    Budget is **60 s**, deliberately tighter than
+    ``_open_jetbrains_terminal``'s 10 min: navigate is user-triggered
+    (they clicked a button and expect a window to come forward),
+    not background work, so a long wait would feel like the click
+    did nothing.  Early-bail conditions: IDE seen running and then
+    disappeared, or IDE never appeared within the 30 s appearance
+    grace.
+    """
     script_dir = Path(__file__).parent
     groovy_script = script_dir / "resources" / "activate_terminal.groovy"
 
@@ -446,6 +463,19 @@ def _navigate_jetbrains(
     if not ide_cmd:
         return False
 
+    # Result-file the instrumented Groovy writes — see
+    # ``_open_jetbrains_terminal`` for why we use a file instead of
+    # the subprocess exit code.  ``tmp_script_path`` may not get
+    # assigned (if template read / NamedTemporaryFile raises before
+    # we reach the inner block) so it stays None and the cleanup
+    # loop skips it.
+    result_file = tempfile.NamedTemporaryFile(
+        mode='w', suffix='.txt', prefix='leap-navresult-', delete=False,
+    )
+    result_file.close()
+    result_path = result_file.name
+    tmp_script_path: Optional[str] = None
+
     try:
         # Read template and substitute values
         with open(groovy_script, 'r') as f:
@@ -462,40 +492,82 @@ def _navigate_jetbrains(
                 'var terminalTabName = System.getenv("LEAP_TERMINAL_TITLE")',
                 f'var terminalTabName = "{_escape_groovy(terminal_title)}"'
             )
+        # Always wire up the result path — Python relies on this.
+        custom_script = custom_script.replace(
+            'var leapResultPath = System.getenv("LEAP_RESULT_PATH")',
+            f'var leapResultPath = "{_escape_groovy(result_path)}"'
+        )
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.groovy', delete=False) as tmp:
             tmp.write(custom_script)
             tmp_script_path = tmp.name
 
-        try:
-            env = _jetbrains_env()
+        env = _jetbrains_env()
 
-            # First, open/focus the project if we have a project path
-            if project_path:
+        # Open/focus the project once; the poll below waits for the
+        # IDE to actually load it.
+        if project_path:
+            try:
                 subprocess.run(
                     [ide_cmd, project_path],
-                    capture_output=True,
-                    env=env,
-                    timeout=5
+                    capture_output=True, env=env, timeout=5,
                 )
-                time.sleep(0.3)
+            except subprocess.TimeoutExpired:
+                pass
 
-            # Then run the groovy script to activate terminal
-            result = subprocess.run(
-                [ide_cmd, 'ideScript', tmp_script_path],
-                capture_output=True,
-                timeout=5,
-                env=env
-            )
-            if result.returncode == 0:
-                return True
-        finally:
+        deadline = time.monotonic() + 60.0
+        appearance_deadline = time.monotonic() + 30.0
+        ide_ever_seen = False
+        while True:
+            running = _is_jetbrains_running(ide)
+            if running:
+                ide_ever_seen = True
+            elif ide_ever_seen:
+                return False  # IDE was up and is now gone
+            elif time.monotonic() > appearance_deadline:
+                return False  # never appeared — bad bundle?
+
+            # Clear stale result from previous iteration.
             try:
-                os.unlink(tmp_script_path)
+                os.unlink(result_path)
             except OSError:
                 pass
+
+            try:
+                subprocess.run(
+                    [ide_cmd, 'ideScript', tmp_script_path],
+                    capture_output=True, env=env, timeout=15,
+                )
+            except subprocess.TimeoutExpired:
+                # Same reasoning as the open-helper: an in-flight
+                # IPC could still be processed by the IDE — better
+                # to bail than risk a second activation request
+                # stomping on the first.
+                return False
+
+            try:
+                with open(result_path, 'r') as f:
+                    content = f.read().strip()
+                if content == 'QUEUED':
+                    return True
+            except (OSError, IOError):
+                pass
+
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
     except (subprocess.SubprocessError, OSError):
         pass
+    finally:
+        # Clean up both temp files on every exit path — even when
+        # we bailed out before ``tmp_script_path`` was assigned.
+        for p in (tmp_script_path, result_path):
+            if not p:
+                continue
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
     return False
 
@@ -1469,6 +1541,30 @@ def _schedule_warp_config_cleanup(path: Path) -> None:
     t.start()
 
 
+def _is_vscode_running(ide: str = 'VS Code') -> bool:
+    """Return True if VS Code or Cursor is currently running.
+
+    Counterpart to ``_is_jetbrains_running`` for the VS Code / Cursor
+    poll loops.  Matched primarily by ``localizedName`` because
+    Cursor's bundle id (``com.todesktop.230313mzl4w4u92``) doesn't
+    contain ``'cursor'``; VS Code's name-and-bundle both contain
+    ``'visual studio code'`` / ``'vscode'`` so we accept either.
+    """
+    try:
+        for app in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
+            name = (app.localizedName() or '').lower()
+            bundle = (app.bundleIdentifier() or '').lower()
+            if ide == 'Cursor':
+                if 'cursor' in name:
+                    return True
+            elif 'visual studio code' in name or 'vscode' in bundle:
+                return True
+    except Exception:
+        logger.debug("_is_vscode_running error", exc_info=True)
+        return True
+    return False
+
+
 def _is_jetbrains_running(ide: str) -> bool:
     """Return True if a JetBrains app matching *ide* is currently running.
 
@@ -1554,6 +1650,7 @@ def _open_jetbrains_terminal(
     )
     result_file.close()
     result_path = result_file.name
+    tmp_script_path: Optional[str] = None
 
     project_match = ""
     if project_path:
@@ -1637,77 +1734,80 @@ fw.close()
             tmp.write(groovy_script)
             tmp_script_path = tmp.name
 
-        try:
-            # Poll the IDE's scripting engine until QUEUED appears in
-            # the result file or our (deliberately generous) budget is
-            # exhausted.  PyCharm cold-start with indexing/plugin load
-            # can take several minutes on a slow machine or first run.
-            #
-            # Per-iteration: clear the result file, run ``ideScript``,
-            # read the file.  ``QUEUED`` = success; anything else (or
-            # missing) = retry.  We retry on subprocess non-zero too
-            # but *not* on TimeoutExpired (could leave a duplicate
-            # ``leap`` tab queued in the IDE — see fix #A).
-            # Per-call timeout is 30 s.
-            #
-            # Three early-bail conditions besides the 10-min deadline:
-            #   * ``should_cancel`` — caller asks us to stop (X button).
-            #   * IDE seen running, then gone — closed/crashed.
-            #   * IDE never appeared within ``appearance_deadline``
-            #     (90 s) — probably picked a broken bundle.
-            deadline = time.monotonic() + 600.0  # 10 minutes
-            appearance_deadline = time.monotonic() + 90.0
-            ide_ever_seen = False
-            while True:
-                if should_cancel is not None and should_cancel():
-                    return False
+        # Poll the IDE's scripting engine until QUEUED appears in
+        # the result file or our (deliberately generous) budget is
+        # exhausted.  PyCharm cold-start with indexing/plugin load
+        # can take several minutes on a slow machine or first run.
+        #
+        # Per-iteration: clear the result file, run ``ideScript``,
+        # read the file.  ``QUEUED`` = success; anything else (or
+        # missing) = retry.  We retry on subprocess non-zero too
+        # but *not* on TimeoutExpired (could leave a duplicate
+        # ``leap`` tab queued in the IDE — see fix #A).
+        # Per-call timeout is 30 s.
+        #
+        # Three early-bail conditions besides the 10-min deadline:
+        #   * ``should_cancel`` — caller asks us to stop (X button).
+        #   * IDE seen running, then gone — closed/crashed.
+        #   * IDE never appeared within ``appearance_deadline``
+        #     (90 s) — probably picked a broken bundle.
+        deadline = time.monotonic() + 600.0  # 10 minutes
+        appearance_deadline = time.monotonic() + 90.0
+        ide_ever_seen = False
+        while True:
+            if should_cancel is not None and should_cancel():
+                return False
 
-                running = _is_jetbrains_running(ide)
-                if running:
-                    ide_ever_seen = True
-                elif ide_ever_seen:
-                    return False  # IDE was up, now gone — give up
-                elif time.monotonic() > appearance_deadline:
-                    return False  # never showed up — bad bundle?
+            running = _is_jetbrains_running(ide)
+            if running:
+                ide_ever_seen = True
+            elif ide_ever_seen:
+                return False  # IDE was up, now gone — give up
+            elif time.monotonic() > appearance_deadline:
+                return False  # never showed up — bad bundle?
 
-                # Clear result file from previous iteration so we
-                # don't read a stale value.
-                try:
-                    os.unlink(result_path)
-                except OSError:
-                    pass
+            # Clear result file from previous iteration so we
+            # don't read a stale value.
+            try:
+                os.unlink(result_path)
+            except OSError:
+                pass
 
-                try:
-                    subprocess.run(
-                        [ide_cmd, 'ideScript', tmp_script_path],
-                        capture_output=True,
-                        timeout=30,
-                        env=env
-                    )
-                except subprocess.TimeoutExpired:
-                    return False
+            try:
+                subprocess.run(
+                    [ide_cmd, 'ideScript', tmp_script_path],
+                    capture_output=True,
+                    timeout=30,
+                    env=env
+                )
+            except subprocess.TimeoutExpired:
+                return False
 
-                # Check result file.
-                try:
-                    with open(result_path, 'r') as f:
-                        content = f.read().strip()
-                    if content == 'QUEUED':
-                        return True
-                    # 'WAITING' or anything else — retry
-                except (OSError, IOError):
-                    pass  # File missing — IDE didn't get our request; retry
+            # Check result file.
+            try:
+                with open(result_path, 'r') as f:
+                    content = f.read().strip()
+                if content == 'QUEUED':
+                    return True
+                # 'WAITING' or anything else — retry
+            except (OSError, IOError):
+                pass  # File missing — IDE didn't get our request; retry
 
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(0.5)
-        finally:
-            for path in (tmp_script_path, result_path):
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
     except (subprocess.SubprocessError, OSError):
         pass
+    finally:
+        # Clean up both temp files on every exit path — even when we
+        # bailed out before ``tmp_script_path`` was assigned.
+        for path in (tmp_script_path, result_path):
+            if not path:
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     return False
 
@@ -1781,27 +1881,97 @@ def _open_vscode_terminal(
     project_path: Optional[str],
     command: str,
     ide: str = 'VS Code',
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> bool:
-    """Open a new VS Code/Cursor terminal tab and run a command."""
+    """Open a new VS Code/Cursor terminal tab and run a command.
+
+    Talks to the Leap VS Code extension via ``~/.leap-terminal-request``.
+    The extension reads the file, creates a terminal with the command,
+    and ``unlink``s the file (see ``vscode-extension/extension.js``
+    ``processRequestFile``).  We use the unlink as our success signal
+    — if the file persists, the extension didn't process it (cold
+    start, not installed, wrong window focused, etc.) and we should
+    keep waiting or fall back.
+
+    Symmetric with ``_open_jetbrains_terminal``'s poll: same 10-min
+    budget, same early-bail conditions (cancellation, IDE never
+    appeared in 90 s, IDE was up and disappeared).  Per-iteration
+    sleep is 0.5 s.
+    """
     try:
         env, code_path = _vscode_env_and_path(ide)
         if not code_path:
             return False
 
         if project_path:
-            subprocess.run(
-                [code_path, '--reuse-window', project_path],
-                capture_output=True,
-                timeout=5,
-                env=env
-            )
-            time.sleep(0.3)
+            try:
+                subprocess.run(
+                    [code_path, '--reuse-window', project_path],
+                    capture_output=True,
+                    timeout=5,
+                    env=env
+                )
+            except subprocess.TimeoutExpired:
+                # CLI hung handing off to VS Code — the IDE may still
+                # be coming up.  Don't bail; the poll loop below will
+                # wait for the extension to consume our request.
+                pass
 
         request_file = os.path.expanduser('~/.leap-terminal-request')
+        # Clear any stale request from a previous attempt so we don't
+        # mistake an old still-pending request for the extension
+        # consuming ours.
+        try:
+            os.unlink(request_file)
+        except OSError:
+            pass
         with open(request_file, 'w') as f:
             f.write(f'open:{command}')
-        time.sleep(0.1)
-        return True
+
+        # Poll for the extension to process and unlink the request.
+        deadline = time.monotonic() + 600.0  # 10 minutes
+        appearance_deadline = time.monotonic() + 90.0
+        ide_ever_seen = False
+        while True:
+            if should_cancel is not None and should_cancel():
+                # Try to clean up our orphaned request so a later
+                # extension load doesn't surprise the user with a
+                # stray terminal.
+                try:
+                    os.unlink(request_file)
+                except OSError:
+                    pass
+                return False
+
+            running = _is_vscode_running(ide)
+            if running:
+                ide_ever_seen = True
+            elif ide_ever_seen:
+                # VS Code/Cursor was up and is now gone — give up.
+                try:
+                    os.unlink(request_file)
+                except OSError:
+                    pass
+                return False
+            elif time.monotonic() > appearance_deadline:
+                try:
+                    os.unlink(request_file)
+                except OSError:
+                    pass
+                return False
+
+            # Extension consumes the request by unlinking — that's
+            # our success signal.
+            if not os.path.exists(request_file):
+                return True
+
+            if time.monotonic() >= deadline:
+                try:
+                    os.unlink(request_file)
+                except OSError:
+                    pass
+                return False
+            time.sleep(0.5)
     except (subprocess.SubprocessError, OSError):
         pass
 
