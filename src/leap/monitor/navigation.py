@@ -239,11 +239,15 @@ def open_terminal_with_command(
             a user clicking the X mid-move doesn't leave a 10-min
             worker spinning against a dead IDE.
         ide_app_path: Path to the specific ``.app`` bundle the user
-            picked (Move-to-IDE flow only).  When set, JetBrains CLI
-            subprocesses are run from that bundle's
-            ``Contents/MacOS/`` directly rather than via PATH —
-            avoids ``ideScript`` landing in a *different* PyCharm
-            installation than the one ``open -a`` activated.
+            picked (Move-to-IDE flow only).  When set:
+              * JetBrains CLI subprocesses are run from that bundle's
+                ``Contents/MacOS/`` directly rather than via PATH.
+              * VS Code / Cursor's CLI is pinned to that bundle's
+                ``Contents/Resources/app/bin/<code|cursor>``.
+            In both cases, this prevents subprocess calls from
+            routing to a *different* installation than the one
+            ``open -a`` activated when the user has multiple
+            versions installed (CE + Pro, Stable + Insiders, etc.).
 
     Returns:
         True if a new terminal was opened successfully.
@@ -275,6 +279,7 @@ def open_terminal_with_command(
             if _open_vscode_terminal(
                 project_path, command, ide=preferred_ide,
                 should_cancel=should_cancel,
+                ide_app_path=ide_app_path,
             ):
                 return _record(preferred_ide)
         elif preferred_ide == 'iTerm2':
@@ -1909,6 +1914,7 @@ def _open_vscode_terminal(
     command: str,
     ide: str = 'VS Code',
     should_cancel: Optional[Callable[[], bool]] = None,
+    ide_app_path: Optional[str] = None,
 ) -> bool:
     """Open a new VS Code/Cursor terminal tab and run a command.
 
@@ -1924,9 +1930,25 @@ def _open_vscode_terminal(
     budget, same early-bail conditions (cancellation, IDE never
     appeared in 90 s, IDE was up and disappeared).  Per-iteration
     sleep is 0.5 s.
+
+    ``ide_app_path``: when set (Move-to-IDE flow), pins ``code_path``
+    to the picked bundle's CLI at ``Contents/Resources/app/bin/<cli>``
+    instead of resolving via PATH.  Avoids the same multi-install
+    routing bug ``ide_app_path`` fixes for JetBrains: if the user
+    has VS Code Stable + Insiders and PATH resolves to the wrong
+    one, ``--reuse-window`` opens the wrong installation.
     """
     try:
         env, code_path = _vscode_env_and_path(ide)
+        # Prefer the CLI inside the picked .app — same rationale as
+        # the JetBrains ``ide_app_path`` pinning.
+        if ide_app_path:
+            cli_name = 'cursor' if ide == 'Cursor' else 'code'
+            candidate = os.path.join(
+                ide_app_path, 'Contents', 'Resources', 'app', 'bin', cli_name,
+            )
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                code_path = candidate
         if not code_path:
             return False
 
