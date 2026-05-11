@@ -45,8 +45,13 @@ class PRTrackingMixin(_Base):
         """Auto-reconnect PR tracking for sessions that were tracked last time."""
         if not self._scm_providers:
             return
+        # Skip tags already being checked — protects against duplicate
+        # workers when this fires twice in quick succession (startup
+        # auto-reconnect + SCM-dialog Save).
         for tag, pin in self._pinned_sessions.items():
-            if pin.get('pr_tracked') and tag not in self._tracked_tags:
+            if (pin.get('pr_tracked')
+                    and tag not in self._tracked_tags
+                    and tag not in self._checking_tags):
                 self._start_tracking(tag, _silent=True)
 
     def _start_tracking(self, tag: str, _silent: bool = False) -> None:
@@ -163,13 +168,18 @@ class PRTrackingMixin(_Base):
         if self._scm_oneshot_worker is worker:
             self._scm_oneshot_worker = None
 
-    def _stop_tracking(self, tag: str, _skip_prompt: bool = False) -> None:
+    def _stop_tracking(self, tag: str, _skip_prompt: bool = False,
+                       _skip_ui: bool = False) -> None:
         """Stop PR tracking for a session.
 
         Args:
             tag: Session tag.
             _skip_prompt: If True, skip the confirmation prompt for dead rows
                 (used when called from _remove_pinned_session which has its own).
+            _skip_ui: If True, skip the trailing ``_update_table`` /
+                ``_update_dock_badge`` calls — caller will refresh itself.
+                Avoids a double-render when the caller (``_remove_pinned_session``)
+                still has more state changes to make before the final render.
         """
         # If server is dead AND the row has no remaining PR data to
         # display, stopping tracking will remove the row.  Warn so the
@@ -244,8 +254,9 @@ class PRTrackingMixin(_Base):
                 and self._scm_poll_timer.isActive()):
             self._scm_poll_timer.stop()
 
-        self._update_table()
-        self._update_dock_badge()
+        if not _skip_ui:
+            self._update_table()
+            self._update_dock_badge()
 
     def _clear_pinned_pr_data(self, tag: str) -> None:
         """Clear pinned PR data so Track PR falls back to the server's live git info."""

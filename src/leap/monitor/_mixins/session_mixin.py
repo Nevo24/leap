@@ -515,6 +515,13 @@ class SessionMixin(_Base):
         self._remove_from_row_order({tag})
         self._state_changed_at.pop(tag, None)
         self._dismissed_new_status.discard(tag)
+        # PR-fire-icon state — in single-threaded Qt these dicts are
+        # already cleaned by ``_stop_tracking`` for any tracked row,
+        # but discarding here makes the helper safe to call on any
+        # removal path without worrying about whether the caller went
+        # through ``_stop_tracking``.
+        self._pr_changed_at.pop(tag, None)
+        self._dismissed_pr_new_status.discard(tag)
 
     def _remove_dead_untracked_row(self, tag: str) -> None:
         """Silently remove a dead row whose PR has been definitively
@@ -539,8 +546,15 @@ class SessionMixin(_Base):
         self._pinned_sessions.pop(tag, None)
         save_pinned_sessions(self._pinned_sessions)
 
-        # Clean up PR tracking (skip prompt — _delete_row already prompted)
-        self._stop_tracking(tag, _skip_prompt=True)
+        # Clean up PR tracking (skip prompt — _delete_row already
+        # prompted; skip UI refresh — we do it ourselves at the end so
+        # the user only sees one redraw instead of two).
+        self._stop_tracking(tag, _skip_prompt=True, _skip_ui=True)
+
+        # Drop transient in-flight guards too — otherwise stale entries
+        # leak when a row is deleted mid-server-start or mid-Move-to-IDE.
+        self._starting_tags.discard(tag)
+        self._moving_tags.discard(tag)
 
         # Clean up per-tag display state
         self._cleanup_row_state(tag)
@@ -548,6 +562,7 @@ class SessionMixin(_Base):
         # Remove from sessions list and refresh table
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
         self._update_table()
+        self._update_dock_badge()
 
     def _remove_from_row_order(self, tags: set[str]) -> None:
         """Remove tags from the persisted row order list."""
