@@ -7,12 +7,18 @@ the root of that directory.
 These helpers are deliberately stateless and module-level so tests can
 monkey-patch ``NOTES_DIR`` / ``_NOTES_META_FILE`` to redirect FS access
 into a tmp dir — the same pattern used by ``notes_undo``'s tests.
+
+This module is the **canonical** home for note metadata IO.  Earlier
+revisions of the codebase had byte-identical duplicate copies of these
+helpers in ``notes_undo.py``; ``notes_undo.py`` now imports from here.
 """
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
+from leap.utils.atomic_write import atomic_write_json
 from leap.utils.constants import NOTES_DIR
 
 
@@ -94,11 +100,23 @@ def _load_notes_meta() -> dict:
 
 
 def _save_notes_meta(meta: dict) -> None:
+    # ``atomic_write_json`` (tmp + fsync + atomic rename) instead of a
+    # bare ``write_text`` — a crash mid-write would otherwise truncate
+    # ``.notes_meta.json`` and the load path's ``except
+    # json.JSONDecodeError: return {}`` would silently wipe the user's
+    # folder structure, pinned state, mode flags, and created_at
+    # timestamps with no visible error.
     try:
-        NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        _NOTES_META_FILE.write_text(json.dumps(meta, indent=2), encoding='utf-8')
+        atomic_write_json(_NOTES_META_FILE, meta)
     except OSError:
         pass
+
+
+def _set_note_created_at(name: str) -> None:
+    """Stamp the note's created_at timestamp (now) in metadata."""
+    meta = _load_notes_meta()
+    meta.setdefault(name, {})['created_at'] = int(time.time())
+    _save_notes_meta(meta)
 
 
 def _get_note_mode(name: str) -> str:

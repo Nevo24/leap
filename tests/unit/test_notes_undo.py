@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 import leap.monitor.dialogs.notes_undo as nu
+from leap.monitor.dialogs.notes import ordering as nd_ordering
+from leap.monitor.dialogs.notes import persistence as nd_persist
 from leap.monitor.dialogs.notes_undo import (
     ChecklistDeleteItemCmd,
     ChecklistReorderCmd,
@@ -123,13 +125,21 @@ class TestUndoStack:
 
 @pytest.fixture
 def notes_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # Helpers that read NOTES_DIR / NOTE_IMAGES_DIR / _NOTES_META_FILE
+    # bind those names in their own module's namespace.  notes_undo
+    # imports the FS helpers from ``notes.persistence`` / ``notes.ordering``
+    # now, so patching ``nu`` alone wouldn't redirect them — patch the
+    # canonical modules too.  Matches the pattern in test_notes_helpers.py.
     d = tmp_path / 'notes'
     d.mkdir()
     img_d = tmp_path / 'note_images'
     img_d.mkdir()
+    meta = d / '.notes_meta.json'
     monkeypatch.setattr(nu, 'NOTES_DIR', d)
-    monkeypatch.setattr(nu, '_NOTES_META_FILE', d / '.notes_meta.json')
     monkeypatch.setattr(nu, 'NOTE_IMAGES_DIR', img_d)
+    monkeypatch.setattr(nd_persist, 'NOTES_DIR', d)
+    monkeypatch.setattr(nd_persist, '_NOTES_META_FILE', meta)
+    monkeypatch.setattr(nd_ordering, 'NOTES_DIR', d)
     return d
 
 

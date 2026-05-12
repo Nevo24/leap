@@ -7,7 +7,6 @@ mode switch, checklist mutations).
 
 from __future__ import annotations
 
-import json
 import shutil
 import time
 from abc import ABC, abstractmethod
@@ -16,10 +15,23 @@ from typing import TYPE_CHECKING, Optional
 
 from leap.utils.constants import NOTE_IMAGES_DIR, NOTES_DIR  # NOTE_IMAGES_DIR is re-exported; tests monkey-patch it here
 
+from leap.monitor.dialogs.notes.persistence import (
+    _load_notes_meta,
+    _note_path,
+    _save_notes_meta,
+    _set_note_created_at,
+)
+from leap.monitor.dialogs.notes.ordering import (
+    _insert_into_order,
+    _load_order,
+    _remove_from_order,
+    _rename_folder_meta,
+    _rename_order_keys,
+    _save_order,
+)
+
 if TYPE_CHECKING:
     from leap.monitor.dialogs.notes_dialog import NotesDialog
-
-_NOTES_META_FILE: Path = NOTES_DIR / '.notes_meta.json'
 
 
 # ---------------------------------------------------------------------------
@@ -202,104 +214,13 @@ class NotesUndoStack:
 
 
 # ---------------------------------------------------------------------------
-# Helper functions (mirror notes_dialog.py equivalents for command use)
-# ---------------------------------------------------------------------------
-
-def _note_path(name: str) -> Path:
-    return NOTES_DIR / f'{name}.txt'
-
-
-def _load_notes_meta() -> dict:
-    try:
-        if _NOTES_META_FILE.exists():
-            return json.loads(_NOTES_META_FILE.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
-        pass
-    return {}
-
-
-def _save_notes_meta(meta: dict) -> None:
-    try:
-        NOTES_DIR.mkdir(parents=True, exist_ok=True)
-        _NOTES_META_FILE.write_text(json.dumps(meta, indent=2), encoding='utf-8')
-    except OSError:
-        pass
-
-
-def _set_note_created_at(name: str) -> None:
-    """Stamp the note's created_at timestamp (now) in metadata."""
-    meta = _load_notes_meta()
-    meta.setdefault(name, {})['created_at'] = int(time.time())
-    _save_notes_meta(meta)
-
-
-def _load_order() -> dict[str, list[str]]:
-    return _load_notes_meta().get('_order', {})
-
-
-def _save_order(order: dict[str, list[str]]) -> None:
-    meta = _load_notes_meta()
-    if order:
-        meta['_order'] = order
-    else:
-        meta.pop('_order', None)
-    _save_notes_meta(meta)
-
-
-def _remove_from_order(folder: str, leaf: str) -> None:
-    order = _load_order()
-    lst = order.get(folder, [])
-    if leaf in lst:
-        lst.remove(leaf)
-        if lst:
-            order[folder] = lst
-        else:
-            order.pop(folder, None)
-        _save_order(order)
-
-
-def _insert_into_order(folder: str, leaf: str, position: Optional[int] = None) -> None:
-    """Insert *leaf* into *folder*'s order at *position* (or end if None)."""
-    order = _load_order()
-    lst = order.get(folder, [])
-    if leaf in lst:
-        return
-    if position is not None and 0 <= position <= len(lst):
-        lst.insert(position, leaf)
-    else:
-        lst.append(leaf)
-    order[folder] = lst
-    _save_order(order)
-
-
-def _rename_meta_keys(from_prefix: str, to_prefix: str) -> None:
-    """Rename metadata keys that start with *from_prefix* to *to_prefix*."""
-    meta = _load_notes_meta()
-    updated: dict = {}
-    for key, value in meta.items():
-        if key == '_order':
-            updated[key] = value
-        elif key == from_prefix or key.startswith(from_prefix + '/'):
-            updated[to_prefix + key[len(from_prefix):]] = value
-        else:
-            updated[key] = value
-    if updated != meta:
-        _save_notes_meta(updated)
-
-
-def _rename_order_keys(from_prefix: str, to_prefix: str) -> None:
-    """Rename _order dict keys from *from_prefix* to *to_prefix*."""
-    order = _load_order()
-    changed = False
-    for old_k in [k for k in order if k == from_prefix or k.startswith(from_prefix + '/')]:
-        order[to_prefix + old_k[len(from_prefix):]] = order.pop(old_k)
-        changed = True
-    if changed:
-        _save_order(order)
-
-
-# ---------------------------------------------------------------------------
 # Concrete command classes
+#
+# All FS / metadata / ordering helpers used by these commands now live
+# in ``notes.persistence`` and ``notes.ordering`` (imported at the top
+# of the module).  Earlier revisions kept byte-identical duplicates of
+# them inline here, which silently diverged from the canonical copies
+# (in particular, the inline ``_save_notes_meta`` was not crash-safe).
 # ---------------------------------------------------------------------------
 
 class CreateNoteCmd(UndoCommand):
@@ -621,7 +542,7 @@ class RenameFolderCmd(UndoCommand):
             (NOTES_DIR / from_path).rename(NOTES_DIR / to_path)
         except OSError:
             return
-        _rename_meta_keys(from_path, to_path)
+        _rename_folder_meta(from_path, to_path)
         order = _load_order()
         lst = order.get(self._parent_folder, [])
         if from_leaf in lst:
@@ -712,7 +633,7 @@ class MoveFolderCmd(UndoCommand):
             src.rename(dest)
         except OSError:
             return
-        _rename_meta_keys(from_path, to_path)
+        _rename_folder_meta(from_path, to_path)
         _remove_from_order(from_parent, _leaf_name(from_path))
         _rename_order_keys(from_path, to_path)
         # Insert into target parent order at specified position

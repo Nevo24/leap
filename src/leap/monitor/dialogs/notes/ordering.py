@@ -7,6 +7,8 @@ and folder-meta helpers) and a stored child ordering (under the special
 survives renames and reorders.
 """
 
+from typing import Optional
+
 from leap.utils.constants import NOTES_DIR
 
 from leap.monitor.dialogs.notes.persistence import (
@@ -92,6 +94,20 @@ def _remove_from_order(folder: str, leaf: str) -> None:
         else:
             order.pop(folder, None)
         _save_order(order)
+
+
+def _insert_into_order(folder: str, leaf: str, position: Optional[int] = None) -> None:
+    """Insert *leaf* into *folder*'s order at *position* (or end if None)."""
+    order = _load_order()
+    lst = order.get(folder, [])
+    if leaf in lst:
+        return
+    if position is not None and 0 <= position <= len(lst):
+        lst.insert(position, leaf)
+    else:
+        lst.append(leaf)
+    order[folder] = lst
+    _save_order(order)
 
 
 def _rename_order_keys(old_prefix: str, new_prefix: str) -> None:
