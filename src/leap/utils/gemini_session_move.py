@@ -30,6 +30,7 @@ import re
 from pathlib import Path
 from typing import Callable, Optional
 
+from leap.utils.atomic_write import atomic_write_json
 from leap.utils.relocation import (
     RelocationError,
     best_effort_remove,
@@ -236,14 +237,16 @@ def _load_projects_registry() -> dict[str, str]:
 def _save_projects_registry(projects: dict[str, str]) -> None:
     """Atomically rewrite ``~/.gemini/projects.json`` with ``projects``.
 
-    Wrapped in the same JSON shape Gemini itself writes.  Tmp + rename
-    so a partial write can't corrupt the file.
+    Wrapped in the same JSON shape Gemini itself writes.
+    ``atomic_write_json`` gives us a unique tmp filename and an explicit
+    ``fsync`` before rename — without the fsync a crash between
+    ``write`` and ``rename`` could lose the registry update and leave a
+    moved JSONL orphaned (file at new slug, registry still pointing at
+    the old one).  Without the unique tmp name two concurrent relocates
+    sharing this module would clobber each other's tmp.
     """
-    GEMINI_HOME.mkdir(parents=True, exist_ok=True)
     payload = {'projects': projects}
-    tmp = GEMINI_PROJECTS_REGISTRY.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, indent=2))
-    os.replace(str(tmp), str(GEMINI_PROJECTS_REGISTRY))
+    atomic_write_json(GEMINI_PROJECTS_REGISTRY, payload)
 
 
 def _claim_new_slug(cwd: str, registry: dict[str, str]) -> str:

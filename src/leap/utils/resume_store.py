@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from leap.utils.atomic_write import atomic_write_json
+
 
 # Cap per (cli, tag) file; oldest-first trimming keeps this bounded.
 MAX_ENTRIES_PER_TAG: int = 20
@@ -124,7 +126,6 @@ def record_session(
     if transcript_path and not os.path.isabs(transcript_path):
         transcript_path = os.path.abspath(transcript_path)
     try:
-        tag_file.parent.mkdir(parents=True, exist_ok=True)
         entries = _load_raw_entries(tag_file)
         entries = [e for e in entries if e.get("session_id") != session_id]
         entries.append({
@@ -134,9 +135,14 @@ def record_session(
             "last_seen": time.time(),
         })
         entries = entries[-MAX_ENTRIES_PER_TAG:]
-        tmp = tag_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(entries, indent=2))
-        os.replace(tmp, tag_file)
+        # ``atomic_write_json`` uses ``tempfile.mkstemp`` for a unique tmp
+        # filename and ``fsync``s before rename — both matter here.
+        # Two hooks firing concurrently for the same (cli, tag) used to
+        # share a fixed ``.json.tmp`` name and one writer's data could
+        # silently overwrite the other's tmp (or fail with ENOENT on
+        # ``os.replace``).  Unique names also remove the orphan-tmp
+        # cleanup concern.  ``atomic_write_json`` makes the parent dir.
+        atomic_write_json(tag_file, entries)
     except (OSError, ValueError):
         pass
 
@@ -202,20 +208,15 @@ def relocate_records(
             changed = True
         if not changed:
             continue
-        tmp = tag_file.with_suffix(".json.tmp")
+        # Same atomic-write reasoning as ``record_session`` — unique tmp
+        # filename + fsync via ``atomic_write_json``.  On failure the
+        # record's cwd stays at the old value and the picker will
+        # display the stale cwd until the next hook fire re-records.
         try:
-            tmp.write_text(json.dumps(entries, indent=2))
-            os.replace(tmp, tag_file)
+            atomic_write_json(tag_file, entries)
             rewritten += 1
         except (OSError, ValueError):
-            # Best-effort: a failed rewrite means the record's cwd
-            # stays at the old value; the picker will display the
-            # stale cwd until the next hook fire re-records.  Try to
-            # clean up the orphan tmp.
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+            pass
     return rewritten
 
 
