@@ -15,7 +15,8 @@ try:
 except ImportError:  # optional dependency
     WebClient = None  # type: ignore[assignment,misc]
 
-from leap.utils.constants import SLACK_DIR, atomic_json_write
+from leap.utils.atomic_write import atomic_write_json
+from leap.utils.constants import SLACK_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def save_slack_config(config: dict[str, Any]) -> None:
     Args:
         config: Configuration dictionary to persist.
     """
-    atomic_json_write(_CONFIG_FILE, config)
+    atomic_write_json(_CONFIG_FILE, config)
 
 
 def load_slack_sessions() -> dict[str, dict[str, Any]]:
@@ -72,7 +73,7 @@ def save_slack_sessions(sessions: dict[str, dict[str, Any]]) -> None:
     Args:
         sessions: Mapping of tag → session data.
     """
-    atomic_json_write(_SESSIONS_FILE, sessions)
+    atomic_write_json(_SESSIONS_FILE, sessions)
 
 
 def resolve_team_id() -> str:

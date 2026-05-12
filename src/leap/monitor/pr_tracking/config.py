@@ -6,7 +6,8 @@ import os
 import tempfile
 from typing import Any, Optional
 
-from leap.utils.constants import STORAGE_DIR, atomic_json_write
+from leap.utils.atomic_write import atomic_write_json
+from leap.utils.constants import STORAGE_DIR
 
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
@@ -111,7 +112,7 @@ def load_notification_seen() -> dict[str, list[str]]:
 
 def save_notification_seen(seen: dict[str, list[str]]) -> None:
     """Save the set of seen notification IDs per SCM type."""
-    atomic_json_write(NOTIFICATION_SEEN_FILE, seen)
+    atomic_write_json(NOTIFICATION_SEEN_FILE, seen)
 
 
 def resolve_scm_token(config: dict[str, Any], token_key: str) -> Optional[str]:
@@ -232,7 +233,7 @@ def load_gitlab_config() -> Optional[dict[str, Any]]:
 
 def save_gitlab_config(config: dict[str, Any]) -> None:
     """Save GitLab configuration to storage."""
-    atomic_json_write(GITLAB_CONFIG_FILE, config)
+    atomic_write_json(GITLAB_CONFIG_FILE, config)
 
 
 def load_github_config() -> Optional[dict[str, Any]]:
@@ -253,7 +254,7 @@ def load_github_config() -> Optional[dict[str, Any]]:
 
 def save_github_config(config: dict[str, Any]) -> None:
     """Save GitHub configuration to storage."""
-    atomic_json_write(GITHUB_CONFIG_FILE, config)
+    atomic_write_json(GITHUB_CONFIG_FILE, config)
 
 
 def _migrate_notification_keys(prefs: dict[str, Any]) -> bool:
@@ -291,13 +292,13 @@ def load_monitor_prefs() -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
     if _migrate_notification_keys(prefs):
-        atomic_json_write(MONITOR_PREFS_FILE, prefs)
+        atomic_write_json(MONITOR_PREFS_FILE, prefs)
     return prefs
 
 
 def save_monitor_prefs(prefs: dict[str, Any]) -> None:
     """Save monitor UI preferences to storage."""
-    atomic_json_write(MONITOR_PREFS_FILE, prefs)
+    atomic_write_json(MONITOR_PREFS_FILE, prefs)
 
 
 def load_send_position() -> str:
@@ -551,7 +552,7 @@ def load_saved_presets() -> dict[str, list[str]]:
 
 def _write_saved_presets(presets: dict[str, list[str]]) -> None:
     """Write all named presets to storage."""
-    atomic_json_write(LEAP_PRESETS_FILE, presets, ensure_ascii=False)
+    atomic_write_json(LEAP_PRESETS_FILE, presets, ensure_ascii=False)
 
 
 def save_named_preset(name: str, messages: list[str]) -> None:
@@ -608,7 +609,7 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
                     _migrate_mr_to_pr_keys(session)
                     migrated = True
             if migrated:
-                atomic_json_write(PINNED_SESSIONS_FILE, data)
+                atomic_write_json(PINNED_SESSIONS_FILE, data)
             return data
     except (json.JSONDecodeError, OSError):
         pass
@@ -617,4 +618,4 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
 
 def save_pinned_sessions(sessions: dict[str, dict[str, Any]]) -> None:
     """Save pinned sessions to storage."""
-    atomic_json_write(PINNED_SESSIONS_FILE, sessions)
+    atomic_write_json(PINNED_SESSIONS_FILE, sessions)

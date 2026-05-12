@@ -12,7 +12,8 @@ import time
 from typing import Any
 
 from leap.cli_providers.states import CLIState
-from leap.utils.constants import SLACK_DIR, SOCKET_DIR, atomic_json_write
+from leap.utils.atomic_write import atomic_write_json
+from leap.utils.constants import SLACK_DIR, SOCKET_DIR
 
 
 class OutputCapture:
@@ -90,7 +91,7 @@ class OutputCapture:
             'prompt_output': prompt_output,
         }
         try:
-            atomic_json_write(self._response_file, payload)
+            atomic_write_json(self._response_file, payload)
         except OSError:
             pass
 
@@ -130,7 +131,7 @@ class OutputCapture:
             'prompt_output': prompt_output,
         }
         try:
-            atomic_json_write(self._response_file, payload)
+            atomic_write_json(self._response_file, payload)
         except OSError:
             pass
 
@@ -201,6 +202,6 @@ class OutputCapture:
             if self._tag not in data:
                 data[self._tag] = {}
             data[self._tag]['enabled'] = self._enabled
-            atomic_json_write(self._sessions_file, data)
+            atomic_write_json(self._sessions_file, data)
         except (json.JSONDecodeError, OSError):
             pass

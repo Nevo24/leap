@@ -16,7 +16,8 @@ from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
 from leap.cli_providers.cursor_agent import CursorAgentProvider
 from leap.cli_providers.gemini import GeminiProvider
-from leap.utils.constants import STORAGE_DIR, atomic_json_write
+from leap.utils.atomic_write import atomic_write_json
+from leap.utils.constants import STORAGE_DIR
 
 
 class CustomCLIProvider(CLIProvider):
@@ -151,7 +152,7 @@ def _load_cli_order() -> list[str]:
 
 def save_cli_order(order: list[str]) -> None:
     """Save CLI provider order to storage."""
-    atomic_json_write(CLI_ORDER_FILE, order)
+    atomic_write_json(CLI_ORDER_FILE, order)
 
 
 def load_cli_flags() -> dict[str, str]:
@@ -174,7 +175,7 @@ def load_cli_flags() -> dict[str, str]:
 
 def save_cli_flags(flags: dict[str, str]) -> None:
     """Save per-CLI default flags to storage."""
-    atomic_json_write(CLI_FLAGS_FILE, flags)
+    atomic_write_json(CLI_FLAGS_FILE, flags)
 
 
 def get_cli_flags(provider_name: str) -> str:
@@ -196,7 +197,7 @@ def load_cli_hidden() -> list[str]:
 
 def save_cli_hidden(hidden: list[str]) -> None:
     """Save list of hidden CLI provider names to storage."""
-    atomic_json_write(CLI_HIDDEN_FILE, hidden)
+    atomic_write_json(CLI_HIDDEN_FILE, hidden)
 
 
 def load_cli_aliases() -> dict[str, str]:
@@ -213,7 +214,7 @@ def load_cli_aliases() -> dict[str, str]:
 
 def save_cli_aliases(aliases: dict[str, str]) -> None:
     """Save user-defined CLI display name aliases."""
-    atomic_json_write(CLI_ALIASES_FILE, aliases)
+    atomic_write_json(CLI_ALIASES_FILE, aliases)
 
 
 def load_cli_env() -> dict[str, dict[str, str]]:
@@ -230,7 +231,7 @@ def load_cli_env() -> dict[str, dict[str, str]]:
 
 def save_cli_env(env: dict[str, dict[str, str]]) -> None:
     """Save per-CLI environment variables."""
-    atomic_json_write(CLI_ENV_FILE, env)
+    atomic_write_json(CLI_ENV_FILE, env)
 
 
 def get_cli_env(provider_name: str) -> dict[str, str]:
@@ -255,7 +256,7 @@ def load_custom_clis() -> list[dict[str, Any]]:
 
 def save_custom_clis(custom_clis: list[dict[str, Any]]) -> None:
     """Save custom CLI definitions to storage."""
-    atomic_json_write(CLI_CUSTOM_FILE, custom_clis)
+    atomic_write_json(CLI_CUSTOM_FILE, custom_clis)
 
 
 def _register_custom_clis() -> None:

@@ -35,10 +35,11 @@ except ImportError:  # non-macOS or pyobjc missing
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
+from leap.utils.atomic_write import atomic_write_json
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, NOTE_IMAGES_DIR, QUEUE_IMAGES_DIR,
     STORAGE_DIR, POLL_INTERVAL, TITLE_RESET_INTERVAL,
-    atomic_json_write, ensure_storage_dirs, load_settings, save_settings,
+    ensure_storage_dirs, load_settings, save_settings,
 )
 from leap.utils.menu import extract_menu_options
 from leap.utils.terminal import set_terminal_title, print_banner
@@ -297,7 +298,7 @@ class LeapServer:
                     pinned = json.load(f)
                 if tag in pinned:
                     pinned[tag]['auto_send_mode'] = mode
-                    atomic_json_write(pinned_file, pinned)
+                    atomic_write_json(pinned_file, pinned)
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -972,7 +973,7 @@ class LeapServer:
                                 presets_changed = True
                             _collect_refs(migrated)
                     if presets_changed:
-                        atomic_json_write(presets_file, data,
+                        atomic_write_json(presets_file, data,
                                           ensure_ascii=False)
             except (OSError, ValueError):
                 pass
@@ -1457,7 +1458,7 @@ class LeapServer:
     def _persist_saved_messages(self) -> None:
         """Write saved messages to disk."""
         try:
-            atomic_json_write(
+            atomic_write_json(
                 self._SAVED_MESSAGES_FILE,
                 self._saved_messages[-self._SAVED_MESSAGES_MAX:],
             )
@@ -3653,7 +3654,7 @@ class LeapServer:
         pid_map_dir.mkdir(parents=True, exist_ok=True)
         self._cli_pid_map_file = pid_map_dir / f'{cli_pid}.json'
         try:
-            atomic_json_write(self._cli_pid_map_file, {
+            atomic_write_json(self._cli_pid_map_file, {
                 'tag': self.tag,
                 'signal_dir': str(SOCKET_DIR),
                 'python': sys.executable,
