@@ -6,6 +6,8 @@ a CLI tool (Claude Code, Codex, Cursor Agent, Gemini CLI, etc.) so that the PTY 
 tracker, and server can work with any registered CLI.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -15,9 +17,22 @@ import time
 from abc import ABC, abstractmethod
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import pexpect
+# pexpect is used only in type annotations (``process: pexpect.spawn``)
+# for send_message / send_image_message — the spawned object is created
+# by the server's pty_handler and passed in.  Importing pexpect at
+# module top makes this module unimportable on Pythons that don't have
+# it installed, which breaks the hook processor: hooks run under
+# whatever Python the hook script picks (``${LEAP_PYTHON:-python3}``),
+# and when LEAP_PYTHON isn't propagated by the parent CLI we land on
+# system ``python3`` — which usually lacks the venv's pexpect.  Symptom
+# was every hook logging ``record-skip / no-leap-import`` and `leap
+# --resume` never showing new sessions.  Combined with the
+# ``from __future__ import annotations`` above, type checkers still
+# resolve the annotation; runtime never tries to import pexpect here.
+if TYPE_CHECKING:
+    import pexpect
 
 from leap.cli_providers.states import SIGNAL_ALIASES, SIGNAL_STATES
 

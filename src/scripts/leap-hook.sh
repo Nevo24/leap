@@ -47,16 +47,26 @@ unset PYTHONHOME PYTHONPATH VIRTUAL_ENV
 # Homebrew-only installs may not have python3 in PATH inside CLI subshells.
 PYTHON="${LEAP_PYTHON:-python3}"
 
-# If LEAP_TAG / LEAP_SIGNAL_DIR / LEAP_CLI_PROVIDER are missing (some CLIs
-# like Codex strip env vars from hook subprocesses), recover them by
-# walking up the PPID chain looking for ``<project>/.storage/pid_maps/<ppid>.json``
-# written by the Leap server.  The ``<project>`` dir is found via either:
+# If any of LEAP_TAG / LEAP_SIGNAL_DIR / LEAP_CLI_PROVIDER / LEAP_PYTHON
+# is missing (some CLIs like Codex strip env vars from hook subprocesses,
+# and we've observed a case where Claude propagated three of the four
+# but lost LEAP_PYTHON), recover them by walking up the PPID chain
+# looking for ``<project>/.storage/pid_maps/<ppid>.json`` written by
+# the Leap server.  The ``<project>`` dir is found via either:
 #   1. ``$LEAP_PROJECT_DIR`` env (set by user's shell rc) — fast path, OR
 #   2. regex-reading the same ``export LEAP_PROJECT_DIR="…"`` line that
 #      ``make install`` wrote into ``~/.zshrc`` / ``~/.bashrc``.
 # That's the single anchor from which every other piece of context is
 # discoverable — no ``/tmp``, no separate config file.
-if [ -z "$LEAP_TAG" ] || [ -z "$LEAP_SIGNAL_DIR" ] || [ -z "$LEAP_CLI_PROVIDER" ]; then
+#
+# Including LEAP_PYTHON in the trigger list matters because the script
+# falls back to bare ``python3`` from PATH when LEAP_PYTHON is unset —
+# on a homebrew-only macOS that's a Python without the leap venv's
+# site-packages, so any non-stdlib dep added in the future would
+# silently break the hook (record_session never runs, resume picker
+# never sees new sessions).  Recovering LEAP_PYTHON from the pid map
+# closes that gap.
+if [ -z "$LEAP_TAG" ] || [ -z "$LEAP_SIGNAL_DIR" ] || [ -z "$LEAP_CLI_PROVIDER" ] || [ -z "$LEAP_PYTHON" ]; then
     RESOLVED=$("$PYTHON" -c "
 import json, os, re, subprocess
 
@@ -134,8 +144,14 @@ for _ in range(10):
         [ -z "$LEAP_TAG" ] && LEAP_TAG="$_TAG"
         [ -z "$LEAP_SIGNAL_DIR" ] && LEAP_SIGNAL_DIR="$_DIR"
         [ -z "$LEAP_CLI_PROVIDER" ] && [ -n "$_CLI" ] && LEAP_CLI_PROVIDER="$_CLI"
-        [ -n "$_PY" ] && PYTHON="$_PY"
-        export LEAP_TAG LEAP_SIGNAL_DIR LEAP_CLI_PROVIDER
+        if [ -n "$_PY" ]; then
+            PYTHON="$_PY"
+            # Also re-export so hook-process.py sees the recovered value
+            # in os.environ — useful both for downstream logic and for
+            # the debug log line that records ``leap_python``.
+            [ -z "$LEAP_PYTHON" ] && LEAP_PYTHON="$_PY"
+        fi
+        export LEAP_TAG LEAP_SIGNAL_DIR LEAP_CLI_PROVIDER LEAP_PYTHON
     fi
 fi
 

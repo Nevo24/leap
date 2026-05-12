@@ -34,11 +34,49 @@ import time
 from pathlib import Path
 
 # Make the ``leap`` package importable regardless of how this script is
-# invoked.  The hook may run from any cwd (the CLI process's cwd, not
-# necessarily the Leap repo), so we resolve ``src/`` from __file__.
-_THIS_DIR = Path(__file__).resolve().parent
-_SRC_DIR = _THIS_DIR.parent
-if str(_SRC_DIR) not in sys.path:
+# invoked.  Three layouts need to work:
+#
+#   1. Running directly from the source checkout
+#      ``<leap>/src/scripts/leap-hook-process.py`` — ``__file__.parent.parent``
+#      is the ``src/`` dir.
+#   2. Installed copy under ``~/.claude/hooks/leap-hook-process.py`` (CLAUDE)
+#      — ``__file__.parent.parent`` is ``~/.claude/`` and has no ``leap``
+#      package, so we need a different anchor.
+#   3. Installed copies under ``~/.codex/leap-hooks/`` or other CLI hook
+#      dirs — same problem as (2).
+#
+# For (2)/(3) we recover the leap source from ``LEAP_SIGNAL_DIR``
+# (always ``<leap>/.storage/sockets``) or the ``project-path`` file
+# ``make install`` writes next to it.  This was the original silent-
+# failure root cause behind ``leap --resume`` not seeing new sessions:
+# before the May 10 PYTHONPATH-strip commit, the user's shell-exported
+# ``PYTHONPATH`` happened to point at ``<leap>/src`` and the bogus
+# ``_SRC_DIR = ~/.claude`` was masked.  After the strip, the import
+# failed silently for every hook fire.
+def _find_leap_src() -> "Path | None":
+    # 1. Source-checkout layout.
+    cand = Path(__file__).resolve().parent.parent
+    if (cand / 'leap').is_dir():
+        return cand
+    signal_dir = os.environ.get('LEAP_SIGNAL_DIR', '')
+    if signal_dir:
+        # 2. ``<leap>/.storage/sockets`` → ``<leap>/src``
+        cand = Path(signal_dir).parent.parent / 'src'
+        if (cand / 'leap').is_dir():
+            return cand
+        # 3. ``<leap>/.storage/project-path`` file content + ``/src``
+        ppf = Path(signal_dir).parent / 'project-path'
+        try:
+            cand = Path(ppf.read_text().strip()) / 'src'
+            if (cand / 'leap').is_dir():
+                return cand
+        except OSError:
+            pass
+    return None
+
+
+_SRC_DIR = _find_leap_src()
+if _SRC_DIR is not None and str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 try:
@@ -162,11 +200,17 @@ def main() -> None:
     state = sys.argv[1]
     signal_file = sys.argv[2]
 
+    # ``python_exe`` / ``leap_python`` are how we'd diagnose another
+    # "every hook silently skips recording" regression like the May 10
+    # pexpect-import one: tail this log and check whether the running
+    # interpreter is the venv (with leap's deps) or a bare PATH python3.
     _debug_log('hook-enter',
                state=state,
                leap_tag=os.environ.get('LEAP_TAG', '<unset>'),
                leap_cli_provider=os.environ.get('LEAP_CLI_PROVIDER', '<unset>'),
-               leap_signal_dir=os.environ.get('LEAP_SIGNAL_DIR', '<unset>'))
+               leap_signal_dir=os.environ.get('LEAP_SIGNAL_DIR', '<unset>'),
+               python_exe=sys.executable,
+               leap_python=os.environ.get('LEAP_PYTHON', '<unset>'))
 
     signal: dict = {'state': state}
 
