@@ -805,6 +805,98 @@ class TestSafetyTimeouts:
         t[0] = 1.1
         assert tracker.get_state(pty_alive=True) == 'running'
 
+    def test_enter_from_waiting_does_not_flip_idle_on_stale_silence(
+        self, tmp_path: Path,
+    ) -> None:
+        """Reproduces the AskUserQuestion / permission-dialog regression:
+        when the user answers via Enter, state goes NEEDS_PERMISSION →
+        RUNNING.  The running→idle cursor+silence heuristic must not
+        fire on silence accumulated WHILE the dialog was on screen —
+        otherwise the auto-sender flushes the queue between the Enter
+        and Claude's first post-answer output.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # Dialog appears on screen with a visible cursor (so the live
+        # screen carries dialog patterns when the Notification signal
+        # arrives and the Late-Notification guard accepts it).
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Allow tool?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # User deliberates for ~10 seconds — _last_output_time stays at 1.0.
+        t[0] = 12.0
+        # Enter dismisses the dialog; state flips back to RUNNING.
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+        assert tracker._running_since == 12.0
+        # Without the ``_last_output_time > _running_since`` guard,
+        # the cursor+silence heuristic would see ``silence = 11 s`` and
+        # immediately flip RUNNING → IDLE.  With the guard, the stale
+        # pre-dialog silence is ignored and state stays RUNNING.
+        t[0] = 12.1
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_enter_from_waiting_still_idles_after_real_post_answer_silence(
+        self, tmp_path: Path,
+    ) -> None:
+        """Guard against over-correction: once Claude produces real
+        output after the Enter, the cursor+silence heuristic must still
+        fire on the next 5 s of genuine silence.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Allow tool?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)
+        # User answers after a long wait.
+        t[0] = 12.0
+        tracker.on_input(b'\r')
+        # Claude resumes and produces output — now ``_last_output_time``
+        # is post-``_running_since`` and the gate opens.
+        t[0] = 13.0
+        feed_with_visible_cursor(tracker, 'Claude resumed work')
+        # Real 5 s+ of post-answer silence → idle.
+        t[0] = 19.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_safety_timeout_ignores_stale_pre_running_silence(
+        self, tmp_path: Path,
+    ) -> None:
+        """Same shape as the cursor+silence regression but for the 60 s
+        safety silence fallback: a user who answers AskUserQuestion 60 s
+        after it appears must not force-idle the session the moment
+        Enter lands.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        # Cursor hidden so the cursor+silence path is gated off and we
+        # exercise the safety-silence path specifically.  Includes the
+        # dialog footer so the Late-Notification guard accepts the
+        # needs_permission signal.
+        tracker.on_output(
+            b'\x1b[?25lAllow tool?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # User deliberates for longer than the safety silence window.
+        t[0] = 2.0 + SAFETY_SILENCE_TIMEOUT + 5.0
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+        assert tracker.get_state(pty_alive=True) == 'running'
+
     def test_waiting_timeout_triggers_idle(self, tmp_path: Path) -> None:
         t = [0.0]
         tracker = make_tracker(tmp_path, t)

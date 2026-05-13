@@ -1452,11 +1452,29 @@ class CLIStateTracker:
         # doesn't fire (e.g. /clear, /help).  2s is long enough that
         # brief streaming pauses don't false-trigger, but short enough
         # that /clear resolves quickly.  Disabled for Ratatui TUIs.
+        #
+        # Silence is measured from ``max(_last_output_time,
+        # _running_since)`` so that pre-RUNNING silence does not count.
+        # Without this baseline, answering an AskUserQuestion /
+        # permission dialog with Enter (which moves WAITING→RUNNING
+        # but does not refresh ``_last_output_time``) instantly trips
+        # the 5 s threshold off the silence accumulated while the
+        # dialog was on screen — the transcript guard can't help
+        # because the next assistant entry hasn't been written yet
+        # (the latest one is the OLD tool_use call at
+        # ``ts <= _running_since``) and the auto-sender would flush a
+        # queued message before Claude resumes producing output.
+        # Using the max preserves the hung-after-send case: once the
+        # baseline is ``_running_since``, a real 5 s / 60 s of
+        # post-transition silence still triggers the fallbacks.
+        silence_baseline = max(
+            self._last_output_time, self._running_since,
+        )
         if (
             current == CLIState.RUNNING
             and not self._provider.cursor_hidden_while_idle
-            and self._last_output_time > 0
-            and (self._clock() - self._last_output_time) > 5.0
+            and silence_baseline > 0
+            and (self._clock() - silence_baseline) > 5.0
         ):
             with self._screen_lock:
                 cursor_visible = not self._screen.cursor.hidden
@@ -1542,8 +1560,17 @@ class CLIStateTracker:
             if self._provider.silence_timeout is not None
             else SAFETY_SILENCE_TIMEOUT
         )
-        if current == CLIState.RUNNING and self._last_output_time > 0:
-            silence = self._clock() - self._last_output_time
+        # Same ``max(_last_output_time, _running_since)`` baseline as
+        # the cursor+silence path above — pre-RUNNING silence (e.g.
+        # from a long-deliberation dialog wait) must not count toward
+        # the safety timeout, or a 60 s+ dialog would force-idle the
+        # session the instant the user answers.  Hung-after-send is
+        # still covered: silence ticks from ``_running_since`` onward.
+        safety_baseline = max(
+            self._last_output_time, self._running_since,
+        )
+        if current == CLIState.RUNNING and safety_baseline > 0:
+            silence = self._clock() - safety_baseline
             if silence > silence_timeout:
                 with self._screen_lock:
                     running_indicator = self._screen_has_running_indicator()

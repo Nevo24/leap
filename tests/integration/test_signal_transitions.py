@@ -10,6 +10,8 @@ import json
 import time
 from datetime import datetime, timezone
 
+from leap.utils.constants import SAFETY_SILENCE_TIMEOUT
+
 from tests.conftest import PTYFixture
 
 
@@ -92,7 +94,12 @@ class TestSafetyTimeoutWithTranscript:
         pty.tracker.on_send()
         self._write_assistant(transcript, 'tool_use', ts_offset=1.0)
         # Force > 60 s output silence (default SAFETY_SILENCE_TIMEOUT).
-        pty.tracker._last_output_time = time.time() - 120.0
+        # Both ``_last_output_time`` and ``_running_since`` are aged
+        # because silence is measured from ``max(_last_output_time,
+        # _running_since)`` so that pre-RUNNING silence does not count.
+        past = time.time() - (SAFETY_SILENCE_TIMEOUT + 10)
+        pty.tracker._last_output_time = past
+        pty.tracker._running_since = past
         # Silence alone would trigger running→idle; transcript blocks it.
         assert pty.get_state() == 'running'
 
@@ -104,6 +111,11 @@ class TestSafetyTimeoutWithTranscript:
         pty, transcript = self._setup(pty_factory, tmp_path)
         pty.tracker.on_input(b'x')
         pty.tracker.on_send()
-        # No fresh entries written.
-        pty.tracker._last_output_time = time.time() - 120.0
+        # No fresh entries written.  Both ``_last_output_time`` and
+        # ``_running_since`` are aged because silence is measured from
+        # ``max(_last_output_time, _running_since)`` so pre-RUNNING
+        # silence (e.g. from a long dialog wait) does not count.
+        past = time.time() - (SAFETY_SILENCE_TIMEOUT + 10)
+        pty.tracker._last_output_time = past
+        pty.tracker._running_since = past
         assert pty.get_state() == 'idle'
