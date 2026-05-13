@@ -187,7 +187,9 @@ assets/
 | `LeapClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI core window (uses mixins for methods) |
-| `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow |
+| `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow (gates dirty managed clones on a 3-way dialog: Clone-into-next / Discard / Cancel) |
+| `_dirty_files()` | `monitor/server_launcher.py` | Returns the list of local files a force-align would discard (`git status --porcelain`); `None` on scan failure so the consent gate stays armed |
+| `_dir_index()` | `monitor/server_launcher.py` | Numeric suffix of a managed-clone dir name (`<name>` → 0, `<name>_1` → 1, …) — drives the "next slot" logic |
 | `GitLabProvider` | `monitor/pr_tracking/gitlab_provider.py` | GitLab PR thread tracking + user notifications |
 | `GitHubProvider` | `monitor/pr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
 | `ActionsMenuMixin` | `monitor/_mixins/actions_menu_mixin.py` | Git menu + Path menu (Open in Terminal / Open in IDE / Move session to IDE) |
@@ -418,6 +420,24 @@ Three options:
 - **From Resume** — GUI does only the picking + already-running guard, then hands off to a new terminal. `_add_row_from_resume()` (in `pr_tracking_mixin.py`) opens `ResumeSessionDialog`; when the user picks `(cli, tag, SessionRecord)`, refuses if the same CLI session UUID is already running under another live Leap tag, then calls `ServerLauncher.open_resume_in_terminal(cli=…, tag=…, session_id=…)` which spawns a terminal running `leap --resume --cli=<X> --tag=<Y> --session=<Z>`. From there the CLI flow takes over: `leap-resume.py` skips its picker (pre-pick mode), runs the live-owners + `_server_alive` checks, prompts the user for cwd choice if `provider.requires_cwd_bound_resume` is True and the recorded cwd ≠ the terminal's cwd, then execs `leap-main.sh` with `LEAP_RESUME_*` env vars set. The server reads those and prepends `provider.resume_args(<id>)` to the CLI argv. The monitor row appears via auto-discovery once the server starts.
 
 Tag validation via shared `_ask_tag()` helper.
+
+### Managed Clone Sync (Dirty-Tree Dialog)
+
+Clicking Terminal on a PR-pinned row syncs the managed clone in `<repos_dir>/<project>` to `origin/<branch>` before opening Leap. The sync is destructive (`git reset --hard` + `git clean -fd`) because managed clones are throwaway state — but if the clone has uncommitted edits we now prompt before destroying them.
+
+Flow (`ServerLauncher._dirty_check_then_align` → `_on_dirty_check` → `_ask_dirty_action`):
+
+1. `git status --porcelain` runs in a `BackgroundCallWorker`.
+2. Clean tree → straight to `_server_force_align`, no dialog.
+3. Dirty tree (or scan failure — treated as "unknown, be safe") → 3-way `QDialog` with Cancel pinned bottom-left and two action buttons bottom-right:
+   - **Clone into `<name>_<i+1>`** (default) — leaves the dirty dir untouched, picks the lowest free slot at or after `i+1` via `_find_available_project_dir(start_index=…)`, then re-enters `_start_server_from_pr`. If that slot is *also* dirty the dialog re-fires; if it's in use by another Leap server it auto-skips. Slot 100 is the hardcoded fallback (always clones fresh).
+   - **Discard && sync** — calls `_server_force_align`. `_align()` does a best-effort `git merge|rebase|cherry-pick|revert --abort`, then `reset --hard HEAD` + `clean -fd`, then the branch checkout. The pre-clean exists because plain `git checkout <branch>` refuses to switch with conflicting local changes.
+   - **Cancel** — `_cancel_start(tag)`, status banner updates to "Cancelled syncing '…'", `pinned['project_path']` is preserved (next click retries the same dir).
+
+Safety guards:
+- `pinned['remote_project_path']` rsplit must yield a non-empty project name — otherwise `<repos_dir>/''` would resolve to `repos_dir` itself and the clone path's `shutil.rmtree` would wipe every managed clone. Both `_start_server_from_pr` and `_on_dirty_check` bail out cleanly on empty.
+- Tag deletion during the dialog is rechecked twice (entry to `_on_dirty_check` *and* after the modal returns) — without these, `_server_finish` would resurrect a tag the user explicitly dropped.
+- `Discard && sync`'s autoDefault is forced off so tabbing onto it and pressing Enter doesn't silently destroy local edits; Enter falls through to the safe default.
 
 ### New Change Indicator
 

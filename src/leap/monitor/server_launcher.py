@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote
 
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import (
+    QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QStyle, QVBoxLayout,
+)
 
 from leap.monitor.pr_tracking.config import save_pinned_sessions
 from leap.monitor.pr_tracking.git_utils import detect_default_branch, resolve_ssh_alias
@@ -39,6 +41,58 @@ def _is_git_repo(path: Path) -> bool:
         return r.returncode == 0
     except (subprocess.SubprocessError, OSError):
         return False
+
+
+def _dir_index(project_name: str, dir_name: str) -> int:
+    """Numeric suffix of a candidate managed-clone dir name.
+
+    ``<project_name>`` → 0, ``<project_name>_1`` → 1, etc. Returns -1
+    for anything that doesn't fit the pattern.
+    """
+    if dir_name == project_name:
+        return 0
+    prefix = f'{project_name}_'
+    if not dir_name.startswith(prefix):
+        return -1
+    try:
+        return int(dir_name[len(prefix):])
+    except ValueError:
+        return -1
+
+
+def _dirty_files(project_dir: Path) -> Optional[list[str]]:
+    """List local files a force-align would discard in this managed clone.
+
+    Combines tracked modifications (wiped by ``reset --hard``) and
+    untracked files (wiped by ``clean -fd``). Ignored paths are skipped
+    because ``git status --porcelain`` honours .gitignore.
+
+    Returns ``[]`` when the tree is clean, a non-empty list when dirty,
+    and ``None`` when the scan itself failed (timeout, missing git, etc.).
+    Callers MUST treat ``None`` as "unknown" rather than "clean" — the
+    consent gate exists precisely so we don't destroy work silently.
+    """
+    try:
+        r = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True, text=True,
+            cwd=str(project_dir), timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        logger.warning("Dirty-check subprocess failed for %s", project_dir, exc_info=True)
+        return None
+    if r.returncode != 0:
+        logger.warning(
+            "Dirty-check non-zero for %s: %s",
+            project_dir, (r.stderr or '').strip(),
+        )
+        return None
+    out: list[str] = []
+    for line in r.stdout.splitlines():
+        # Porcelain format: "XY path" — XY is 2 chars + 1 space; path at index 3.
+        if len(line) >= 4:
+            out.append(line[3:])
+    return out
 
 
 class ServerLauncher:
@@ -157,10 +211,11 @@ class ServerLauncher:
                     pinned['project_path'] = ''
                     self._start_server_from_pr(tag, pinned)
                 else:
-                    # Local path free — force-align to remote
+                    # Local path free — gate force-align on a dirty-tree prompt
+                    # so we don't silently discard user edits in the managed clone.
                     branch = pinned.get('branch', '') or detect_default_branch(str(project_dir))
                     self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
-                    self._server_force_align(tag, pinned, project_dir, branch)
+                    self._dirty_check_then_align(tag, pinned, project_dir, branch)
             return
 
         # Auto-pinned row — open directly in the default terminal from settings
@@ -243,20 +298,21 @@ class ServerLauncher:
 
     def _find_available_project_dir(
         self, repos_dir: Path, project_name: str,
+        start_index: int = 0,
     ) -> tuple[Path, bool, list[str]]:
         """Find a project directory not used by a running Leap server.
 
-        Checks repo-name, repo-name_1, repo-name_2, ...
-        Returns (project_dir, needs_clone, in_use_names).
-        in_use_names lists the directory names that were skipped because
-        they have an active Leap server.
+        Scans ``<repos_dir>/<project_name>`` (index 0), then ``_1``, ``_2``,
+        ... starting at ``start_index`` (used by the dirty-tree dialog to
+        bump past a dir the user just rejected). Returns
+        ``(project_dir, needs_clone, in_use_names)``. ``in_use_names`` lists
+        directories skipped because they have an active Leap server.
         """
         active_paths = self._w._get_active_project_paths()
         in_use: list[str] = []
 
-        # Start with base name, then _1, _2, ...
-        candidates = [project_name] + [f'{project_name}_{i}' for i in range(1, 100)]
-        for name in candidates:
+        for i in range(start_index, 100):
+            name = project_name if i == 0 else f'{project_name}_{i}'
             candidate = repos_dir / name
             resolved = str(candidate.resolve())
             if not candidate.is_dir() or not _is_git_repo(candidate):
@@ -268,19 +324,44 @@ class ServerLauncher:
         fallback = repos_dir / f'{project_name}_{100}'
         return fallback, True, in_use
 
-    def _start_server_from_pr(self, tag: str, pinned: dict[str, Any]) -> None:
-        """Start server for a PR-pinned row: find/clone project, checkout branch."""
+    def _start_server_from_pr(
+        self, tag: str, pinned: dict[str, Any], start_index: int = 0,
+    ) -> None:
+        """Start server for a PR-pinned row: find/clone project, checkout branch.
+
+        ``start_index`` lets the dirty-tree dialog re-enter this flow at a
+        higher index after the user opts to bump past a dirty managed
+        clone (e.g. ``mwb-manifests`` dirty → start_index=1 picks the
+        lowest free dir at or after ``mwb-manifests_1``).
+        """
+        # Heal an SSH-alias host_url here too: the dirty-tree dialog re-enters
+        # this method directly (bypassing ``start_server``), so without this
+        # the recursion's ``_build_clone_url`` would run on an un-healed alias.
+        # Idempotent — no-op for proper DNS hostnames.
+        self._heal_pinned_host_url(tag, pinned)
+
         repos_dir = self._w._prefs.get('repos_dir', DEFAULT_REPOS_DIR).strip() or DEFAULT_REPOS_DIR
 
-        remote_project = pinned['remote_project_path']
+        remote_project = pinned.get('remote_project_path', '')
         host_url = pinned.get('host_url', '')
         branch = pinned.get('branch', '')
         project_name = remote_project.rsplit('/', 1)[-1]
+        # Safety: an empty project_name turns ``repos_dir / ''`` into
+        # ``repos_dir`` itself, and the clone path's ``shutil.rmtree``
+        # would wipe every managed clone the user owns.
+        if not project_name:
+            QMessageBox.warning(
+                self._w, 'Invalid Remote',
+                f"Cannot start a server for tag '{tag}': pinned "
+                f"remote_project_path '{remote_project}' has no project name.",
+            )
+            self._cancel_start(tag)
+            return
         rd = Path(repos_dir).expanduser()
         rd.mkdir(parents=True, exist_ok=True)
 
         project_dir, needs_clone, in_use_names = self._find_available_project_dir(
-            rd, project_name,
+            rd, project_name, start_index=start_index,
         )
 
         if needs_clone:
@@ -319,11 +400,12 @@ class ServerLauncher:
             w.start()
             return
 
-        # Project exists and no Leap server using it — force-align to branch
+        # Project exists and no Leap server using it — gate force-align on a
+        # dirty-tree prompt so we don't silently discard user edits.
         if not branch:
             branch = detect_default_branch(str(project_dir))
         self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
-        self._server_force_align(tag, pinned, project_dir, branch)
+        self._dirty_check_then_align(tag, pinned, project_dir, branch)
 
     def _cancel_start(self, tag: str) -> None:
         """Clear the starting guard so the button resets."""
@@ -389,6 +471,186 @@ class ServerLauncher:
             return
         self._server_finish(tag, pinned, project_dir)
 
+    def _dirty_check_then_align(
+        self, tag: str, pinned: dict[str, Any], project_dir: Path, branch: str,
+    ) -> None:
+        """Gate ``_server_force_align`` on a user prompt if the clone is dirty.
+
+        Managed clones in repos_dir get wiped on every sync — but if the
+        user has uncommitted edits (tracked or untracked) we want to
+        surface that before destroying them. Clean tree → straight to
+        align (no dialog). Dirty tree (or scan failure — treated as
+        "unknown, be safe") → 3-way prompt (clone into next / discard &
+        sync / cancel).
+        """
+        # Use a sentinel so we can distinguish "scan didn't run" from
+        # "scan ran, tree is clean". Default is the unknown sentinel.
+        files_box: list[Optional[list[str]]] = [None]
+
+        def _scan() -> None:
+            files_box[0] = _dirty_files(project_dir)
+
+        w = BackgroundCallWorker(_scan, self._w)
+        w.finished.connect(lambda: self._on_dirty_check(
+            tag, pinned, project_dir, branch, files_box[0],
+        ))
+        w.finished.connect(w.deleteLater)
+        w.start()
+
+    def _on_dirty_check(
+        self, tag: str, pinned: dict[str, Any], project_dir: Path,
+        branch: str, files: Optional[list[str]],
+    ) -> None:
+        """Handle dirty-scan result: dialog if dirty/unknown, else straight to align."""
+        # The dirty scan runs in a worker, so by the time we get here the
+        # user may have deleted the row. If so, the resurrection paths in
+        # _server_finish would re-insert ``pinned`` into _pinned_sessions
+        # for a tag the user explicitly dropped.
+        if tag not in self._w._pinned_sessions:
+            self._cancel_start(tag)
+            return
+        if files is None:
+            # Scan failed — conservatively surface a dialog so the user
+            # can pick a non-destructive path (Clone into next) rather
+            # than have us silently wipe state.
+            files = ['(could not check working tree — proceeding may discard local changes)']
+        elif not files:
+            self._server_force_align(tag, pinned, project_dir, branch)
+            return
+        repos_dir = Path(
+            self._w._prefs.get('repos_dir', DEFAULT_REPOS_DIR).strip()
+            or DEFAULT_REPOS_DIR,
+        ).expanduser()
+        # ``.get`` rather than bracket-access: even though the entry-guard above
+        # confirmed the tag is still pinned, another handler could in principle
+        # drop this key in the worker→main-thread gap. Empty → cancel cleanly.
+        project_name = pinned.get('remote_project_path', '').rsplit('/', 1)[-1]
+        if not project_name:
+            self._cancel_start(tag)
+            return
+        current_idx = _dir_index(project_name, project_dir.name)
+        # max(_, 1) defends against an unexpected dir name (current_idx == -1):
+        # we never want to re-suggest the same dir or fall back to index 0.
+        next_start = max(current_idx + 1, 1)
+        next_dir, _next_needs_clone, _ = self._find_available_project_dir(
+            repos_dir, project_name, start_index=next_start,
+        )
+        action = self._ask_dirty_action(project_dir, files, next_dir)
+        # Re-check: the row could have been deleted while the modal was open
+        # (auto-refresh and other handlers still run during ``box.exec_()``).
+        if tag not in self._w._pinned_sessions:
+            self._cancel_start(tag)
+            return
+        if action == 'cancel':
+            # Override the stale "Syncing..." status the caller emitted,
+            # so the user sees their cancel reflected immediately.
+            self._w._show_status(f"Cancelled syncing '{project_dir.name}'")
+            self._cancel_start(tag)
+            return
+        if action == 'discard':
+            self._server_force_align(tag, pinned, project_dir, branch)
+            return
+        # 'next' — recurse from next_start. Don't clear pinned['project_path']:
+        # if the recursive flow ends up cancelled too, today's saved path
+        # is still the best fallback for the next Terminal click.
+        self._start_server_from_pr(tag, pinned, start_index=next_start)
+
+    def _ask_dirty_action(
+        self, project_dir: Path, files: list[str], next_dir: Path,
+    ) -> str:
+        """3-way prompt for a dirty managed clone. Returns 'next'/'discard'/'cancel'.
+
+        Shows the full on-disk path of both the affected dir and the
+        proposed bump target so the user can locate them in Finder/IDE.
+
+        Built as a plain ``QDialog`` rather than ``QMessageBox`` because the
+        latter follows the platform's button layout (macOS pins
+        ``RejectRole`` to the middle, between Destructive and Accept). The
+        product wants Cancel pinned to the bottom-left.
+        """
+        shown = files[:5]
+        more = len(files) - len(shown)
+        files_text = '\n'.join(f'  • {f}' for f in shown)
+        if more > 0:
+            files_text += f'\n  …and {more} more'
+
+        dialog = QDialog(self._w)
+        dialog.setWindowTitle('Local Changes')
+
+        outer = QVBoxLayout(dialog)
+        outer.setContentsMargins(20, 16, 20, 12)
+        outer.setSpacing(12)
+
+        # Top row: warning icon + message body
+        top = QHBoxLayout()
+        top.setSpacing(14)
+        icon_label = QLabel()
+        icon_label.setPixmap(self._w.style().standardIcon(
+            QStyle.SP_MessageBoxWarning,
+        ).pixmap(48, 48))
+        # Layout-level pin: QLabel.setAlignment governs pixmap-within-label,
+        # not the QLabel's vertical position inside the row. Without this, a
+        # 48px icon sits mid-message instead of at the top.
+        top.addWidget(icon_label, alignment=Qt.AlignTop)
+
+        msg = QLabel(
+            f"The managed clone at\n"
+            f"    {project_dir}\n"
+            f"has uncommitted local changes:\n\n"
+            f"{files_text}\n\n"
+            f"Syncing to the PR branch would discard them."
+        )
+        # Force plain text so a path containing '<' isn't mis-parsed as HTML.
+        msg.setTextFormat(Qt.PlainText)
+        # Word-wrap helps long file paths in the bullet list (Qt can break at
+        # '/'). Min-width keeps the dialog from collapsing; max-width prevents
+        # an exotic 200-char path from blowing past the screen edge — at that
+        # cap, an unbreakable token overflows the label, but the dialog stays
+        # usable.
+        msg.setWordWrap(True)
+        msg.setMinimumWidth(480)
+        msg.setMaximumWidth(720)
+        top.addWidget(msg, stretch=1)
+        outer.addLayout(top)
+
+        # Button row: Cancel left, Discard + Clone right.
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton('Cancel')
+        btn_discard = QPushButton('Discard && sync')
+        btn_next = QPushButton(f'Clone into {next_dir.name}')
+        btn_next.setToolTip(str(next_dir))
+        btn_next.setDefault(True)
+        btn_next.setAutoDefault(True)
+        # Critical: Qt's per-button autoDefault means a focused button consumes
+        # Enter — so without this, tabbing onto Discard and pressing Enter would
+        # destroy local edits. Force Enter from any focus to fall through to the
+        # safe default (Clone into next). Cancel keeps autoDefault on — Enter
+        # on a focused Cancel cancelling is both expected and safe.
+        btn_discard.setAutoDefault(False)
+
+        btn_row.addWidget(btn_cancel)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_discard)
+        btn_row.addWidget(btn_next)
+        outer.addLayout(btn_row)
+
+        # ``result`` is set by whichever button is clicked; defaults to
+        # 'cancel' so Esc / close-window / unexpected dismissal map to it.
+        result = ['cancel']
+
+        def _pick(value: str) -> None:
+            result[0] = value
+            dialog.accept()
+
+        btn_cancel.clicked.connect(lambda: _pick('cancel'))
+        btn_discard.clicked.connect(lambda: _pick('discard'))
+        btn_next.clicked.connect(lambda: _pick('next'))
+        # Esc / X / unexpected dismissal: QDialog.reject() runs but no
+        # button-click fires, so ``result`` stays at the 'cancel' default.
+
+        dialog.exec_()
+        return result[0]
+
     def _server_force_align(
         self, tag: str, pinned: dict[str, Any], project_dir: Path, branch: str,
     ) -> None:
@@ -396,6 +658,8 @@ class ServerLauncher:
 
         These are managed clones in repos_dir, not user workspaces — local
         changes are always discarded in favour of the remote state.
+        Callers entering this method through ``_dirty_check_then_align``
+        have already prompted the user for consent.
         """
         if not branch:
             branch = detect_default_branch(str(project_dir))
@@ -429,7 +693,37 @@ class ServerLauncher:
                 return
 
             try:
-                # 2. Checkout branch (create tracking branch if needed)
+                # 2a. Best-effort: abort any in-progress merge/rebase/cherry-
+                #     pick/revert. Each call no-ops (non-zero exit, swallowed)
+                #     if not in that state. Without this, a dirty tree caused
+                #     by an unfinished merge would survive the reset and the
+                #     subsequent checkout would fail with "you need to resolve
+                #     your current index first".
+                for abort_cmd in (
+                    ['git', 'merge', '--abort'],
+                    ['git', 'rebase', '--abort'],
+                    ['git', 'cherry-pick', '--abort'],
+                    ['git', 'revert', '--abort'],
+                ):
+                    subprocess.run(
+                        abort_cmd, capture_output=True, text=True,
+                        cwd=cwd, timeout=10,
+                    )
+                # 2b. Pre-clean the current branch so the upcoming checkout
+                #     can't be blocked by dirty tracked files or untracked-vs-
+                #     target-tracked overlaps. Best-effort: the user-consent
+                #     gate is the upstream _dirty_check_then_align dialog; if
+                #     these fail for some unusual reason the real source of
+                #     truth is the unconditional reset to origin/<branch> below.
+                subprocess.run(
+                    ['git', 'reset', '--hard', 'HEAD'],
+                    capture_output=True, text=True, cwd=cwd, timeout=10,
+                )
+                subprocess.run(
+                    ['git', 'clean', '-fd'],
+                    capture_output=True, text=True, cwd=cwd, timeout=10,
+                )
+                # 3. Checkout branch (create tracking branch if needed)
                 r = subprocess.run(
                     ['git', 'checkout', branch],
                     capture_output=True, text=True, cwd=cwd, timeout=10,
@@ -440,13 +734,13 @@ class ServerLauncher:
                         check=True, capture_output=True, text=True,
                         cwd=cwd, timeout=10,
                     )
-                # 3. Hard-reset to remote (unconditional)
+                # 4. Hard-reset to remote (unconditional)
                 subprocess.run(
                     ['git', 'reset', '--hard', f'origin/{branch}'],
                     check=True, capture_output=True, text=True,
                     cwd=cwd, timeout=10,
                 )
-                # 4. Remove untracked files
+                # 5. Remove untracked files left behind by the target branch
                 subprocess.run(
                     ['git', 'clean', '-fd'],
                     check=True, capture_output=True, text=True,
