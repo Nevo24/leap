@@ -60,6 +60,38 @@ def _dir_index(project_name: str, dir_name: str) -> int:
         return -1
 
 
+def _detached_head_sha(project_dir: Path) -> Optional[str]:
+    """Return the short SHA at HEAD if HEAD is detached, else None.
+
+    Detached HEAD means the user (or a prior commit-URL flow) checked out a
+    specific commit rather than a branch. A sync would move HEAD to the
+    target branch tip — so we want the dialog to spell that out explicitly,
+    not just report an "N commits ahead" count that the user might read as
+    "their commits".
+    """
+    try:
+        r = subprocess.run(
+            ['git', 'symbolic-ref', '--quiet', 'HEAD'],
+            capture_output=True, cwd=str(project_dir), timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if r.returncode == 0:
+        return None  # HEAD is symbolic (on a branch) — not detached
+    try:
+        r = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True,
+            cwd=str(project_dir), timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    sha = r.stdout.strip()
+    return sha or None
+
+
 def _commits_ahead_of_origin(project_dir: Path, branch: str) -> Optional[int]:
     """Count local commits on HEAD not in ``origin/<branch>``.
 
@@ -250,7 +282,7 @@ class ServerLauncher:
                     # Local path free — gate force-align on a dirty-tree prompt
                     # so we don't silently discard user edits in the managed clone.
                     branch = pinned.get('branch', '') or detect_default_branch(str(project_dir))
-                    self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
+                    self._w._show_status(f"Checking '{project_dir.name}'...")
                     self._dirty_check_then_align(tag, pinned, project_dir, branch)
             return
 
@@ -440,7 +472,7 @@ class ServerLauncher:
         # dirty-tree prompt so we don't silently discard user edits.
         if not branch:
             branch = detect_default_branch(str(project_dir))
-        self._w._show_status(f"Syncing '{project_dir.name}' to origin/{branch}...")
+        self._w._show_status(f"Checking '{project_dir.name}'...")
         self._dirty_check_then_align(tag, pinned, project_dir, branch)
 
     def _cancel_start(self, tag: str) -> None:
@@ -513,27 +545,30 @@ class ServerLauncher:
         """Gate ``_server_force_align`` on a user prompt if local state would be lost.
 
         Managed clones in repos_dir get wiped on every sync — but if the
-        user has uncommitted edits (working-tree changes) OR local commits
-        ahead of ``origin/<branch>`` we want to surface that before
-        destroying them. Clean + up-to-date → straight to align (no
-        dialog). Anything to lose (or scan failure — treated as
-        "unknown, be safe") → 3-way prompt (clone into next / discard &
-        sync / cancel).
+        user has uncommitted edits (working-tree changes), local commits
+        ahead of ``origin/<branch>``, or a detached HEAD, we surface that
+        before destroying them. Clean + up-to-date + on a branch → straight
+        to align (no dialog). Anything to lose (or scan failure — treated
+        as "unknown, be safe") → 3-way prompt (clone into next / discard
+        & sync / cancel).
 
-        The worker pre-fetches so the ahead-count is against current
-        remote state; ``_server_force_align`` will re-fetch (cheap when
-        unchanged), but if pre-fetch fails we proceed to align and let
-        the existing fetch-failure UI in ``_on_server_force_aligned``
-        handle it consistently.
+        The worker pre-fetches so the ahead-count is against current remote
+        state. We do NOT defer to ``_server_force_align`` on pre-fetch
+        failure — doing so would open a silent-destruction window if the
+        pre-fetch failed transiently while ``_align``'s later retry
+        succeeded (network recovered, auth re-resolved), and ``_align``
+        ran ``reset --hard`` without any consent. Instead we surface the
+        dialog with a synthetic "(could not fetch …)" entry so the user
+        stays in control even when remote state is unknown.
         """
         auth_url = self._build_clone_url(
             pinned.get('host_url', ''), pinned.get('remote_project_path', ''),
             pinned.get('scm_type', ''),
         )
         refspec = f'+refs/heads/{branch}:refs/remotes/origin/{branch}'
-        # state: (fetch_failed: bool, dirty: Optional[list[str]], ahead: Optional[int])
-        state: list[tuple[bool, Optional[list[str]], Optional[int]]] = [
-            (False, None, None),
+        # state: (fetch_failed, dirty, ahead, detached_sha)
+        state: list[tuple[bool, Optional[list[str]], Optional[int], Optional[str]]] = [
+            (False, None, None, None),
         ]
 
         def _scan() -> None:
@@ -560,7 +595,8 @@ class ServerLauncher:
                 _commits_ahead_of_origin(project_dir, branch)
                 if not fetch_failed else None
             )
-            state[0] = (fetch_failed, dirty, ahead)
+            detached = _detached_head_sha(project_dir)
+            state[0] = (fetch_failed, dirty, ahead, detached)
 
         w = BackgroundCallWorker(_scan, self._w)
         w.finished.connect(lambda: self._on_dirty_check(
@@ -572,7 +608,7 @@ class ServerLauncher:
     def _on_dirty_check(
         self, tag: str, pinned: dict[str, Any], project_dir: Path,
         branch: str, fetch_failed: bool, dirty: Optional[list[str]],
-        ahead: Optional[int],
+        ahead: Optional[int], detached_sha: Optional[str],
     ) -> None:
         """Handle scan result: dialog if anything to lose, else straight to align."""
         # The scan runs in a worker, so by the time we get here the user
@@ -583,27 +619,45 @@ class ServerLauncher:
             self._cancel_start(tag)
             return
 
-        # If the pre-fetch failed, defer to _server_force_align — its
-        # _on_server_force_aligned handler already prompts the user with
-        # branch-gone vs. fetch-failed-but-start-anyway choices.
-        if fetch_failed:
-            self._server_force_align(tag, pinned, project_dir, branch)
-            return
-
-        # Build the "what would be lost" list. Scan failures map to
-        # synthetic entries so the user still sees a prompt.
+        # Build the "what would be lost" list. Synthetic entries (detached-HEAD,
+        # fetch-fail, ahead-count, scan failures) go FIRST so they're never
+        # hidden behind the dialog's "…and N more" truncation when the working
+        # tree has many dirty files.
+        #
+        # We do NOT silently defer to _server_force_align on fetch failure.
+        # Doing so would open a silent-destruction window: pre-fetch could fail
+        # transiently while _align's later retry succeeds (network recovered,
+        # auth re-resolved, etc.), and _align would then run reset --hard
+        # without any consent prompt. Surfacing the dialog keeps the user in
+        # control even when we can't verify remote state.
         items: list[str] = []
-        if dirty is None:
-            items.append('(could not check working tree — proceeding may discard local changes)')
-        else:
-            items.extend(dirty)
-        if ahead is None:
+        if detached_sha:
+            # Most likely arrival: the user re-opens a row that was originally
+            # added from a commit URL — the prior session left HEAD detached
+            # at the pinned SHA. Without spelling this out, the "N commits
+            # ahead" entry below reads as if the user has authored new commits.
+            items.append(
+                f'HEAD is detached at {detached_sha} — '
+                f'sync will move it to origin/{branch}',
+            )
+        if fetch_failed:
+            items.append(
+                f'(could not fetch — local state may already diverge '
+                f'from origin/{branch})',
+            )
+        elif ahead is None:
+            # Only flag "couldn't check ahead" when fetch succeeded; otherwise
+            # the fetch-fail entry already covers it.
             items.append('(could not check local commits vs origin)')
         elif ahead > 0:
             plural = '' if ahead == 1 else 's'
             items.append(
                 f'{ahead} local commit{plural} ahead of origin/{branch}',
             )
+        if dirty is None:
+            items.append('(could not check working tree — proceeding may discard local changes)')
+        else:
+            items.extend(dirty)
 
         if not items:
             self._server_force_align(tag, pinned, project_dir, branch)
@@ -634,9 +688,9 @@ class ServerLauncher:
             self._cancel_start(tag)
             return
         if action == 'cancel':
-            # Override the stale "Syncing..." status the caller emitted,
+            # Override the stale "Checking..." status the caller emitted,
             # so the user sees their cancel reflected immediately.
-            self._w._show_status(f"Cancelled syncing '{project_dir.name}'")
+            self._w._show_status(f"Cancelled — '{project_dir.name}' left as-is")
             self._cancel_start(tag)
             return
         if action == 'discard':

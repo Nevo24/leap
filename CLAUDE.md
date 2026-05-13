@@ -190,6 +190,7 @@ assets/
 | `ServerLauncher` | `monitor/server_launcher.py` | PR server clone/force-align/start flow (gates dirty managed clones on a 3-way dialog: Clone-into-next / Discard / Cancel) |
 | `_dirty_files()` | `monitor/server_launcher.py` | Returns the list of local files a force-align would discard (`git status --porcelain`); `None` on scan failure so the consent gate stays armed |
 | `_commits_ahead_of_origin()` | `monitor/server_launcher.py` | Counts commits on HEAD not in `origin/<branch>` (`git rev-list --count origin/<branch>..HEAD`); `None` on scan failure |
+| `_detached_head_sha()` | `monitor/server_launcher.py` | Returns the short SHA if HEAD is detached, else `None` — surfaced in the dialog so commit-URL re-opens don't read as "you have N new commits" |
 | `_dir_index()` | `monitor/server_launcher.py` | Numeric suffix of a managed-clone dir name (`<name>` → 0, `<name>_1` → 1, …) — drives the "next slot" logic |
 | `GitLabProvider` | `monitor/pr_tracking/gitlab_provider.py` | GitLab PR thread tracking + user notifications |
 | `GitHubProvider` | `monitor/pr_tracking/github_provider.py` | GitHub PR thread tracking + user notifications |
@@ -428,15 +429,16 @@ Clicking Terminal on a PR-pinned row syncs the managed clone in `<repos_dir>/<pr
 
 Flow (`ServerLauncher._dirty_check_then_align` → `_on_dirty_check` → `_ask_dirty_action`):
 
-1. `BackgroundCallWorker` does: ensure auth on `origin`, `git fetch origin <branch>`, `git status --porcelain`, `git rev-list --count origin/<branch>..HEAD`.
-2. Clean working tree AND zero commits ahead → straight to `_server_force_align`, no dialog.
-3. Pre-fetch failed → skip dialog, defer to `_server_force_align`'s existing fetch-failed UI (branch-gone vs. start-anyway).
-4. Otherwise → 3-way `QDialog` with Cancel pinned bottom-left and two action buttons bottom-right. The bullet list mixes **dirty files** (from `--porcelain`) and a synthetic **"N local commits ahead of origin/<branch>"** entry when ahead > 0:
+1. `BackgroundCallWorker` does: ensure auth on `origin`, `git fetch origin <branch>`, `git status --porcelain`, `git rev-list --count origin/<branch>..HEAD`, `git symbolic-ref --quiet HEAD` (detached check).
+2. Clean working tree AND zero commits ahead AND HEAD on a branch → straight to `_server_force_align`, no dialog.
+3. Otherwise → 3-way `QDialog` with Cancel pinned bottom-left and two action buttons bottom-right. The bullet list goes synthetic-entries-first (detached HEAD, fetch-fail, ahead-count, scan failures) then dirty files, so the dialog's `items[:5]` truncation can't hide a critical entry behind "…and N more":
    - **Clone into `<name>_<i+1>`** (default) — leaves the dirty/ahead dir untouched, picks the lowest free slot at or after `i+1` via `_find_available_project_dir(start_index=…)`, then re-enters `_start_server_from_pr`. If that slot is *also* dirty the dialog re-fires; if it's in use by another Leap server it auto-skips. Slot 100 is the hardcoded fallback (always clones fresh).
    - **Discard && sync** — calls `_server_force_align`. `_align()` does a best-effort `git merge|rebase|cherry-pick|revert --abort`, then `reset --hard HEAD` + `clean -fd`, then the branch checkout. The pre-clean exists because plain `git checkout <branch>` refuses to switch with conflicting local changes. The subsequent `reset --hard origin/<branch>` is what wipes ahead commits.
-   - **Cancel** — `_cancel_start(tag)`, status banner updates to "Cancelled syncing '…'", `pinned['project_path']` is preserved (next click retries the same dir).
+   - **Cancel** — `_cancel_start(tag)`, status banner updates to `Cancelled — '<dir>' left as-is`, `pinned['project_path']` is preserved (next click retries the same dir).
 
-The pre-check fetch is duplicated by `_align`'s own fetch — acceptable: git fetches against unchanged refs are sub-second, and the duplication keeps `_align` self-contained for the post-clone path (which skips the dirty gate).
+We deliberately surface the dialog even when the pre-fetch failed (with a synthetic `(could not fetch — local state may already diverge from origin/<branch>)` entry) rather than deferring to `_align`'s fetch-failed handler. Deferring opens a silent-destruction window: pre-fetch could fail transiently while `_align`'s retry succeeds (network recovered, auth re-resolved), and `_align` would then run `reset --hard` without any consent prompt.
+
+Detached HEAD is detected separately and surfaced as a distinct entry — without it, commit-URL re-opens (which leave HEAD detached at the pinned SHA after the prior session) would read the "N commits ahead" entry as "you have N new commits", which is misleading. The pre-check fetch is duplicated by `_align`'s own fetch — acceptable: git fetches against unchanged refs are sub-second, and the duplication keeps `_align` self-contained for the post-clone path (which skips the dirty gate).
 
 Safety guards:
 - `pinned['remote_project_path']` rsplit must yield a non-empty project name — otherwise `<repos_dir>/''` would resolve to `repos_dir` itself and the clone path's `shutil.rmtree` would wipe every managed clone. Both `_start_server_from_pr` and `_on_dirty_check` bail out cleanly on empty.
