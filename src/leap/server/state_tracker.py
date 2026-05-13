@@ -1686,19 +1686,26 @@ class CLIStateTracker:
         renders, so cells from earlier frames bleed through).
 
         Preference order while in a prompt state:
-        1. Live screen, if it already contains the provider's dialog
-           indicator (Claude has rendered the dialog after reset).
+        1. Live screen, if it certainly contains a full dialog (Claude
+           has re-rendered the dialog after reset).  Uses the strict
+           ``is_dialog_certain`` check rather than the lenient
+           ``has_dialog_indicator`` — otherwise a stray footer fragment
+           like ``'…Esc to cancel'`` left over after reset would override
+           the captured snapshot with a near-empty screen, hiding the
+           menu options.  Hit on the trust folder dialog at startup, where
+           Claude doesn't re-render the menu rows after the reset.
         2. The snapshot captured at transition time (fallback for the
            moment between reset and Claude's first dialog bytes).
-        3. Live screen, if the snapshot is empty (covers the trust
-           dialog case where the snapshot was overwritten).
+        3. Live screen, if the snapshot is empty (defensive fallback
+           for paths that transitioned to a waiting state without
+           capturing one).
         """
         with self._screen_lock:
             snapshot = self._prompt_snapshot
             if self._state in WAITING_STATES:
                 live_lines = self._get_display_lines()
                 live_compact = ''.join(live_lines).replace(' ', '')
-                if self._provider.has_dialog_indicator(live_compact):
+                if self._provider.is_dialog_certain(live_compact):
                     snapshot = live_lines
                 elif not snapshot:
                     snapshot = live_lines
