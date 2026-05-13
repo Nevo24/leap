@@ -1,7 +1,7 @@
 """Dialog for adding a session from a local path."""
 
 from PyQt5.QtWidgets import (
-    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel,
+    QDialog, QFileDialog, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QRadioButton, QVBoxLayout,
 )
 
@@ -53,11 +53,17 @@ class AddLocalDialog(ZoomMixin, QDialog):
         layout.addWidget(self._clone_radio)
         layout.addWidget(self._open_radio)
 
-        # OK / Cancel
-        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
 
         self._init_zoom('add_local_font_size')
 

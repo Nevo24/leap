@@ -13,7 +13,7 @@ from typing import Optional
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QMenu, QMessageBox, QPushButton, QSplitter,
     QStackedWidget, QStyle, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout,
@@ -1391,11 +1391,17 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
                 prefs.get('save_preset_include_completed', False))
             dlg_layout.addWidget(include_cb)
 
-        btn_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(dlg.accept)
-        btn_box.rejected.connect(dlg.reject)
-        dlg_layout.addWidget(btn_box)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(ok_btn)
+        dlg_layout.addLayout(btn_row)
 
         def _save_cb_state() -> None:
             if is_checklist:

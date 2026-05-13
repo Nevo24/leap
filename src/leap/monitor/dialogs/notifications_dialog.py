@@ -9,8 +9,8 @@ from Foundation import NSURL
 from PyQt5.QtCore import QEvent, Qt, QTimer
 from PyQt5.QtGui import QCursor, QFont
 from PyQt5.QtWidgets import (
-    QAction, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QGridLayout, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget,
+    QAction, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout,
+    QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget,
 )
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
@@ -261,10 +261,17 @@ class NotificationsDialog(ZoomMixin, QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
 
         self._init_zoom('notifications_font_size')
 

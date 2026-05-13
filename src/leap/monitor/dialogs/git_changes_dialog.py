@@ -327,18 +327,20 @@ class CommitListDialog(ZoomMixin, QDialog):
         layout.addWidget(self._list)
 
         # Bottom row: manual entry + OK/Cancel
+        # Button row: Cancel bottom-left, secondary "Manual" + primary OK
+        # bottom-right.
         bottom = QHBoxLayout()
+
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        bottom.addWidget(cancel_btn)
+
+        bottom.addStretch()
 
         manual_btn = QPushButton('Enter commit SHA manually')
         manual_btn.setToolTip('Type a commit hash instead of selecting from the list')
         manual_btn.clicked.connect(self._enter_manual)
         bottom.addWidget(manual_btn)
-
-        bottom.addStretch()
-
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.clicked.connect(self.reject)
-        bottom.addWidget(cancel_btn)
 
         ok_btn = QPushButton('OK')
         ok_btn.setDefault(True)

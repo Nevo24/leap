@@ -306,6 +306,23 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 - **New third-party dependencies** → Add to `pyproject.toml` under the appropriate group: `[tool.poetry.dependencies]` for core, `[tool.poetry.group.monitor.dependencies]` for GUI-only deps. Run `poetry lock && poetry install` after. All imports must be at module top level (no inline imports except optional deps).
 - **New dialogs** → All new resizable dialogs (except simple warning/error/info popups) must save/restore their size using `load_dialog_geometry(key)` / `save_dialog_geometry(key, w, h)` from `monitor/pr_tracking/config.py`. Call `load_dialog_geometry()` in `__init__` to restore. For persistence: if the dialog closes via `accept()`/`reject()`, save in `done()`. If it closes via `close()` or the X button, save in `closeEvent()` instead — `done()` is **not** called for `close()`/X.
 
+  **Button row layout — Cancel bottom-left, primary bottom-right.** Project convention for every monitor `QDialog` with a Cancel button: add Cancel first, then `addStretch()`, then the primary action(s) on the right:
+
+  ```python
+  btn_row = QHBoxLayout()
+  cancel_btn = QPushButton('Cancel')
+  cancel_btn.clicked.connect(self.reject)
+  btn_row.addWidget(cancel_btn)
+  btn_row.addStretch()
+  ok_btn = QPushButton('OK')  # or 'Send' / 'Save' / 'Confirm' / etc.
+  ok_btn.setDefault(True)
+  ok_btn.clicked.connect(self.accept)
+  btn_row.addWidget(ok_btn)
+  layout.addLayout(btn_row)
+  ```
+
+  Do **not** use `QDialogButtonBox(Ok | Cancel)` for new dialogs — on macOS it groups Cancel next to OK on the right, which violates the convention. For 3-button cases (e.g. Cancel + secondary + primary), keep Cancel on the outside-left and group the other two on the right of the stretch — see `_mixins/actions_menu_mixin.py` and `dialogs/git_changes_dialog.py:CommitListDialog`. Close-labeled dismissal buttons (one-button viewer dialogs like `WhatsNewDialog`, `NotesDialog`) are not covered by this rule — they're a different paradigm ("I'm done viewing" vs "discard my edits").
+
   **Font zoom (Cmd+scroll / Cmd+±/0):** Every new dialog must inherit from `ZoomMixin` (`monitor/dialogs/zoom_mixin.py`) and call `_init_zoom(...)` at the end of `__init__`. Two forms are supported:
 
   * **Single-target** — for form dialogs with no distinct "content" area (inputs, combos, checkboxes, and buttons only):

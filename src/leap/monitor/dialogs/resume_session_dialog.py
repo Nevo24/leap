@@ -18,9 +18,9 @@ from typing import Optional
 
 from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
-    QHeaderView, QLabel, QLineEdit, QTableWidget,
-    QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QApplication, QDialog, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from leap.cli_providers.registry import get_display_name
@@ -149,11 +149,17 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         # in a new terminal so the user finishes the flow (cwd choice
         # for cwd-bound CLIs, server hand-off) interactively.  No
         # "Use ~/" toggle here; that decision belongs in the terminal.
-        self._btn_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self._btn_box.accepted.connect(self._accept_if_selected)
-        self._btn_box.rejected.connect(self.reject)
-        layout.addWidget(self._btn_box)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._accept_if_selected)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
 
         self._populate(self._rows)
         # Focus the search box so the user can start typing immediately —
@@ -411,11 +417,17 @@ class _TagSessionPicker(ZoomMixin, QDialog):
             self._table.selectRow(0)
         layout.addWidget(self._table, 1)
 
-        btn_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self._accept_if_selected)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self._accept_if_selected)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
 
         self._init_zoom(
             pref_key='resume_tag_sessions_font_size',

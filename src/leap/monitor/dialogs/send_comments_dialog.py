@@ -145,14 +145,14 @@ class SendCommentsDialog(ZoomMixin, QDialog):
 
         # -- Buttons ----------------------------------------------------
         btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
         btn_row.addStretch()
         send_btn = QPushButton('Send')
         send_btn.setDefault(True)
         send_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(send_btn)
-        btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
 
         # Persist on every flip so the choice survives Cancel/close too.

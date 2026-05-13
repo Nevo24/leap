@@ -202,11 +202,16 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         self.status_label = QLabel('')
         layout.addWidget(self.status_label)
 
-        # Buttons: [Connect|Disconnect]  [stretch]  [Save] [Cancel]
-        # Left slot is a single button whose label and style flip based on
-        # the saved ``username`` state. Save sits with Cancel on the right
-        # so the user reads it as "commit my edits" alongside "discard".
+        # Buttons: [Cancel]  [Connect|Disconnect]  [stretch]  [Save]
+        # Cancel pinned bottom-left per dialog convention (back-button slot).
+        # Toggle is a single button whose label and style flip based on
+        # the saved ``username`` state.  Save is the primary forward
+        # action and sits bottom-right.
         btn_layout = QHBoxLayout()
+
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
 
         self.toggle_btn = QPushButton()
         self.toggle_btn.clicked.connect(self._on_toggle_clicked)
@@ -221,10 +226,6 @@ class SCMSetupDialog(ZoomMixin, QDialog):
         )
         self.save_btn.clicked.connect(self._save_fields)
         btn_layout.addWidget(self.save_btn)
-
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
 
         layout.addLayout(btn_layout)
 

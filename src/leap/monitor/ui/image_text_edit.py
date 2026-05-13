@@ -415,14 +415,14 @@ class SendMessageDialog(ZoomMixin, QDialog):
         layout.addWidget(hint)
 
         btn_layout = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
         btn_layout.addStretch()
         ok_btn = QPushButton('Send')
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(ok_btn)
-        btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
         self._init_zoom(
@@ -502,15 +502,15 @@ class SendPresetDialog(ZoomMixin, QDialog):
         layout.addLayout(toggle_row)
 
         btn_layout = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(cancel_btn)
         btn_layout.addStretch()
         self._ok_btn = QPushButton('Send')
         self._ok_btn.setDefault(True)
         self._ok_btn.setEnabled(bool(self._preset_names))
         self._ok_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton('Cancel')
-        cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self._ok_btn)
-        btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
         self._init_zoom(pref_key='send_preset_font_size')

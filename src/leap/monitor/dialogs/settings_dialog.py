@@ -9,8 +9,8 @@ from typing import Any, Callable, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 from PyQt5.QtGui import QKeySequence
@@ -378,10 +378,17 @@ class SettingsDialog(ZoomMixin, QDialog):
         layout.addLayout(grid)
         layout.addStretch()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
 
         # Collect widgets that have tooltips for the toggle
         self._tooltip_widgets: list[tuple[QWidget, str]] = []

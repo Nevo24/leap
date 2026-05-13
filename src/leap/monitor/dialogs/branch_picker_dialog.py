@@ -5,8 +5,8 @@ import subprocess
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QComboBox, QCompleter, QDialog, QDialogButtonBox, QHBoxLayout,
-    QLabel, QRadioButton, QVBoxLayout,
+    QComboBox, QCompleter, QDialog, QHBoxLayout, QLabel, QPushButton,
+    QRadioButton, QVBoxLayout,
 )
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
@@ -62,11 +62,17 @@ class BranchPickerDialog(ZoomMixin, QDialog):
 
         layout.addStretch()
 
-        # OK / Cancel
-        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btn_box.accepted.connect(self.accept)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        # Cancel bottom-left, OK bottom-right.
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
 
         # Populate initial branches
         self._default_branch = detect_default_branch(project_path)
