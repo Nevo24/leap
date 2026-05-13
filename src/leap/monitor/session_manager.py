@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
-from leap.cli_providers.registry import DEFAULT_PROVIDER
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.ide_detection import get_git_branch
@@ -250,6 +250,28 @@ def get_active_sessions() -> list[dict[str, Any]]:
                 pass
 
         cli_provider = status_response.get('cli_provider', DEFAULT_PROVIDER)
+
+        # Prefer the CLI's own user-prompt record (transcript) over
+        # ``recently_sent`` when available — ``recently_sent`` only sees
+        # text that crossed Leap's PTY input path, so IDE-side prompts
+        # (e.g. Claude Code's @file:lines via Cmd+Option+K) would
+        # otherwise show "Last Msg" minus the @-reference.  Providers
+        # that don't override return '' and we keep ``recently_sent``.
+        try:
+            provider_obj = get_provider(cli_provider)
+        except ValueError:
+            provider_obj = None
+        if provider_obj is not None:
+            try:
+                transcript_prompt = provider_obj.extract_last_user_prompt(
+                    cwd=project_path or '',
+                    tag=tag,
+                    storage_dir=SOCKET_DIR.parent,
+                )
+            except Exception:
+                transcript_prompt = ''
+            if transcript_prompt:
+                current_task = transcript_prompt
 
         sessions.append({
             'tag': tag,

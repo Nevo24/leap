@@ -634,6 +634,28 @@ class CLIProvider(ABC):
         msg = hook_data.get('last_assistant_message', '')
         return msg if isinstance(msg, str) else ''
 
+    def extract_last_user_prompt(
+        self,
+        cwd: str,
+        tag: str,
+        storage_dir: Optional[Path],
+    ) -> str:
+        """Best-effort: return the user's most recent prompt as the CLI
+        recorded it (transcript or equivalent).
+
+        Used by the monitor's "Last Msg" column to surface prompts that
+        bypassed Leap's PTY input path — most importantly Claude Code's
+        ``@file:lines`` references injected via the VS Code / JetBrains
+        plugin's Cmd+Option+K shortcut, which travels through an IDE
+        side-channel and never appears in Leap's ``recently_sent``.
+
+        Default returns ``''`` — providers without a readable user-message
+        transcript opt out and the monitor falls back to ``recently_sent``.
+        :class:`leap.cli_providers.claude.ClaudeProvider` overrides this
+        to walk the JSONL transcript.
+        """
+        return ''
+
     # -- CLI-specific input behaviors ------------------------------------
 
     def send_message(

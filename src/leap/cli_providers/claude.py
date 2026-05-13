@@ -10,7 +10,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
@@ -20,6 +20,22 @@ from leap.utils.menu import MENU_OPTION_RE
 
 _TRANSCRIPT_TAIL_BYTES = 32768
 _TRANSCRIPT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+
+# Reverse-chunk reading bounds for user-prompt extraction.  A 32 KiB
+# tail (the assistant-message convention) routinely buries user prompts
+# during heavy tool use — verified on a real session where the user's
+# last text landed 260 KiB before EOF after a burst of tool calls.  We
+# read backward in chunks until we find a real prompt, capped at 4 MiB
+# so a pathological transcript can't make us page in the entire file.
+_USER_PROMPT_REVERSE_CHUNK = 65536
+_USER_PROMPT_REVERSE_MAX = 4 * 1024 * 1024
+
+# (path_str, mtime_ns, size) → extracted prompt.  Keyed on identity-
+# changing facts only, so any actual write invalidates.  Lifetime is
+# the process — the monitor restarts often enough that unbounded
+# growth from stale paths isn't a concern in practice, and each
+# session contributes at most one entry.
+_USER_PROMPT_CACHE: dict[tuple[str, int, int], str] = {}
 
 
 class ClaudeProvider(CLIProvider):
@@ -217,6 +233,226 @@ class ClaudeProvider(CLIProvider):
                 return joined
         return ''
 
+    def extract_last_user_prompt(
+        self,
+        cwd: str,
+        tag: str,
+        storage_dir: Optional[Path],
+    ) -> str:
+        """Walk the transcript JSONL for the most recent user-typed prompt.
+
+        Anthropic API ``role=user`` covers many on-disk shapes — the
+        ones we filter (and why):
+
+        * Plain string content — user keystrokes, including unexpanded
+          ``@file:lines`` from the VS Code / JetBrains Cmd+Option+K
+          shortcut.  KEPT — this is the target case.
+        * Plain string content starting with ``<command-name`` /
+          ``<local-command-caveat`` / ``<local-command-stdout`` —
+          synthetic blocks Claude writes for slash commands and local
+          command output.  REJECTED so "Last Msg" doesn't read
+          ``<command-name>/clear</command-name>``.
+        * Any entry with ``isMeta: true`` — Claude's clean flag for
+          synthetic entries (e.g. ``[Image: source: …]`` breadcrumbs
+          attached to a pasted image).  REJECTED.
+        * Content-block list with a ``tool_result`` block AND no
+          ``text`` blocks — Read/Bash output recorded as ``role=user``
+          from the model's perspective.  REJECTED.  When a list has
+          BOTH a ``text`` block and a ``tool_result`` (canonical
+          tool-feedback pattern), the text is KEPT.
+        * Content-block list whose only text blocks are
+          ``[Request interrupted by user]`` — synthetic interrupt
+          marker.  REJECTED.
+
+        Reads backward in 64 KiB chunks, capped at 4 MiB — far enough
+        to clear heavy tool-call bursts (verified: a single session had
+        the user's last prompt sitting 260 KiB before EOF after a flurry
+        of file-Read tool calls) without paging in an arbitrarily large
+        transcript.  Results are cached by ``(path, mtime_ns, size)`` so
+        the typical poll cycle is a single ``stat`` syscall.
+
+        Returns ``''`` when no transcript exists, the tail contains no
+        qualifying user entry, or any I/O / parse step fails — the
+        caller falls back to Leap's PTY-side ``recently_sent`` tracking.
+        """
+        # We deliberately only consult the absolute ``transcript_path``
+        # recorded in ``cli_sessions/claude/<tag>.json`` (written by the
+        # hook on every Stop/Notification).  A slug-based fallback
+        # using the caller's cwd is tempting but unsafe: when two Leap
+        # sessions share a cwd (or a fresh session has no record yet
+        # while a recently-touched older session sits in the same
+        # ``~/.claude/projects/`` subdir), the most-recently-modified
+        # ``*.jsonl`` may belong to a *different* tag — we'd then
+        # display another row's prompt.  Before the first hook fires,
+        # ``recently_sent`` is the right source anyway; degraded for
+        # a few seconds beats wrong.
+        transcript = self._latest_recorded_transcript(tag, storage_dir)
+        if transcript is None:
+            return ''
+        try:
+            st = transcript.stat()
+        except OSError:
+            return ''
+        cache_key = (str(transcript), st.st_mtime_ns, st.st_size)
+        cached = _USER_PROMPT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            result = self._extract_user_prompt_uncached(
+                transcript, st.st_size,
+            )
+        except OSError:
+            return ''
+        # Cache success and failure alike — if the transcript's
+        # last 4 MiB has no qualifying prompt right now, that won't
+        # change until the file is appended to (which bumps mtime/size
+        # and invalidates the key).
+        _USER_PROMPT_CACHE[cache_key] = result
+        return result
+
+    @classmethod
+    def _extract_user_prompt_uncached(
+        cls,
+        transcript: Path,
+        size: int,
+    ) -> str:
+        """Reverse-walk the transcript's tail (up to 4 MiB) for a real
+        user prompt.
+
+        Returns the first qualifying prompt found scanning end-to-start,
+        or ``''`` when the safety cap is hit without a match (extremely
+        long active session where the user hasn't sent anything in a
+        very long time).
+        """
+        for raw in cls._iter_lines_reverse(
+            transcript, size,
+            chunk=_USER_PROMPT_REVERSE_CHUNK,
+            max_bytes=_USER_PROMPT_REVERSE_MAX,
+        ):
+            try:
+                entry = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if entry.get('type') != 'user':
+                continue
+            # ``isMeta`` is Claude's own flag for synthetic user
+            # entries (image-source breadcrumbs, etc.) — always skip.
+            if entry.get('isMeta'):
+                continue
+            content = entry.get('message', {}).get('content')
+            text = cls._user_prompt_text(content)
+            if text:
+                return text
+        return ''
+
+    @staticmethod
+    def _iter_lines_reverse(
+        path: Path,
+        size: int,
+        *,
+        chunk: int,
+        max_bytes: int,
+    ) -> Iterator[bytes]:
+        """Yield non-empty stripped lines from a file, end → start.
+
+        Reads in fixed chunks moving backward.  Each chunk is prepended
+        to a carry-over buffer whose head is treated as a partial line
+        (because it may be split mid-line at the chunk boundary).  At
+        EOF — when we either hit the start of the file or reach
+        ``max_bytes`` — the final buffer is yielded as the last line.
+
+        Yields ``bytes`` per call; callers do their own JSON parsing.
+        """
+        end = size
+        read_total = 0
+        carry = b''
+        with open(path, 'rb') as f:
+            while end > 0 and read_total < max_bytes:
+                sz = min(chunk, end, max_bytes - read_total)
+                end -= sz
+                f.seek(end)
+                data = f.read(sz)
+                read_total += sz
+                buf = data + carry
+                # All but the first segment are complete lines from
+                # within ``buf``.  The first segment may have been
+                # split mid-line at the chunk boundary, so we carry
+                # it into the next iteration (or out as the final
+                # line when we reach the file start).
+                lines = buf.split(b'\n')
+                carry = lines[0]
+                for ln in reversed(lines[1:]):
+                    ln = ln.strip()
+                    if ln:
+                        yield ln
+        # Only yield the carry when we read all the way to the start
+        # of the file — otherwise it may be a partial line truncated
+        # by the ``max_bytes`` cap, which we don't want to feed to
+        # JSON parsing as if it were complete.
+        if end == 0:
+            tail = carry.strip()
+            if tail:
+                yield tail
+
+    # Plain-string user content starting with any of these prefixes is
+    # synthetic — slash-command echoes, local-command captures.  We
+    # also have ``isMeta`` for newer transcripts, but older ones can
+    # carry these strings without the flag, so prefix-match too.
+    _SYNTHETIC_USER_PREFIXES: tuple[str, ...] = (
+        '<command-name',
+        '<command-message',
+        '<command-args',
+        '<command-stdout',
+        '<local-command-caveat',
+        '<local-command-stdout',
+        '<local-command-stderr',
+    )
+
+    @classmethod
+    def _user_prompt_text(cls, content: Any) -> str:
+        """Pull the user-typed text out of a single ``role=user`` content.
+
+        Returns ``''`` for entries that aren't actual user prompts —
+        synthetic command echoes, tool_result-only payloads, interrupt
+        markers, image-only content.  When a content-block list mixes
+        ``text`` and ``tool_result`` (canonical tool-feedback pattern),
+        the text is kept; the tool_result alone never blocks a sibling
+        text block from surfacing.
+        """
+        if isinstance(content, str):
+            text = content.strip()
+            if not text or text == '[Request interrupted by user]':
+                return ''
+            if text.startswith(cls._SYNTHETIC_USER_PREFIXES):
+                return ''
+            return text
+        if not isinstance(content, list):
+            return ''
+        parts: list[str] = []
+        has_tool_result = False
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get('type')
+            if btype == 'tool_result':
+                has_tool_result = True
+                continue
+            if btype == 'text':
+                t = block.get('text', '')
+                if not isinstance(t, str):
+                    continue
+                if t == '[Request interrupted by user]':
+                    continue
+                if t.startswith(cls._SYNTHETIC_USER_PREFIXES):
+                    continue
+                parts.append(t)
+        joined = '\n'.join(p for p in parts if p).strip()
+        # An entry with ONLY a tool_result (no text) is Read/Bash output
+        # masquerading as a user message — let the caller keep walking.
+        if not joined and has_tool_result:
+            return ''
+        return joined
+
     # -- Transcript-based "still running" check --------------------------
 
     @property
@@ -295,6 +531,49 @@ class ClaudeProvider(CLIProvider):
             stop_reason = entry.get('message', {}).get('stop_reason', '')
             return stop_reason == 'tool_use'
         return False
+
+    @staticmethod
+    def _latest_recorded_transcript(
+        tag: str,
+        storage_dir: Optional[Path],
+    ) -> Optional[Path]:
+        """Return the absolute ``transcript_path`` from the newest record
+        in ``cli_sessions/claude/<tag>.json``, if it still exists on disk.
+
+        Independent of ``cwd`` / slugification, so it's safe to use from
+        callers that only have ``project_path`` (a git root) rather than
+        the actual launch cwd.  The hook writes the real path on every
+        fire, so by the time Claude has produced its first
+        Stop/Notification this lookup is precise.
+
+        Returns ``None`` before the first hook fire, when the record
+        file is missing/corrupt, or when every recorded transcript was
+        deleted out-of-band.
+        """
+        if not tag or storage_dir is None:
+            return None
+        tag_file = storage_dir / 'cli_sessions' / 'claude' / f'{tag}.json'
+        if not tag_file.is_file():
+            return None
+        try:
+            data = json.loads(tag_file.read_text())
+        except (json.JSONDecodeError, OSError, ValueError):
+            return None
+        if not isinstance(data, list):
+            return None
+        for entry in reversed(data):
+            if not isinstance(entry, dict):
+                continue
+            tp = entry.get('transcript_path', '')
+            if not isinstance(tp, str) or not tp:
+                continue
+            p = Path(tp)
+            try:
+                if p.is_file():
+                    return p
+            except OSError:
+                continue
+        return None
 
     def _resolve_transcript_path(
         self,
