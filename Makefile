@@ -69,44 +69,75 @@ if grep -q "ClaudeQ Configuration START" "$$RC_FILE"; then \
 fi
 endef
 
-# Shell helper: build and install monitor app
+# Shell helper: build and install monitor app.
+#
+# After py2app builds the bundle we re-sign it with our "Leap Self-Signed"
+# code-signing cert (generated once by .gen-codesign-cert).  This makes
+# the bundle's designated requirement stable across rebuilds:
+#
+#   designated => identifier "com.leap.monitor" and certificate leaf = H"<cert-sha1>"
+#
+# macOS TCC keys Accessibility grants on the designated requirement, so a
+# rebuild that changes the cdhash but keeps the same signing cert
+# preserves the user's Accessibility approval — no more re-granting on
+# every update.  The previous ad-hoc signing produced a cdhash-based
+# requirement that invalidated TCC on every rebuild, which is why this
+# macro used to end with `tccutil reset Accessibility` (now removed).
+#
+# Install strategy: we try user-level rm of the existing bundle and
+# only fall back to `sudo cp -R` for the overwrite (not `sudo rm`).
+# IT-managed Macs commonly block `sudo rm` with a loud "Sudo Command
+# Blocked" message that looks like an install failure even though we
+# `|| true` past it.  `sudo cp -R` is generally allowed on the same
+# fleets and will replace every file in the bundle that codesign
+# actually sealed — so the resulting cdhash matches the fresh build
+# even if some old top-level files end up lingering as harmless cruft.
+#
+# Re-launch: if the Monitor was running at the start, we close it
+# before the install, then `open` the freshly-installed bundle at the
+# end.  The re-launch step *always* quits-then-launches (not just
+# launches) because the user can manually click Spotlight / Dock
+# while we're sitting on the `sudo` password prompt — at that point
+# the disk still has the OLD bundle, LaunchServices launches it, and
+# the just-spawned process holds open file handles to inodes that
+# `sudo cp` is about to overwrite.  macOS file-replacement semantics
+# leave the running process executing the OLD code from those frozen
+# inodes; a bare `open` would just bring that stale process to front.
+# Quit-then-launch forces a fresh spawn against the new bundle on disk.
 define BUILD_MONITOR_APP
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
-if pgrep -f "Leap Monitor" > /dev/null 2>&1; then \
+echo "$(PROMPT_PREFIX) Signing Leap Monitor.app with Leap Self-Signed cert..."; \
+SIGN_OUT=$$(codesign --force --sign "Leap Self-Signed" \
+	--identifier com.leap.monitor \
+	"$(REPO_PATH)/.dist/Leap Monitor.app" 2>&1); \
+SIGN_RC=$$?; \
+echo "$$SIGN_OUT" | grep -v "replacing existing signature" || true; \
+if [ "$$SIGN_RC" -ne 0 ] || ! codesign --verify "$(REPO_PATH)/.dist/Leap Monitor.app" >/dev/null 2>&1; then \
+	echo "$(YELLOW)  ⚠ Cert-based signing failed — bundle still has its py2app ad-hoc signature.$(NC)"; \
+	echo "  Accessibility will be lost on the next update.  Check the cert with:"; \
+	echo "    security find-certificate -c \"Leap Self-Signed\" \"$$HOME/Library/Keychains/login.keychain-db\""; \
+	echo "  If missing, remove the cert from Keychain Access and re-run 'make install-monitor'."; \
+fi; \
+WAS_RUNNING=0; \
+if pgrep -f "Leap Monitor.app/Contents/MacOS/Leap Monitor" > /dev/null 2>&1; then \
+	WAS_RUNNING=1; \
 	echo "$(PROMPT_PREFIX) Closing running Leap Monitor..."; \
 	osascript -e 'quit app "Leap Monitor"' 2>/dev/null || true; \
 	sleep 1; \
-	pkill -f "Leap Monitor" 2>/dev/null || true; \
+	pkill -f "Leap Monitor.app/Contents/MacOS/Leap Monitor" 2>/dev/null || true; \
 fi; \
 echo "$(PROMPT_PREFIX) Installing Leap Monitor.app..."; \
-rm -rf "$(REPO_PATH)/.dist/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || true; \
 if [ -d "/Applications/Leap Monitor.app" ]; then \
-	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
+	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 fi; \
+INSTALL_PATH=""; \
 if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null; then \
-	if [ -d "/Applications/Leap Monitor.app/Contents/_CodeSignature" ]; then \
-		sudo rm -rf "/Applications/Leap Monitor.app/Contents/_CodeSignature" 2>/dev/null || true; \
-	fi; \
-	if [ -d "/Applications/Leap Monitor.app/Contents/_CodeSignature" ]; then \
-		echo "$(YELLOW)  ⚠ Stale codesignature in /Applications can't be removed (requires IT/admin).$(NC)"; \
-		echo "  Installing clean copy to ~/Applications instead..."; \
-		rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
-		mkdir -p "$$HOME/Applications"; \
+	echo "$(GREEN)✓ Installed to /Applications$(NC)"; \
+	INSTALL_PATH="/Applications/Leap Monitor.app"; \
+	if [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
+		echo "$(PROMPT_PREFIX) Removing stale ~/Applications copy..."; \
 		rm -rf "$$HOME/Applications/Leap Monitor.app"; \
-		if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" "$$HOME/Applications/"; then \
-			echo "$(GREEN)✓ Installed to ~/Applications$(NC)"; \
-			echo "  Launch Leap Monitor from Spotlight or ~/Applications in Finder."; \
-		else \
-			echo "$(YELLOW)⚠ Installation to ~/Applications also failed. Check disk space and permissions.$(NC)"; \
-			exit 1; \
-		fi; \
-	else \
-		echo "$(GREEN)✓ Installed to /Applications$(NC)"; \
-		if [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
-			echo "$(PROMPT_PREFIX) Removing stale ~/Applications copy..."; \
-			rm -rf "$$HOME/Applications/Leap Monitor.app"; \
-		fi; \
 	fi; \
 else \
 	echo "$(YELLOW)  ⚠ Could not install to /Applications (blocked by system policy).$(NC)"; \
@@ -118,13 +149,48 @@ else \
 	if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" "$$HOME/Applications/"; then \
 		echo "$(GREEN)✓ Installed to ~/Applications$(NC)"; \
 		echo "  To launch: open ~/Applications in Finder, or search 'Leap Monitor' in Spotlight."; \
+		INSTALL_PATH="$$HOME/Applications/Leap Monitor.app"; \
 	else \
 		echo "$(YELLOW)⚠ Installation to ~/Applications also failed. Check disk space and permissions.$(NC)"; \
 		exit 1; \
 	fi; \
 fi; \
-tccutil reset Accessibility com.leap.monitor 2>/dev/null || true
+if [ "$$WAS_RUNNING" = "1" ] && [ -n "$$INSTALL_PATH" ]; then \
+	if pgrep -f "Leap Monitor.app/Contents/MacOS/Leap Monitor" > /dev/null 2>&1; then \
+		osascript -e 'quit app "Leap Monitor"' 2>/dev/null || true; \
+		sleep 1; \
+		pkill -f "Leap Monitor.app/Contents/MacOS/Leap Monitor" 2>/dev/null || true; \
+		sleep 1; \
+	fi; \
+	echo "$(PROMPT_PREFIX) Re-launching Leap Monitor from $$INSTALL_PATH..."; \
+	open "$$INSTALL_PATH" 2>/dev/null || echo "$(YELLOW)  ⚠ Could not auto-relaunch — open Leap Monitor manually.$(NC)"; \
+fi
 endef
+
+# Generate the "Leap Self-Signed" code-signing cert (if missing) and
+# import it into the user's login keychain.  This runs as a prereq for
+# every monitor build so the cert is always in place before signing.
+#
+# Idempotent: when the cert is already present we skip the generation
+# script entirely.  On the very first run we ALSO clear any stale
+# Accessibility entries that may have been left by the previous
+# ad-hoc-signed scheme — those entries are cdhash-based and would never
+# match the new cert-signed bundle anyway; clearing them avoids ghost
+# entries showing up alongside the new one in System Settings.
+.PHONY: .gen-codesign-cert
+.gen-codesign-cert: check-macos
+	@if security find-certificate -c "Leap Self-Signed" "$$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then \
+		: ; \
+	else \
+		echo "$(PROMPT_PREFIX) Generating Leap Self-Signed code-signing certificate..."; \
+		bash $(SCRIPTS_DIR)/leap-codesign-setup.sh || exit $$?; \
+		tccutil reset Accessibility com.leap.monitor 2>/dev/null || true; \
+		echo ""; \
+		echo "$(YELLOW)ℹ One-time step on next Leap Monitor launch:$(NC) the in-app banner will ask"; \
+		echo "  you to grant Accessibility (and Notifications, if not already granted)."; \
+		echo "  Future updates will preserve the grant — you'll never see this again."; \
+		echo ""; \
+	fi
 
 .PHONY: default
 default: install
@@ -284,7 +350,7 @@ write-install-metadata: ensure-storage
 	@echo "   Saved project: $$(cat $(REPO_PATH)/.storage/project-path)"
 
 .PHONY: install-monitor
-install-monitor: .env ensure-storage write-install-metadata
+install-monitor: .env ensure-storage write-install-metadata .gen-codesign-cert
 	@echo "$(PROMPT_PREFIX) Installing monitor dependencies..."
 	@poetry install --no-root --with monitor
 	@$(BUILD_MONITOR_APP)
@@ -299,56 +365,9 @@ install-monitor: .env ensure-storage write-install-metadata
 	@echo "  • Finder: Open Leap Monitor.app from Applications or ~/Applications"
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
-	@echo "$(YELLOW)Optional: Grant macOS permissions for full functionality$(NC)"
-	@echo ""
-	@echo "  $(YELLOW)Accessibility$(NC) — Required for IDE terminal navigation"
-	@read -p "  Open Accessibility settings? (Y/n) " -n 1 -r REPLY_ACC; echo; \
-	if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
-		open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
-	fi
-	@$(MAKE) .prompt-notifications
-
-.PHONY: .prompt-notifications
-.prompt-notifications:
-	@echo ""
-	@echo "$(YELLOW)Notifications — required for banner / Slack / PR alerts$(NC)"
-	@if pgrep -f "Leap Monitor.app" > /dev/null 2>&1; then \
-		echo "  Leap Monitor is already running — can't probe permission state."; \
-		echo "  Quit the app and run 'make install-monitor' again, or enable it"; \
-		echo "  directly in System Settings > Notifications > Leap Monitor."; \
-	else \
-		if [ -f "/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor" ]; then \
-			LEAP_BIN="/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor"; \
-		elif [ -f "$$HOME/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor" ]; then \
-			LEAP_BIN="$$HOME/Applications/Leap Monitor.app/Contents/MacOS/Leap Monitor"; \
-		else \
-			LEAP_BIN=""; \
-		fi; \
-		if [ -z "$$LEAP_BIN" ]; then \
-			echo "  Could not find Leap Monitor binary to probe notification permissions."; \
-			echo "  If notifications are not working, enable them in"; \
-			echo "  System Settings > Notifications > Leap Monitor."; \
-		else \
-			"$$LEAP_BIN" --request-permissions 2>/dev/null; \
-			NOTIF_STATUS=$$?; \
-			if [ "$$NOTIF_STATUS" = "0" ]; then \
-				echo "  $(GREEN)✓ Notifications permission OK.$(NC)"; \
-			elif [ "$$NOTIF_STATUS" = "2" ]; then \
-				echo "  Notifications declined — you can enable them later in"; \
-				echo "  System Settings if you change your mind."; \
-			elif [ "$$NOTIF_STATUS" -ge 126 ] 2>/dev/null; then \
-				echo "  $(YELLOW)⚠ Notification probe was blocked (process terminated externally).$(NC)"; \
-				echo "  If notifications are not working, enable them in"; \
-				echo "  System Settings > Notifications > Leap Monitor."; \
-			else \
-				printf "  Open Notifications settings? (Y/n) "; \
-				read -n 1 -r REPLY_NOTIF; echo; \
-				if [ "$$REPLY_NOTIF" != "n" ] && [ "$$REPLY_NOTIF" != "N" ]; then \
-					open "x-apple.systempreferences:com.apple.Notifications-Settings.extension"; \
-				fi; \
-			fi; \
-		fi; \
-	fi
+	@echo "$(YELLOW)Note:$(NC) Leap Monitor will prompt for Accessibility and Notifications"
+	@echo "      permissions on first launch. Grant them from the in-app banners —"
+	@echo "      this is a one-time step that persists across future updates."
 
 .PHONY: install-slack-app
 install-slack-app: .env ensure-storage write-install-metadata
@@ -430,44 +449,26 @@ update: .env
 		echo ""; \
 		echo "  Slack not installed. To install it, run: make install-slack-app"; \
 	fi
-	@MONITOR_REBUILT=no; \
-	if [ -d "/Applications/Leap Monitor.app" ] || [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
+	@if [ -d "/Applications/Leap Monitor.app" ] || [ -d "$$HOME/Applications/Leap Monitor.app" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Detected Leap Monitor installation"; \
 		echo "$(PROMPT_PREFIX) Updating monitor dependencies..."; \
 		poetry install --no-root --with monitor || exit $$?; \
+		$(MAKE) .gen-codesign-cert || exit $$?; \
 		$(BUILD_MONITOR_APP) || exit $$?; \
 		echo "$(GREEN)✓ Monitor updated$(NC)"; \
-		echo ""; \
-		echo "$(YELLOW)Note: macOS revokes Accessibility after app rebuild$(NC)"; \
-		printf "  Re-open Accessibility settings? (Y/n) "; \
-		read -n 1 -r REPLY_ACC; echo; \
-		if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
-			open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
-		fi; \
-		MONITOR_REBUILT=yes; \
 	elif [ -f "$(REPO_PATH)/.storage/.migration_had_monitor" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Old ClaudeQ Monitor was removed during migration"; \
 		echo "$(PROMPT_PREFIX) Rebuilding as Leap Monitor..."; \
 		rm -f "$(REPO_PATH)/.storage/.migration_had_monitor"; \
 		poetry install --no-root --with monitor || exit $$?; \
+		$(MAKE) .gen-codesign-cert || exit $$?; \
 		$(BUILD_MONITOR_APP) || exit $$?; \
 		echo "$(GREEN)✓ Leap Monitor installed$(NC)"; \
-		echo ""; \
-		echo "$(YELLOW)Note: macOS requires Accessibility permission for IDE navigation$(NC)"; \
-		printf "  Open Accessibility settings? (Y/n) "; \
-		read -n 1 -r REPLY_ACC; echo; \
-		if [ "$$REPLY_ACC" != "n" ] && [ "$$REPLY_ACC" != "N" ]; then \
-			open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"; \
-		fi; \
-		MONITOR_REBUILT=yes; \
 	else \
 		echo ""; \
 		echo "  Monitor not installed. To install it, run: make install-monitor"; \
-	fi; \
-	if [ "$$MONITOR_REBUILT" = "yes" ]; then \
-		$(MAKE) .prompt-notifications; \
 	fi
 	@echo ""
 	@echo "$(PROMPT_PREFIX) Updating IDE/terminal configurations..."

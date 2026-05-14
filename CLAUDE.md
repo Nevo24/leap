@@ -528,6 +528,24 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 ### WezTerm
 **Automatically configured during `make install`** — `enable_csi_u_key_encoding = true` added to Lua config (`~/.wezterm.lua` or `~/.config/wezterm/wezterm.lua`) so Shift+Enter sends a distinct CSI u sequence. Creates a new config file if none exists. Restart WezTerm after installation for the change to take effect. Full monitor navigation support via `wezterm cli` (navigate, close, open tabs).
 
+## Monitor Code Signing (the "Leap Self-Signed" cert)
+
+Leap Monitor.app is signed with a per-user self-signed code-signing certificate (CN = `Leap Self-Signed`) stored in the user's login keychain. This is the mechanism that lets macOS Accessibility and Notification grants **survive every `make update` / `leap --update`** — without it, every rebuild changed the bundle's cdhash, which invalidated TCC and forced the user to re-grant Accessibility after every update.
+
+**Why it works.** TCC keys grants on the bundle's *designated requirement*, not its cdhash. With ad-hoc signing (py2app's default), the designated requirement is `cdhash H"..."` — changes on every rebuild. With cert-based signing, it's `identifier "com.leap.monitor" and certificate leaf = H"<cert-sha1>"` — stable across rebuilds because the cert sits unchanged in the keychain.
+
+**One-time generation (`Makefile:.gen-codesign-cert`).** Runs as a prereq for both `install-monitor` and the monitor rebuild in `.update-after-pull`. Idempotent — skips if the cert is already in the keychain. On first generation it also runs `tccutil reset Accessibility com.leap.monitor` to clear any stale cdhash-based entries left by the old ad-hoc scheme. The generation itself is delegated to `src/scripts/leap-codesign-setup.sh`: openssl genrsa → openssl req → openssl pkcs12 -legacy → `security import -T /usr/bin/codesign`. The `-T` ACL is what lets `codesign` use the private key without a "Allow codesign to access key?" dialog on every signing.
+
+**Every build (`Makefile:BUILD_MONITOR_APP`).** Right after `setup.py py2app`, the bundle is re-signed with `codesign --force --sign "Leap Self-Signed" --identifier com.leap.monitor`. The macro then runs `codesign --verify` and prints a clear warning + diagnostic command if signing failed (e.g., cert was removed from keychain). **Do not strip `_CodeSignature` from the installed bundle** — that's the cert signature. Earlier versions of this Makefile stripped it; that's been removed.
+
+**Migration scenario (existing users updating from ad-hoc to cert-signed).** Their existing TCC entry is cdhash-based, won't match the new cert-signed bundle. On their first `leap --update` after this change ships, `.gen-codesign-cert` runs `tccutil reset` once, the new bundle is signed with the fresh cert, and the user re-grants Accessibility once via the in-app banner. After that, all subsequent updates are silent.
+
+**Keychain wipe / new machine.** Cert lives in `~/Library/Keychains/login.keychain-db`. If the user nukes their login keychain or restores from a clean install, `.gen-codesign-cert` regenerates a *new* cert with a different SHA1 → designated requirement changes → one more one-time re-grant. Same on any new machine — the first `make install-monitor` generates a per-machine cert. No cross-machine cert sharing (and we don't want it; it'd require trusting whatever path moved the private key).
+
+**No more install-time permission prompts.** Both `install-monitor` and `.update-after-pull` previously asked "Open Accessibility settings? (Y/n)" and ran a `.prompt-notifications` probe. Both are removed — opening the Settings pane via `x-apple.systempreferences:...` doesn't reliably pre-list the new app (user often has to click `+` and dig through `/Applications`), which is worse UX than the in-app banner flow that uses `AXIsProcessTrustedWithOptions({AXTrustedCheckOptionPrompt: true})` to surface a native macOS dialog with the app pre-selected. The `.prompt-notifications` make target has been deleted entirely.
+
+**Gatekeeper vs TCC.** `spctl --assess` will reject the cert-signed bundle (no Apple Developer ID anchor). That's expected and irrelevant for our use case — Gatekeeper rejection means "macOS warns on first launch from quarantine", but bundles installed via `cp -R` from local builds don't carry the quarantine xattr, so Gatekeeper never runs. TCC operates on a different axis and accepts the self-signed cert just fine.
+
 ## Troubleshooting
 
 **"Another client already connected"** → `rm .storage/sockets/<tag>.client.lock`
@@ -535,6 +553,10 @@ Bot can also be started/stopped from the monitor's **Slack Bot** button. Depende
 **Stale sockets** → `leap-cleanup`
 
 **`✗ Leap's hooks aren't configured for <CLI>` at session start** → The session-start gate (`leap-server.py:_enforce_hooks_installed_or_exit`) ran `provider.base_type`'s `hooks_installed()` and got False. Almost always means the user installed that CLI / IDE / terminal *after* `make install` ran (so install-time hook configuration silently skipped it). Fix: `leap --reconfigure`. Same flag also recovers from "user wiped `~/.<cli>/settings.json`" or any other partial-config drift.
+
+**`⚠ Cert-based signing failed — bundle still has its py2app ad-hoc signature`** during build → `.gen-codesign-cert` ran but `codesign --sign "Leap Self-Signed"` couldn't find the cert. Either the user deleted it from Keychain Access, or the import silently failed last time. Check with `security find-certificate -c "Leap Self-Signed" "$HOME/Library/Keychains/login.keychain-db"`. If missing, just re-run `make install-monitor` — `.gen-codesign-cert` will regenerate it (and will also `tccutil reset` so the user re-grants Accessibility once from the in-app banner).
+
+**Accessibility silently fails after update on a machine that should be cert-signed** → Compare `codesign -dr - "/Applications/Leap Monitor.app"` to the TCC entry: `sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "SELECT hex(csreq) FROM access WHERE client='com.leap.monitor' AND service='kTCCServiceAccessibility';"`. The bundle's designated requirement should be `identifier "com.leap.monitor" and certificate leaf = H"<sha1>"` and the TCC csreq should be its byte-identical encoding. Mismatch usually means the bundle was rebuilt with a different cert (e.g., keychain was wiped between installs). Fix: `tccutil reset Accessibility com.leap.monitor` and have the user re-grant once.
 
 ## Make Commands
 
