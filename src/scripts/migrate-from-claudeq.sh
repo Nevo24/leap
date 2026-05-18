@@ -8,6 +8,9 @@
 #
 set -e
 
+# shellcheck source=sed-inplace.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sed-inplace.sh"
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
@@ -125,17 +128,15 @@ fi
 # ── Step 2: Remove old shell config block ───────────────────────────
 if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ] && grep -q "ClaudeQ Configuration" "$RC_FILE" 2>/dev/null; then
     if grep -q "ClaudeQ Configuration START" "$RC_FILE"; then
-        sed -i.bak '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
+        sed_inplace '/ClaudeQ Configuration START/,/ClaudeQ Configuration END/d' "$RC_FILE"
     elif grep -q "# ClaudeQ" "$RC_FILE"; then
         # Older format without START/END markers
-        sed -i.bak '/# ClaudeQ/,/^alias cq=/d' "$RC_FILE"
+        sed_inplace '/# ClaudeQ/,/^alias cq=/d' "$RC_FILE"
     fi
-    rm -f "$RC_FILE.bak"
 
     # Also remove any stale CLAUDEQ_PROJECT_DIR export that might be outside the block
     if grep -q "CLAUDEQ_PROJECT_DIR" "$RC_FILE" 2>/dev/null; then
-        sed -i.bak '/CLAUDEQ_PROJECT_DIR/d' "$RC_FILE"
-        rm -f "$RC_FILE.bak"
+        sed_inplace '/CLAUDEQ_PROJECT_DIR/d' "$RC_FILE"
     fi
 
     echo -e "  ${GREEN}✓ Removed old ClaudeQ shell configuration from $RC_FILE${NC}"

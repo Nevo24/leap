@@ -5,6 +5,9 @@
 #
 set -e
 
+# shellcheck source=sed-inplace.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sed-inplace.sh"
+
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
@@ -31,12 +34,11 @@ fi
 
 # Remove legacy LEAP_*_FLAGS exports (now stored in .storage/cli_flags.json)
 if [ -f "$RC_FILE" ]; then
-    sed -i.bak '/^export LEAP_[A-Z_]*_FLAGS="/d' "$RC_FILE"
-    sed -i.bak '/^# Default flags per CLI/d' "$RC_FILE"
-    sed -i.bak '/^# Extra flags can also be passed inline/d' "$RC_FILE"
+    sed_inplace '/^export LEAP_[A-Z_]*_FLAGS="/d' "$RC_FILE"
+    sed_inplace '/^# Default flags per CLI/d' "$RC_FILE"
+    sed_inplace '/^# Extra flags can also be passed inline/d' "$RC_FILE"
     # Remove legacy leap-cleanup comment (auto-cleanup runs on every leap invocation)
-    sed -i.bak '/^#        leap-cleanup$/d' "$RC_FILE"
-    rm -f "$RC_FILE.bak"
+    sed_inplace '/^#        leap-cleanup$/d' "$RC_FILE"
 fi
 
 # Silently strip any existing Leap block. The content is 100% regenerated
@@ -44,21 +46,21 @@ fi
 # protected (users are expected to customize outside the block).
 stripped=false
 if grep -q "Leap Configuration START" "$RC_FILE" 2>/dev/null; then
-    sed -i.bak '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
-    rm -f "$RC_FILE.bak"
+    sed_inplace '/Leap Configuration START/,/Leap Configuration END/d' "$RC_FILE"
     stripped=true
 elif grep -q "# Leap" "$RC_FILE" 2>/dev/null; then
     # Legacy pre-marker block — fall back to the old heuristic.
-    sed -i.bak '/# Leap/,/^alias claudel=/d' "$RC_FILE"
-    rm -f "$RC_FILE.bak"
+    sed_inplace '/# Leap/,/^alias claudel=/d' "$RC_FILE"
     stripped=true
 fi
 
 # Collapse trailing blank lines left behind by the strip, so the separator
 # blank line in our heredoc doesn't accumulate across repeated installs.
+# `replace_file` preserves a symlinked $RC_FILE — a plain `mv` here would
+# replace the symlink with a regular file and break dotfile-manager setups.
 if [ "$stripped" = true ] && [ -s "$RC_FILE" ]; then
     awk 'NF {for (i=0;i<bl;i++) print ""; bl=0; print; next} {bl++}' \
-        "$RC_FILE" > "$RC_FILE.trim" && mv "$RC_FILE.trim" "$RC_FILE"
+        "$RC_FILE" > "$RC_FILE.trim" && replace_file "$RC_FILE.trim" "$RC_FILE"
 fi
 
 # Get Poetry venv path (try stored path first, then poetry command)
