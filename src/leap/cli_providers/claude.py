@@ -482,29 +482,107 @@ class ClaudeProvider(CLIProvider):
           2. mtime fallback: most recently modified ``*.jsonl`` in
              the cwd's slug directory.
         """
+        return self._classify_transcript_tail(
+            since, cwd, tag, storage_dir,
+        ) == 'running'
+
+    def transcript_says_interrupted(
+        self,
+        since: float,
+        cwd: str,
+        tag: str = '',
+        storage_dir: Optional[Path] = None,
+    ) -> bool:
+        """True iff the transcript shows a ``[Request interrupted by
+        user]`` user entry written after the most recent assistant
+        tool_use of the current turn.
+
+        Same lookup strategy as :meth:`transcript_says_running`.
+        """
+        return self._classify_transcript_tail(
+            since, cwd, tag, storage_dir,
+        ) == 'interrupted'
+
+    _INTERRUPT_MARKER = '[Request interrupted by user]'
+
+    @classmethod
+    def _is_interrupt_entry(cls, entry: dict) -> bool:
+        """True iff *entry* is a ``role=user`` row whose payload is the
+        Claude CLI's synthetic interrupt marker.
+
+        Tolerates both shapes observed in the wild:
+        * ``message.content`` as a plain string (older transcripts)
+        * ``message.content`` as a list of typed blocks (newer)
+
+        Mirrors the content-shape handling in
+        :meth:`_user_prompt_text` so a stale-format transcript can't
+        slip past the classifier.
+        """
+        msg = entry.get('message')
+        if not isinstance(msg, dict):
+            return False
+        content = msg.get('content')
+        if isinstance(content, str):
+            return content.strip() == cls._INTERRUPT_MARKER
+        if isinstance(content, list):
+            for block in content:
+                if (isinstance(block, dict)
+                        and block.get('type') == 'text'
+                        and block.get('text') == cls._INTERRUPT_MARKER):
+                    return True
+        return False
+
+    def _classify_transcript_tail(
+        self,
+        since: float,
+        cwd: str,
+        tag: str,
+        storage_dir: Optional[Path],
+    ) -> str:
+        """Classify the transcript's recent activity as one of:
+
+        * ``'running'`` — most recent assistant entry of the current
+          turn has ``stop_reason='tool_use'`` and was *not* superseded
+          by a ``[Request interrupted by user]`` user entry.
+        * ``'interrupted'`` — a ``[Request interrupted by user]`` user
+          entry appears in the tail above the most recent in-turn
+          assistant entry (i.e. the user cancelled the loop after a
+          tool_use call).
+        * ``''`` — anything else (no transcript, no in-turn assistant
+          entry, assistant ``stop_reason='end_turn'``, parse error,
+          etc.).
+
+        Single reverse-walk over the tail; both public predicates derive
+        from this so the disk I/O isn't doubled per poll cycle.
+        """
         project_dir = self.transcript_projects_root / slugify(cwd)
         if not project_dir.is_dir():
-            return False
+            return ''
 
         transcript = self._resolve_transcript_path(
             project_dir, tag, storage_dir,
         )
         if transcript is None:
-            return False
+            return ''
 
         try:
             size = transcript.stat().st_size
         except OSError:
-            return False
+            return ''
         try:
             with open(transcript, 'rb') as f:
                 f.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
                 tail = f.read()
         except OSError:
-            return False
+            return ''
 
         # Walk back to the most recent assistant entry; its stop_reason
         # tells us whether the agent loop is still in tool-use mode.
+        # On the way, watch for a [Request interrupted by user] user
+        # entry — if one appears AFTER the most recent in-turn assistant
+        # tool_use, the loop was cancelled even though no tool_result
+        # was written.
+        saw_user_interrupt = False
         for raw in reversed(tail.split(b'\n')):
             raw = raw.strip()
             if not raw:
@@ -513,24 +591,39 @@ class ClaudeProvider(CLIProvider):
                 entry = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
                 continue
-            if entry.get('type') != 'assistant':
+
+            entry_type = entry.get('type')
+            if entry_type == 'user':
+                # Skip past user entries on the way back, but flag the
+                # interrupt sentinel.  Note: we only care about the
+                # FIRST one we encounter going backwards (which is the
+                # most recent one in time) — additional matches from
+                # older turns shouldn't override.
+                if not saw_user_interrupt and self._is_interrupt_entry(entry):
+                    saw_user_interrupt = True
                 continue
+
+            if entry_type != 'assistant':
+                continue
+
             ts_str = entry.get('timestamp', '')
             if not ts_str:
-                return False
+                return ''
             try:
                 ts = datetime.fromisoformat(
                     ts_str.replace('Z', '+00:00'),
                 ).timestamp()
             except (ValueError, TypeError):
-                return False
+                return ''
             # Stale entry from a previous turn — current turn hasn't
             # produced an assistant entry yet, so we can't tell.
             if ts <= since:
-                return False
+                return ''
+            if saw_user_interrupt:
+                return 'interrupted'
             stop_reason = entry.get('message', {}).get('stop_reason', '')
-            return stop_reason == 'tool_use'
-        return False
+            return 'running' if stop_reason == 'tool_use' else ''
+        return ''
 
     @staticmethod
     def _latest_recorded_transcript(

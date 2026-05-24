@@ -338,6 +338,27 @@ class CLIProvider(ABC):
         """
         return False
 
+    def transcript_says_interrupted(
+        self,
+        since: float,
+        cwd: str,
+        tag: str = '',
+        storage_dir: Optional[Path] = None,
+    ) -> bool:
+        """Return True iff the transcript proves the agent loop was
+        cancelled by the user mid-turn — i.e. a user-interrupt marker
+        appears after the most recent assistant tool_use of the current
+        turn.
+
+        Used as a positive signal in cursor+silence and signal=idle
+        paths to flip RUNNING → INTERRUPTED when the Ink TUI's redraw
+        prevented pyte from capturing the on-screen "Interrupted" text.
+
+        Default: False (no transcript awareness).  Same arguments as
+        :meth:`transcript_says_running`.
+        """
+        return False
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

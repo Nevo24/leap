@@ -2300,3 +2300,674 @@ class TestClaudeCompactingIndicator:
         feed_screen_text(tracker, 'Compacting conversation...')
         # No idle→running transition — the pattern is provider-specific.
         assert tracker.current_state == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Transcript classification: running vs interrupted vs idle
+# ---------------------------------------------------------------------------
+
+class TestTranscriptClassification:
+    """Direct unit tests for ``ClaudeProvider.transcript_says_running`` and
+    ``transcript_says_interrupted``.
+
+    Exercises the JSONL walk that gates the three "would idle" code paths
+    in ``CLIStateTracker.get_state``.  Without correct interrupt detection,
+    a user-cancelled tool_use leaves the state machine stuck in RUNNING
+    until the safety timeout — observed live with a session sitting at
+    "Interrupted · What should Claude do instead?" while the monitor
+    showed Running.
+    """
+
+    @staticmethod
+    def _setup(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        entries: list[dict],
+    ) -> tuple[ClaudeProvider, dict]:
+        """Build a fake projects root + transcript + cli_sessions record,
+        then return ``(provider, kwargs)`` ready to call the classifier."""
+        from leap.cli_providers import claude as claude_mod
+        from leap.utils.claude_session_move import slugify
+
+        root = tmp_path / 'projects'
+        root.mkdir()
+        monkeypatch.setattr(claude_mod, '_TRANSCRIPT_PROJECTS_ROOT', root)
+
+        cwd = str(tmp_path / 'project')
+        sid = 'abc-def-123'
+        slug_dir = root / slugify(cwd)
+        slug_dir.mkdir(parents=True)
+        transcript = slug_dir / f'{sid}.jsonl'
+        transcript.write_text(
+            '\n'.join(json.dumps(e) for e in entries) + '\n',
+        )
+
+        # Record the session_id so the resolver finds the file via the
+        # precise tag→jsonl path rather than the mtime fallback.
+        storage = tmp_path / '.storage'
+        (storage / 'cli_sessions' / 'claude').mkdir(parents=True)
+        (storage / 'cli_sessions' / 'claude' / 'test.json').write_text(
+            json.dumps([{
+                'session_id': sid,
+                'transcript_path': str(transcript),
+                'cwd': cwd,
+                'last_seen': 0.0,
+            }]),
+        )
+
+        return ClaudeProvider(), dict(
+            since=1000.0,
+            cwd=cwd,
+            tag='test',
+            storage_dir=storage,
+        )
+
+    def _ts(self, epoch: float) -> str:
+        """Format an epoch as the ISO-8601 Z string the Claude CLI writes."""
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(
+            epoch, tz=timezone.utc,
+        ).isoformat().replace('+00:00', 'Z')
+
+    # ---- running classification -----------------------------------------
+
+    def test_running_when_tool_use_pending(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Latest assistant entry in the current turn has stop_reason
+        'tool_use' and no tool_result has been written → running."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is True
+        assert p.transcript_says_interrupted(**kw) is False
+
+    def test_running_after_tool_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user tool_result entry following a tool_use does NOT
+        terminate the loop — Claude is processing the result."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'message': {'content': [
+                    {'type': 'tool_result', 'tool_use_id': 'toolu_x'},
+                ]},
+            },
+        ])
+        # Still running: the latest assistant entry is tool_use and
+        # the only user entry between it and the tail is a tool_result.
+        assert p.transcript_says_running(**kw) is True
+        assert p.transcript_says_interrupted(**kw) is False
+
+    def test_idle_on_end_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Assistant stop_reason 'end_turn' → neither running nor
+        interrupted (the loop ended cleanly)."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'end_turn'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is False
+
+    # ---- interrupted classification -------------------------------------
+
+    def test_interrupted_after_tool_use(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """User cancelled a tool_use call — the assistant entry shows
+        stop_reason 'tool_use' but a [Request interrupted by user] user
+        entry was written above it.  This is the bug repro: previously
+        ``transcript_says_running`` ignored the user-interrupt entry and
+        returned True forever, jamming the state machine in RUNNING."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'system',
+                'subtype': 'api_error',
+                'timestamp': self._ts(2010.0),
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is True
+
+    def test_interrupted_with_intervening_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Metadata-style entries with no ``type``/``timestamp`` between
+        the assistant tool_use and the user-interrupt entry are skipped
+        cleanly (real transcripts have permission-mode / agent-name /
+        ai-title / last-prompt blocks here)."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {'permission-mode': 'auto'},
+            {'agent-name': 'main'},
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is True
+
+    def test_old_interrupt_does_not_carry_over(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A [Request interrupted by user] entry from a previous turn,
+        followed by a fresh assistant tool_use, is not a current
+        interrupt — running."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            # Previous turn — interrupted
+            {
+                'type': 'user',
+                'timestamp': self._ts(1500.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+            # Fresh turn — assistant resumed
+            {
+                'type': 'user',
+                'timestamp': self._ts(1800.0),
+                'message': {'content': [
+                    {'type': 'text', 'text': 'please continue'},
+                ]},
+            },
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is True
+        assert p.transcript_says_interrupted(**kw) is False
+
+    # ---- timestamp guard ------------------------------------------------
+
+    def test_stale_assistant_entry_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the most recent assistant entry predates ``since`` (the
+        last on_send time), it belongs to a previous turn — neither
+        running nor interrupted from the current turn's perspective."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(500.0),  # < since=1000.0
+                'message': {'stop_reason': 'tool_use'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is False
+
+    def test_stale_interrupt_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user-interrupt entry above a *stale* assistant entry is
+        still considered no-current-turn — returns False for both
+        predicates."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(500.0),  # < since
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(600.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is False
+
+    # ---- error / absent transcript -------------------------------------
+
+    def test_missing_transcript_returns_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No transcript on disk → both predicates return False rather
+        than raising."""
+        from leap.cli_providers import claude as claude_mod
+        root = tmp_path / 'projects'
+        root.mkdir()
+        monkeypatch.setattr(claude_mod, '_TRANSCRIPT_PROJECTS_ROOT', root)
+
+        p = ClaudeProvider()
+        kwargs = dict(
+            since=1000.0,
+            cwd=str(tmp_path / 'project'),  # slug dir does not exist
+            tag='test',
+            storage_dir=tmp_path / '.storage',
+        )
+        assert p.transcript_says_running(**kwargs) is False
+        assert p.transcript_says_interrupted(**kwargs) is False
+
+    def test_other_providers_default_to_false(self) -> None:
+        """Base implementation (e.g. CodexProvider) must always return
+        False — no transcript awareness."""
+        c = CodexProvider()
+        kw = dict(since=0.0, cwd='/', tag='x', storage_dir=None)
+        assert c.transcript_says_running(**kw) is False
+        assert c.transcript_says_interrupted(**kw) is False
+
+    # ---- content-shape coverage ----------------------------------------
+
+    def test_interrupt_with_string_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Older transcripts store ``message.content`` as a plain string
+        rather than a list of typed blocks.  The classifier must accept
+        both shapes; missing the string form would let an old-format
+        transcript wedge the state machine."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': '[Request interrupted by user]'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is True
+
+    def test_interrupt_text_block_mixed_with_other_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user entry with multiple content blocks (e.g. text +
+        attached image) where one block is the interrupt marker still
+        registers as an interrupt."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': [
+                    {'type': 'image', 'source': {'data': '...'}},
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_interrupted(**kw) is True
+
+    def test_text_block_with_user_text_not_interrupt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user text block whose payload is the user's actual prompt
+        — even one quoting the marker phrase elsewhere — must NOT
+        trigger interrupt detection.  Exact string equality only."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': 'why does it say [Request interrupted by '
+                             'user]?'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_interrupted(**kw) is False
+        # Running classification: there's a user entry between the
+        # tool_use and the tail (not a tool_result, not an interrupt),
+        # which means the user submitted a fresh prompt — the tool_use
+        # is from the previous step of the same turn, agent is still
+        # processing.  Returns True.
+        assert p.transcript_says_running(**kw) is True
+
+    # ---- multi-interrupt and tool_result interaction --------------------
+
+    def test_double_interrupt_same_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two ``[Request interrupted by user]`` entries in a row (user
+        pressed Esc twice without typing anything in between).  Same
+        classification — interrupted."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2010.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_interrupted(**kw) is True
+
+    def test_interrupt_after_tool_result_in_same_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Tool ran (tool_result written), then user interrupted before
+        the next API call.  Classifier walks past the tool_result
+        (which doesn't trigger the marker check), past the assistant
+        tool_use, and returns 'interrupted'."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2005.0),
+                'message': {'content': [
+                    {'type': 'tool_result', 'tool_use_id': 'toolu_x',
+                     'content': 'ok'},
+                ]},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2020.0),
+                'message': {'content': [
+                    {'type': 'text',
+                     'text': '[Request interrupted by user]'},
+                ]},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is True
+
+    # ---- malformed input ------------------------------------------------
+
+    def test_missing_assistant_timestamp_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Assistant entry without a ``timestamp`` field — we can't
+        decide if it belongs to the current turn, so neither predicate
+        fires.  Defensive: must not raise."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'message': {'stop_reason': 'tool_use'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is False
+
+    def test_malformed_timestamp_returns_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Garbled timestamp string — same defensive behaviour as
+        missing timestamp."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': 'not-a-timestamp',
+                'message': {'stop_reason': 'tool_use'},
+            },
+        ])
+        assert p.transcript_says_running(**kw) is False
+        assert p.transcript_says_interrupted(**kw) is False
+
+    def test_garbled_json_lines_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A non-JSON line (truncated write, log spillover) is skipped
+        — must not derail the walk."""
+        from leap.cli_providers import claude as claude_mod
+        from leap.utils.claude_session_move import slugify
+
+        root = tmp_path / 'projects'
+        root.mkdir()
+        monkeypatch.setattr(claude_mod, '_TRANSCRIPT_PROJECTS_ROOT', root)
+
+        cwd = str(tmp_path / 'project')
+        sid = 'abc-def'
+        slug_dir = root / slugify(cwd)
+        slug_dir.mkdir(parents=True)
+        good = {
+            'type': 'assistant',
+            'timestamp': self._ts(2000.0),
+            'message': {'stop_reason': 'tool_use'},
+        }
+        (slug_dir / f'{sid}.jsonl').write_text(
+            'this is not valid json\n'
+            + json.dumps(good) + '\n'
+            + '{"truncated":\n',
+        )
+
+        storage = tmp_path / '.storage'
+        (storage / 'cli_sessions' / 'claude').mkdir(parents=True)
+        (storage / 'cli_sessions' / 'claude' / 'test.json').write_text(
+            json.dumps([{
+                'session_id': sid,
+                'transcript_path': str(slug_dir / f'{sid}.jsonl'),
+                'cwd': cwd,
+                'last_seen': 0.0,
+            }]),
+        )
+
+        p = ClaudeProvider()
+        kw = dict(
+            since=1000.0, cwd=cwd, tag='test', storage_dir=storage,
+        )
+        assert p.transcript_says_running(**kw) is True
+
+    def test_empty_user_content_list_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user entry with ``content: []`` (degenerate) doesn't trip
+        the interrupt detector and doesn't stop the walk."""
+        p, kw = self._setup(tmp_path, monkeypatch, [
+            {
+                'type': 'assistant',
+                'timestamp': self._ts(2000.0),
+                'message': {'stop_reason': 'tool_use'},
+            },
+            {
+                'type': 'user',
+                'timestamp': self._ts(2010.0),
+                'message': {'content': []},
+            },
+        ])
+        # User entry skipped — walk continues to the assistant entry.
+        assert p.transcript_says_running(**kw) is True
+        assert p.transcript_says_interrupted(**kw) is False
+
+
+# ---------------------------------------------------------------------------
+# State machine wiring: transcript-driven RUNNING → INTERRUPTED
+# ---------------------------------------------------------------------------
+
+class _StubTranscriptProvider(ClaudeProvider):
+    """ClaudeProvider with the two transcript predicates stubbed out.
+
+    Lets the wiring tests drive the three transcript-guarded fallback
+    paths in ``get_state`` without standing up real ``.jsonl`` files
+    under a slug directory — that's already exercised by
+    :class:`TestTranscriptClassification`.
+    """
+
+    def __init__(self, running: bool = False, interrupted: bool = False) -> None:
+        super().__init__()
+        self._running = running
+        self._interrupted = interrupted
+
+    def transcript_says_running(self, **_kwargs: object) -> bool:
+        return self._running
+
+    def transcript_says_interrupted(self, **_kwargs: object) -> bool:
+        return self._interrupted
+
+
+class TestTranscriptInterruptWiring:
+    """Verify the three transcript-guarded paths in ``get_state`` flip
+    RUNNING → INTERRUPTED (not IDLE) when the transcript records a
+    user-interrupt marker.
+
+    Before the fix, all three paths fell through to "→ idle" once the
+    transcript_says_running guard cleared, and the auto-sender would
+    immediately dispatch the next queued message into Claude's
+    "What should Claude do instead?" prompt — silently swallowing the
+    user's interrupt intent.
+    """
+
+    def test_signal_idle_with_transcript_interrupt_goes_to_interrupted(
+        self, tmp_path: Path,
+    ) -> None:
+        """Stop hook fires (signal=idle) and the transcript records the
+        user-interrupt marker → INTERRUPTED, even though pyte never
+        saw "Interrupted" on screen (this is the real-world Ink TUI
+        redraw scenario)."""
+        t = [0.0]
+        provider = _StubTranscriptProvider(running=False, interrupted=True)
+        tracker = make_tracker(tmp_path, t, provider=provider)
+        tracker.on_send()
+        assert tracker.current_state == 'running'
+
+        # Stop hook signal arrives.  No "Interrupted" pattern was
+        # written to pyte (provider.interrupted_pattern is 'Interrupted'
+        # but the screen is blank), and _interrupt_pending is False
+        # (e.g. cleared by a brief pty_alive=False blip).
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_signal_idle_with_pending_and_transcript_marker(
+        self, tmp_path: Path,
+    ) -> None:
+        """Both the pending flag and the transcript agree → INTERRUPTED.
+        Same outcome as either source alone — just confirms the OR
+        logic doesn't accidentally fall through."""
+        t = [0.0]
+        provider = _StubTranscriptProvider(running=False, interrupted=True)
+        tracker = make_tracker(tmp_path, t, provider=provider)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')
+        assert tracker._interrupt_pending is True
+
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        # Flag is cleared by the INTERRUPTED transition.
+        assert tracker._interrupt_pending is False
+
+    def test_cursor_silence_with_transcript_interrupt_goes_to_interrupted(
+        self, tmp_path: Path,
+    ) -> None:
+        """5 s of silence + cursor visible + transcript interrupt marker
+        → INTERRUPTED.  This is the path that wedged in the live bug
+        (Stop hook hadn't fired yet, just steady output silence).
+
+        Note: the cursor+silence path is gated by ``silence_baseline > 0``
+        (``max(_last_output_time, _running_since)``), so we must start
+        the clock at a non-zero value.
+        """
+        t = [1.0]
+        provider = _StubTranscriptProvider(running=False, interrupted=True)
+        tracker = make_tracker(tmp_path, t, provider=provider)
+        tracker.on_send()
+        # Cursor visible, screen otherwise quiet.
+        feed_with_visible_cursor(tracker, '> ')
+        # Advance past the 5 s silence threshold.
+        t[0] = 7.0
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_cursor_silence_transcript_running_keeps_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: when the transcript still shows tool_use (no
+        interrupt), cursor+silence must keep RUNNING — the new
+        interrupt branch must not steal cases the existing tool_use
+        guard already handles."""
+        t = [1.0]
+        provider = _StubTranscriptProvider(running=True, interrupted=False)
+        tracker = make_tracker(tmp_path, t, provider=provider)
+        tracker.on_send()
+        feed_with_visible_cursor(tracker, '> ')
+        t[0] = 7.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_safety_timeout_with_transcript_interrupt_goes_to_interrupted(
+        self, tmp_path: Path,
+    ) -> None:
+        """At the safety_timeout boundary (60 s) the interrupt marker
+        also wins over the unconditional IDLE fallback.  Covers the
+        case where 5 s cursor+silence somehow didn't fire (e.g. cursor
+        was hidden the whole time)."""
+        t = [1.0]
+        provider = _StubTranscriptProvider(running=False, interrupted=True)
+        tracker = make_tracker(tmp_path, t, provider=provider)
+        tracker.on_send()
+        # Cursor hidden → cursor+silence path is skipped, only the
+        # safety fallback can fire.
+        feed_with_hidden_cursor(tracker, 'thinking...')
+        t[0] = SAFETY_SILENCE_TIMEOUT + 2.0
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+
+    def test_no_interrupt_signals_still_go_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Final regression: no pending flag, no transcript interrupt,
+        no on-screen pattern — the existing IDLE transitions still
+        work unchanged."""
+        t = [0.0]
+        provider = _StubTranscriptProvider(running=False, interrupted=False)
+        tracker = make_tracker(tmp_path, t, provider=provider)
+        tracker.on_send()
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'

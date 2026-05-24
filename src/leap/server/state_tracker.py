@@ -310,6 +310,38 @@ class CLIStateTracker:
             )
             return False
 
+    def _transcript_says_interrupted(self) -> bool:
+        """True iff the provider's transcript proves the user cancelled
+        the agent loop after ``_running_since`` — i.e. a
+        ``[Request interrupted by user]`` entry was written above the
+        current turn's most recent assistant tool_use.
+
+        Used as a *positive* signal alongside the screen-pattern check
+        when flipping RUNNING → INTERRUPTED.  Catches the case where
+        the Ink TUI's redraw cleared "Interrupted" out of pyte's
+        rendered buffer before the on_output handler observed it —
+        without this, the cursor+silence and signal=idle fallbacks
+        degrade to IDLE and the auto-sender immediately dispatches
+        the queued message into Claude's "What should Claude do
+        instead?" prompt as if no interrupt had happened.
+
+        Same lock-free I/O contract as :meth:`_transcript_says_running`.
+        """
+        try:
+            return self._provider.transcript_says_interrupted(
+                since=self._running_since,
+                cwd=self._cwd,
+                tag=self._tag,
+                storage_dir=self._storage_dir,
+            )
+        except Exception:
+            _log.debug(
+                'transcript_says_interrupted raised; falling back '
+                'to False',
+                exc_info=True,
+            )
+            return False
+
     # -- Public API -----------------------------------------------------------
 
     @property
@@ -1020,12 +1052,23 @@ class CLIStateTracker:
                         pass
                     return current
 
-                # Only convert to INTERRUPTED if the interrupt pattern
-                # is actually visible on the pyte screen.  The user may
-                # have pressed Escape but the CLI ignored it (busy) and
-                # finished normally — in that case, "Interrupted" never
-                # appeared and we should accept the idle transition.
+                # Convert to INTERRUPTED if EITHER:
+                #   (a) ``_interrupt_pending`` + interrupt pattern on
+                #       pyte's rendered screen, OR
+                #   (b) the transcript records a ``[Request interrupted
+                #       by user]`` entry above the current turn's most
+                #       recent assistant tool_use.
+                # Path (a) alone misses the common Ink-TUI redraw case
+                # where pyte never observes "Interrupted" in its buffer
+                # (verified on a real session: 0 has_Interrupted=True
+                # observations across 147k RUNNING ON_OUTPUT polls
+                # spanning the entire interrupt window).
+                # Path (b) doesn't require ``_interrupt_pending`` —
+                # the transcript is independent evidence and the timestamp
+                # filter in ``transcript_says_interrupted`` already
+                # restricts to the current turn.
                 has_pattern = False
+                has_transcript_interrupt = False
                 if self._interrupt_pending:
                     interrupted_pattern = self._provider.interrupted_pattern
                     pattern_str = interrupted_pattern.decode(
@@ -1037,11 +1080,22 @@ class CLIStateTracker:
                             ' ', '',
                         ).replace('\n', '')
                     has_pattern = pattern_str in compact
+                # Transcript check is independent of the pending flag
+                # — covers races where Esc fires while ``pty_alive``
+                # is briefly False (which silently clears
+                # ``_interrupt_pending`` in the pty-dead path).
+                if not has_pattern:
+                    has_transcript_interrupt = (
+                        self._transcript_says_interrupted()
+                    )
 
-                if self._interrupt_pending and has_pattern:
+                if (self._interrupt_pending and has_pattern) \
+                        or has_transcript_interrupt:
                     _log.debug(
-                        'GET_STATE signal=idle + interrupt_pending '
-                        '+ pattern on screen → interrupted',
+                        'GET_STATE signal=idle + %s → interrupted',
+                        'interrupt_pending + pattern on screen'
+                        if has_pattern
+                        else 'transcript interrupt marker',
                     )
                     self._interrupt_pending = False
                     self._user_responded = False
@@ -1538,6 +1592,31 @@ class CLIStateTracker:
                     )
                     return current
 
+                # User-interrupt guard before falling to idle: when
+                # ``transcript_says_running`` is False *because* the
+                # user cancelled mid-tool-use, the transcript records
+                # ``[Request interrupted by user]`` above the in-turn
+                # assistant entry.  Without this branch we'd flip to
+                # IDLE and the auto-sender would dispatch the next
+                # queued message into Claude's "What should Claude do
+                # instead?" prompt — visually indistinguishable from
+                # the interrupt being silently ignored.
+                if self._transcript_says_interrupted():
+                    _log.debug(
+                        'GET_STATE cursor+silence + transcript '
+                        'interrupt marker → interrupted',
+                    )
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                    return CLIState.INTERRUPTED
+
                 _log.debug(
                     'GET_STATE running→idle (cursor visible + '
                     'output silent %.1fs)',
@@ -1591,6 +1670,25 @@ class CLIStateTracker:
                         silence,
                     )
                     return current
+                # User-interrupt guard: same rationale as the
+                # cursor+silence path above.  See that branch for the
+                # full reasoning.
+                if self._transcript_says_interrupted():
+                    _log.debug(
+                        'GET_STATE safety timeout %.1fs + transcript '
+                        'interrupt marker → interrupted',
+                        silence,
+                    )
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = CLIState.INTERRUPTED
+                        self._waiting_since = self._clock()
+                    self._write_interrupted_signal()
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._reset_screen()
+                    return CLIState.INTERRUPTED
                 _log.debug(
                     'GET_STATE safety timeout %.1fs → idle', silence,
                 )
