@@ -42,7 +42,9 @@ from leap.utils.constants import (
     ensure_storage_dirs, load_settings, save_settings,
 )
 from leap.utils.menu import extract_menu_options
-from leap.utils.terminal import set_terminal_title, print_banner
+from leap.utils.terminal import (
+    _jetbrains_sweep_stale_tabs, set_terminal_title, print_banner,
+)
 from leap.server.pty_handler import PTYHandler
 from leap.server.socket_handler import SocketHandler
 from leap.server.queue_manager import QueueManager
@@ -266,6 +268,30 @@ class LeapServer:
         # Load existing queue and save metadata (include CLI provider)
         self.queue.load()
         self.metadata.save(cli_provider=self._provider.name)
+
+        # Sweep stale ``lps <tag>``/``lpc <tag>`` JetBrains tabs left
+        # over by force-quit / kernel panic / power loss — see
+        # ``_jetbrains_sweep_stale_tabs`` for the contract.
+        #
+        # Synchronous (not a daemon thread) because the function MUST
+        # finish before the ``lps <tag>`` OSC fires in ``_run()`` —
+        # otherwise the Groovy rename can race the OSC and either
+        # leave the new tab bare (sweep wins) or leave the old
+        # duplicate tab as ``lps <tag>`` (OSC wins after sweep already
+        # passed it).  ``exclude_tag=self.tag`` removes our own
+        # about-to-start tag from the live-tags allow-list, so any
+        # pre-existing ``lps <ourTag>`` tab is treated as a stale
+        # duplicate and renamed to bare — the OSC then claims the
+        # name on our brand-new tab a moment later.  Cost is
+        # ~200-1000ms (warm JetBrains) and entirely no-op for
+        # iTerm2/Terminal.app/Warp/WezTerm (function self-gates on
+        # ``_resolve_jetbrains_cli``).
+        ide_now = self.metadata.ide or ''
+        proj_now = self.metadata.project_path or ''
+        if ide_now and proj_now:
+            _jetbrains_sweep_stale_tabs(
+                STORAGE_DIR, ide_now, proj_now, exclude_tag=self.tag,
+            )
 
         # Prompt user about old queue messages
         if not self.queue.is_empty:
@@ -3683,8 +3709,25 @@ class LeapServer:
         self._release_startup_lock()
         self.socket_handler.stop()
         self.socket_handler.cleanup()
-        self.metadata.cleanup()
+        # Kill the CLI BEFORE unlinking ``<tag>.meta`` — the hook
+        # subprocess reads the meta to capture ``terminal_app`` and
+        # dedups by session_id, so a hook fire that races our
+        # ``metadata.cleanup()`` and reads a missing file would
+        # overwrite the prior good record with an empty entry (the
+        # ``record_session`` defense-in-depth picks the prior up in
+        # that case, but narrower windows are still better).
         self.pty.terminate()
+        self.metadata.cleanup()
+        # Strip the ``lps <tag>`` tab name back to just ``<tag>`` so a
+        # post-server shell prompt (or whatever takes over the tab next)
+        # doesn't carry the Leap label.  Done AFTER ``pty.terminate()``
+        # so a CLI that emits its own OSC title sequence on exit (most
+        # TUIs do, to restore the parent shell's title) can't overwrite
+        # ours.  Best-effort: a stdout-closed terminal can't be helped.
+        try:
+            set_terminal_title(self.tag)
+        except Exception:
+            pass
         self.state.cleanup()
         self.output_capture.cleanup()
         self._cleanup_cli_pid_map()

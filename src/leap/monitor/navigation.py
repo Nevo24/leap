@@ -63,6 +63,68 @@ _JETBRAINS_APP_DIRS: list[str] = [
 ]
 
 
+def find_jetbrains_app(name: Optional[str]) -> Optional[str]:
+    """Return the absolute path of the JetBrains ``.app`` bundle matching *name*.
+
+    Used by GUI Resume to derive ``ide_app_path`` for
+    ``_open_jetbrains_terminal`` — without it, the JetBrains CLI runs
+    via the Toolbox-generated shim (``open -na`` internally), which is
+    flaky for cold-start (forces a new instance whose subsequent
+    activation can silently no-op).  Move-to-IDE has this for free
+    because the user picks the ``.app`` via QFileDialog.  Resume only
+    has the IDE *name* from the recorded session, so we have to find
+    the matching bundle ourselves.
+
+    Searches the same locations as ``_jetbrains_env``: ``/Applications``,
+    ``~/Applications`` (one subdir deep for the ``JetBrains Toolbox``
+    folder layout), and the Toolbox-managed install root recursively.
+    Returns the first match — when multiple GoLand/PyCharm/etc. installs
+    coexist (CE + Pro, multiple Toolbox versions), Resume has no
+    affinity to which one the user wants; first-found is acceptable
+    and matches LaunchServices' own resolution.
+    """
+    if not name:
+        return None
+    # ``IntelliJ IDEA`` is the canonical detect_ide() return for any
+    # IntelliJ edition — the bundle is ``IntelliJ IDEA.app``,
+    # ``IntelliJ IDEA CE.app``, or similar.  Match by prefix.
+    bundle_glob = f'{name}*.app'
+    for app_dir in _JETBRAINS_APP_DIRS:
+        for app in glob.glob(f'{app_dir}/{bundle_glob}'):
+            return app
+        # ``~/Applications/JetBrains Toolbox/<App>.app`` — one subdir level.
+        for app in glob.glob(f'{app_dir}/*/{bundle_glob}'):
+            return app
+    toolbox_apps_root = os.path.expanduser(
+        '~/Library/Application Support/JetBrains/Toolbox/apps'
+    )
+    if os.path.isdir(toolbox_apps_root):
+        for app in glob.glob(
+            f'{toolbox_apps_root}/**/{bundle_glob}', recursive=True,
+        ):
+            return app
+    return None
+
+
+def is_ide_app(name: Optional[str]) -> bool:
+    """True if *name* is an IDE we can open a project in (vs a plain terminal).
+
+    Used by GUI Resume to decide whether to thread the recorded ``cwd``
+    through as ``project_path``: IDEs (VS Code, Cursor, JetBrains family)
+    take a project path and open the project; plain terminals (iTerm2,
+    Terminal.app, WezTerm, Warp, Kitty, Ghostty, …) ignore project_path
+    and just open at the shell's default cwd.
+
+    Match by substring against the JetBrains list so 'IntelliJ IDEA',
+    'PyCharm Professional', etc. all resolve as JetBrains.
+    """
+    if not name:
+        return False
+    if name in ('VS Code', 'Cursor'):
+        return True
+    return any(jb in name for jb in _JETBRAINS_IDE_NAMES)
+
+
 def detect_supported_ide_for_move(app_path: str) -> Optional[str]:
     """Classify a user-picked ``.app`` for the Move-to-IDE flow and
     return the value to pass as ``preferred_ide`` to
@@ -1727,6 +1789,17 @@ var p = targetProject
 IDE.application.invokeLater {{
     var terminalManager = TerminalToolWindowManager.getInstance(p)
     var widget = terminalManager.createLocalShellWidget(p.getBasePath(), "leap")
+    // ``createLocalShellWidget`` usually shows the Terminal tool window
+    // and selects the new tab, but only when the tool window is in a
+    // normal docked state.  If the user has it detached / minimised /
+    // floating, the new tab can land off-screen unfocused.  Explicit
+    // ``show + activate`` guarantees the new tab is the visible one
+    // regardless of layout state.
+    var tw = ToolWindowManager.getInstance(p).getToolWindow("Terminal")
+    if (tw != null) {{
+        tw.show(null)
+        tw.activate(null, true, true)
+    }}
     new Thread({{
         Thread.sleep(500)
         IDE.application.invokeLater {{
@@ -1813,7 +1886,34 @@ fw.close()
                     env=env
                 )
             except subprocess.TimeoutExpired:
-                return False
+                # The original "bail on TimeoutExpired" rule existed to
+                # avoid leaving a duplicate ``leap`` tab queued in the
+                # IDE — see the Groovy: ``QUEUED`` is written AFTER
+                # ``invokeLater`` enqueues terminal creation, so if a
+                # timeout fired while the EDT was processing a slow
+                # ``invokeLater`` the next retry would queue a SECOND
+                # tab.  But the same rule blanket-fails cold-start: a
+                # freshly-launched IDE whose IPC isn't ready yet
+                # blocks the CLI for >30 s, no Groovy ran, no tab
+                # queued — yet the bail dumps the user into the
+                # fallback terminal.  Distinguish via ``result_path``:
+                # if the Groovy wrote anything there (WAITING or
+                # QUEUED) the script DID run, possible terminal was
+                # queued, bail to be safe.  If it's empty/missing,
+                # nothing ran (no tab risk), retry on the next
+                # iteration.  Without this, GUI Resume against a
+                # closed IDE silently lands in iTerm2.
+                try:
+                    acted = (os.path.exists(result_path)
+                             and os.path.getsize(result_path) > 0)
+                except OSError:
+                    acted = False
+                if acted:
+                    return False
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.5)
+                continue
 
             # Check result file.
             try:

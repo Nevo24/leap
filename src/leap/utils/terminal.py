@@ -5,6 +5,7 @@ Handles terminal title setting, escape sequences, and terminal-related operation
 """
 
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -176,6 +177,161 @@ IDE.application.invokeLater {{
             except OSError:
                 pass
     except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _jetbrains_sweep_stale_tabs(
+    storage_dir: Path,
+    ide_name: str,
+    project_path: str,
+    exclude_tag: Optional[str] = None,
+) -> None:
+    """Rename stale ``lps <tag>``/``lpc <tag>`` JetBrains terminal tabs.
+
+    Force-quit / kernel panic / power-loss kills the IDE before our
+    cleanup OSC reset can be processed (SIGKILL is uncatchable; the
+    IDE saves workspace.xml on its own schedule), so the next IDE
+    launch restores tabs at their last live name — ``lps <tag>`` /
+    ``lpc <tag>`` — even though the server is long dead.  This
+    function runs on every new leap-server start in a JetBrains
+    terminal: it walks the current project's Terminal tool window,
+    checks each ``lp[sc] <tag>`` tab against the per-tag
+    ``<tag>.meta`` file, and renames any whose meta is missing OR
+    whose meta says the session belongs to a different IDE / project.
+
+    Scoped to ``project_path``'s project only — a stale ``lps X`` in
+    a different GoLand window / different project is left alone.  A
+    live session in ``project_path`` is also left alone (because its
+    meta matches our ``ide_name`` + ``project_path``).
+
+    ``exclude_tag`` is the tag of the session that's *starting right
+    now*: it is force-removed from the live-tags allow-list, so a
+    pre-existing ``lps <that-tag>`` tab (force-quit leftover) is
+    treated as stale and renamed.  Our own newly-created tab still
+    has its default JetBrains name (e.g. "Local") at this point —
+    the ``lps <tag>`` OSC fires later in ``_run()`` — so the sweep
+    doesn't accidentally touch it.  Callers MUST run the sweep
+    synchronously BEFORE the OSC, otherwise the rename can race the
+    OSC and rename our own live tab back to bare.
+
+    Best-effort: silent on every failure path (no JetBrains CLI, meta
+    files unreadable, ideScript hung, project closed in IDE, etc.).
+    """
+    cli_path = _resolve_jetbrains_cli()
+    if not cli_path:
+        return
+
+    # Build the allow-list of tags genuinely live in *this* IDE+project.
+    # A tab named ``lps <tag>`` whose <tag> is in this set is the live
+    # tab for our own (or a sibling concurrent) session and stays put;
+    # anything else is treated as a leftover.
+    live_tags: list[str] = []
+    sockets_dir = Path(storage_dir) / 'sockets'
+    try:
+        meta_files = list(sockets_dir.glob('*.meta'))
+    except OSError:
+        meta_files = []
+    for meta in meta_files:
+        try:
+            with open(meta) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if (data.get('ide') == ide_name
+                and data.get('project_path') == project_path):
+            tag = meta.stem
+            if tag == exclude_tag:
+                # Our own about-to-start session: force-remove from
+                # the allow-list so a pre-existing ``lps <ourTag>``
+                # tab (force-quit leftover) gets renamed to bare,
+                # freeing the name for our OSC to claim a moment later.
+                continue
+            # Verify the recorded PID is actually alive — ``kill -9``
+            # leaves the meta file lingering with no live server, and
+            # without this check the stale tab would be protected.
+            # ``os.kill(pid, 0)`` raises ProcessLookupError when the
+            # PID is gone; treat that as "session is dead, meta is
+            # garbage, tab is stale".
+            pid = data.get('pid')
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, OSError):
+                    continue
+            live_tags.append(tag)
+
+    # Format the allow-list as a Groovy Set literal.  Empty list is
+    # fine — Groovy ``[] as Set`` is a valid empty set.
+    groovy_set_items = ', '.join(
+        f'"{_escape_groovy(t)}"' for t in live_tags
+    )
+    escaped_project_path = _escape_groovy(project_path)
+
+    groovy_script = f'''import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.project.ProjectManager
+
+IDE.application.invokeLater {{
+    var liveTags = [{groovy_set_items}] as Set
+    var allProjects = ProjectManager.getInstance().getOpenProjects()
+    var targetProject = null
+    for (var i = 0; i < allProjects.length; i++) {{
+        var project = allProjects[i]
+        if (project.getBasePath() != null
+                && project.getBasePath().equals("{escaped_project_path}")) {{
+            targetProject = project
+            break
+        }}
+    }}
+    if (targetProject == null) return
+
+    var tw = ToolWindowManager.getInstance(targetProject).getToolWindow("Terminal")
+    if (tw == null) return
+
+    var cm = tw.getContentManager()
+    if (cm == null) return
+
+    var n = cm.getContentCount()
+    for (var i = 0; i < n; i++) {{
+        var content = cm.getContent(i)
+        if (content == null) continue
+        var name = content.getDisplayName()
+        if (name == null) continue
+        var prefix = null
+        if (name.startsWith("lps ")) prefix = "lps "
+        else if (name.startsWith("lpc ")) prefix = "lpc "
+        if (prefix == null) continue
+        var tag = name.substring(prefix.length())
+        if (!liveTags.contains(tag)) {{
+            try {{
+                content.setDisplayName(tag)
+            }} catch (Exception e) {{
+            }}
+        }}
+    }}
+}}
+'''
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.groovy', delete=False
+        ) as tmp:
+            tmp.write(groovy_script)
+            tmp_path = tmp.name
+        try:
+            subprocess.run(
+                [cli_path, 'ideScript', tmp_path],
+                capture_output=True,
+                timeout=10,
+                env=_jetbrains_env(),
+            )
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except (OSError, subprocess.SubprocessError):
         pass
 
 

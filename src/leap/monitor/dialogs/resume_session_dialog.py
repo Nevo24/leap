@@ -16,17 +16,24 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtCore import QEvent, QPoint, Qt
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout,
+    QAbstractItemView, QApplication, QCheckBox, QDialog, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
+    QTableWidgetItem, QVBoxLayout,
 )
 
 from leap.cli_providers.registry import get_display_name
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import (
-    load_dialog_geometry, save_dialog_geometry,
+    load_dialog_geometry, load_resume_hidden_columns,
+    load_resume_open_in_last_app, save_dialog_geometry,
+    save_resume_hidden_columns, save_resume_open_in_last_app,
+)
+from leap.monitor.themes import current_theme
+from leap.monitor.ui.table_helpers import (
+    SubtleColumnSeparatorDelegate, SubtleColumnSeparatorHeaderView,
+    build_column_visibility_menu,
 )
 from leap.utils.resume_store import SessionRecord, TagRow, load_tag_rows
 
@@ -77,12 +84,26 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
 
     _DEFAULT_SIZE = (820, 460)
 
-    # Column indices
-    _COL_CLI = 0
-    _COL_TAG = 1
-    _COL_AGE = 2
-    _COL_SESSION = 3
-    _COL_CWD = 4
+    # Column indices — order mirrors the main monitor table:
+    # Tag → CLI → App → Project → Path, then the Resume-specific
+    # Age + Session metadata.  The first five also have visibility
+    # controlled by the main table's ``hidden_columns`` pref so a
+    # column the user hid in the monitor disappears here too.
+    _COL_TAG = 0
+    _COL_CLI = 1
+    _COL_APP = 2
+    _COL_PROJECT = 3
+    _COL_PATH = 4
+    _COL_AGE = 5
+    _COL_SESSION = 6
+
+    # Labels in column order; used by ``setHorizontalHeaderLabels`` and
+    # by the per-column visibility menu.  Tag is the only mandatory
+    # column (a Resume picker without it is useless); every other
+    # column is toggleable via the header's right-click menu and the
+    # choice persists per dialog in ``resume_session_hidden_columns``.
+    _COL_LABELS = ['Tag', 'CLI', 'App', 'Project', 'Path', 'Age', 'Session']
+    _MANDATORY_LABEL = 'Tag'
 
     def __init__(
         self,
@@ -123,9 +144,66 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         layout.addWidget(self._search_edit)
 
         # Table
-        self._table = QTableWidget(0, 5, self)
-        self._table.setHorizontalHeaderLabels(
-            ['CLI', 'Tag', 'Age', 'Session', 'Working directory'])
+        self._table = QTableWidget(0, len(self._COL_LABELS), self)
+        # Install BEFORE setHorizontalHeaderLabels so the header is
+        # the custom view from the start (avoids a flash of the
+        # default header on first paint).  Delegate handles cell
+        # separators; header view handles the header-row separators
+        # — together they look like one continuous vertical line.
+        self._table.setHorizontalHeader(
+            SubtleColumnSeparatorHeaderView(Qt.Horizontal, self._table))
+        self._table.setItemDelegate(
+            SubtleColumnSeparatorDelegate(self._table))
+        self._table.setHorizontalHeaderLabels(self._COL_LABELS)
+        # ``setStretchLastSection`` defaults to True — combined with
+        # our explicit ``Stretch`` mode on ``_COL_PATH`` it produces a
+        # small visual artefact (a bump / partial-section on the last
+        # column's right edge) because Qt runs both stretches and
+        # they fight each other for the leftover pixels.  Disable so
+        # only Path stretches and the rightmost section ends cleanly.
+        self._table.horizontalHeader().setStretchLastSection(False)
+        # Corner button (intersection of vertical + horizontal headers)
+        # — invisible when the vertical header is hidden, but disabling
+        # it is the documented way to avoid stray paint events on the
+        # top-right corner.
+        self._table.setCornerButtonEnabled(False)
+        # Mirror the thin themed scrollbar from MonitorWindow's app-level
+        # QSS (which doesn't cascade into this dialog).  The default
+        # Qt scrollbar on macOS is the chunky pill-shaped one that the
+        # user spotted as "a bump" in the top-right of the table.  Use
+        # the same theme colours + thin (8px) layout the main table
+        # uses so the scrollbar looks consistent across surfaces.
+        t = current_theme()
+        sb_bg = t.scrollbar_bg or t.window_bg
+        sb_handle = t.scrollbar_handle or t.border_solid
+        sb_hover = t.scrollbar_handle_hover or t.text_muted
+        self._table.setStyleSheet(
+            (self._table.styleSheet() or '')
+            + f'''
+QScrollBar:vertical {{
+    background: {sb_bg}; width: 8px; margin: 0; border: none;
+}}
+QScrollBar::handle:vertical {{
+    background: {sb_handle}; min-height: 30px; border-radius: 4px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {sb_hover}; }}
+QScrollBar:horizontal {{
+    background: {sb_bg}; height: 8px; margin: 0; border: none;
+}}
+QScrollBar::handle:horizontal {{
+    background: {sb_handle}; min-width: 30px; border-radius: 4px;
+}}
+QScrollBar::handle:horizontal:hover {{ background: {sb_hover}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0; border: none; background: transparent;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0; border: none; background: transparent;
+}}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+QTableCornerButton::section {{ background: transparent; border: none; }}
+'''
+        )
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -136,19 +214,49 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         self._table.itemDoubleClicked.connect(lambda _i: self._accept_if_selected())
 
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(self._COL_CLI, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self._COL_TAG, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self._COL_CLI, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self._COL_APP, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self._COL_PROJECT, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self._COL_PATH, QHeaderView.Stretch)
         header.setSectionResizeMode(self._COL_AGE, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(self._COL_SESSION, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(self._COL_CWD, QHeaderView.Stretch)
+
+        # Restore the user's per-column visibility choices for THIS
+        # dialog (independent from the main monitor table — Resume
+        # serves a different purpose, so the user toggles each set
+        # separately).  Tag is non-toggleable so it's force-shown
+        # even if the persisted list (e.g. hand-edited prefs) names it.
+        hidden_columns = set(load_resume_hidden_columns())
+        for col_idx, label in enumerate(self._COL_LABELS):
+            if label == self._MANDATORY_LABEL:
+                continue
+            if label in hidden_columns:
+                self._table.setColumnHidden(col_idx, True)
+
+        # Right-click the header to toggle column visibility.  Mirrors
+        # the main monitor table's UX so the gesture is familiar.
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_column_menu)
 
         layout.addWidget(self._table, 1)
 
-        # The dialog now does only the *picking* step — after Accept,
-        # the caller spawns ``leap --resume --cli=… --tag=… --session=…``
-        # in a new terminal so the user finishes the flow (cwd choice
-        # for cwd-bound CLIs, server hand-off) interactively.  No
-        # "Use ~/" toggle here; that decision belongs in the terminal.
+        # "Open in the app the session was last run in" toggle — when
+        # checked, the caller passes ``record.terminal_app`` as
+        # ``preferred_ide`` to ``open_resume_in_terminal``, so the resume
+        # relaunches in iTerm2 (or wherever the session was last seen)
+        # instead of the user's global ``default_terminal`` pref.  When
+        # off, or when the record has no recorded app (pre-feature
+        # entries), the global default is used.
+        self._open_in_last_app_check = QCheckBox(
+            'Open in the app the session was last run in')
+        self._open_in_last_app_check.setChecked(load_resume_open_in_last_app())
+        layout.addWidget(self._open_in_last_app_check)
+
+        # The dialog does only the *picking* step — after Accept, the
+        # caller spawns ``leap --resume --cli=… --tag=… --session=…`` in
+        # a new terminal so the user finishes the flow (cwd choice for
+        # cwd-bound CLIs, server hand-off) interactively.
         # Cancel bottom-left, OK bottom-right.
         btn_row = QHBoxLayout()
         cancel_btn = QPushButton('Cancel')
@@ -228,12 +336,30 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
             cwd_short = _shorten_cwd(newest.cwd)
             cwd_item = QTableWidgetItem(cwd_short)
             cwd_item.setToolTip(newest.cwd)
+            # ``terminal_app`` lands here from the hook (read from <tag>.meta's
+            # ``ide`` field at record time).  Empty for pre-feature records.
+            app_item = QTableWidgetItem(newest.terminal_app or '')
+            if newest.terminal_app:
+                app_item.setToolTip(newest.terminal_app)
+            # ``project_path`` — display just the basename (project folder
+            # name) so the column stays compact; full path lives in the
+            # tooltip and in the Working directory column.  Empty for
+            # pre-feature records that don't have project_path stored.
+            project_basename = (
+                os.path.basename(newest.project_path.rstrip(os.sep))
+                if newest.project_path else ''
+            )
+            project_item = QTableWidgetItem(project_basename)
+            if newest.project_path:
+                project_item.setToolTip(newest.project_path)
             for col, item in (
-                (self._COL_CLI, cli_item),
                 (self._COL_TAG, tag_item),
+                (self._COL_CLI, cli_item),
+                (self._COL_APP, app_item),
+                (self._COL_PROJECT, project_item),
+                (self._COL_PATH, cwd_item),
                 (self._COL_AGE, age_item),
                 (self._COL_SESSION, sess_item),
-                (self._COL_CWD, cwd_item),
             ):
                 item.setTextAlignment(Qt.AlignCenter)
                 self._table.setItem(i, col, item)
@@ -294,6 +420,43 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         """Reconstruct the row list currently shown in the table."""
         return self._filtered_rows(self._search_edit.text())
 
+    # ── Column visibility ────────────────────────────────────────────
+
+    def _show_column_menu(self, pos: QPoint) -> None:
+        """Header right-click — toggle column visibility per column.
+
+        Tag is omitted from the menu since it's mandatory.
+        """
+        menu = build_column_visibility_menu(
+            self,
+            self._table,
+            self._COL_LABELS,
+            on_toggle=self._toggle_column,
+            skip=lambda _i, label: label == self._MANDATORY_LABEL,
+        )
+        header = self._table.horizontalHeader()
+        menu.exec_(header.mapToGlobal(pos))
+
+    def _toggle_column(self, col_idx: int, label: str, visible: bool) -> None:
+        """Toggle column ``col_idx`` and persist the choice.
+
+        ``visible`` is the new state requested by the menu's toggle.
+        We read+write the full hidden-columns list each call (cheap;
+        list is at most ~7 entries) to avoid coupling to any in-memory
+        cache the dialog might hold across opens.
+        """
+        self._table.setColumnHidden(col_idx, not visible)
+        hidden = set(load_resume_hidden_columns())
+        # Tag is never toggleable, but guard anyway so a hand-coded
+        # call can't accidentally persist a forbidden hide.
+        if label == self._MANDATORY_LABEL:
+            hidden.discard(label)
+        elif visible:
+            hidden.discard(label)
+        else:
+            hidden.add(label)
+        save_resume_hidden_columns(sorted(hidden))
+
     def _accept_if_selected(self) -> None:
         """Accept the dialog when a row is selected.
 
@@ -325,6 +488,16 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         """Return ``(cli, tag, SessionRecord)`` for the picked row."""
         return self._chosen
 
+    @property
+    def open_in_last_app(self) -> bool:
+        """Whether the user wants the resume to open in the recorded app.
+
+        Caller reads this after ``exec_()`` returns ``Accepted`` and
+        decides whether to thread ``record.terminal_app`` through to
+        ``open_resume_in_terminal`` or fall back to the global default.
+        """
+        return self._open_in_last_app_check.isChecked()
+
     @staticmethod
     def has_resumable_sessions(storage_dir: Path) -> bool:
         """Quick check the caller can use to short-circuit to a message box."""
@@ -336,8 +509,14 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
     # ── Persistence ───────────────────────────────────────────────────
 
     def done(self, result: int) -> None:
-        """Save dialog size on close."""
+        """Save dialog size + the "open in last app" toggle on close.
+
+        Persist the checkbox state on every close (Accept *and* Cancel)
+        so the user's preference sticks even when they back out of the
+        dialog.
+        """
         save_dialog_geometry('resume_session', self.width(), self.height())
+        save_resume_open_in_last_app(self._open_in_last_app_check.isChecked())
         super().done(result)
 
 

@@ -394,21 +394,34 @@ class ActionsMenuMixin(_Base):
         cli = (session or {}).get('cli_provider') or DEFAULT_PROVIDER
         server_pid = (session or {}).get('server_pid')
 
-        # Most recent recorded session_id for this (cli, tag) — if any.
+        # Most recent recorded session_id + cwd for this (cli, tag) — if any.
         # ``load_tag_rows`` already filters stale entries (transcript
         # file gone), so ``session_id is None`` means "nothing to
-        # resume → start fresh under the same tag".
+        # resume → start fresh under the same tag".  We also grab the
+        # recorded cwd so we can ``cd`` to the actual subdir the
+        # session was in — JetBrains opens its integrated terminal at
+        # ``getBasePath()`` (the project root), which is typically a
+        # parent of the recorded cwd, so without the ``cd`` the
+        # leap-resume.py cwd-check would mismatch and pop a needless
+        # Original/Current picker.
         session_id: Optional[str] = None
+        recorded_cwd: Optional[str] = None
         try:
             for row in load_tag_rows(STORAGE_DIR):
                 if row.tag == tag and row.cli == cli and row.sessions:
                     session_id = row.sessions[0].session_id
+                    recorded_cwd = row.sessions[0].cwd or None
                     break
         except Exception:  # pragma: no cover - best-effort lookup
             session_id = None
 
         _app, _proj = app_path, project_path
         _tag, _cli, _sid = tag, cli, session_id
+        # Prefer the recorded cwd (deeper, where the session was last
+        # active) over the project root for the ``cd``.  Falls back to
+        # the project root when no session has been recorded yet
+        # (fresh start) or the resume-store lookup failed.
+        _cd_target = recorded_cwd or project_path
         _preferred_ide = preferred_ide
         _fallback_terminal = self._prefs.get('default_terminal', '') or None
 
@@ -445,9 +458,10 @@ class ActionsMenuMixin(_Base):
             # inside the IDE's integrated terminal.  Mirrors
             # ``ServerLauncher._open_leap_in_terminal`` to stay
             # consistent with the From-Resume hand-off path.
-            parts: list[str] = []
-            if _proj:
-                parts.append(f"cd {shlex.quote(_proj)}")
+            # ``_cd_target`` is the deeper recorded cwd when available
+            # (so the terminal lands where the session was actually
+            # running, not at the project root JetBrains defaults to)
+            # — falls back to the project root for fresh starts.
             leap_cmd = f"leap {shlex.quote(_tag)}"
             if _sid:
                 leap_cmd = (
@@ -456,8 +470,17 @@ class ActionsMenuMixin(_Base):
                     f"LEAP_CLI={shlex.quote(_cli)} "
                     f"{leap_cmd}"
                 )
-            parts.append(leap_cmd)
-            cmd = " && ".join(parts)
+            # ``;`` (not ``&&``) so a failed ``cd`` (recorded cwd
+            # deleted off disk) doesn't short-circuit leap — without
+            # this guard the user would land in a dead terminal with
+            # ``cd: no such file or directory`` and no leap server.
+            # With ``;``, leap runs from whatever cwd the IDE put us
+            # in (project root) and leap-resume.py's cwd-picker fires
+            # as the safety net.
+            if _cd_target:
+                cmd = f"cd {shlex.quote(_cd_target)} ; {leap_cmd}"
+            else:
+                cmd = leap_cmd
 
             label = _app.rsplit('/', 1)[-1].removesuffix('.app')
             verb = 'Resuming' if _sid else 'Starting'

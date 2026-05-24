@@ -4,12 +4,12 @@ Contains separator delegates, header views, tooltip overrides, and
 column-group boundary constants extracted from app.py.
 """
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import sip
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QFrame, QGridLayout,
-    QHeaderView, QProxyStyle, QPushButton, QStyle,
+    QAbstractItemView, QAction, QApplication, QFrame, QGridLayout,
+    QHeaderView, QMenu, QProxyStyle, QPushButton, QStyle,
     QStyledItemDelegate, QTableWidget, QToolTip, QVBoxLayout, QWidget,
 )
 from PyQt5.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt, QTimer
@@ -717,3 +717,95 @@ class SeparatorHeaderView(QHeaderView):
         elif border == BORDER_INTRA:
             painter.setPen(border_subtle_pen())
             painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
+
+
+class SubtleColumnSeparatorDelegate(QStyledItemDelegate):
+    """Item delegate drawing a 1px subtle vertical separator on each
+    cell's right edge — except the right-edge of the last visible
+    column (avoids an orphan border against the table frame).
+
+    Uses ``border_subtle_pen`` so the line matches the main monitor
+    table's ``BORDER_INTRA`` style.  Use this when you want light
+    column separators in a small / secondary table (e.g. dialog
+    pickers) without the main table's group/intra distinction.
+    """
+
+    def paint(self, painter: Any, option: Any, index: QModelIndex) -> None:
+        super().paint(painter, option, index)
+        table = self.parent()
+        if table is None:
+            return
+        col = index.column()
+        # Skip the rightmost-visible column to avoid double-border
+        # against the table's right edge.
+        for next_col in range(col + 1, table.columnCount()):
+            if not table.isColumnHidden(next_col):
+                break
+        else:
+            return  # col is the last visible — no separator
+        painter.save()
+        painter.setPen(border_subtle_pen())
+        x = option.rect.right()
+        painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
+        painter.restore()
+
+
+class SubtleColumnSeparatorHeaderView(QHeaderView):
+    """Header view drawing a 1px subtle vertical separator at each
+    section's right edge (except the rightmost-visible one).
+
+    Companion to ``SubtleColumnSeparatorDelegate`` for the header
+    row so the separators run continuously top-to-bottom.
+    """
+
+    def paintSection(
+        self, painter: Any, rect: Any, logicalIndex: int,
+    ) -> None:
+        super().paintSection(painter, rect, logicalIndex)
+        table = self.parent()
+        if table is None:
+            return
+        for next_col in range(logicalIndex + 1, table.columnCount()):
+            if not table.isColumnHidden(next_col):
+                break
+        else:
+            return  # last visible — no separator
+        painter.setPen(border_subtle_pen())
+        painter.drawLine(rect.right(), rect.top(), rect.right(), rect.bottom())
+
+
+def build_column_visibility_menu(
+    parent: QWidget,
+    table: QTableWidget,
+    labels: list[str],
+    on_toggle: Callable[[int, str, bool], None],
+    skip: Optional[Callable[[int, str], bool]] = None,
+) -> QMenu:
+    """Build a column-visibility toggle context menu for ``table``.
+
+    For each ``(idx, label)`` in ``enumerate(labels)``, adds a checkable
+    ``QAction`` whose checked state mirrors ``not table.isColumnHidden(idx)``.
+    On toggle, fires ``on_toggle(idx, label, visible)`` where ``visible``
+    is the new requested visibility.  ``skip(idx, label) -> bool`` skips
+    entries (e.g. mandatory or runtime-unavailable columns).
+
+    Returns the unanchored ``QMenu``.  Caller invokes
+    ``menu.exec_(header.mapToGlobal(pos))``.
+
+    Shared by the main monitor table (``app.py``) and the Resume picker
+    (``resume_session_dialog.py``).  Persistence + post-toggle UI
+    fix-up (e.g. re-distributing column widths) stays with each caller —
+    only the menu construction is generic.
+    """
+    menu = QMenu(parent)
+    for col_idx, label in enumerate(labels):
+        if skip is not None and skip(col_idx, label):
+            continue
+        action = QAction(label, menu)
+        action.setCheckable(True)
+        action.setChecked(not table.isColumnHidden(col_idx))
+        action.toggled.connect(
+            lambda checked, c=col_idx, lbl=label: on_toggle(c, lbl, checked)
+        )
+        menu.addAction(action)
+    return menu

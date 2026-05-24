@@ -12,6 +12,20 @@ On disk, each file holds a JSON list of entries shaped::
         "session_id":      str,    # CLI-specific stable id (uuid, chat id, …)
         "transcript_path": str,    # may be '' for CLIs that don't write one
         "cwd":             str,    # the CLI's cwd at record time
+        "terminal_app":    str,    # e.g. 'iTerm2' / 'Terminal.app' / 'VS Code';
+                                   #   '' when unknown or for pre-feature entries.
+                                   #   Sourced from <tag>.meta's ``ide`` field
+                                   #   at hook time so the GUI resume dialog
+                                   #   can reopen in the same terminal app.
+        "project_path":    str,    # Git root of the project the session ran
+                                   #   in, e.g. ``~/workspace/tenant-manager``.
+                                   #   Sourced from <tag>.meta's ``project_path``
+                                   #   so GUI resume can ``open -a <ide>
+                                   #   <project_path>`` (open the project) AND
+                                   #   ``cd <cwd>`` (land at the recorded
+                                   #   subdir) — mirroring Move-to-IDE.  ''
+                                   #   for pre-feature entries; downstream
+                                   #   derives via ``git rev-parse`` from cwd.
         "last_seen":       float,  # Unix timestamp of the most recent hook fire
     }
 
@@ -57,6 +71,8 @@ class SessionRecord:
     cwd: str
     last_seen: float
     size: int = 0  # transcript bytes on disk (0 when no transcript_path)
+    terminal_app: str = ''  # e.g. 'iTerm2' / 'VS Code'; '' if unknown / old entry
+    project_path: str = ''  # git root the session ran in; '' for old entries
 
 
 @dataclass
@@ -101,6 +117,8 @@ def record_session(
     session_id: str,
     transcript_path: str = "",
     cwd: str = "",
+    terminal_app: str = "",
+    project_path: str = "",
 ) -> None:
     """Upsert an entry into ``<storage>/cli_sessions/<cli>/<tag>.json``.
 
@@ -127,11 +145,28 @@ def record_session(
         transcript_path = os.path.abspath(transcript_path)
     try:
         entries = _load_raw_entries(tag_file)
+        # Defense-in-depth: a transient meta-read failure in the hook
+        # (e.g. force-quit race where the server unlinks ``<tag>.meta``
+        # just as the CLI's exit hook is reading it) would pass empty
+        # ``terminal_app`` / ``project_path`` here and overwrite
+        # previously-good values via the dedup-then-append below.
+        # Preserve the prior entry's value(s) when the new write has
+        # nothing better to say — both fields handled the same way.
+        if not terminal_app or not project_path:
+            for e in entries:
+                if e.get("session_id") == session_id:
+                    if not terminal_app:
+                        terminal_app = (e.get("terminal_app") or "")
+                    if not project_path:
+                        project_path = (e.get("project_path") or "")
+                    break
         entries = [e for e in entries if e.get("session_id") != session_id]
         entries.append({
             "session_id": session_id,
             "transcript_path": transcript_path or "",
             "cwd": cwd or "",
+            "terminal_app": terminal_app or "",
+            "project_path": project_path or "",
             "last_seen": time.time(),
         })
         entries = entries[-MAX_ENTRIES_PER_TAG:]
@@ -253,6 +288,8 @@ def _resumable_sessions(raw: list[dict]) -> list[SessionRecord]:
             cwd=entry.get("cwd", "") or "",
             last_seen=last_seen,
             size=size,
+            terminal_app=entry.get("terminal_app", "") or "",
+            project_path=entry.get("project_path", "") or "",
         ))
     return out
 

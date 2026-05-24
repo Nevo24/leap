@@ -173,12 +173,34 @@ def _record(cli: str, tag: str, hook_data: dict) -> None:
         return
     signal_dir = os.environ.get('LEAP_SIGNAL_DIR', '')
     storage_dir = _resolve_storage_dir(signal_dir)
+    # The live server already detected and persisted the terminal/IDE
+    # app + project root at startup into ``<tag>.meta``'s ``ide`` and
+    # ``project_path`` fields.  Snapshot both into the resume record so
+    # the GUI resume dialog can reopen the session in the same terminal
+    # app AND open the IDE at the *project root* (not the deeper cwd
+    # subdir, which may have its own ``.idea/`` and would be opened as
+    # a separate project — see Move-to-IDE's split).  Best-effort: a
+    # missing or corrupt meta file just means we record empty fields
+    # for this hook fire — ``record_session`` then preserves the
+    # previously-recorded values so a transient failure doesn't lose data.
+    terminal_app = ''
+    project_path = ''
+    try:
+        with open(storage_dir / 'sockets' / f'{tag}.meta') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            terminal_app = data.get('ide') or ''
+            project_path = data.get('project_path') or ''
+    except (OSError, json.JSONDecodeError):
+        pass
     _debug_log('record-ok', cli=cli, tag=tag, session_id=session_id)
     record_session(
         storage_dir, cli, tag,
         session_id=session_id,
         transcript_path=hook_data.get('transcript_path', '') or '',
         cwd=hook_data.get('cwd', '') or os.getcwd(),
+        terminal_app=terminal_app,
+        project_path=project_path,
     )
 
 

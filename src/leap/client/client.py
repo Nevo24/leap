@@ -146,6 +146,16 @@ class LeapClient:
 
     def _cleanup_lock(self) -> None:
         """Release and remove client lock file."""
+        # Strip the ``lpc <tag>`` tab name back to just ``<tag>`` so when
+        # the client exits and the tab drops back to a shell prompt the
+        # Leap label doesn't linger.  Runs from both the atexit path
+        # and ``_signal_handler`` (which calls us before ``os._exit``),
+        # so every exit path catches it except SIGKILL / hard crash.
+        # Best-effort: a stdout-closed terminal can't be helped.
+        try:
+            set_terminal_title(self.tag)
+        except Exception:
+            pass
         # Try to unlock and close file descriptor
         if hasattr(self, 'lock_fd') and self.lock_fd:
             try:

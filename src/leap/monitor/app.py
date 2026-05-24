@@ -23,7 +23,7 @@ from AppKit import (
 )
 from Foundation import NSDate, NSMakeRect, NSRunLoop
 from PyQt5.QtWidgets import (
-    QAction, QApplication, QComboBox, QDialog, QFrame, QInputDialog,
+    QApplication, QComboBox, QDialog, QFrame, QInputDialog,
     QLineEdit, QMainWindow, QMenu, QScrollBar, QShortcut, QToolButton,
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout, QTableWidget,
     QPushButton, QCheckBox, QHeaderView, QMessageBox, QProgressBar,
@@ -67,6 +67,7 @@ from leap.monitor.ui.dock_badge import DockBadge
 from leap.monitor.ui.log_history import LogHistory, LogHistoryDialog
 from leap.monitor.ui.table_helpers import (
     PersistentTooltipStyle, SeparatorDelegate, SeparatorHeaderView, TooltipApp,
+    build_column_visibility_menu,
 )
 from leap.monitor.ui.ui_widgets import PulsingLabel, ShimmerBar, IndicatorLabel
 from leap.utils.constants import ICON_CACHE_DIR, STORAGE_DIR
@@ -207,20 +208,21 @@ class MonitorWindow(
     COL_DELETE = 0
     COL_TAG = 1
     COL_CLI = 2
-    COL_PROJECT = 3
-    COL_SERVER = 4
-    COL_TASK = 5
-    COL_PATH = 6
-    COL_SERVER_BRANCH = 7
-    COL_STATUS = 8
-    COL_QUEUE = 9
-    COL_CLIENT = 10
-    COL_SLACK = 11
-    COL_PR = 12
-    COL_PR_BRANCH = 13
+    COL_APP = 3
+    COL_PROJECT = 4
+    COL_SERVER = 5
+    COL_TASK = 6
+    COL_PATH = 7
+    COL_SERVER_BRANCH = 8
+    COL_STATUS = 9
+    COL_QUEUE = 10
+    COL_CLIENT = 11
+    COL_SLACK = 12
+    COL_PR = 13
+    COL_PR_BRANCH = 14
 
     _HEADER_LABELS = [
-        '', 'Tag', 'CLI', 'Project', 'Server', 'Last Msg', 'Path',
+        '', 'Tag', 'CLI', 'App', 'Project', 'Server', 'Last Msg', 'Path',
         'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
@@ -255,6 +257,22 @@ class MonitorWindow(
             self._save_prefs()
         if 'hidden_columns' not in self._prefs:
             self._prefs['hidden_columns'] = ['Client']
+            self._save_prefs()
+        # One-time migration for the new App column: drop the stale
+        # ``column_widths`` array so the new 15-column layout starts
+        # from equal-widths rather than shifting every saved width by
+        # one (App would otherwise end up with Project's width, Project
+        # with Server's, …).  Also normalize a corrupt ``hidden_columns``
+        # value (None / non-list) so subsequent ``X in hidden_columns``
+        # checks don't TypeError on launch and brick the monitor.
+        # The App column itself is intentionally NOT added to
+        # ``hidden_columns`` — visible by default.
+        if not self._prefs.get('app_column_migrated'):
+            hidden = self._prefs.get('hidden_columns')
+            if not isinstance(hidden, list):
+                self._prefs['hidden_columns'] = []
+            self._prefs.pop('column_widths', None)
+            self._prefs['app_column_migrated'] = True
             self._save_prefs()
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
@@ -473,13 +491,17 @@ class MonitorWindow(
         self.table.setHorizontalHeader(SeparatorHeaderView(Qt.Horizontal, self.table))
         self.table.setItemDelegate(SeparatorDelegate(self.table))
         self.table.setShowGrid(False)
-        self.table.setColumnCount(14)
+        # Column count is derived from ``_HEADER_LABELS`` so a hardcoded
+        # number can't drift behind a new-column addition (added "App"
+        # column and broke saved-widths mapping when this was a literal).
+        self.table.setColumnCount(len(self._HEADER_LABELS))
         self.table.setHorizontalHeaderLabels(self._HEADER_LABELS)
 
         # Column header tooltip descriptions (applied via _apply_header_tooltips)
         self._col_tooltip_descriptions = {
             self.COL_TAG: 'Leap session name',
             self.COL_CLI: 'AI CLI engine',
+            self.COL_APP: 'Terminal / IDE app the session was last run in',
             self.COL_PROJECT: 'Git project name',
             self.COL_SERVER: 'Leap server process (green = running)',
             self.COL_PATH: 'Directory where the server is running',
@@ -1698,20 +1720,16 @@ class MonitorWindow(
 
     def _show_column_visibility_menu(self, pos: QPoint) -> None:
         """Show a context menu to toggle column visibility."""
-        menu = QMenu(self)
-        for col, label in enumerate(self._HEADER_LABELS):
-            if col in self._NON_TOGGLEABLE_COLS:
-                continue
-            # Skip Slack entry when Slack is not installed
-            if col == self.COL_SLACK and not self._slack_available:
-                continue
-            action = QAction(label, menu)
-            action.setCheckable(True)
-            action.setChecked(not self.table.isColumnHidden(col))
-            action.toggled.connect(
-                lambda checked, c=col, lbl=label: self._toggle_column(
-                    c, lbl, checked))
-            menu.addAction(action)
+        menu = build_column_visibility_menu(
+            self,
+            self.table,
+            self._HEADER_LABELS,
+            on_toggle=self._toggle_column,
+            skip=lambda c, _l: (
+                c in self._NON_TOGGLEABLE_COLS
+                or (c == self.COL_SLACK and not self._slack_available)
+            ),
+        )
         header = self.table.horizontalHeader()
         menu.exec_(header.mapToGlobal(pos))
 
@@ -2384,8 +2402,11 @@ class MonitorWindow(
         'send_comments_mode',
         'preset_editor_last_name',
         'dialog_splitter_sizes',
+        'dialog_geometry',
         'dialog_geometry_state',
         'notes_flatten_on_paste',
+        'resume_open_in_last_app',
+        'resume_session_hidden_columns',
     })
 
     def _save_prefs(self) -> None:
@@ -2419,6 +2440,21 @@ class MonitorWindow(
                     or key.endswith('_font_family')
                     or key in self._DIALOG_OWNED_KEYS):
                 self._prefs[key] = value
+        # Symmetric to the loop above: if a dialog REMOVED a dialog-owned
+        # key from disk (e.g. ZoomMixin's Cmd+0 reset pops the font-size
+        # entry), drop it from our in-memory copy too.  Otherwise the
+        # stale startup-cached value would land back on disk on this
+        # save, silently undoing the user's reset.
+        stale = [
+            k for k in self._prefs
+            if k != 'main_font_size'
+            and k not in disk_prefs
+            and (k.endswith('_font_size')
+                 or k.endswith('_font_family')
+                 or k in self._DIALOG_OWNED_KEYS)
+        ]
+        for k in stale:
+            self._prefs.pop(k, None)
         save_monitor_prefs(self._prefs)
 
     def _apply_theme(self, theme_name: str) -> None:

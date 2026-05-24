@@ -286,13 +286,13 @@ class NotificationsDialog(ZoomMixin, QDialog):
 
     def _toggle_all_dock(self) -> None:
         """Click on the Dock master — all-on if any are off, else all-off."""
-        self._toggle_column('dock')
+        self._bulk_toggle_column('dock')
 
     def _toggle_all_banner(self) -> None:
         """Click on the Banner master — all-on if any are off, else all-off."""
-        self._toggle_column('banner')
+        self._bulk_toggle_column('banner')
 
-    def _toggle_column(self, col: str) -> None:
+    def _bulk_toggle_column(self, col: str) -> None:
         target = not all(c[col].isChecked() for c in self._checks.values())
         # Block stateChanged on each row while we flip them so the
         # master doesn't visibly oscillate Checked → Partial → Partial →

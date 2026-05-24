@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
@@ -1177,14 +1177,49 @@ class PRTrackingMixin(_Base):
             f"Resuming [{get_display_name(cli)}] '{original_tag}' "
             f"(session {sess.session_id[:8]}) — see the new terminal"
         )
+        # Mark the row as "starting" so the dead-pinned row sticks
+        # around (escape hatch in ``_merge_sessions``) and renders the
+        # disabled "Starting…" Server button while the IDE cold-starts
+        # / poll runs.  The ``_starting_tags -= alive`` sweep in
+        # ``_update_table`` clears this the moment the new leap server
+        # creates its socket — so a successful resume falls back to the
+        # normal live-row rendering without an extra timer firing.  The
+        # 12-min safety timer is a backstop for the cold-IDE path:
+        # ``_open_jetbrains_terminal`` polls for up to 10 min, plus a
+        # buffer for the actual leap server boot.  Without this guard
+        # a user who Ctrl+C's the terminal mid-cold-start would see
+        # the row hang in "Starting…" forever (or until restart).
+        self._starting_tags.add(original_tag)
+        QTimer.singleShot(
+            720_000, lambda t=original_tag: self._starting_tags.discard(t),
+        )
+        self._update_table()
         # The terminal opens at the user's default cwd; for cwd-bound
         # CLIs (Claude/Gemini/Cursor), leap-resume.py will then prompt
         # the user to pick "Original" (chdir into the recorded cwd) or
         # "Current" (relocate the transcript into the current cwd).
-        preferred_ide = self._prefs.get('default_terminal')
+        # When the dialog's "Open in last app" toggle is on AND we have
+        # a recorded terminal app for this session, route through that
+        # so the resume lands in (say) iTerm2 even if the user's global
+        # default is Terminal.app.  Otherwise fall back to the global
+        # default; ``open_terminal_with_command`` handles the empty case
+        # by stepping through its own fallback chain.
+        if dlg.open_in_last_app and sess.terminal_app:
+            preferred_ide = sess.terminal_app
+        else:
+            preferred_ide = self._prefs.get('default_terminal')
+        # ``recorded_cwd`` + ``recorded_project_path`` are consumed by
+        # ``open_resume_in_terminal`` when the resolved target is an
+        # IDE.  Mirrors Move-to-IDE: IDE is opened at the project root
+        # (so subdirs with their own .idea — e.g. ``proto/`` inside
+        # ``tenant-manager/`` — don't get treated as separate projects),
+        # while the terminal inside the IDE cds to the recorded subdir.
+        # For plain terminals both are ignored downstream.
         self._server_launcher.open_resume_in_terminal(
             cli=cli, tag=original_tag, session_id=sess.session_id,
             preferred_ide=preferred_ide,
+            recorded_cwd=sess.cwd or None,
+            recorded_project_path=sess.project_path or None,
         )
 
     # ------------------------------------------------------------------

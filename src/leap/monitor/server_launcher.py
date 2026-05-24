@@ -21,9 +21,36 @@ from PyQt5.QtWidgets import (
 
 from leap.monitor.pr_tracking.config import save_pinned_sessions
 from leap.monitor.pr_tracking.git_utils import detect_default_branch, resolve_ssh_alias
-from leap.monitor.navigation import open_terminal_with_command
+from leap.monitor.navigation import (
+    find_jetbrains_app, is_ide_app, open_terminal_with_command,
+)
 from leap.monitor.scm_polling import BackgroundCallWorker
 from leap.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR
+
+
+def _git_root_or(cwd: str, fallback: str) -> str:
+    """Return ``git rev-parse --show-toplevel`` from *cwd*, or *fallback*.
+
+    Used by ``open_resume_in_terminal`` to derive the project root for
+    legacy resume records (saved before ``project_path`` was a field
+    on ``SessionRecord``).  Best-effort: any failure — directory gone,
+    not a git repo, git binary missing — falls through to ``fallback``.
+    Short timeout because this runs synchronously on a UI button press.
+    """
+    if not cwd:
+        return fallback
+    try:
+        result = subprocess.run(
+            ['git', '-C', cwd, 'rev-parse', '--show-toplevel'],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            root = result.stdout.strip()
+            if root:
+                return root
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return fallback
 
 if TYPE_CHECKING:
     from leap.monitor.app import MonitorWindow
@@ -300,6 +327,8 @@ class ServerLauncher:
     def open_resume_in_terminal(
         self, *, cli: str, tag: str, session_id: str,
         preferred_ide: Optional[str] = None,
+        recorded_cwd: Optional[str] = None,
+        recorded_project_path: Optional[str] = None,
     ) -> None:
         """Spawn a terminal running ``leap --resume --cli=… --tag=… --session=…``.
 
@@ -309,9 +338,32 @@ class ServerLauncher:
         prompts (cwd choice for Claude/Gemini/Cursor; nothing for
         Codex which finds sessions by UUID alone).
 
-        The terminal opens at its default cwd (typically ``$HOME`` for
-        a GUI-spawned terminal) — leap-resume.py's cwd-prompt handles
-        the mismatch with the recorded cwd.
+        When ``preferred_ide`` resolves to an IDE (VS Code / Cursor /
+        JetBrains family) we thread ``recorded_cwd`` through as
+        ``project_path``: the IDE opens that project (or focuses an
+        existing window for it) and the new terminal lands in the
+        project's basePath — so ``leap-resume.py``'s cwd check sees
+        a match with the recorded cwd and skips the prompt.
+
+        Mirrors :meth:`ActionsMenuMixin._move_session_to_ide`'s
+        cold-start handling: we pre-open the IDE via
+        ``subprocess.Popen(['open', '-a', <ide>, <project>])`` BEFORE
+        calling ``open_terminal_with_command`` and pass
+        ``project_already_open=True`` so JetBrains' own
+        ``[ide_cmd, project_path]`` call is skipped — that call uses
+        the Toolbox-generated CLI shim (``open -na`` internally) which
+        is unreliable when the IDE is fully closed, and without our
+        bootstrap the poll loop would spin for ten minutes before
+        falling back to a plain terminal.  ``fallback_terminal`` is
+        also threaded through so an unsupported recorded app (Kitty,
+        Ghostty, generic 'JetBrains IDE') lands in the user's chosen
+        default terminal instead of the absolute-last-resort
+        Terminal.app.
+
+        For plain terminals (iTerm2, Terminal.app, WezTerm, Warp,
+        Kitty, Ghostty) we leave ``project_path=None`` — those openers
+        ignore it anyway, and ``leap-resume.py`` will prompt the user
+        with the "Original / Current" choice for cwd-bound CLIs.
         """
         leap_cmd = (
             f"leap --resume "
@@ -319,12 +371,104 @@ class ServerLauncher:
             f"--tag={shlex.quote(tag)} "
             f"--session={shlex.quote(session_id)}"
         )
-        worker = BackgroundCallWorker(
-            lambda: open_terminal_with_command(
-                leap_cmd, preferred_ide=preferred_ide, project_path=None,
-            ),
-            self._w,
-        )
+        ide_target = is_ide_app(preferred_ide)
+        # Pick the path we hand to the IDE: prefer the recorded project
+        # root (git toplevel that the leap server captured into
+        # ``<tag>.meta`` and the hook then snapshotted into the resume
+        # record).  When missing (pre-feature record), derive via
+        # ``git rev-parse`` from the recorded cwd — handles legacy
+        # entries before this PR.  Fall back to the cwd itself when
+        # git resolution fails too (no .git, dir gone, etc.).
+        # This split (open IDE at project root, cd terminal to subdir)
+        # mirrors Move-to-IDE — without it, JetBrains opens the deep
+        # subdir as a separate project when that subdir happens to
+        # have its own ``.idea/`` (e.g. ``tenant-manager/proto``).
+        ide_open_path: Optional[str] = None
+        if ide_target and recorded_project_path:
+            ide_open_path = recorded_project_path
+        elif ide_target and recorded_cwd:
+            ide_open_path = _git_root_or(recorded_cwd, recorded_cwd)
+        project_path = ide_open_path if ide_target else None
+        fallback_terminal = self._w._prefs.get('default_terminal') or None
+
+        # For JetBrains, resolve the concrete ``.app`` bundle so the
+        # CLI subprocess (``[binary, project_path]`` and
+        # ``ideScript``) runs from that exact install — NOT via the
+        # Toolbox-generated shim (``open -na`` internally), which
+        # is unreliable for cold-start.  Move-to-IDE has this for
+        # free (user picked the ``.app`` via QFileDialog); Resume
+        # has only the recorded IDE name to go on, so we glob for it.
+        # ``find_jetbrains_app`` returns None for VS Code / Cursor —
+        # that's fine: ``_open_vscode_terminal`` handles them via
+        # AppleScript ``tell application … activate``.
+        ide_app_path: Optional[str] = None
+        if ide_target:
+            ide_app_path = find_jetbrains_app(preferred_ide)
+
+        # When targeting an IDE, prepend ``cd <recorded_cwd>`` so the
+        # terminal lands at the exact subdir the session was last in
+        # — JetBrains opens its terminals at ``getBasePath()`` (the
+        # project root), which may be above the recorded cwd, so
+        # without this ``cd`` the leap-resume.py cwd-check would see
+        # a mismatch and prompt the user.  For VS Code the workspace
+        # folder usually IS the recorded cwd so the ``cd`` is a no-op,
+        # but adding it uniformly keeps the IDE path symmetric.  Plain
+        # terminals (iTerm2 etc.) keep the existing flow — we *want*
+        # leap-resume.py's Original/Current picker there.
+        #
+        # Separator is ``;`` (not ``&&``) so a failed ``cd`` (recorded
+        # cwd deleted off disk) does NOT short-circuit ``leap`` — the
+        # leap command still runs from whatever cwd the IDE landed in
+        # (project root) and leap-resume.py's cwd-picker fires as the
+        # safety net.  With ``&&`` the chain would abort on cd failure
+        # and the user would be staring at a dead terminal.
+        if ide_target and recorded_cwd:
+            leap_cmd = f"cd {shlex.quote(recorded_cwd)} ; {leap_cmd}"
+
+        def _spawn() -> bool:
+            # VS Code / Cursor: pre-open the workspace via
+            # LaunchServices so the editor follows the recorded
+            # project — without this, an already-open VS Code window
+            # on a different workspace stays focused and the new
+            # leap terminal lands inside the WRONG file tree.  VS
+            # Code (unlike JetBrains) correctly interprets a
+            # directory arg to ``open -a`` as "open as workspace",
+            # focusing an existing window if it has that folder
+            # loaded or opening a new window otherwise.  Explicit
+            # ``in ('VS Code', 'Cursor')`` check, NOT a negation of
+            # ``ide_app_path`` — those two are the only IDEs that
+            # treat the directory arg as a workspace.  JetBrains
+            # mishandles it (empty duplicate window) and must go
+            # through ``_open_jetbrains_terminal``'s pinned-binary
+            # path even when ``find_jetbrains_app`` can't locate the
+            # bundle (e.g., custom install dir).
+            if preferred_ide in ('VS Code', 'Cursor') and project_path:
+                vscode_bundle = (
+                    'Visual Studio Code' if preferred_ide == 'VS Code'
+                    else 'Cursor'
+                )
+                try:
+                    subprocess.Popen(
+                        ['open', '-a', vscode_bundle, project_path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except OSError:
+                    pass
+            # JetBrains: ``_open_jetbrains_terminal`` issues the
+            # project-open via ``[binary, project_path]`` (using the
+            # ``ide_app_path``-pinned canonical install, NOT the
+            # Toolbox shim).  The binary's CLI logic handles
+            # cold/warm/different-project cases cleanly.
+            return bool(open_terminal_with_command(
+                leap_cmd,
+                preferred_ide=preferred_ide,
+                project_path=project_path,
+                fallback_terminal=fallback_terminal,
+                ide_app_path=ide_app_path,
+            ))
+
+        worker = BackgroundCallWorker(_spawn, self._w)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 

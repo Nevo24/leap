@@ -322,6 +322,46 @@ def save_send_position(position: str) -> None:
     save_monitor_prefs(prefs)
 
 
+def load_resume_open_in_last_app() -> bool:
+    """Load the Resume dialog's "open in the app the session was last run in"
+    toggle.  Defaults to ``True`` — the feature only adds value when on,
+    and the user can switch it off per session.
+    """
+    prefs = load_monitor_prefs()
+    return bool(prefs.get('resume_open_in_last_app', True))
+
+
+def save_resume_open_in_last_app(value: bool) -> None:
+    """Persist the Resume dialog's "open in last app" toggle."""
+    prefs = load_monitor_prefs()
+    prefs['resume_open_in_last_app'] = bool(value)
+    save_monitor_prefs(prefs)
+
+
+def load_resume_hidden_columns() -> list[str]:
+    """Load the Resume dialog's per-column hidden list.
+
+    Independent from the main monitor table's ``hidden_columns`` — the
+    Resume picker is a different view and the user toggles each set
+    independently via the header's right-click menu.  Returns ``[]``
+    on missing / corrupt data.
+    """
+    prefs = load_monitor_prefs()
+    val = prefs.get('resume_session_hidden_columns')
+    if not isinstance(val, list):
+        return []
+    return [x for x in val if isinstance(x, str)]
+
+
+def save_resume_hidden_columns(hidden: list[str]) -> None:
+    """Persist the Resume dialog's per-column hidden list."""
+    prefs = load_monitor_prefs()
+    prefs['resume_session_hidden_columns'] = [
+        x for x in hidden if isinstance(x, str)
+    ]
+    save_monitor_prefs(prefs)
+
+
 def load_send_comments_prefs() -> dict[str, str]:
     """Return saved picks for the "Send comments to session" dialog.
 

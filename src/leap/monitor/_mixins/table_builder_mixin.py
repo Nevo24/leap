@@ -668,6 +668,38 @@ class TableBuilderMixin(_Base):
                     self._cache_cell(tag, 'cli', cli_state_key,
                                      row, self.COL_CLI)
 
+                # ── App cell ───────────────────────────────────────
+                # The terminal/IDE app the session is running in.  For
+                # live rows it comes from ``<tag>.meta`` (populated by
+                # ``detect_ide()`` at server start).  For dead rows we
+                # don't persist it anywhere so it falls back to N/A.
+                app_display = session.get('ide') or 'N/A'
+                app_state_key = (app_display, row_color)
+                if not self._cell_cached(tag, 'app', app_state_key,
+                                         row, self.COL_APP):
+                    t_app = current_theme()
+                    app_label = QLabel(app_display)
+                    app_label.setAlignment(Qt.AlignCenter)
+                    if app_display != 'N/A':
+                        fg = t_app.text_secondary
+                        border_c = t_app.border_solid
+                        if row_color:
+                            fg = ensure_contrast(t_app.text_secondary, row_color)
+                            border_c = ensure_contrast(t_app.border_solid, row_color)
+                        app_label.setFixedHeight(self._zoomed_btn_w(24))
+                        app_label.setStyleSheet(
+                            f'QLabel {{'
+                            f'  color: {fg};'
+                            f'  border: 1px solid {border_c};'
+                            f'  border-radius: 12px;'
+                            f'  padding: 0px 10px;'
+                            f'  font-size: {self._zoomed_size()}px;'
+                            f'}}'
+                        )
+                    self._set_cell_widget(row, self.COL_APP, app_label)
+                    self._cache_cell(tag, 'app', app_state_key,
+                                     row, self.COL_APP)
+
                 # Server Branch always shows the live branch
                 server_branch = session['branch']
 
