@@ -3164,9 +3164,20 @@ class MonitorWindow(
             f'\nQComboBox {{ padding: {combo_py}px {combo_px}px; }}'
             f'\nQLineEdit {{ padding: {line_py}px {line_px}px; }}'
         )
-        # Scale table row height proportionally to font size
+        # Scale table row height proportionally to font size.  setDefaultSectionSize
+        # only affects sections that haven't been explicitly resized — once
+        # setRowHeight has been called on a row (e.g. the empty-state placeholder
+        # pinning row 0 to 80 px, or our own empty→non-empty reset which also
+        # marks the section explicit), that row stops tracking the default.
+        # Force-sync every row so a stale pin can't desync from the rest on zoom.
+        # Safe because the vertical header is hidden — users can't drag-resize
+        # rows, so nothing legitimate gets clobbered here.
         if hasattr(self, 'table') and self.table is not None:
-            self.table.verticalHeader().setDefaultSectionSize(int(36 * scale))
+            new_h = int(36 * scale)
+            self.table.verticalHeader().setDefaultSectionSize(new_h)
+            for row in range(self.table.rowCount()):
+                if self.table.rowHeight(row) != new_h:
+                    self.table.setRowHeight(row, new_h)
 
         # Scale toolbar icons so they don't look tiny next to larger text
         icon_px = max(12, int(16 * scale))

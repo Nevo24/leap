@@ -581,12 +581,18 @@ class TableBuilderMixin(_Base):
                 item.setFont(font)
                 return
 
-            # Reset the full-row span and placeholder text from the empty state
+            # Reset the full-row span and placeholder text from the empty state.
+            # Also restore row 0's height — the empty branch pins it to 80 px
+            # via setRowHeight, which survives setRowCount() and isn't touched
+            # by setDefaultSectionSize (only affects rows without explicit
+            # heights), so without this reset row 0 stays oversized forever.
             if self.table.columnSpan(0, 0) > 1:
                 self.table.setSpan(0, 0, 1, 1)
                 item = self.table.item(0, 0)
                 if item and item.text() == 'No active sessions':
                     item.setText('')
+                self.table.setRowHeight(
+                    0, self.table.verticalHeader().defaultSectionSize())
 
             self.table.setRowCount(new_count)
 
@@ -1504,6 +1510,14 @@ class TableBuilderMixin(_Base):
                           if k[0] not in current_tags]
             for k in stale_keys:
                 self._cell_cache.pop(k, None)
+
+            # Force COL_DELETE to re-measure against the current X-button
+            # widget.  ResizeToContents grows the section when a wider widget
+            # arrives via setCellWidget, but setCellWidget doesn't emit a
+            # signal that triggers a downward re-measure — so after a zoom-up
+            # → zoom-down round-trip the column stays inflated.  An explicit
+            # call here keeps it honest on every rebuild.
+            self.table.resizeColumnToContents(self.COL_DELETE)
         finally:
             app._suppress_tooltips = tooltips_were_enabled
             self.table.setUpdatesEnabled(True)
