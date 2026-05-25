@@ -310,3 +310,108 @@ def test_custom_cli_provider_inherits_hooks_installed(
     # base_type — custom returns the base's name (delegation), not
     # its own custom id.
     assert custom.base_type == "claude"
+
+
+# --------------------------------------------------------------------------
+# Claude PermissionRequest hook — canonical auto-approve path that bypasses
+# the dialog entirely.  Must be present in settings.json with matcher ".*"
+# and the ``auto_approve`` state argument so the hook script knows to emit
+# the PermissionRequest decision JSON (vs writing the signal file).
+# --------------------------------------------------------------------------
+
+def test_claude_configure_hooks_installs_permission_request(
+    isolated_home: Path,
+) -> None:
+    """Verify Claude's configure_hooks() writes a PermissionRequest entry
+    with matcher ``.*`` and command ending in ``auto_approve``.  This is
+    the load-bearing hook that fixes the multi-agent subagent auto-approve
+    gap — its absence would silently revert behaviour to the TUI-menu path
+    (which can lose Notification signals during sustained RUNNING).
+    """
+    provider = ClaudeProvider()
+    dest = _install_hook_script(provider, isolated_home)
+    provider.configure_hooks(str(dest))
+
+    settings_path = isolated_home / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    pr_entries = settings.get("hooks", {}).get("PermissionRequest", [])
+    assert pr_entries, "PermissionRequest hook missing from settings.json"
+
+    # Find the Leap entry (defends against other hooks coexisting).
+    leap_entries = [
+        e for e in pr_entries
+        if any(
+            "leap-hook.sh" in (h.get("command") or "")
+            for h in e.get("hooks", [])
+        )
+    ]
+    assert len(leap_entries) == 1, (
+        f"expected one Leap PermissionRequest entry, got {len(leap_entries)}"
+    )
+    entry = leap_entries[0]
+    assert entry.get("matcher") == ".*", (
+        f"PermissionRequest matcher must be '.*' (every tool), got "
+        f"{entry.get('matcher')!r}"
+    )
+    cmd = entry["hooks"][0]["command"]
+    assert cmd.endswith(" auto_approve"), (
+        f"PermissionRequest command must end with ' auto_approve', got {cmd!r}"
+    )
+
+
+def test_claude_configure_hooks_is_idempotent_for_permission_request(
+    isolated_home: Path,
+) -> None:
+    """Running configure_hooks() twice must not duplicate the
+    PermissionRequest entry.  The ``upsert`` helper strips existing
+    leap-hook.sh references before re-adding — without this property,
+    every ``make update`` / ``leap --reconfigure`` would accumulate
+    stale entries that all fire in parallel.
+    """
+    provider = ClaudeProvider()
+    dest = _install_hook_script(provider, isolated_home)
+    provider.configure_hooks(str(dest))
+    provider.configure_hooks(str(dest))
+
+    settings = json.loads(
+        (isolated_home / ".claude" / "settings.json").read_text(),
+    )
+    pr_entries = [
+        e for e in settings.get("hooks", {}).get("PermissionRequest", [])
+        if any(
+            "leap-hook.sh" in (h.get("command") or "")
+            for h in e.get("hooks", [])
+        )
+    ]
+    assert len(pr_entries) == 1
+
+
+@pytest.mark.parametrize(
+    "provider_cls",
+    [CodexProvider, CursorAgentProvider, GeminiProvider],
+    ids=["codex", "cursor-agent", "gemini"],
+)
+def test_other_providers_do_not_install_permission_request(
+    provider_cls, isolated_home: Path,
+) -> None:
+    """Codex / Cursor / Gemini don't have subagents and don't expose a
+    PermissionRequest-equivalent hook.  The fix is Claude-only; make sure
+    we don't accidentally inject PermissionRequest entries into the other
+    CLIs' settings (Codex would silently ignore unknown event names, but
+    Gemini's stricter schema would reject the whole file).
+    """
+    provider = provider_cls()
+    dest = _install_hook_script(provider, isolated_home)
+    provider.configure_hooks(str(dest))
+
+    # Each CLI uses a different settings file path/format — read raw.
+    settings_paths = {
+        "codex": isolated_home / ".codex" / "hooks.json",
+        "cursor-agent": isolated_home / ".cursor" / "hooks.json",
+        "gemini": isolated_home / ".gemini" / "settings.json",
+    }
+    raw = settings_paths[provider.name].read_text()
+    assert "PermissionRequest" not in raw, (
+        f"{provider.name} configure_hooks must not write a "
+        f"PermissionRequest entry (Claude-only)"
+    )

@@ -1237,7 +1237,7 @@ class CLIStateTracker:
                 # — they have no PTY-based dialog detection and rely
                 # entirely on hook signals.
                 if (
-                    current in (CLIState.IDLE, CLIState.RUNNING)
+                    current == CLIState.IDLE
                     and new_state in (
                         CLIState.NEEDS_PERMISSION,
                         CLIState.NEEDS_INPUT,
@@ -1274,6 +1274,66 @@ class CLIStateTracker:
                         )
                         # Delete the stale signal so it doesn't block
                         # future transitions on every poll cycle.
+                        try:
+                            self._signal_file.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        return current
+
+                # RUNNING-state stale-signal guard.  Distinct rationale
+                # from the IDLE guard above: the only path that reaches
+                # RUNNING with an incoming permission/input signal that
+                # is *actually stale* is when the user pressed Enter to
+                # answer a prompt — that transition resets both the
+                # pyte screen and ``_last_running_snapshot``, so an
+                # empty-screen + empty-snapshot pair is the signature
+                # of a freshly-answered dialog whose hook is arriving
+                # late (see ``test_stale_notification_rejected_after_
+                # enter_from_permission``).
+                #
+                # We deliberately do NOT require dialog patterns on
+                # screen here.  In multi-agent runs the parent stays
+                # RUNNING for the entire turn (no ``Stop`` hook fires
+                # for subagents) and ``_last_running_snapshot`` never
+                # gets populated.  When the subagent's permission
+                # ``Notification`` hook fires before pyte has processed
+                # the dialog footer bytes, the live screen has the
+                # subagent's *prior* output but no footer pattern yet —
+                # the old pattern-only check rejected those valid
+                # signals, leaving auto-approve stuck waiting for the
+                # 5 s cursor+silence fallback (or indefinitely, if the
+                # TUI kept emitting bytes).  Treat any non-empty screen
+                # as evidence that the running state isn't a freshly-
+                # reset post-Enter snapshot, and let the signal through.
+                if (
+                    current == CLIState.RUNNING
+                    and new_state in (
+                        CLIState.NEEDS_PERMISSION,
+                        CLIState.NEEDS_INPUT,
+                    )
+                    and self._provider.dialog_patterns
+                ):
+                    # Read both pieces under the same lock so a concurrent
+                    # on_input(Enter) can't reset one but not the other
+                    # between our reads — without this, a screen-cleared-
+                    # but-snapshot-not-yet-cleared interleaving could let
+                    # a genuinely stale signal slip past the guard (or
+                    # vice versa).  Mirrors the IDLE guard above, which
+                    # also reads ``_last_running_snapshot`` inside the
+                    # screen lock.
+                    with self._screen_lock:
+                        screen_text = self._get_screen_text()
+                        screen_compact = screen_text.replace(
+                            ' ', '',
+                        ).replace('\n', '')
+                        snapshot_empty = not self._last_running_snapshot
+                    if not screen_compact and snapshot_empty:
+                        _log.debug(
+                            'GET_STATE signal=%s from running with '
+                            'empty screen + empty snapshot — ignoring '
+                            'stale notification (post-Enter race)',
+                            new_state,
+                        )
                         try:
                             self._signal_file.unlink(missing_ok=True)
                         except OSError:

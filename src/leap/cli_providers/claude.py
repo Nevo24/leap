@@ -925,6 +925,36 @@ class ClaudeProvider(CLIProvider):
             make_entry("needs_input", matcher="elicitation_dialog"),
         ])
 
+        # PermissionRequest hook — canonical auto-approve path.  Fires
+        # before Claude shows a permission dialog, including for tool
+        # calls originating inside subagents (Task tool).  The hook
+        # script consults the session's ``auto_send_mode`` and returns
+        # ``{"behavior":"allow"}`` only when ALWAYS is set; PAUSE mode
+        # emits ``{}`` so Claude renders the dialog normally.
+        #
+        # Matcher ``.*`` covers every tool — the gate is the runtime
+        # mode check, not the matcher.  Subagent permissions are caught
+        # automatically (PermissionRequest fires for them too), which
+        # closes the gap where the older Notification-based auto-approve
+        # silently dropped the signal during sustained RUNNING (the
+        # ``Stop`` hook does not fire for subagents, so the state never
+        # transitioned out of RUNNING and the Late Notification guard
+        # had no ``_last_running_snapshot`` fallback).
+        #
+        # Note: only the *permission* dialog is auto-handled.  MCP
+        # elicitation forms still surface to the user via the
+        # ``Notification(elicitation_dialog)`` path above.
+        #
+        # Backward-compat: Claude Code versions without
+        # ``PermissionRequest`` support silently ignore the entry, and
+        # the existing TUI-menu auto-approve in ``_try_auto_approve``
+        # continues to handle those cases.
+        if "PermissionRequest" not in hooks:
+            hooks["PermissionRequest"] = []
+        hooks["PermissionRequest"] = upsert(hooks["PermissionRequest"], [
+            make_entry("auto_approve", matcher=".*"),
+        ])
+
         # SessionStart(resume) — fires on `/resume` inside a running Claude
         # and on `claude --resume=<id>` startup.  Without it, a user who
         # loads a past session but exits before sending a message never

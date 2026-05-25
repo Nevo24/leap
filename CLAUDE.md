@@ -178,7 +178,7 @@ assets/
 |------------------|------|---------|
 | `CLIState` | `cli_providers/states.py` | State enum (`idle`, `running`, `needs_permission`, `needs_input`, `interrupted`) |
 | `CLIProvider` | `cli_providers/base.py` | Abstract base for CLI backends (patterns, hooks, input) |
-| `ClaudeProvider` | `cli_providers/claude.py` | Claude Code CLI (Ink TUI, numbered menus, Notification hooks) |
+| `ClaudeProvider` | `cli_providers/claude.py` | Claude Code CLI (Ink TUI, numbered menus, Notification + PermissionRequest hooks) |
 | `CodexProvider` | `cli_providers/codex.py` | OpenAI Codex CLI (Ratatui TUI, y/n approval, Stop hook only) |
 | `CursorAgentProvider` | `cli_providers/cursor_agent.py` | Cursor Agent CLI (Ink TUI, menu approval, Stop hook only) |
 | `GeminiProvider` | `cli_providers/gemini.py` | Gemini CLI (Ink TUI, radio-button approval, AfterAgent/Notification hooks) |
@@ -281,6 +281,26 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 **Saved messages**: Type `^^` inside capture mode to save the current message to history and clear the buffer. Browse saved messages with arrow up/down. History persists across sessions in `.storage/saved_messages.json` (max 100 entries, shared across all CLIs/sessions). Editing a recalled message does not modify the saved history — only explicit `^^` save does.
 
 **CLI input-history recall (↑/↓ outside capture)**: Leap intercepts ↑/↓ at the CLI's input prompt and drives recall itself by reading the CLI's own on-disk history (Claude: `~/.claude/history.jsonl` filtered by `project == cwd`; Codex: `~/.codex/history.jsonl`; Cursor: `~/.cursor/prompt_history.json`; Gemini: `~/.gemini/tmp/<slug>/logs.json`). Without the intercept the recalled text lives only in the CLI's TUI render and never enters Leap's input mirror — so a subsequent `^^` would snapshot an empty buffer. With it, `^^` after ↑ captures the recalled message (including paste content for Claude entries: `[Pasted text #N]` placeholders are resolved inline from `pastedContents` so the actual content reaches the LLM on submit, not the placeholder string). The cache invalidates on Enter / Ctrl+C / queue dispatch / capture exit so just-submitted messages show up immediately on the next ↑. Providers opt in via `CLIProvider.input_history(cwd)`; returning `None` falls back to passthrough (CLI handles ↑/↓ natively).
+
+## Auto-Approve Architecture (Claude)
+
+ALWAYS-mode auto-approve has two layers — the primary is hook-based and never renders a dialog; the fallback is the legacy TUI-menu path that types "1\r" into a rendered prompt.
+
+**Primary: `PermissionRequest` hook (`hook_script auto_approve`).** Configured in `ClaudeProvider.configure_hooks` with matcher `.*` (every tool). The hook script handler `_handle_auto_approve()` in `leap-hook-process.py` reads the session's `auto_send_mode` from `.storage/pinned_sessions.json[tag]` (with global fallback to `.storage/settings.json`) and, in ALWAYS mode, emits `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}` to stdout, then `sys.exit(0)` so the trailing `print('{}')` in `__main__` doesn't append a second JSON object after the decision. `SystemExit` inherits from `BaseException` (not `Exception`), so it propagates past the `except Exception` block and the trailing `print('{}')` never runs — leaving exactly one JSON object on stdout. PAUSE mode returns normally so the trailing `print('{}')` runs, telling Claude "no decision" so the dialog renders normally.
+
+Critically: the auto_approve state does NOT touch the signal file. It's a pure hook decision; Leap's state machine stays RUNNING throughout, as if no permission had ever been needed.
+
+This hook **fires for subagent (Task tool) tool calls too**, which the older Notification path could silently miss — Claude's `Stop` hook does not fire for subagents, so an entire multi-agent turn stayed RUNNING with `_last_running_snapshot == []`, and the Late Notification guard had no fallback content to verify the dialog against. The `PermissionRequest` hook sidesteps every TUI race because no dialog is ever rendered.
+
+**Fallback: TUI menu auto-approve (`_try_auto_approve` in `server.py`).** Still wired up for two scenarios:
+1. **Older Claude versions** that don't support `PermissionRequest` — the new hook entry is silently ignored by them, and approval falls back to detecting `❯ 1. Yes` on the rendered menu and typing `1\r`.
+2. **Defense-in-depth race** — if `PermissionRequest` somehow doesn't fire (e.g. a future Claude bug, or an unrecognized matcher edge case), `Notification(permission_prompt)` still fires, the state tracker transitions to `NEEDS_PERMISSION`, and `_try_auto_approve` picks up the dialog.
+
+The `_try_auto_approve` path itself was strengthened: the Late Notification guard at `state_tracker.py:get_state` formerly rejected RUNNING→prompt signals when no dialog patterns were on screen AND `_last_running_snapshot` was empty — that's exactly the multi-agent subagent shape. The guard now distinguishes the post-Enter stale signal (empty screen + empty snapshot, the freshly-answered-via-Enter signature) from a fresh subagent signal (screen has accumulated subagent output, snapshot empty because no idle transition during the turn). Only the empty-and-empty pair is treated as stale; anything else lets the signal through.
+
+**What auto-approve does NOT auto-handle.** MCP `Elicitation` (Notification matcher `elicitation_dialog`) is *not* auto-approved — these are free-form input requests where Leap can't guess what to type. They surface to the user via `NEEDS_INPUT`. Permission-to-USE the elicitation tool is auto-approved (it's a tool call), but the resulting question dialog stays user-facing — that's the right asymmetry.
+
+**Other CLIs (Codex, Cursor, Gemini).** The bug above is Claude-specific because Claude is the only one with subagents. Codex/Cursor have no permission hook at all (state tracker uses TUI detection); Gemini uses `Notification(ToolPermission)` but has no subagent concept. None of them get a `PermissionRequest` hook — the test `test_other_providers_do_not_install_permission_request` pins this.
 
 ## Client Commands
 

@@ -2003,6 +2003,55 @@ class TestLateNotificationGuard:
         assert tracker.get_state(pty_alive=True) == 'running'
         assert not tracker._signal_file.exists()
 
+    def test_running_signal_accepted_when_screen_has_content(
+        self, tmp_path: Path,
+    ) -> None:
+        """Multi-agent subagent regression test.
+
+        During a Task-tool subagent run, the parent stays RUNNING for the
+        entire turn (Claude's ``Stop`` hook does not fire for subagents,
+        so ``_last_running_snapshot`` never gets populated).  When the
+        subagent's tool call triggers ``Notification(permission_prompt)``,
+        the hook can fire before the dialog footer is pyte-rendered — the
+        screen has the subagent's prior output (Read indicators, status
+        text, etc.) but no ``Enter to select / Esc to cancel`` yet.
+
+        The OLD pattern-only guard rejected those valid signals as
+        "stale" because dialog patterns weren't visible AND snapshot was
+        empty — auto-approve was then stuck waiting for the 5s
+        cursor+silence fallback (or indefinitely, when TUI redraws kept
+        refreshing ``_last_output_time``).
+
+        The fix: when ``current==RUNNING``, only reject if BOTH the
+        screen AND the snapshot are empty (the freshly-answered-via-Enter
+        signature, see the test above).  Non-empty screen → accept the
+        signal as fresh, even without dialog patterns on it yet — the
+        dialog is incoming, and ``_try_auto_approve`` will retry until
+        it can read the menu.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()  # → running
+
+        # Subagent has been producing output for a while — accumulates
+        # on the pyte screen.  No dialog patterns yet (footer hasn't
+        # rendered).  Snapshot is empty (no idle transition during the
+        # subagent's run).
+        feed_screen_text(
+            tracker,
+            '● Read(/path/to/file)\n'
+            '● Edit(/path/to/other)\n'
+            'Token usage: 12345',
+        )
+        assert tracker._last_running_snapshot == []
+
+        # Notification fires for the subagent's pending Edit permission.
+        # Old behavior: rejected (no dialog patterns + empty snapshot).
+        # New behavior: accepted (screen has subagent output → fresh).
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
 
 # ---------------------------------------------------------------------------
 # Mid-session proactive dialog detection (AskUserQuestion / "Proceed?")

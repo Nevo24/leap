@@ -187,8 +187,19 @@ fi
 # Fallback if python fails — the helper normally emits '{}' on stdout
 # for CLIs (e.g. Gemini) that expect a JSON hook response, so we only
 # need to synthesise that here when the helper itself crashed.
+#
+# auto_approve is special: it's NOT a Leap state — it's a hook decision
+# for Claude's PermissionRequest event.  Writing
+# {"state": "auto_approve"} to the signal file would leave garbage on
+# disk (the state tracker rejects unknown values via
+# ``parse_signal_file``, but the file persists until the next legit
+# hook overwrites it).  Skip the signal write for that state and only
+# emit the empty-decision stdout fallback so Claude shows the dialog
+# as a fail-closed default.
 if [ $? -ne 0 ]; then
-    echo "{\"state\":\"$STATE\"}" > "$SIGNAL_FILE"
+    if [ "$STATE" != "auto_approve" ]; then
+        echo "{\"state\":\"$STATE\"}" > "$SIGNAL_FILE"
+    fi
     echo '{}'
 fi
 

@@ -215,6 +215,94 @@ def _last_assistant_message(cli: str, hook_data: dict) -> str:
     return provider.extract_last_assistant_message(hook_data)
 
 
+def _resolve_auto_send_mode(tag: str, storage_dir: Path) -> str:
+    """Mirror the server's per-tag-then-global lookup for ``auto_send_mode``.
+
+    Per-tag value in ``pinned_sessions.json[tag].auto_send_mode`` wins;
+    otherwise fall back to the global default in ``settings.json``;
+    otherwise ``'pause'``.  Returned values are the literal string forms
+    of :class:`leap.cli_providers.states.AutoSendMode` (``'always'`` /
+    ``'pause'``) — kept as plain strings so this script stays importable
+    without the leap package on PATH.
+    """
+    pinned_file = storage_dir / 'pinned_sessions.json'
+    try:
+        if pinned_file.is_file():
+            with open(pinned_file) as f:
+                pinned = json.load(f)
+            if isinstance(pinned, dict):
+                entry = pinned.get(tag, {})
+                if isinstance(entry, dict):
+                    mode = entry.get('auto_send_mode')
+                    if isinstance(mode, str) and mode:
+                        return mode
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    settings_file = storage_dir / 'settings.json'
+    try:
+        if settings_file.is_file():
+            with open(settings_file) as f:
+                settings = json.load(f)
+            if isinstance(settings, dict):
+                mode = settings.get('auto_send_mode')
+                if isinstance(mode, str) and mode:
+                    return mode
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return 'pause'
+
+
+def _handle_auto_approve() -> None:
+    """Emit a ``PermissionRequest`` decision based on ``auto_send_mode``.
+
+    Fires from Claude's ``PermissionRequest`` hook (matcher ``.*``)
+    BEFORE the permission dialog is rendered.  When the session's mode
+    is ``ALWAYS``, we write the canonical "allow" decision to stdout and
+    Claude skips the dialog entirely — including for tool calls
+    originating inside subagents, which fixes the long-standing gap
+    where the older ``Notification(permission_prompt)`` path could lose
+    the signal during sustained RUNNING (no ``Stop`` hook fires for
+    subagents, so the Late Notification guard had no
+    ``_last_running_snapshot`` fallback and dropped the signal when the
+    dialog hadn't pyte-rendered yet).
+
+    PAUSE mode falls through to the trailing ``print('{}')`` — empty
+    response means "no decision", so Claude shows the dialog as normal.
+
+    Deliberately does NOT touch the signal file: this is a hook
+    decision, not a state transition.  Leap's state tracker stays
+    RUNNING throughout, just as if no permission had ever been needed.
+    """
+    tag = os.environ.get('LEAP_TAG', '')
+    signal_dir = os.environ.get('LEAP_SIGNAL_DIR', '')
+    if not tag or not signal_dir:
+        # No Leap context — likely a non-Leap session that happens to
+        # have inherited our hook.  Defer the decision to Claude.
+        _debug_log('auto-approve-skip', reason='missing-context',
+                   leap_tag=tag, leap_signal_dir=signal_dir)
+        return
+    storage_dir = _resolve_storage_dir(signal_dir)
+    mode = _resolve_auto_send_mode(tag, storage_dir)
+    _debug_log('auto-approve-decision', tag=tag, mode=mode)
+    if mode != 'always':
+        return
+    decision = {
+        'hookSpecificOutput': {
+            'hookEventName': 'PermissionRequest',
+            'decision': {'behavior': 'allow'},
+        },
+    }
+    # ``print`` (not ``sys.stdout.write``) for the trailing newline —
+    # matches the module's other JSON-on-stdout emit (the trailing
+    # ``print('{}')`` in ``__main__``) and avoids any ambiguity with
+    # newline-delimited hook protocols.  SystemExit propagates past
+    # the module-level ``except Exception`` (it inherits from
+    # BaseException), so the trailing ``print('{}')`` is skipped and
+    # our decision is the only JSON on stdout.
+    print(json.dumps(decision))
+    sys.exit(0)
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         # Leap's contract: arg1 = state, arg2 = signal file path.
@@ -233,6 +321,10 @@ def main() -> None:
                leap_signal_dir=os.environ.get('LEAP_SIGNAL_DIR', '<unset>'),
                python_exe=sys.executable,
                leap_python=os.environ.get('LEAP_PYTHON', '<unset>'))
+
+    if state == 'auto_approve':
+        _handle_auto_approve()
+        return
 
     signal: dict = {'state': state}
 
