@@ -449,8 +449,25 @@ class CLIStateTracker:
                 elif data[i + 1] == 0x4f:
                     # SS3 (e.g. \x1bOP for F1) — skip 3 bytes
                     i += 3 if i + 2 < len(data) else len(data)
-                elif 0x40 <= data[i + 1] <= 0x5f:
-                    # Two-byte escape (e.g. ESC M) — skip
+                elif 0x20 <= data[i + 1] <= 0x7e:
+                    # ESC + printable ASCII byte — Meta/Alt key combo
+                    # (e.g. Alt+B = \x1bb for word-back, Alt+F = \x1bf
+                    # for word-forward, ESC M for line-up, etc.).  These
+                    # are *not* bare Escape keypresses — terminals bundle
+                    # the modifier and key into the same read, so the
+                    # second byte landing in the same chunk is the
+                    # disambiguator.  Without this branch, every Alt+B
+                    # / Alt+F press while RUNNING used to set
+                    # ``_interrupt_pending = True`` and the next time
+                    # the rendered screen contained "Interrupted"
+                    # anywhere (conversational text, code, commit
+                    # messages) the running→interrupted transition
+                    # would false-fire.  Counts as real user input
+                    # (so the "pure terminal event" filter doesn't
+                    # drop it), but not as ``has_non_interrupt_input``
+                    # because Meta combos are typically navigation,
+                    # not text-typing that should block auto-resume.
+                    has_real_input = True
                     i += 2
                 else:
                     # Not a recognized sequence introducer — standalone
