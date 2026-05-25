@@ -932,12 +932,22 @@ class ClaudeProvider(CLIProvider):
         # ``{"behavior":"allow"}`` only when ALWAYS is set; PAUSE mode
         # emits ``{}`` so Claude renders the dialog normally.
         #
-        # Matcher ``.*`` covers every tool — the gate is the runtime
-        # mode check, not the matcher.  Subagent permissions are caught
-        # automatically (PermissionRequest fires for them too), which
-        # closes the gap where the older Notification-based auto-approve
-        # silently dropped the signal during sustained RUNNING (the
-        # ``Stop`` hook does not fire for subagents, so the state never
+        # Matcher is a negative-lookahead regex that covers every tool
+        # EXCEPT ``AskUserQuestion``.  AskUserQuestion is the one tool
+        # whose *purpose* is to elicit a user choice — auto-approving
+        # its PermissionRequest tells Claude "skip user interaction"
+        # and the tool then returns an empty answer set to the model
+        # ("Allowed by PermissionRequest hook" with no selections),
+        # which corrupts the very flow the user invoked it for.  We
+        # leave its PermissionRequest unanswered so Claude renders the
+        # question dialog and the user actually picks.  The runtime
+        # mode check is the gate for every OTHER tool.
+        #
+        # Subagent permissions are caught automatically
+        # (PermissionRequest fires for them too), which closes the gap
+        # where the older Notification-based auto-approve silently
+        # dropped the signal during sustained RUNNING (the ``Stop``
+        # hook does not fire for subagents, so the state never
         # transitioned out of RUNNING and the Late Notification guard
         # had no ``_last_running_snapshot`` fallback).
         #
@@ -952,7 +962,7 @@ class ClaudeProvider(CLIProvider):
         if "PermissionRequest" not in hooks:
             hooks["PermissionRequest"] = []
         hooks["PermissionRequest"] = upsert(hooks["PermissionRequest"], [
-            make_entry("auto_approve", matcher=".*"),
+            make_entry("auto_approve", matcher="^(?!AskUserQuestion$).*"),
         ])
 
         # SessionStart(resume) — fires on `/resume` inside a running Claude

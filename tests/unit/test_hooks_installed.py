@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterator
+from typing import Final, Iterator
 
 import pytest
 
@@ -314,19 +314,24 @@ def test_custom_cli_provider_inherits_hooks_installed(
 
 # --------------------------------------------------------------------------
 # Claude PermissionRequest hook — canonical auto-approve path that bypasses
-# the dialog entirely.  Must be present in settings.json with matcher ".*"
-# and the ``auto_approve`` state argument so the hook script knows to emit
-# the PermissionRequest decision JSON (vs writing the signal file).
+# the dialog entirely.  Must be present in settings.json with the negative-
+# lookahead matcher that EXCLUDES AskUserQuestion (auto-approving that one
+# tells Claude to skip user interaction, and the tool returns an empty
+# answer set — corrupting the very flow the user invoked it for).
 # --------------------------------------------------------------------------
+
+_PR_MATCHER: Final = "^(?!AskUserQuestion$).*"
+
 
 def test_claude_configure_hooks_installs_permission_request(
     isolated_home: Path,
 ) -> None:
     """Verify Claude's configure_hooks() writes a PermissionRequest entry
-    with matcher ``.*`` and command ending in ``auto_approve``.  This is
-    the load-bearing hook that fixes the multi-agent subagent auto-approve
-    gap — its absence would silently revert behaviour to the TUI-menu path
-    (which can lose Notification signals during sustained RUNNING).
+    with the AskUserQuestion-excluding matcher and command ending in
+    ``auto_approve``.  This is the load-bearing hook that fixes the
+    multi-agent subagent auto-approve gap — its absence would silently
+    revert behaviour to the TUI-menu path (which can lose Notification
+    signals during sustained RUNNING).
     """
     provider = ClaudeProvider()
     dest = _install_hook_script(provider, isolated_home)
@@ -349,13 +354,57 @@ def test_claude_configure_hooks_installs_permission_request(
         f"expected one Leap PermissionRequest entry, got {len(leap_entries)}"
     )
     entry = leap_entries[0]
-    assert entry.get("matcher") == ".*", (
-        f"PermissionRequest matcher must be '.*' (every tool), got "
-        f"{entry.get('matcher')!r}"
+    assert entry.get("matcher") == _PR_MATCHER, (
+        f"PermissionRequest matcher must exclude AskUserQuestion "
+        f"({_PR_MATCHER!r}), got {entry.get('matcher')!r}"
     )
     cmd = entry["hooks"][0]["command"]
     assert cmd.endswith(" auto_approve"), (
         f"PermissionRequest command must end with ' auto_approve', got {cmd!r}"
+    )
+
+
+def test_claude_permission_request_matcher_excludes_ask_user_question() -> None:
+    """The matcher MUST match every standard tool name (Bash, Edit, Write,
+    Task, MCP-namespaced tools, etc.) and reject ONLY ``AskUserQuestion``.
+
+    Auto-approving AskUserQuestion tells Claude to skip user interaction,
+    and the tool then returns an empty answer set ("Allowed by
+    PermissionRequest hook" with no selections) — which corrupts the very
+    flow the user invoked it for.  Pin the negative-lookahead behaviour
+    here so a future regex tweak can't silently re-enable it.
+
+    Uses Python's ``re`` as a stand-in for JavaScript regex — both
+    support ``^``, negative lookahead ``(?!...)``, and ``.*`` identically
+    for the syntactic subset we use here.
+    """
+    import re
+    pattern = re.compile(_PR_MATCHER)
+    must_match = [
+        "Bash", "Edit", "Write", "Read", "MultiEdit", "Task",
+        "Grep", "Glob", "WebFetch", "WebSearch", "TodoWrite",
+        "ExitPlanMode", "NotebookEdit",
+        "mcp__memory__store", "mcp__github__create_issue",
+    ]
+    for tool in must_match:
+        assert pattern.match(tool), (
+            f"matcher {_PR_MATCHER!r} unexpectedly REJECTED {tool!r} — "
+            f"auto-approve will no longer fire for it"
+        )
+    assert not pattern.match("AskUserQuestion"), (
+        f"matcher {_PR_MATCHER!r} unexpectedly ACCEPTED 'AskUserQuestion' — "
+        f"auto-approving it makes the tool return an empty answer set"
+    )
+    # Defensive: also reject things that just CONTAIN AskUserQuestion as
+    # a prefix or substring (we only want exact-name exclusion).  These
+    # should match because they aren't literally the same tool name.
+    assert pattern.match("AskUserQuestionX"), (
+        f"matcher unexpectedly rejected 'AskUserQuestionX' — the "
+        f"exclusion should be exact-name only"
+    )
+    assert pattern.match("MyAskUserQuestion"), (
+        f"matcher unexpectedly rejected 'MyAskUserQuestion' — the "
+        f"exclusion should be exact-name only"
     )
 
 
