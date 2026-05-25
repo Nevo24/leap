@@ -250,6 +250,28 @@ class LeapServer:
         # returns to idle and the queue is empty.
         self._preserved_input_buf: bytearray = bytearray()
         self._preserved_chars_sent: int = 0
+        # CLI input-history recall: Leap intercepts ↑/↓ outside capture
+        # mode and drives recall itself by reading the CLI's own
+        # history file (see provider.input_history).  Without this,
+        # the CLI's TUI re-paints its input box with the recalled text
+        # but ``_terminal_input_buf`` stays at its pre-↑ state, so a
+        # subsequent ``^^`` snapshots an empty / stale buffer.
+        #
+        # Cache lifecycle: ``None`` means "not loaded for this recall
+        # session" — we re-fetch on the first ↑/↓ after every reset
+        # (Enter, Ctrl+C, queue dispatch) so just-submitted messages
+        # show up immediately.  Once loaded, ↑↑↑ stays in-memory.
+        #
+        # Index semantics: ``-1`` is the "idle / not browsing" sentinel.
+        # On the first ↑ after reset we snapshot the live buffer into
+        # ``_pre_recall_text`` and seed the index at ``len(cache)`` —
+        # the "after-newest" position, same as readline.  ↓ past
+        # ``len(cache)-1`` returns to the snapshot (mirrors bash/Ink
+        # behavior of restoring the partial pre-recall text).
+        self._cli_history_cache: Optional[list[str]] = None
+        self._cli_history_index: int = -1
+        self._pre_recall_text: bytes = b''
+        self._cwd: str = os.getcwd()
         self._queue_sending: bool = False  # blocks input filter during send
         self._queue_sending_held: bytearray = bytearray()  # keystrokes buffered during send
         # Serializes all paths that send keystrokes to the CLI on behalf
@@ -663,6 +685,13 @@ class LeapServer:
         # no longer reference — caps the dict's memory footprint
         # over long-running sessions.
         self._gc_paste_text_map()
+        # Reset history-recall state — the just-dispatched message is
+        # now on disk, so the next ↑ must re-read the provider's
+        # history file to pick it up.  The pre-recall snapshot also
+        # needs to be re-taken from whatever ``_restore_preserved_input``
+        # just put back (or from the empty buf when no partial text
+        # was preserved).
+        self._reset_history_recall()
         # Clear the capture-mode gate-bypass flag — it was only
         # meant to cover the dispatch we just performed.
         self._capture_force_dispatch = False
@@ -707,6 +736,157 @@ class LeapServer:
             self.pty.send(payload)
         except OSError:
             pass
+
+    def _reset_history_recall(self) -> None:
+        """Reset CLI history-recall state.
+
+        Called on Enter, Ctrl+C, queue-message dispatch, and other
+        paths that clear ``_terminal_input_buf`` back to a fresh
+        state.  Forces the next ↑ to re-read the provider's history
+        file (so a just-submitted message shows up immediately) and
+        to re-snapshot the live buffer as the new pre-recall anchor.
+        """
+        self._cli_history_cache = None
+        self._cli_history_index = -1
+        self._pre_recall_text = b''
+
+    def _handle_history_recall(self, direction: int) -> bool:
+        """Drive CLI input-history recall in response to a ↑/↓ keypress.
+
+        Returns ``True`` when Leap has fully taken over — the caller
+        must NOT forward the original ↑/↓ escape to the CLI.  Returns
+        ``False`` to fall through to the legacy passthrough (CLI
+        handles recall natively, but ``_terminal_input_buf`` will be
+        out of sync — a subsequent ``^^`` snapshots an empty buffer).
+
+        The cache is loaded lazily on the first ↑/↓ after every reset
+        (``_reset_history_recall``).  The first ↑ also snapshots the
+        live buffer into ``_pre_recall_text`` so ↓ past the newest
+        entry restores it — same behavior as readline / Ink / Ratatui.
+
+        Clearing + injection reuses ``_clear_stale_cli_input`` and the
+        bracketed-paste-wrap technique from ``_restore_preserved_input``,
+        so multi-line history entries (e.g. Claude's recalled pasted
+        snippets) re-enter the input box as a single paste rather
+        than triggering one submit per ``\\n``.
+
+        Args:
+            direction: ``-1`` for ↑ (older), ``+1`` for ↓ (newer).
+        """
+        # Bail out if a capture-cancel bg thread is mid-send: it's
+        # about to write pty bytes (and to flip ``_queue_sending``),
+        # and racing it from here would interleave our clear+inject
+        # with its re-type of the cancelled text — the CLI would
+        # see a garbled mix.  Consume the keypress so the CLI
+        # doesn't see it either; the user can re-press ↑ after the
+        # cancel settles (typically <300ms).
+        if self._capture_cancel_pending:
+            return True
+
+        # A held ``^`` was waiting for a second caret to enter
+        # capture mode.  The user pressed ↑ instead — their intent
+        # is to recall history, not to keep the lone ``^``.  Cancel
+        # the timer so it doesn't fire later and inject a stray
+        # ``^`` after our recalled text lands on the CLI input line.
+        if self._pending_caret:
+            if self._pending_caret_timer is not None:
+                self._pending_caret_timer.cancel()
+                self._pending_caret_timer = None
+            self._pending_caret = False
+
+        if self._cli_history_cache is None:
+            try:
+                history = self._provider.input_history(self._cwd)
+            except Exception:
+                history = None
+            if history is None:
+                return False  # provider opted out — passthrough
+            # Defensive: a custom provider that returns a str (or any
+            # non-list sequence) would slip through ``cache[idx]``
+            # giving single characters as "history entries".  Reject
+            # anything that isn't a list and fall back to passthrough.
+            if not isinstance(history, list):
+                return False
+            self._cli_history_cache = history
+        cache = self._cli_history_cache
+        if not cache:
+            # Provider supports history but cwd has none — match the
+            # CLI's own no-op behavior (consume so ↑↓ don't reach it
+            # and trigger something unrelated).
+            return True
+
+        if self._cli_history_index < 0:
+            # First recall after reset.  ↓ at idle has nowhere newer
+            # to go — consume silently.  ↑ snapshots the live buffer
+            # as the "after-newest" anchor and seeds the index.
+            if direction > 0:
+                return True
+            self._pre_recall_text = bytes(self._terminal_input_buf)
+            self._cli_history_index = len(cache)
+
+        new_index = max(0, min(self._cli_history_index + direction, len(cache)))
+        if new_index == self._cli_history_index:
+            return True  # hit boundary — consume, no visible change
+        self._cli_history_index = new_index
+
+        if new_index == len(cache):
+            new_text = self._pre_recall_text.decode('utf-8', errors='replace')
+        else:
+            new_text = cache[new_index]
+
+        # Strip embedded bracketed-paste markers BEFORE the mirror /
+        # CLI updates.  A history entry containing literal
+        # ``\x1b[200~ ... \x1b[201~`` would otherwise (a) confuse
+        # the CLI's TUI by triggering an unintended paste mode and
+        # (b) leave the mirror with the literal markers while the
+        # CLI's input box only shows the inner text — visually
+        # divergent, and ``^^`` would then snapshot a buffer that
+        # doesn't match what the user sees.
+        new_text = new_text.replace(
+            '\x1b[200~', '').replace('\x1b[201~', '')
+
+        # Clear whatever's currently in the CLI's input box.  Use the
+        # CURRENT mirror — passing it explicitly because the helpers
+        # default to ``_capture_pre_input_buf`` (a snapshot taken
+        # only inside capture mode), which is unrelated to what's
+        # on the input line outside capture.  Without the explicit
+        # arg, a multi-line recalled entry held in the mirror would
+        # be undercounted (0 → defaulted to 1), leaving residue on
+        # subsequent ↑↓ navigation.  Placeholders are expanded via
+        # ``_paste_text_map`` inside ``_stale_buf_text``.  Fall back
+        # to 1/1 for empty input (extra clears are no-ops).
+        lines = self._stale_logical_lines(self._terminal_input_buf) or 1
+        rows = self._stale_visual_rows(self._terminal_input_buf) or 1
+        self._clear_stale_cli_input(lines, rows)
+
+        # Update the mirror — cursor at end matches what the CLI shows
+        # after its own ↑ recall (cursor parks at end of recalled text).
+        text_bytes = new_text.encode('utf-8')
+        self._terminal_input_buf = bytearray(text_bytes)
+        self._terminal_input_cursor = len(self._terminal_input_buf)
+        # Match the printable-byte convention used by the normal
+        # keystroke path (line ~3499): only bytes 0x20-0x7e and 0x80+
+        # bump ``_chars_sent_to_cli``.  Newlines aren't counted —
+        # they don't occupy a horizontal cell on the CLI input line.
+        self._chars_sent_to_cli = sum(
+            1 for b in text_bytes
+            if (0x20 <= b < 0x7f) or b >= 0x80
+        )
+
+        if new_text:
+            # Multi-line content wraps in bracketed-paste markers so
+            # the CLI treats ``\n`` as paste content, not a submit
+            # per line.  Markers were already stripped from
+            # ``new_text`` above, so the wrap can't nest.
+            if '\n' in new_text or '\r' in new_text:
+                payload = '\x1b[200~' + new_text + '\x1b[201~'
+            else:
+                payload = new_text
+            try:
+                self.pty.send(payload)
+            except OSError:
+                pass
+        return True
 
     def _run_dialog_action(
         self,
@@ -1894,6 +2074,12 @@ class LeapServer:
         # accidentally trigger capture mode.
         self._pending_caret = False
         self._queue_capture_mode = False
+        # Reset history-recall — the buf is now in a fresh state (empty
+        # on submit, restored cancel_text on cancel), and on cancel the
+        # ``_capture_cancel`` background thread re-types the text into
+        # the CLI; the next ↑ should snapshot whatever ends up on the
+        # input line, not whatever was there before ``^^``.
+        self._reset_history_recall()
         if defer_sigwinch:
             self._pending_sigwinch = True
             return
@@ -3289,6 +3475,7 @@ class LeapServer:
                     self._preserved_input_buf.clear()
                     self._preserved_chars_sent = 0
                     self._pending_paste_images.clear()
+                    self._reset_history_recall()
                     out.extend(esc_seq)
                 elif (not in_prompt
                       and not chunk_has_paste
@@ -3316,6 +3503,55 @@ class LeapServer:
                     self._terminal_buf_insert(0x0a)
                     self._chars_sent_to_cli += 1
                     out.extend(esc_seq)
+                elif (not in_prompt
+                      and not chunk_has_paste
+                      and self._paste_accumulator is None
+                      and esc_seq in (b'\x1b[A', b'\x1bOA',
+                                      b'\x1b[B', b'\x1bOB')):
+                    # ↑/↓ outside capture — try Leap-managed history
+                    # recall.  Reads the CLI's own persistent history
+                    # via the provider and injects the recalled text
+                    # back into the input box so a subsequent ``^^``
+                    # captures the recalled message instead of an
+                    # empty buffer.
+                    #
+                    # Pre-flush: if the same chunk carried typed
+                    # bytes ahead of the arrow (e.g. ``hello\x1b[A``
+                    # arrives in one ``read()``), those bytes are
+                    # still sitting in ``out`` waiting for pexpect
+                    # to write them AFTER ``_input_filter`` returns.
+                    # If we then call ``pty.send`` for our clear +
+                    # inject, the CLI receives our writes first and
+                    # the typed bytes land AFTER the recalled text
+                    # — input box ends up as ``newesthello`` while
+                    # the mirror correctly holds ``newest``.  Flush
+                    # ``out`` directly via ``pty.send`` to lock in
+                    # the [typed → clear → inject] order.
+                    #
+                    # The flushed bytes also need to be visible to
+                    # ``state.on_input`` — without it, an Enter or
+                    # Ctrl+C arriving in the same chunk before the
+                    # arrow would slip past the state tracker (the
+                    # end-of-filter ``state.on_input(out)`` only
+                    # sees what's still in ``out``, and we just
+                    # cleared it).  Fire on_input on the flushed
+                    # slice so state transitions (idle→running on
+                    # Enter, interrupt-pending on Ctrl+C) still fire.
+                    if out:
+                        flushed = bytes(out)
+                        try:
+                            self.pty.send(flushed)
+                        except OSError:
+                            pass
+                        self.state.on_input(flushed)
+                        out.clear()
+                    direction = -1 if esc_seq in (b'\x1b[A', b'\x1bOA') else 1
+                    if not self._handle_history_recall(direction):
+                        # Provider opted out — preserve passthrough
+                        # by emitting the escape to the CLI.  Typed
+                        # bytes were already flushed above, so the
+                        # CLI sees them before the arrow.
+                        out.extend(esc_seq)
                 else:
                     # Mirror cursor motion escapes so our
                     # _terminal_input_buf stays in sync with Claude.
@@ -3448,6 +3684,10 @@ class LeapServer:
                 # accumulate and get injected into a later ^^ message.
                 self._pending_paste_images.clear()
                 self._gc_paste_text_map()
+                # Reset CLI history-recall so the next ↑ re-reads the
+                # provider's history file (the just-submitted message
+                # is now on disk) and re-snapshots the live buffer.
+                self._reset_history_recall()
                 out.append(b)
             elif b == 0x7f:  # Backspace
                 self._terminal_buf_backspace()
@@ -3462,6 +3702,7 @@ class LeapServer:
                 self._preserved_chars_sent = 0
                 self._pending_paste_images.clear()
                 self._gc_paste_text_map()
+                self._reset_history_recall()
                 out.append(b)
             elif b == 0x16:  # Ctrl+V — save clipboard image for next ^^
                 if not chunk_has_paste:

@@ -229,6 +229,8 @@ assets/
 | `CLIProvider.session_exists()` | `cli_providers/base.py` | Existence check for the picker (default: `transcript_path`; Cursor scans chat dir) |
 | `CLIProvider.relocate_session()` | `cli_providers/base.py` | Optional hook — implemented by Claude/Gemini/Cursor; Codex inherits None |
 | `CLIProvider.hooks_installed()` | `cli_providers/base.py` | Whether Leap's hooks are wired up; gate-checked at session start; must never raise |
+| `CLIProvider.input_history()` | `cli_providers/base.py` | Returns the CLI's persisted ↑-recall history for `cwd`, ordered oldest→newest; None opts out → passthrough |
+| `_handle_history_recall()` | `server/server.py` | Drives ↑/↓ recall: reads provider history, clears CLI input, injects recalled text, keeps mirror in sync |
 | `CLIProvider.base_type` | `cli_providers/base.py` | Built-in CLI this provider is a variant of; custom providers inherit via `__getattribute__` |
 | `atomic_write_json()` | `utils/atomic_write.py` | Write JSON to a temp file in the same dir, fsync, atomic rename |
 | `_enforce_hooks_installed_or_exit()` | `server/server.py` | Session-start gate — exits with code 1 if `hooks_installed()` returns False |
@@ -277,6 +279,8 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activates capture mode — characters are hidden from the CLI and shown in a `[Leap Q]` prompt on the input line. Works at any point: type `^^msg` to start fresh, or type `hello` then `^^` to convert already-typed text into a queued message. Press Enter to queue, Escape or Ctrl+C to cancel.
 
 **Saved messages**: Type `^^` inside capture mode to save the current message to history and clear the buffer. Browse saved messages with arrow up/down. History persists across sessions in `.storage/saved_messages.json` (max 100 entries, shared across all CLIs/sessions). Editing a recalled message does not modify the saved history — only explicit `^^` save does.
+
+**CLI input-history recall (↑/↓ outside capture)**: Leap intercepts ↑/↓ at the CLI's input prompt and drives recall itself by reading the CLI's own on-disk history (Claude: `~/.claude/history.jsonl` filtered by `project == cwd`; Codex: `~/.codex/history.jsonl`; Cursor: `~/.cursor/prompt_history.json`; Gemini: `~/.gemini/tmp/<slug>/logs.json`). Without the intercept the recalled text lives only in the CLI's TUI render and never enters Leap's input mirror — so a subsequent `^^` would snapshot an empty buffer. With it, `^^` after ↑ captures the recalled message (including paste content for Claude entries: `[Pasted text #N]` placeholders are resolved inline from `pastedContents` so the actual content reaches the LLM on submit, not the placeholder string). The cache invalidates on Enter / Ctrl+C / queue dispatch / capture exit so just-submitted messages show up immediately on the next ↑. Providers opt in via `CLIProvider.input_history(cwd)`; returning `None` falls back to passthrough (CLI handles ↑/↓ natively).
 
 ## Client Commands
 

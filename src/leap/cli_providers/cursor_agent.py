@@ -138,6 +138,29 @@ class CursorAgentProvider(CLIProvider):
     def supports_image_attachments(self) -> bool:
         return False
 
+    # -- Input history (CLI ↑/↓ recall) ----------------------------------
+
+    def input_history(self, cwd: str) -> Optional[list[str]]:
+        """Read ``~/.cursor/prompt_history.json`` (plain JSON array of
+        strings, oldest first) and return it unchanged.
+
+        Cursor's history is global — ``cwd`` is ignored, matching the
+        CLI's own ↑ behavior.
+        """
+        del cwd  # Cursor history is global
+        path = CURSOR_CONFIG_DIR / 'prompt_history.json'
+        try:
+            raw = path.read_text()
+        except OSError:
+            return None
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(data, list):
+            return None
+        return [s for s in data if isinstance(s, str) and s]
+
     # -- Hook configuration ----------------------------------------------
 
     # -- Resume support --------------------------------------------------

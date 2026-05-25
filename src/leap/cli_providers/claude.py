@@ -21,6 +21,13 @@ from leap.utils.menu import MENU_OPTION_RE
 _TRANSCRIPT_TAIL_BYTES = 32768
 _TRANSCRIPT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
+# Matches ``[Pasted text #N]`` / ``[Pasted text #N +K lines]`` in
+# history ``display`` strings.  Captures the paste id so the resolver
+# can look it up in the entry's ``pastedContents`` dict.
+_PASTED_TEXT_RE: re.Pattern[str] = re.compile(
+    r'\[Pasted text #(\d+)(?:\s+\+\d+\s+lines?)?\]'
+)
+
 # Reverse-chunk reading bounds for user-prompt extraction.  A 32 KiB
 # tail (the assistant-message convention) routinely buries user prompts
 # during heavy tool use — verified on a real session where the user's
@@ -143,6 +150,59 @@ class ClaudeProvider(CLIProvider):
     @property
     def supports_image_attachments(self) -> bool:
         return True
+
+    # -- Input history (CLI ↑/↓ recall) ----------------------------------
+
+    def input_history(self, cwd: str) -> Optional[list[str]]:
+        """Read ``~/.claude/history.jsonl`` and return the entries Claude
+        would surface on ↑ in the given cwd, ordered oldest → newest.
+
+        Each line is ``{"display", "pastedContents", "timestamp",
+        "project", "sessionId"}``.  Claude's own ↑ filters by
+        ``project == cwd``.
+
+        ``display`` is the literal text the user saw in the input box
+        (``[Pasted text #N +M lines]`` placeholders for pastes).  We
+        expand those placeholders inline from ``pastedContents`` so
+        that when Leap's ``^^`` later submits the recalled message,
+        the real paste content reaches the LLM — without expansion
+        the placeholder string would be sent verbatim and the paste
+        would be lost.  Image placeholders (``[Image #N]``) stay
+        as-is; they refer to clipboard images that Leap can't restore.
+        """
+        path = Path.home() / '.claude' / 'history.jsonl'
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        out: list[str] = []
+        for line in raw.split(b'\n'):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if entry.get('project') != cwd:
+                continue
+            display = entry.get('display')
+            if not isinstance(display, str) or not display:
+                continue
+            pasted = entry.get('pastedContents')
+            if isinstance(pasted, dict) and _PASTED_TEXT_RE.search(display):
+                def _resolve(m: re.Match[str]) -> str:
+                    info = pasted.get(m.group(1))
+                    if isinstance(info, dict):
+                        content = info.get('content')
+                        if isinstance(content, str):
+                            return content
+                    return m.group(0)  # leave placeholder if unresolved
+                display = _PASTED_TEXT_RE.sub(_resolve, display)
+                if not display:
+                    continue  # substitution emptied the entry — skip
+            out.append(display)
+        return out
 
     # -- Resume support --------------------------------------------------
 

@@ -434,6 +434,43 @@ class CLIProvider(ABC):
         """Whether the CLI supports inline image file attachments."""
         return False
 
+    # -- Input history (CLI ↑/↓ recall) ----------------------------------
+
+    def input_history(self, cwd: str) -> Optional[list[str]]:
+        """Return the CLI's persisted input history for the given cwd.
+
+        Leap intercepts ↑/↓ at the input box so it can drive history
+        recall itself — without this, the recalled text lives only in
+        the CLI's TUI render and never enters Leap's input mirror, so
+        a subsequent ``^^`` would snapshot an empty buffer.  By
+        re-implementing recall on top of the CLI's on-disk history,
+        Leap can inject the recalled text into the input line, keep
+        its mirror in sync, and have ``^^`` capture exactly what the
+        user sees.
+
+        The returned list is ordered **oldest → newest** (so the
+        last element is what plain ↑ should select first), and must
+        match what the CLI itself would surface for ↑/↓ in this cwd —
+        e.g. Claude filters by ``project == cwd``, Gemini stores per
+        project, Codex/Cursor are global.
+
+        Return ``None`` to opt out — Leap then leaves ↑/↓ as a
+        passthrough to the CLI (the recalled text stays invisible to
+        Leap's mirror, but the CLI's own recall keeps working).
+        Return ``[]`` when history is supported but empty.
+
+        Implementations should be cheap (called once per ↑/↓ press
+        with an mtime guard on top), tolerate format drift gracefully
+        (catch exceptions, return ``None`` on parse failure), and
+        avoid raising — a crash here would propagate into the input
+        filter.
+
+        Args:
+            cwd: The session's current working directory, used by
+                providers that scope history per project.
+        """
+        return None
+
     # -- Hook configuration ----------------------------------------------
 
     @property

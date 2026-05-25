@@ -112,6 +112,50 @@ class GeminiProvider(CLIProvider):
     def supports_image_attachments(self) -> bool:
         return True
 
+    # -- Input history (CLI ↑/↓ recall) ----------------------------------
+
+    def input_history(self, cwd: str) -> Optional[list[str]]:
+        """Read ``~/.gemini/tmp/<slug>/logs.json`` for ``cwd`` and return
+        the user-typed messages in chronological order.
+
+        Gemini stores history per project, where the cwd→slug mapping
+        lives in ``~/.gemini/projects.json``.  If the cwd isn't
+        registered (user has never started a Gemini session there),
+        return an empty list — matches what ↑ would surface in that
+        cwd.  The logs.json shape is a JSON array of
+        ``{sessionId, messageId, type, message, timestamp}``; we keep
+        ``type == "user"`` entries.
+        """
+        registry_path = GEMINI_CONFIG_DIR / 'projects.json'
+        try:
+            registry = json.loads(registry_path.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        projects = (registry.get('projects')
+                    if isinstance(registry, dict) else None)
+        if not isinstance(projects, dict):
+            return None
+        slug = projects.get(cwd)
+        if not isinstance(slug, str) or not slug:
+            return []  # cwd not registered → no history yet
+        logs_path = GEMINI_CONFIG_DIR / 'tmp' / slug / 'logs.json'
+        try:
+            data = json.loads(logs_path.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        out: list[str] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get('type') != 'user':
+                continue
+            msg = entry.get('message')
+            if isinstance(msg, str) and msg:
+                out.append(msg)
+        return out
+
     # -- Resume support --------------------------------------------------
     #
     # Despite what ``gemini --help`` advertises ("Use 'latest' for most

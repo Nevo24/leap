@@ -145,6 +145,37 @@ class CodexProvider(CLIProvider):
         # but not via @path inline syntax.
         return False
 
+    # -- Input history (CLI ↑/↓ recall) ----------------------------------
+
+    def input_history(self, cwd: str) -> Optional[list[str]]:
+        """Read ``~/.codex/history.jsonl`` and return all entries in
+        chronological order (oldest → newest).
+
+        Codex's history is global (not cwd-filtered), so ``cwd`` is
+        ignored — matching what the user sees in the CLI's own ↑.
+        Each line is ``{"session_id", "ts", "text"}`` and the file is
+        append-ordered by submit time.
+        """
+        del cwd  # Codex history is global
+        path = CODEX_CONFIG_DIR / 'history.jsonl'
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        out: list[str] = []
+        for line in raw.split(b'\n'):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            text = entry.get('text')
+            if isinstance(text, str) and text:
+                out.append(text)
+        return out
+
     # -- Resume support --------------------------------------------------
 
     @property
