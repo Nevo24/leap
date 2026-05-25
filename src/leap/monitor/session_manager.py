@@ -257,6 +257,17 @@ def get_active_sessions() -> list[dict[str, Any]]:
         # (e.g. Claude Code's @file:lines via Cmd+Option+K) would
         # otherwise show "Last Msg" minus the @-reference.  Providers
         # that don't override return '' and we keep ``recently_sent``.
+        #
+        # Exception: if the user's last typed input was a slash command
+        # (e.g. ``/clear``, ``/compact``), keep ``recently_sent``.  These
+        # are UI-only operations that often spawn a new Claude session
+        # (no Stop hook fires, so ``cli_sessions/<tag>.json`` still points
+        # at the previous transcript — the walker would surface the
+        # pre-slash prompt and the user's most recent action stays
+        # hidden).  Leap's PTY tracking captured it; the transcript
+        # didn't.  Tested against four prefixes covering all observed
+        # Claude UI commands; non-Claude CLIs return ``transcript_prompt
+        # == ''`` and fall back to ``recently_sent`` anyway.
         try:
             provider_obj = get_provider(cli_provider)
         except ValueError:
@@ -270,7 +281,10 @@ def get_active_sessions() -> list[dict[str, Any]]:
                 )
             except Exception:
                 transcript_prompt = ''
-            if transcript_prompt:
+            slash_recent = bool(
+                recently_sent and recently_sent[-1].startswith('/')
+            )
+            if transcript_prompt and not slash_recent:
                 current_task = transcript_prompt
 
         sessions.append({

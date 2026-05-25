@@ -458,14 +458,35 @@ class ClaudeProvider(CLIProvider):
     # synthetic — slash-command echoes, local-command captures.  We
     # also have ``isMeta`` for newer transcripts, but older ones can
     # carry these strings without the flag, so prefix-match too.
+    # ``<command-name`` is NOT here — slash commands like ``/clear`` are
+    # real user actions worth surfacing; we strip the wrapper instead
+    # of rejecting (see ``_extract_slash_command``).  The others are
+    # transcript-only synthetic blocks (caveats, stdout/stderr echoes
+    # of the local command's output) that shouldn't show in "Last Msg".
     _SYNTHETIC_USER_PREFIXES: tuple[str, ...] = (
-        '<command-name',
         '<command-message',
         '<command-args',
         '<command-stdout',
         '<local-command-caveat',
         '<local-command-stdout',
         '<local-command-stderr',
+    )
+
+    # Slash-command wrapper Claude writes to the transcript:
+    #   <command-name>/clear</command-name>
+    #   <command-message>clear</command-message>
+    #   <command-args>some args</command-args>
+    # Requiring ``<command-message>`` to follow (always present in real
+    # entries — verified against the live transcript format) filters
+    # out user-typed prompts that happen to start with literal
+    # ``<command-name>X</command-name>`` text (e.g., a question about
+    # Claude's XML format) — without this guard those would be
+    # extracted as if they were slash commands.
+    _COMMAND_NAME_RE: re.Pattern[str] = re.compile(
+        r'<command-name>(.*?)</command-name>'
+        r'\s*<command-message>.*?</command-message>'
+        r'(?:\s*<command-args>(.*?)</command-args>)?',
+        re.DOTALL,
     )
 
     @classmethod
@@ -482,6 +503,21 @@ class ClaudeProvider(CLIProvider):
         if isinstance(content, str):
             text = content.strip()
             if not text or text == '[Request interrupted by user]':
+                return ''
+            # Slash commands: strip the wrapper, surface the command.
+            # Falls through to '' if the wrapper is malformed (no
+            # close tag, missing command-message block) or has an
+            # empty command name — the walker then tries the
+            # next-older entry rather than displaying the raw
+            # ``<command-name>...`` tags or a leading-space-only
+            # string ("`` args``").
+            if text.startswith('<command-name'):
+                m = cls._COMMAND_NAME_RE.match(text)
+                if m:
+                    cmd = m.group(1).strip()
+                    if cmd:
+                        args = (m.group(2) or '').strip()
+                        return f'{cmd} {args}' if args else cmd
                 return ''
             if text.startswith(cls._SYNTHETIC_USER_PREFIXES):
                 return ''
@@ -502,6 +538,19 @@ class ClaudeProvider(CLIProvider):
                 if not isinstance(t, str):
                     continue
                 if t == '[Request interrupted by user]':
+                    continue
+                if t.startswith('<command-name'):
+                    # Mirror the string-branch behavior so a slash
+                    # command embedded in a list-shaped content (rare
+                    # but possible if Claude's format evolves) gets
+                    # extracted, not surfaced raw.
+                    m = cls._COMMAND_NAME_RE.match(t)
+                    if m:
+                        cmd = m.group(1).strip()
+                        if cmd:
+                            args = (m.group(2) or '').strip()
+                            extracted = f'{cmd} {args}' if args else cmd
+                            parts.append(extracted)
                     continue
                 if t.startswith(cls._SYNTHETIC_USER_PREFIXES):
                     continue
@@ -699,9 +748,16 @@ class ClaudeProvider(CLIProvider):
         fire, so by the time Claude has produced its first
         Stop/Notification this lookup is precise.
 
-        Returns ``None`` before the first hook fire, when the record
-        file is missing/corrupt, or when every recorded transcript was
-        deleted out-of-band.
+        Records older than the current server's start time are ignored
+        — same tag reused for a new session shouldn't surface the
+        previous use's "Last Msg".  ``server_started_at`` lives in
+        ``<storage>/sockets/<tag>.meta`` (written once at server init);
+        when that file or the field is missing we skip the filter so
+        legacy installs without the field still work.
+
+        Returns ``None`` before the first hook fire of the current
+        server, when the record file is missing/corrupt, or when every
+        recorded transcript was deleted out-of-band.
         """
         if not tag or storage_dir is None:
             return None
@@ -714,8 +770,28 @@ class ClaudeProvider(CLIProvider):
             return None
         if not isinstance(data, list):
             return None
+        # Look up this server's start time so we can drop records from
+        # any prior use of this tag.  Tolerate every failure mode by
+        # treating it as "no filter" — better to occasionally surface
+        # a stale prompt than to silently hide a live one.
+        server_started_at = 0.0
+        meta_file = storage_dir / 'sockets' / f'{tag}.meta'
+        try:
+            meta = json.loads(meta_file.read_text())
+            if isinstance(meta, dict):
+                ts = meta.get('server_started_at')
+                if isinstance(ts, (int, float)):
+                    server_started_at = float(ts)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
         for entry in reversed(data):
             if not isinstance(entry, dict):
+                continue
+            last_seen = entry.get('last_seen', 0)
+            if (isinstance(last_seen, (int, float))
+                    and last_seen < server_started_at):
+                # Pre-server record (left over from a previous use of
+                # this tag) — don't let it drive "Last Msg".
                 continue
             tp = entry.get('transcript_path', '')
             if not isinstance(tp, str) or not tp:

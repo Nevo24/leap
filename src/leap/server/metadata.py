@@ -9,6 +9,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -69,6 +70,14 @@ class SessionMetadata:
             'project_path': project_path,
             'branch': branch_name,
             'cli_provider': cli_provider or DEFAULT_PROVIDER,
+            # Wall-clock when THIS server started.  Used by the monitor's
+            # "Last Msg" lookup to filter out cli_sessions records from
+            # previous uses of the same tag (so a fresh server doesn't
+            # surface stale prompts) while preserving the full record
+            # history for the resume picker.  Always set to the current
+            # time on save — save() is called once at server init, so
+            # this captures the start of the current server instance.
+            'server_started_at': time.time(),
         }
 
         try:
