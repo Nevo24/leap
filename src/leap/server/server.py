@@ -3507,13 +3507,25 @@ class LeapServer:
                       and not chunk_has_paste
                       and self._paste_accumulator is None
                       and esc_seq in (b'\x1b[A', b'\x1bOA',
-                                      b'\x1b[B', b'\x1bOB')):
+                                      b'\x1b[B', b'\x1bOB')
+                      and not self.state.screen_has_active_dialog()):
                     # ↑/↓ outside capture — try Leap-managed history
                     # recall.  Reads the CLI's own persistent history
                     # via the provider and injects the recalled text
                     # back into the input box so a subsequent ``^^``
                     # captures the recalled message instead of an
                     # empty buffer.
+                    #
+                    # The ``screen_has_active_dialog`` gate covers the
+                    # window where a dialog is rendered on screen but
+                    # the state tracker hasn't yet flipped to
+                    # ``NEEDS_PERMISSION`` (notably ``AskUserQuestion``,
+                    # which fires no Notification hook and only flips
+                    # via the 5 s cursor+silence fallback).  Without
+                    # this check, arrows pressed during that window
+                    # would be stolen for history recall and the user
+                    # couldn't navigate the dialog for several seconds
+                    # ("stuck for a moment, then unstuck" reports).
                     #
                     # Pre-flush: if the same chunk carried typed
                     # bytes ahead of the arrow (e.g. ``hello\x1b[A``

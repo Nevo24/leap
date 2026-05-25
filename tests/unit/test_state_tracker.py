@@ -331,6 +331,102 @@ class TestInterruptPendingFlag:
         tracker.on_input(b'x')
         assert tracker._interrupt_pending is False
 
+    def test_alt_b_in_running_does_not_set_interrupt_pending(
+        self, tmp_path: Path,
+    ) -> None:
+        """Alt+B (\\x1bb, readline word-back) is a Meta-key combo, not a
+        bare Escape keypress.  Terminals bundle the modifier + key into
+        the same read; the second byte landing in the chunk is the
+        disambiguator.  Old code only recognised 0x40-0x5f (uppercase)
+        as two-byte ESC sequences, so lowercase letters fell through
+        to the standalone-Escape branch and incorrectly armed
+        ``_interrupt_pending``.  Live regression: a user navigating with
+        Alt+B/Alt+F many times had the flag set, then minutes later a
+        rendered screen happened to contain "Interrupted" anywhere
+        (a Claude reply, code, commit message) and ``_handle_running_output``
+        fired the running→interrupted transition.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1bb')  # Alt+B
+        assert tracker._interrupt_pending is False
+        assert tracker.current_state == 'running'
+
+    def test_alt_f_in_running_does_not_set_interrupt_pending(
+        self, tmp_path: Path,
+    ) -> None:
+        """Same as Alt+B but for Alt+F (\\x1bf, readline word-forward)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1bf')  # Alt+F
+        assert tracker._interrupt_pending is False
+        assert tracker.current_state == 'running'
+
+    def test_esc_then_uppercase_letter_does_not_set_interrupt_pending(
+        self, tmp_path: Path,
+    ) -> None:
+        """ESC + uppercase letter was always handled (0x40-0x5f branch);
+        pin the existing behaviour so the range-widening fix doesn't
+        regress it."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1bM')  # ESC M — line-up control function
+        assert tracker._interrupt_pending is False
+
+    def test_esc_then_digit_does_not_set_interrupt_pending(
+        self, tmp_path: Path,
+    ) -> None:
+        """Digits are also part of the printable-ASCII Meta range —
+        Alt+1, Alt+2 etc. shouldn't read as interrupts."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1b1')  # Alt+1
+        assert tracker._interrupt_pending is False
+
+    def test_double_esc_still_sets_interrupt_pending(
+        self, tmp_path: Path,
+    ) -> None:
+        """\\x1b\\x1b — Esc Esc, second byte is 0x1b (NOT printable
+        ASCII).  Should fall through to the standalone-Escape branch
+        and still arm ``_interrupt_pending``.  Guards the fix from
+        over-broadening: only printable second bytes are Meta combos."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        tracker.on_input(b'\x1b\x1b')
+        assert tracker._interrupt_pending is True
+
+    def test_alt_letter_with_ambient_interrupted_text_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """End-to-end regression of the live bug: user is in RUNNING,
+        rapidly Alt+B / Alt+F-navigates text in the input box, then
+        the rendered screen happens to contain the literal substring
+        "Interrupted" (e.g. Claude is generating text that references
+        interrupt handling).  Old code: each Alt+letter armed
+        ``_interrupt_pending``, the screen text matched
+        ``interrupted_pattern``, and ``_handle_running_output`` fired
+        running→interrupted.  Fixed: Alt+letter no longer arms the
+        flag, so no transition fires no matter what's on screen."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running
+        # User rapidly navigates with Alt+B / Alt+F (10× each).
+        for _ in range(10):
+            tracker.on_input(b'\x1bb')
+            tracker.on_input(b'\x1bf')
+        assert tracker._interrupt_pending is False
+        # Claude renders a reply that mentions "Interrupted" somewhere.
+        feed_screen_text(
+            tracker,
+            'Discussing how Interrupted state is detected via the flag.',
+        )
+        assert tracker.current_state == 'running'
+
     def test_idle_signal_with_interrupt_pending_and_pattern_goes_interrupted(
         self, tmp_path: Path,
     ) -> None:
@@ -2240,6 +2336,104 @@ class TestProactiveIdleDialogDetection:
             'End of explanation here.\n',
         )
         assert tracker._state == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# screen_has_active_dialog — used by the server's ↑/↓ input filter to
+# skip history-recall interception when a dialog is visible on screen
+# but the state tracker hasn't yet flipped to NEEDS_PERMISSION (notably
+# AskUserQuestion, which fires no Notification hook so the state stays
+# RUNNING until the 5 s cursor+silence fallback fires).  Without this
+# check, arrows pressed during that window would be stolen for history
+# recall instead of navigating the dialog.
+# ---------------------------------------------------------------------------
+
+class TestScreenHasActiveDialog:
+    """The real-world trigger is mid-RUNNING (state=running, dialog on
+    screen, no Notification fired).  Use ``on_send`` to enter RUNNING
+    cleanly before feeding output so the startup-dialog detector doesn't
+    consume the dialog out from under us before we can query the screen.
+    """
+
+    def test_returns_true_when_dialog_in_bottom_5_rows(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running, _seen_user_input=True
+        feed_screen_text(
+            tracker,
+            'Working on the task...\n'
+            'Do you want to proceed?\n'
+            '> 1. Yes\n'
+            '  2. No\n'
+            'Enter to select · Esc to cancel',
+        )
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_returns_false_when_screen_is_empty(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        assert tracker.screen_has_active_dialog() is False
+
+    def test_returns_false_when_only_one_pattern_present(
+        self, tmp_path: Path,
+    ) -> None:
+        # Conversational text mentioning a SINGLE shortcut must not
+        # false-trigger — same safety property as the proactive idle
+        # detection.  Without this, response text that quotes one of
+        # the dialog footer phrases would block arrow keys from being
+        # captured for history recall.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'The keyboard shortcut is Esc to cancel — useful for '
+            'aborting a long-running operation.',
+        )
+        assert tracker.screen_has_active_dialog() is False
+
+    def test_returns_false_when_dialog_pushed_out_of_bottom_5(
+        self, tmp_path: Path,
+    ) -> None:
+        # Tail-only restriction: a dialog that scrolled out of the
+        # bottom 5 rows is no longer "active" (the user is past it).
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Enter to select  Esc to cancel\n'
+            'Now working on step one\n'
+            'Now working on step two\n'
+            'Now working on step three\n'
+            'Now working on step four\n'
+            'Now working on step five\n'
+            'Now working on step six\n',
+        )
+        assert tracker.screen_has_active_dialog() is False
+
+    def test_returns_false_for_providers_without_dialog_patterns(
+        self, tmp_path: Path,
+    ) -> None:
+        # Codex/Cursor have empty dialog_patterns and rely on hook
+        # signals — they have no PTY-based dialog detection so we
+        # short-circuit to False rather than scanning the screen.
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Enter to select · Esc to cancel\n'
+            '> 1. Yes\n'
+            '  2. No\n',
+        )
+        assert tracker.screen_has_active_dialog() is False
 
 
 # ---------------------------------------------------------------------------
