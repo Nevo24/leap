@@ -158,6 +158,26 @@ class CLIProvider(ABC):
             for p in patterns
         )
 
+    def is_picker_screen(self, compact_text: str) -> bool:
+        """Return True if the screen shows a non-permission interactive
+        picker (e.g. Claude's ``/resume``, ``/mcp``, ``/agents`` selectors).
+
+        Separate from ``is_dialog_certain`` because these pickers don't
+        match the strict permission-dialog footer (``Entertoselect`` +
+        ``Esctocancel``) — they use varied verb pairs like
+        ``Esctoclose``/``Entertoconfirm``/``Typetosearch`` — but they
+        DO need ↑/↓ to reach the CLI so the user can navigate them.
+        ``screen_has_active_dialog`` ORs this in to extend the input-
+        filter pass-through guard without loosening the state-transition
+        strictness that ``is_dialog_certain`` provides.
+
+        Default: False (no picker detection). Override per provider.
+
+        Args:
+            compact_text: Screen text with spaces and newlines removed.
+        """
+        return False
+
     @property
     def valid_signal_states(self) -> frozenset[str]:
         """States that can appear in the hook signal file."""

@@ -1882,18 +1882,23 @@ class CLIStateTracker:
         the bottom 5 non-blank rows.
 
         Used by the server's ↑/↓ input filter to skip history-recall
-        interception when a dialog is on screen but the state tracker
-        hasn't yet flipped to ``NEEDS_PERMISSION`` (e.g. AskUserQuestion's
-        question dialog never fires a Notification hook, so the state
-        stays ``RUNNING`` until the cursor+silence fallback fires up to
-        5 s later — during that window arrows would otherwise be stolen
-        for history recall instead of navigating the dialog).
+        interception when a dialog or picker is on screen but the state
+        tracker hasn't yet flipped to ``NEEDS_PERMISSION`` — e.g.
+        ``AskUserQuestion``'s question dialog never fires a Notification
+        hook (cursor+silence fallback flips state up to 5 s later), and
+        slash-command pickers (``/resume``, ``/mcp``, ``/agents``) leave
+        state in ``RUNNING`` forever while the picker is open.  Without
+        this gate ↑/↓ would be stolen for history recall instead of
+        navigating the picker.
 
         Strict ``is_dialog_certain`` check + tail-only scan (same
         pattern as the proactive dialog detection in
         ``_handle_idle_output``) so ambient response text mentioning
         "Enter to select" / "Esc to cancel" in the middle of the
-        screen doesn't false-pass arrows through.
+        screen doesn't false-pass arrows through.  ORs in the lenient
+        ``is_picker_screen`` to catch slash-command pickers that use a
+        different verb pair (``Esctoclose``/``Entertoconfirm``/
+        ``Typetosearch``) than the permission-dialog footer.
 
         Returns False for providers with no ``dialog_patterns``
         (Codex / Cursor today) — they have no PTY-based dialog
@@ -1905,7 +1910,8 @@ class CLIStateTracker:
             all_lines = self._get_display_lines()
         filled = [ln for ln in all_lines if ln.strip()]
         tail_compact = ''.join(filled[-5:]).replace(' ', '')
-        return self._provider.is_dialog_certain(tail_compact)
+        return (self._provider.is_dialog_certain(tail_compact)
+                or self._provider.is_picker_screen(tail_compact))
 
     def get_prompt_output(self) -> str:
         """Return PTY output from the last permission/input prompt.

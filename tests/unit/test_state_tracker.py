@@ -2435,6 +2435,84 @@ class TestScreenHasActiveDialog:
         )
         assert tracker.screen_has_active_dialog() is False
 
+    # ------------------------------------------------------------------
+    # Slash-command pickers (/resume, /mcp, /agents) — these stay in
+    # RUNNING state forever while the picker is open (no hook fires).
+    # Their footers use varied verb pairs that miss the strict
+    # ``is_dialog_certain`` check, so ``is_picker_screen`` carries them.
+    # ------------------------------------------------------------------
+
+    def test_returns_true_for_resume_picker_footer(
+        self, tmp_path: Path,
+    ) -> None:
+        # /resume: footer pairs ``Type to search`` with ``Esc to cancel``
+        # — no ``Enter to select`` at all, so the strict dialog check
+        # alone returned False before the picker fallback.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Resume session (1 of 50)\n'
+            '> Investigate JetBrains remove LPS mechanism\n'
+            '    24 seconds ago · main · 774.9KB\n'
+            'Ctrl+A to show all projects · Type to search · Esc to '
+            'cancel',
+        )
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_returns_true_for_mcp_picker_footer(
+        self, tmp_path: Path,
+    ) -> None:
+        # /mcp: ``Enter to confirm`` (not ``select``) + ``Esc to cancel``.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Manage MCP servers\n'
+            '13 servers\n'
+            '> cmd-executor · connected · 1 tool\n'
+            '  claude.ai · connected · 31 tools\n'
+            '↑/↓ to navigate · Enter to confirm · Esc to cancel',
+        )
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_returns_true_for_agents_picker_footer(
+        self, tmp_path: Path,
+    ) -> None:
+        # /agents: ``Enter to select`` + ``Esc to close`` (not cancel).
+        # Strict dialog check requires ``Esctocancel`` specifically, so
+        # this picker formerly slipped through.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Agents  Running   Library\n'
+            'No subagents are currently running.\n'
+            '←/→ to switch · ↑/↓ to navigate · '
+            'Enter to select · Esc to close',
+        )
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_picker_check_requires_both_quit_and_nav_hints(
+        self, tmp_path: Path,
+    ) -> None:
+        # Conversational text containing only ONE picker hint must not
+        # false-trigger — same safety property as the strict dialog
+        # check.  A response sentence mentioning ``Esc to cancel`` or
+        # ``Type to search`` in isolation isn't a picker.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'You can press Esc to close the dialog later — '
+            'this is just plain prose without any other hint.',
+        )
+        assert tracker.screen_has_active_dialog() is False
+
 
 # ---------------------------------------------------------------------------
 # Claude conversation-compaction detection

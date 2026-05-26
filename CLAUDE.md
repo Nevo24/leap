@@ -290,7 +290,17 @@ ALWAYS-mode auto-approve has two layers — the primary is hook-based and never 
 
 **AskUserQuestion exclusion.** `AskUserQuestion` is the one tool whose entire purpose is to elicit a user choice. If `PermissionRequest` returns `"allow"` for it, Claude interprets that as "skip user interaction" — the question dialog is never rendered and the tool returns an empty answer set to the model ("Allowed by PermissionRequest hook" with no selections), corrupting the very flow the user invoked it for. The negative-lookahead matcher excludes the exact tool name `AskUserQuestion` so its `PermissionRequest` goes unanswered, Claude renders the dialog, and the user actually picks. Pinned by `test_claude_permission_request_matcher_excludes_ask_user_question`.
 
-**↑/↓ during mid-RUNNING dialogs.** `AskUserQuestion`'s question dialog fires no Notification hook (it's a built-in tool, not an MCP elicitation), so Leap's state stays `RUNNING` while the dialog is on screen until the 5 s cursor+silence fallback eventually flips it to `NEEDS_PERMISSION`. During that window the server's input filter (`server.py:3506`) would normally see ↑/↓ as RUNNING-state arrows and steal them for history recall — the user couldn't navigate the dialog for several seconds ("stuck for a moment, then unstuck"). The fix is a screen check: the input filter calls `CLIStateTracker.screen_has_active_dialog()` (strict `is_dialog_certain` over the last 5 non-blank rows, same shape as the proactive idle detection) and skips history-recall interception when a dialog is visible regardless of state. Pinned by the `TestScreenHasActiveDialog` class in `test_state_tracker.py`.
+**↑/↓ during mid-RUNNING dialogs and slash-command pickers.** Two distinct classes of in-CLI UI keep the state at `RUNNING` while ↑/↓ need to reach the CLI:
+
+1. `AskUserQuestion`'s question dialog fires no Notification hook (it's a built-in tool, not an MCP elicitation), so state stays `RUNNING` until the 5 s cursor+silence fallback flips it to `NEEDS_PERMISSION`.
+2. Slash-command pickers (`/resume`, `/mcp`, `/agents`, …) fire no hook at all and leave state in `RUNNING` for the entire time the picker is open.
+
+In both cases the server's input filter (`server.py:3506`) would normally see ↑/↓ as RUNNING-state arrows and steal them for history recall, leaving the user unable to navigate the picker. The fix is a screen check: the input filter calls `CLIStateTracker.screen_has_active_dialog()` and passes ↑/↓ through whenever it returns True. The check ORs two predicates over the last 5 non-blank rows (tail-only, same shape as the proactive idle detection):
+
+- `provider.is_dialog_certain(tail)` — strict permission-dialog footer (`Entertoselect` + `Esctocancel`) or numbered-menu cursor (`❯1.`). Kept strict because the same predicate gates state transitions where false positives stick state in `NEEDS_PERMISSION` for 60 s.
+- `provider.is_picker_screen(tail)` — slash-command picker footer: any one of `Esctocancel`/`Esctoclose`/`Esctoexit` AND any one of `Entertoconfirm`/`Entertoselect`/`Typetosearch`/`↑/↓tonavigate`. Used ONLY by the input-filter gate, never by state transitions, so the laxer match is safe — false positives here cost a single missed history-recall keystroke.
+
+Pinned by the `TestScreenHasActiveDialog` class in `test_state_tracker.py` (4 picker cases plus the single-hint negative) and by `TestClaudeProvider::test_claude_picker_screen_*` in `test_provider_behaviors.py`.
 
 Critically: the auto_approve state does NOT touch the signal file. It's a pure hook decision; Leap's state machine stays RUNNING throughout, as if no permission had ever been needed.
 

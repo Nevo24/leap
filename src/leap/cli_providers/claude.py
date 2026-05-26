@@ -115,6 +115,40 @@ class ClaudeProvider(CLIProvider):
             return True
         return self._has_numbered_menu(compact_text)
 
+    # Compact footer fragments shared by Claude's non-permission slash-
+    # command pickers (``/resume``, ``/mcp``, ``/agents``).  Each picker
+    # exposes a different verb pair, so a strict ALL-required check
+    # (like ``is_dialog_certain``) misses them.  We require one quit
+    # hint AND one navigation hint — picker footers always pair both,
+    # while conversational text would need an unusual coincidence to
+    # land both classes in the same screen tail.
+    _PICKER_QUIT_HINTS: tuple[str, ...] = (
+        'Esctocancel', 'Esctoclose', 'Esctoexit',
+    )
+    _PICKER_NAV_HINTS: tuple[str, ...] = (
+        'Entertoconfirm', 'Entertoselect',
+        'Typetosearch', '↑/↓tonavigate',
+    )
+
+    def is_picker_screen(self, compact_text: str) -> bool:
+        """Detect Claude's non-permission slash-command pickers.
+
+        Examples and the compact pairs they trigger on:
+
+        * ``/resume`` — ``Esctocancel`` + ``Typetosearch``
+        * ``/mcp``   — ``Esctocancel`` + ``Entertoconfirm``
+        * ``/agents``— ``Esctoclose``  + ``Entertoselect``
+
+        ``screen_has_active_dialog`` ORs this with ``is_dialog_certain``
+        so ↑/↓ pass through to the picker.  ``is_dialog_certain`` itself
+        stays strict — false positives there trap state in
+        ``needs_permission`` for 60 s, whereas false positives here are
+        merely a missed history-recall keystroke.
+        """
+        has_quit = any(p in compact_text for p in self._PICKER_QUIT_HINTS)
+        has_nav = any(p in compact_text for p in self._PICKER_NAV_HINTS)
+        return has_quit and has_nav
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

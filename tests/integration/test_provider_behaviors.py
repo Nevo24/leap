@@ -82,6 +82,42 @@ class TestClaudeProvider:
         assert provider.is_dialog_certain('\u276f1.')
         assert provider.is_dialog_certain('\u203a1.')
 
+    def test_claude_picker_screen_detects_slash_command_footers(
+        self,
+    ) -> None:
+        # Compact footer fragments from real /resume, /mcp, /agents
+        # screens (captured via PTY).  The strict ``is_dialog_certain``
+        # check requires Entertoselect+Esctocancel and misses all three;
+        # ``is_picker_screen`` carries them so \u2191/\u2193 pass through to the
+        # picker via ``screen_has_active_dialog``.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+
+        # /resume: ``Type to search \u00b7 Esc to cancel``
+        resume_tail = 'TypetosearchEsctocancel'
+        assert not provider.is_dialog_certain(resume_tail)
+        assert provider.is_picker_screen(resume_tail)
+
+        # /mcp: ``\u2191/\u2193 to navigate \u00b7 Enter to confirm \u00b7 Esc to cancel``
+        mcp_tail = '\u2191/\u2193tonavigateEntertoconfirmEsctocancel'
+        assert not provider.is_dialog_certain(mcp_tail)
+        assert provider.is_picker_screen(mcp_tail)
+
+        # /agents: ``Enter to select \u00b7 Esc to close`` (no ``Esctocancel``)
+        agents_tail = 'EntertoselectEsctoclose'
+        assert not provider.is_dialog_certain(agents_tail)
+        assert provider.is_picker_screen(agents_tail)
+
+    def test_claude_picker_screen_rejects_single_hint(self) -> None:
+        # Picker check requires BOTH a quit hint AND a navigation hint
+        # \u2014 a single isolated ``Esctocancel`` (e.g. conversation text
+        # quoting one keybind) must not false-trigger.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        assert not provider.is_picker_screen('Esctocancel')
+        assert not provider.is_picker_screen('Entertoselect')
+        assert not provider.is_picker_screen('plainresponsetext')
+
     def test_claude_cursor_visible_while_idle(self) -> None:
         from leap.cli_providers.claude import ClaudeProvider
         assert ClaudeProvider().cursor_hidden_while_idle is False
