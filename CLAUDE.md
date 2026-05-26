@@ -337,6 +337,11 @@ The `_try_auto_approve` path itself was strengthened: the Late Notification guar
 
   **All custom CLIs are variants of one of the four base CLIs** (Claude / Codex / Cursor Agent / Gemini). `CustomCLIProvider` (in `registry.py`) wraps a base provider and delegates everything via `__getattribute__` — including `hooks_installed()` and `base_type`. Custom-CLI authors don't set `base_type` themselves; they pass `base_provider=ClaudeProvider()` (or one of the other three) to `CustomCLIProvider.__init__`, and `base_type` follows automatically (it resolves to the base's `name` via the `__getattribute__` delegation). The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup automatically. There is no path for a custom CLI that's not built atop one of the four — design accordingly.
 - **New monitor dialog / window** → See the `.claude/skills/add-dialog.md` skill. Covers `ZoomMixin` setup, dialog geometry persistence, theme integration, the font-size cascade quirk, and — critically — the **prefs persistence model** (`MonitorWindow._DIALOG_OWNED_KEYS` and why `save_monitor_prefs(self._prefs)` must NOT be called outside `_save_prefs`). Skipping that last part is the most common way dialog state silently gets clobbered.
+- **Adding / removing / reordering a session-table column** → The `COL_*` constants in `monitor/app.py` are referenced by *four* positional-index sites that DON'T import them — change any column and you MUST update all four in the same diff, or they silently drift off-by-one (wrong separators, wrong monospace columns, wrong alignment):
+  1. `_HEADER_LABELS` in `monitor/app.py` (header strings, parallel to `COL_*` order)
+  2. `_CENTER_COLS` in `_mixins/table_builder_mixin.py` (data cols whose plain-text cells center)
+  3. `_MONO_COLS` in `_mixins/table_builder_mixin.py` (cols rendered in monospace font)
+  4. `COLUMN_GROUPS` in `ui/table_helpers.py` (drives the inter-/intra-group vertical separators)
 - **Utils** → `src/leap/utils/`
 - **Server** → `src/leap/server/`, update `LeapServer`
 - **Client** → `src/leap/client/`, update `LeapClient`

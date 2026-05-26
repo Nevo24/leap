@@ -64,9 +64,9 @@ def _hex_to_rgb_str(hex_color: str) -> str:
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and preset editor."""
 
-    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12})  # All data columns
+    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14})  # All data columns
     # Columns that display technical/code data — rendered in monospace font
-    _MONO_COLS = frozenset({3, 6, 7, 13})  # Project, Path, Server Branch, PR Branch
+    _MONO_COLS = frozenset({4, 7, 8, 14})  # Project, Path, Server Branch, PR Branch
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
         """Set a cell widget wrapped in a hover-aware container.
@@ -1470,6 +1470,12 @@ class TableBuilderMixin(_Base):
                             pr_br_label.setAlignment(Qt.AlignCenter)
                             pr_br_label.setToolTip(pr_branch)
                             pr_br_layout.addWidget(pr_br_label, 1)
+
+                            # Right-side spacer matching the X button width so the centered label sits in the column's centre, not offset by the X.
+                            pr_br_spacer = QWidget()
+                            pr_br_spacer.setFixedWidth(self._zoomed_btn_w(28))
+                            pr_br_layout.addWidget(
+                                pr_br_spacer, 0, Qt.AlignVCenter)
 
                             # Ensure a table item exists with the tooltip
                             # so the cell-widget tooltip path can find it.

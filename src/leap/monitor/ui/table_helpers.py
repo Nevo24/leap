@@ -316,13 +316,16 @@ def menu_btn_style(fg_override: Optional[str] = None,
 
 
 # Column groups for vertical separators.
-# Groups: [X, Tag, CLI, Project] | [Server, Last Msg, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
+# Groups: [X, Tag, CLI, App, Project] | [Server, Last Msg, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
+# Indices here are positional and MUST track the COL_* constants in monitor/app.py — if you
+# add/remove/reorder a column there, update this list (and _CENTER_COLS / _MONO_COLS in
+# _mixins/table_builder_mixin.py) in the same change.
 COLUMN_GROUPS: list[list[int]] = [
-    [0, 1, 2, 3],          # Info
-    [4, 5, 6, 7, 8, 9],    # Server
-    [10],                   # Client
-    [11],                   # Slack
-    [12, 13],               # PR
+    [0, 1, 2, 3, 4],         # Info
+    [5, 6, 7, 8, 9, 10],     # Server
+    [11],                     # Client
+    [12],                     # Slack
+    [13, 14],                 # PR
 ]
 
 # Precomputed: column index → group index (for fast lookup)
