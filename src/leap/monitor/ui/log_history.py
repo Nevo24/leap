@@ -78,11 +78,11 @@ class LogHistoryDialog(ZoomMixin, QDialog):
             for entry in entries:
                 ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
                 msg = html.escape(entry.message)
-                # Color [Notification] messages in cyan, errors in red
+                # Color [Notification] tag in orange (matches notes-bold), errors in red
                 t = current_theme()
                 if msg.startswith('[Notification]'):
                     rest = msg[len('[Notification]'):]
-                    msg = f'<span style="color: {t.accent_blue};">[Notification]</span>{rest}'
+                    msg = f'<span style="color: {t.accent_orange};">[Notification]</span>{rest}'
                 elif _is_error_message(msg):
                     msg = f'<span style="color: {t.accent_red};">{msg}</span>'
                 line = f'[{ts}] {msg}'
