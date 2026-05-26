@@ -115,39 +115,119 @@ class ClaudeProvider(CLIProvider):
             return True
         return self._has_numbered_menu(compact_text)
 
-    # Compact footer fragments shared by Claude's non-permission slash-
-    # command pickers (``/resume``, ``/mcp``, ``/agents``).  Each picker
-    # exposes a different verb pair, so a strict ALL-required check
-    # (like ``is_dialog_certain``) misses them.  We require one quit
-    # hint AND one navigation hint — picker footers always pair both,
-    # while conversational text would need an unusual coincidence to
-    # land both classes in the same screen tail.
-    _PICKER_QUIT_HINTS: tuple[str, ...] = (
-        'Esctocancel', 'Esctoclose', 'Esctoexit',
-    )
-    _PICKER_NAV_HINTS: tuple[str, ...] = (
-        'Entertoconfirm', 'Entertoselect',
-        'Typetosearch', '↑/↓tonavigate',
-    )
+    # Structural fingerprint of Claude's standard idle input box:
+    #     ─────────────────────────  ← top horizontal rule
+    #     ❯ <input text or empty>     ← input row
+    #     ─────────────────────────  ← bottom horizontal rule
+    # When the user invokes any slash-command picker (``/resume``,
+    # ``/mcp``, ``/agents``, ``/config``, ``/doctor``, ``/effort``,
+    # ``/login``, ``/memory``, ``/model``, ``/permissions``, ``/usage``,
+    # ``/bug``, …) the picker UI takes over the bottom of the screen
+    # and the sandwich is gone.  Detecting the sandwich (rather than
+    # enumerating picker footers) means new Claude pickers work without
+    # any code change.
+    _HR_CHAR: str = '─'   # ─
+    _PROMPT_CHAR: str = '❯'  # ❯
+    # Minimum length of a horizontal-rule line.  Real Claude renders
+    # the input-box HR at terminal width minus padding (≈ COLS chars
+    # of ``─``).  40 is the lowest reasonable terminal width Claude
+    # renders at — below that the UI breaks visually anyway.  The
+    # ``/effort`` slider's ``──────▲──────`` axis is ~42 chars but
+    # contains a non-``─`` glyph and is rejected by the strict purity
+    # check below regardless of length, so 40 doesn't sacrifice
+    # protection against inline rule widgets.
+    _MIN_HR_LEN: int = 40
 
-    def is_picker_screen(self, compact_text: str) -> bool:
-        """Detect Claude's non-permission slash-command pickers.
+    def _is_prompt_box_hr(self, line: str) -> bool:
+        """Line is a horizontal-rule border of the idle input box.
 
-        Examples and the compact pairs they trigger on:
+        Strict: every non-whitespace character must be ``─``.  This
+        rejects:
+        * slider widgets like ``──────▲──────`` (has ``▲``)
+        * table borders like ``┌─────┬─────┐`` (has ``┌``/``┬``/``┐``)
+        * markdown table inner rows like ``├─────┼─────┤`` (has
+          ``├``/``┼``/``┤``)
+        * any other box-drawing or response text that happens to
+          contain a long ``─`` run.
 
-        * ``/resume`` — ``Esctocancel`` + ``Typetosearch``
-        * ``/mcp``   — ``Esctocancel`` + ``Entertoconfirm``
-        * ``/agents``— ``Esctoclose``  + ``Entertoselect``
-
-        ``screen_has_active_dialog`` ORs this with ``is_dialog_certain``
-        so ↑/↓ pass through to the picker.  ``is_dialog_certain`` itself
-        stays strict — false positives there trap state in
-        ``needs_permission`` for 60 s, whereas false positives here are
-        merely a missed history-recall keystroke.
+        Real Claude HR rows have *no* other characters — terminal-wide
+        ``─`` only.
         """
-        has_quit = any(p in compact_text for p in self._PICKER_QUIT_HINTS)
-        has_nav = any(p in compact_text for p in self._PICKER_NAV_HINTS)
-        return has_quit and has_nav
+        stripped = line.strip()
+        if len(stripped) < self._MIN_HR_LEN:
+            return False
+        for ch in stripped:
+            if ch != self._HR_CHAR and ch != ' ':
+                return False
+        return True
+
+    def _is_prompt_box_input_row(self, line: str) -> bool:
+        """Line is the ``❯ ...`` input row at the centre of the box.
+
+        Accepts ``❯`` alone (empty input) or ``❯`` followed by *any*
+        whitespace + content.  Claude's TUI renders the gap between
+        ``❯`` and the placeholder/typed text as U+00A0 (NBSP), not a
+        plain space — ``str.isspace()`` covers both (and any other
+        whitespace Claude might pick in the future).
+        """
+        stripped = line.lstrip()
+        if not stripped.startswith(self._PROMPT_CHAR):
+            return False
+        rest = stripped[len(self._PROMPT_CHAR):]
+        return not rest or rest[0].isspace()
+
+    # Minimum non-blank rows required before the absence of the
+    # sandwich is treated as evidence of a picker.  Real Claude pickers
+    # always render 5+ rows (header + list/content + footer); below
+    # that we're seeing a transient or boot-time screen, and defaulting
+    # to ``idle visible`` (return True) preserves the legacy
+    # strict-dialog-only behaviour.
+    _IDLE_DETECT_MIN_ROWS: int = 5
+
+    # Window of recent non-blank rows scanned for the input-box
+    # sandwich.  Widened to 10 to cover multi-line input (Shift+Enter)
+    # which inserts continuation rows between the ``❯`` row and the
+    # bottom HR border.
+    _IDLE_TAIL_WINDOW: int = 10
+
+    def is_idle_prompt_visible(self, display_lines: list[str]) -> bool:
+        """True iff Claude's idle input box is rendered at the bottom.
+
+        The box looks like::
+
+            ─────────────────────  ← top HR border
+            ❯ <input or placeholder text>     ← input row
+            [<continuation row 1>]            ← present iff multi-line
+            [<continuation row 2>]              input has wrapped
+            ─────────────────────  ← bottom HR border
+            <optional hint footer>             ← e.g. ``? for shortcuts``
+
+        Detection: scan the last ``_IDLE_TAIL_WINDOW`` non-blank rows
+        for two HR rows bracketing a ``❯`` row that *immediately*
+        follows the top HR.  The bottom HR can sit 1+ rows after the
+        ``❯`` row, so multi-line input (Shift+Enter) is captured.
+
+        Requiring ``❯`` to be the row directly after the top HR (rather
+        than anywhere between the HRs) is what prevents false positives
+        from Claude's response text containing markdown ``---``
+        separators — response content between them never starts with
+        ``❯``.
+
+        Returns True (assume idle) when the screen has too little
+        content to confidently call it a picker (``< _IDLE_DETECT_MIN_ROWS``
+        non-blank rows).  This makes empty/transient screens behave
+        like the legacy strict-dialog-only check.
+        """
+        tail = display_lines[-self._IDLE_TAIL_WINDOW:]
+        hr_idx = [i for i, ln in enumerate(tail)
+                  if self._is_prompt_box_hr(ln)]
+        if len(hr_idx) >= 2:
+            for j in range(len(hr_idx) - 1):
+                top = hr_idx[j]
+                if (top + 1 < len(tail)
+                        and self._is_prompt_box_input_row(tail[top + 1])):
+                    return True
+        return len(display_lines) < self._IDLE_DETECT_MIN_ROWS
 
     # -- Menu / option parsing -------------------------------------------
 

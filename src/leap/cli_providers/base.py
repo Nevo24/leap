@@ -158,25 +158,38 @@ class CLIProvider(ABC):
             for p in patterns
         )
 
-    def is_picker_screen(self, compact_text: str) -> bool:
-        """Return True if the screen shows a non-permission interactive
-        picker (e.g. Claude's ``/resume``, ``/mcp``, ``/agents`` selectors).
+    def is_idle_prompt_visible(self, display_lines: list[str]) -> bool:
+        """Return True iff the CLI's standard idle input box is rendered
+        at the bottom of the screen.
 
-        Separate from ``is_dialog_certain`` because these pickers don't
-        match the strict permission-dialog footer (``Entertoselect`` +
-        ``Esctocancel``) — they use varied verb pairs like
-        ``Esctoclose``/``Entertoconfirm``/``Typetosearch`` — but they
-        DO need ↑/↓ to reach the CLI so the user can navigate them.
-        ``screen_has_active_dialog`` ORs this in to extend the input-
-        filter pass-through guard without loosening the state-transition
-        strictness that ``is_dialog_certain`` provides.
+        ``screen_has_active_dialog`` uses ``not is_idle_prompt_visible``
+        as the catch-all "something interactive is taking over the
+        bottom of the screen" signal: when the idle prompt is gone,
+        either a permission dialog or a slash-command picker
+        (``/resume``, ``/mcp``, ``/agents``, …) is on screen and ↑/↓
+        belong to it, not to history recall.  This is intentionally
+        structural so a new Claude picker added next month works
+        without us enumerating its footer text.
 
-        Default: False (no picker detection). Override per provider.
+        Default: True (assume the prompt is visible — provider has no
+        structural detector wired up, so ``screen_has_active_dialog``
+        falls back to the strict ``is_dialog_certain`` check alone,
+        which is the legacy behaviour).  Override per provider with a
+        real detector to enable picker-detection.
+
+        Trade-offs for an override:
+        * False positives (claims idle when it isn't) cost ↑/↓ being
+          stolen for history recall — same as today's bug.
+        * False negatives (claims not-idle when it is) cost a single
+          missed history-recall keystroke.  Bias detectors toward
+          false-negatives.
 
         Args:
-            compact_text: Screen text with spaces and newlines removed.
+            display_lines: All non-blank rows of the live pyte screen,
+                top-to-bottom.  The provider is responsible for
+                looking at whichever tail it cares about.
         """
-        return False
+        return True
 
     @property
     def valid_signal_states(self) -> frozenset[str]:

@@ -2402,18 +2402,30 @@ class TestScreenHasActiveDialog:
     ) -> None:
         # Tail-only restriction: a dialog that scrolled out of the
         # bottom 5 rows is no longer "active" (the user is past it).
+        # The realistic screen state during this scenario is that
+        # Claude's idle input box is back at the bottom — without it,
+        # the structural fallback would correctly flag "something
+        # interactive is up" because there's no anchor.
+        # \r\n separators are required because real Claude output uses
+        # CRLF; the test helper's bare \n would otherwise leave each
+        # subsequent row indented past the previous one's end column.
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
+        hr = '─' * 100
         feed_screen_text(
             tracker,
-            'Enter to select  Esc to cancel\n'
-            'Now working on step one\n'
-            'Now working on step two\n'
-            'Now working on step three\n'
-            'Now working on step four\n'
-            'Now working on step five\n'
-            'Now working on step six\n',
+            'Enter to select  Esc to cancel\r\n'
+            'Now working on step one\r\n'
+            'Now working on step two\r\n'
+            'Now working on step three\r\n'
+            'Now working on step four\r\n'
+            'Now working on step five\r\n'
+            'Now working on step six\r\n'
+            f'{hr}\r\n'
+            '❯\r\n'
+            f'{hr}\r\n'
+            '? for shortcuts',
         )
         assert tracker.screen_has_active_dialog() is False
 
@@ -2435,83 +2447,106 @@ class TestScreenHasActiveDialog:
         )
         assert tracker.screen_has_active_dialog() is False
 
-    # ------------------------------------------------------------------
-    # Slash-command pickers (/resume, /mcp, /agents) — these stay in
-    # RUNNING state forever while the picker is open (no hook fires).
-    # Their footers use varied verb pairs that miss the strict
-    # ``is_dialog_certain`` check, so ``is_picker_screen`` carries them.
-    # ------------------------------------------------------------------
-
-    def test_returns_true_for_resume_picker_footer(
+    def test_returns_false_when_idle_prompt_box_visible(
         self, tmp_path: Path,
     ) -> None:
-        # /resume: footer pairs ``Type to search`` with ``Esc to cancel``
-        # — no ``Enter to select`` at all, so the strict dialog check
-        # alone returned False before the picker fallback.
+        # During normal RUNNING with response flowing, Claude's idle
+        # input box stays anchored at the bottom of the screen.  Even
+        # if some upstream text mentioned ``Esc to cancel`` (e.g.
+        # response prose) the structural check should see the
+        # ``HR / ❯ / HR`` sandwich and treat the screen as idle.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        hr = '─' * 100
+        feed_screen_text(
+            tracker,
+            'Some response prose mentioning Esc to cancel here.\r\n'
+            'More response text on the next line.\r\n'
+            'And one more line of prose.\r\n'
+            'Even more prose.\r\n'
+            'Last line of prose.\r\n'
+            f'{hr}\r\n'
+            '❯\r\n'
+            f'{hr}\r\n'
+            '? for shortcuts',
+        )
+        assert tracker.screen_has_active_dialog() is False
+
+    # ------------------------------------------------------------------
+    # Slash-command pickers (/resume, /mcp, /agents, /config, /effort,
+    # /model, /memory, /login, /doctor, /usage, /bug, /permissions, …)
+    # — these stay in RUNNING state forever while the picker is open
+    # (no hook fires) and replace Claude's idle input box with the
+    # picker UI.  Detection is structural: the ``HR / ❯ / HR`` sandwich
+    # is gone from the bottom of the screen.
+    # ------------------------------------------------------------------
+
+    def test_returns_true_for_resume_picker_shape(
+        self, tmp_path: Path,
+    ) -> None:
+        # /resume footer pairs ``Type to search`` with ``Esc to cancel``
+        # — no ``Enter to select`` at all.  Strict dialog check misses
+        # it, but the idle prompt box is absent so the structural
+        # fallback fires.
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         feed_screen_text(
             tracker,
-            'Resume session (1 of 50)\n'
-            '> Investigate JetBrains remove LPS mechanism\n'
-            '    24 seconds ago · main · 774.9KB\n'
+            'Resume session (1 of 50)\r\n'
+            'Search…\r\n'
+            '  leap\r\n'
+            '> Investigate JetBrains remove LPS mechanism\r\n'
+            '    24 seconds ago · main · 774.9KB\r\n'
+            '  Debug image display interruption issue\r\n'
+            '    12 hours ago · main · 1MB\r\n'
             'Ctrl+A to show all projects · Type to search · Esc to '
             'cancel',
         )
         assert tracker.screen_has_active_dialog() is True
 
-    def test_returns_true_for_mcp_picker_footer(
+    def test_returns_true_for_mcp_picker_shape(
         self, tmp_path: Path,
     ) -> None:
-        # /mcp: ``Enter to confirm`` (not ``select``) + ``Esc to cancel``.
+        # /mcp footer: ``Enter to confirm`` (not ``select``) + ``Esc to
+        # cancel`` — also outside the strict dialog footer pair.
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         feed_screen_text(
             tracker,
-            'Manage MCP servers\n'
-            '13 servers\n'
-            '> cmd-executor · connected · 1 tool\n'
-            '  claude.ai · connected · 31 tools\n'
+            'Manage MCP servers\r\n'
+            '13 servers\r\n'
+            'User MCPs\r\n'
+            '> cmd-executor · connected · 1 tool\r\n'
+            '  claude.ai Atlassian · connected · 31 tools\r\n'
+            '  claude.ai Slack · connected · 13 tools\r\n'
+            '  https://code.claude.com/docs/en/mcp for help\r\n'
             '↑/↓ to navigate · Enter to confirm · Esc to cancel',
         )
         assert tracker.screen_has_active_dialog() is True
 
-    def test_returns_true_for_agents_picker_footer(
+    def test_returns_true_for_agents_picker_shape(
         self, tmp_path: Path,
     ) -> None:
-        # /agents: ``Enter to select`` + ``Esc to close`` (not cancel).
-        # Strict dialog check requires ``Esctocancel`` specifically, so
-        # this picker formerly slipped through.
+        # /agents footer: ``Esc to close`` (not ``cancel``) + ``Enter
+        # to select`` — strict dialog check requires ``Esctocancel``,
+        # so this picker formerly slipped through entirely.
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
         feed_screen_text(
             tracker,
-            'Agents  Running   Library\n'
-            'No subagents are currently running.\n'
+            'Agents  Running   Library\r\n'
+            'Filler row to push past the small-screen threshold.\r\n'
+            'Another filler row for the same reason.\r\n'
+            'And one more.\r\n'
+            'No subagents are currently running.\r\n'
             '←/→ to switch · ↑/↓ to navigate · '
             'Enter to select · Esc to close',
         )
         assert tracker.screen_has_active_dialog() is True
-
-    def test_picker_check_requires_both_quit_and_nav_hints(
-        self, tmp_path: Path,
-    ) -> None:
-        # Conversational text containing only ONE picker hint must not
-        # false-trigger — same safety property as the strict dialog
-        # check.  A response sentence mentioning ``Esc to cancel`` or
-        # ``Type to search`` in isolation isn't a picker.
-        t = [0.0]
-        tracker = make_tracker(tmp_path, t)
-        tracker.on_send()
-        feed_screen_text(
-            tracker,
-            'You can press Esc to close the dialog later — '
-            'this is just plain prose without any other hint.',
-        )
-        assert tracker.screen_has_active_dialog() is False
 
 
 # ---------------------------------------------------------------------------

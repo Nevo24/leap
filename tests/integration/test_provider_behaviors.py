@@ -82,41 +82,214 @@ class TestClaudeProvider:
         assert provider.is_dialog_certain('\u276f1.')
         assert provider.is_dialog_certain('\u203a1.')
 
-    def test_claude_picker_screen_detects_slash_command_footers(
+    def test_claude_idle_prompt_visible_sandwich(self) -> None:
+        # The standard idle prompt is a "\u2500 HR / \u276f row / \u2500 HR" sandwich
+        # rendered at the bottom of the screen.  When it's present, \u2191/\u2193
+        # should be intercepted for history recall \u2014 not passed through.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        # Realistic idle: HR + \u276f + HR + hint footer.  HR length must
+        # exceed _MIN_HR_LEN (60 chars) \u2014 picker widgets with shorter
+        # `\u2500\u2500` segments don't qualify.
+        hr = '\u2500' * 100
+        idle = [
+            'Some prior response text',
+            hr,
+            '\u276f',
+            hr,
+            '  ? for shortcuts',
+        ]
+        assert provider.is_idle_prompt_visible(idle)
+
+        # Same sandwich but with typed input \u2014 still idle.
+        idle_with_input = [
+            'Some prior response text',
+            hr,
+            '\u276f my next message draft',
+            hr,
+            '  \u23f5\u23f5 auto mode on',
+        ]
+        assert provider.is_idle_prompt_visible(idle_with_input)
+
+    def test_claude_idle_prompt_not_visible_for_pickers(self) -> None:
+        # Picker screens replace the input box with the picker UI.
+        # No HR / \u276f / HR sandwich at the bottom \u2192 idle not visible.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+
+        # /resume-shaped: list of items + footer.  The focused row's
+        # \u276f marker is mid-list, not between two HR borders.
+        resume_shape = [
+            'Resume session (1 of 50)',
+            '\u276f Investigate JetBrains remove LPS mechanism',
+            '    24 seconds ago \u00b7 main \u00b7 774.9KB',
+            '    Debug image display interruption issue',
+            '    12 hours ago \u00b7 main \u00b7 1MB',
+            '  Ctrl+A to show all projects \u00b7 Type to search \u00b7 Esc to '
+            'cancel',
+        ]
+        assert not provider.is_idle_prompt_visible(resume_shape)
+
+        # /mcp-shaped: list of servers + footer.
+        mcp_shape = [
+            'Manage MCP servers',
+            '13 servers',
+            '\u276f cmd-executor \u00b7 connected \u00b7 1 tool',
+            '  claude.ai Slack \u00b7 connected \u00b7 13 tools',
+            '\u2191/\u2193 to navigate \u00b7 Enter to confirm \u00b7 Esc to cancel',
+        ]
+        assert not provider.is_idle_prompt_visible(mcp_shape)
+
+        # /agents-shaped: tabs + status + footer.  No \u276f at all.
+        # Includes prior banner rows that are still visible above the
+        # picker UI so the row count exceeds _IDLE_DETECT_MIN_ROWS.
+        agents_shape = [
+            'Using Sonnet 4.6 (from managed settings) \u00b7 /model to change',
+            'Large CLAUDE.md will impact performance (65.4k chars > 40.0k)',
+            'Install the PyCharm plugin from the JetBrains Marketplace',
+            '\u276f /agents',  # user's just-typed command (top, scrolled up)
+            'Agents  Running   Library',
+            'No subagents are currently running.',
+            '\u2190/\u2192 to switch \u00b7 \u2191/\u2193 to navigate \u00b7 Enter to select \u00b7 '
+            'Esc to close',
+        ]
+        assert not provider.is_idle_prompt_visible(agents_shape)
+
+    def test_claude_idle_prompt_check_ignores_short_inline_rules(
         self,
     ) -> None:
-        # Compact footer fragments from real /resume, /mcp, /agents
-        # screens (captured via PTY).  The strict ``is_dialog_certain``
-        # check requires Entertoselect+Esctocancel and misses all three;
-        # ``is_picker_screen`` carries them so \u2191/\u2193 pass through to the
-        # picker via ``screen_has_active_dialog``.
+        # The ``/effort`` slider widget renders a ``\u2500\u2500\u2500\u2500\u2500\u2500\u25b2\u2500\u2500\u2500\u2500\u2500\u2500``
+        # axis that's NOT a prompt-box border \u2014 strict purity rejects
+        # it because of the ``\u25b2`` glyph (even though it's nearly
+        # full-width).  Must not be confused with the box HR.
         from leap.cli_providers.claude import ClaudeProvider
         provider = ClaudeProvider()
+        effort_shape = [
+            'Effort',
+            '                                                 Speed                         Intelligence',
+            '                                                 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u25b2\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500',
+            '                                                 low     medium     high     xhigh      max',
+            '  \u2190/\u2192 to adjust \u00b7 Enter to confirm \u00b7 Esc to cancel',
+        ]
+        assert not provider.is_idle_prompt_visible(effort_shape)
 
-        # /resume: ``Type to search \u00b7 Esc to cancel``
-        resume_tail = 'TypetosearchEsctocancel'
-        assert not provider.is_dialog_certain(resume_tail)
-        assert provider.is_picker_screen(resume_tail)
-
-        # /mcp: ``\u2191/\u2193 to navigate \u00b7 Enter to confirm \u00b7 Esc to cancel``
-        mcp_tail = '\u2191/\u2193tonavigateEntertoconfirmEsctocancel'
-        assert not provider.is_dialog_certain(mcp_tail)
-        assert provider.is_picker_screen(mcp_tail)
-
-        # /agents: ``Enter to select \u00b7 Esc to close`` (no ``Esctocancel``)
-        agents_tail = 'EntertoselectEsctoclose'
-        assert not provider.is_dialog_certain(agents_tail)
-        assert provider.is_picker_screen(agents_tail)
-
-    def test_claude_picker_screen_rejects_single_hint(self) -> None:
-        # Picker check requires BOTH a quit hint AND a navigation hint
-        # \u2014 a single isolated ``Esctocancel`` (e.g. conversation text
-        # quoting one keybind) must not false-trigger.
+    def test_claude_idle_prompt_check_rejects_box_drawing_borders(
+        self,
+    ) -> None:
+        # Markdown tables in Claude responses use box-drawing borders
+        # (``\u250c\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2510``, ``\u251c\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2524``) \u2014 these have other
+        # box characters mixed with ``\u2500`` and must be rejected by the
+        # strict purity check.  Without rejection, a wide table top
+        # plus an unrelated ``\u276f`` row in the response could form a
+        # false sandwich.
         from leap.cli_providers.claude import ClaudeProvider
         provider = ClaudeProvider()
-        assert not provider.is_picker_screen('Esctocancel')
-        assert not provider.is_picker_screen('Entertoselect')
-        assert not provider.is_picker_screen('plainresponsetext')
+        long_table_top = '\u250c' + '\u2500' * 60 + '\u252c' + '\u2500' * 60 + '\u2510'
+        long_table_mid = '\u251c' + '\u2500' * 60 + '\u253c' + '\u2500' * 60 + '\u2524'
+        long_table_bot = '\u2514' + '\u2500' * 60 + '\u2534' + '\u2500' * 60 + '\u2518'
+        assert not provider._is_prompt_box_hr(long_table_top)
+        assert not provider._is_prompt_box_hr(long_table_mid)
+        assert not provider._is_prompt_box_hr(long_table_bot)
+
+    def test_claude_idle_prompt_visible_at_narrow_terminal_width(
+        self,
+    ) -> None:
+        # On narrow terminals (~50 cols) the HR border shrinks to
+        # terminal width.  ``_MIN_HR_LEN = 40`` is the floor \u2014 below
+        # that Claude's UI breaks visually anyway, but at 50 cols the
+        # idle box must still be detected so history recall keeps
+        # working.  Real PTY capture at COLS=50: 50-char ``\u2500`` line.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        hr_50 = '\u2500' * 50
+        idle_50 = [
+            'Banner row',
+            'Banner row',
+            'Banner row',
+            'Banner row',
+            hr_50,
+            '\u276f\xa0Try "refactor app.py"',
+            hr_50,
+            '\u23f5\u23f5 auto mode on',
+        ]
+        assert provider.is_idle_prompt_visible(idle_50)
+
+    def test_claude_idle_prompt_visible_with_nbsp_gap(self) -> None:
+        # Real Claude renders ``❯`` followed by U+00A0 (NBSP), not a
+        # regular ASCII space, when there's placeholder or typed text
+        # in the input box.  The detector must accept BOTH so that
+        # idle screens with typed input are still classified as idle —
+        # otherwise the user's ↑ keypress would be passed through to
+        # Claude instead of recalling history.  Captured from a real
+        # PTY: ``❯\xa0Try "fix typecheck errors"`` (welcome placeholder).
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        hr = '─' * 100
+        idle_with_placeholder = [
+            'Welcome banner row',
+            'Another banner row',
+            'And one more',
+            hr,
+            '❯\xa0Try "fix typecheck errors"',  # ❯ + NBSP + text
+            hr,
+            '⏵⏵ auto mode on',
+        ]
+        assert provider.is_idle_prompt_visible(idle_with_placeholder)
+
+        idle_with_typed_input = [
+            'Banner',
+            'Banner',
+            'Banner',
+            hr,
+            '❯\xa0my actual typed draft message',
+            hr,
+            '? for shortcuts',
+        ]
+        assert provider.is_idle_prompt_visible(idle_with_typed_input)
+
+    def test_claude_idle_prompt_visible_with_multiline_input(self) -> None:
+        # Multi-line input (Shift+Enter) renders as ``❯`` row plus
+        # continuation rows, with the bottom HR pushed down by 1+ rows
+        # from the ❯ row.  Captured from a real PTY:
+        #     ❯\xa0first line of message\
+        #       second line continues\
+        #       and third line here
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        hr = '─' * 100
+        idle_multiline = [
+            'Banner',
+            'Banner',
+            'Banner',
+            hr,
+            '❯\xa0first line of message\\',
+            '  second line continues\\',
+            '  and third line here',
+            hr,
+            '⏵⏵ auto mode on',
+        ]
+        assert provider.is_idle_prompt_visible(idle_multiline)
+
+    def test_claude_idle_prompt_check_ignores_picker_focused_rows(
+        self,
+    ) -> None:
+        # ``/model`` / ``/memory`` have a focused-item ``\u276f N. ...``
+        # in the middle of the list.  That row IS preceded and followed
+        # by other list rows, not by HR borders, so it must not be
+        # mistaken for the input box.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        model_shape = [
+            'Switch between Claude models. Applies to this session only.',
+            '    1. Default (recommended)  Opus 4.7 with 1M context',
+            '    2. Sonnet                 Sonnet 4.6',
+            '    3. Sonnet (1M context)    Sonnet 4.6 with 1M context',
+            '    4. Haiku                  Haiku 4.5',
+            '  \u276f 5. Sonnet 4.6 \u2714           claude-sonnet-4-6',
+            '  \u25cf High effort (default) \u2190/\u2192 to adjust',
+            '  Enter to confirm \u00b7 d to set as default \u00b7 Esc to cancel',
+        ]
+        assert not provider.is_idle_prompt_visible(model_shape)
 
     def test_claude_cursor_visible_while_idle(self) -> None:
         from leap.cli_providers.claude import ClaudeProvider

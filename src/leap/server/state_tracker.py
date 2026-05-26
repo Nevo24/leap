@@ -1878,27 +1878,38 @@ class CLIStateTracker:
         return False
 
     def screen_has_active_dialog(self) -> bool:
-        """True iff the live pyte screen shows a dialog footer/menu in
-        the bottom 5 non-blank rows.
+        """True iff the live pyte screen shows something interactive at
+        the bottom — a permission dialog OR a slash-command picker —
+        that should receive ↑/↓ instead of Leap's history recall.
 
         Used by the server's ↑/↓ input filter to skip history-recall
-        interception when a dialog or picker is on screen but the state
-        tracker hasn't yet flipped to ``NEEDS_PERMISSION`` — e.g.
-        ``AskUserQuestion``'s question dialog never fires a Notification
+        interception when something interactive is on screen but the
+        state tracker hasn't flipped out of ``RUNNING`` — e.g.
+        ``AskUserQuestion``'s question dialog fires no Notification
         hook (cursor+silence fallback flips state up to 5 s later), and
-        slash-command pickers (``/resume``, ``/mcp``, ``/agents``) leave
-        state in ``RUNNING`` forever while the picker is open.  Without
-        this gate ↑/↓ would be stolen for history recall instead of
-        navigating the picker.
+        slash-command pickers (``/resume``, ``/mcp``, ``/agents``,
+        ``/config``, ``/effort``, ``/model``, …) fire no hook at all
+        and leave state ``RUNNING`` for the entire time they're open.
 
-        Strict ``is_dialog_certain`` check + tail-only scan (same
-        pattern as the proactive dialog detection in
-        ``_handle_idle_output``) so ambient response text mentioning
-        "Enter to select" / "Esc to cancel" in the middle of the
-        screen doesn't false-pass arrows through.  ORs in the lenient
-        ``is_picker_screen`` to catch slash-command pickers that use a
-        different verb pair (``Esctoclose``/``Entertoconfirm``/
-        ``Typetosearch``) than the permission-dialog footer.
+        Two complementary checks:
+
+        1. **Permission-dialog footer** — strict ``is_dialog_certain``
+           on the compact form of the last 5 non-blank rows.  Catches
+           the standard ``Entertoselect`` + ``Esctocancel`` permission
+           dialog and the ``❯1.`` numbered-menu cursor.  Kept strict
+           because the same predicate gates state transitions where
+           false positives stick state in ``needs_permission`` for 60 s.
+
+        2. **Idle prompt absent** — provider's ``is_idle_prompt_visible``
+           checks for the standard idle input-box structure at the
+           bottom of the screen.  When that structure is gone,
+           *something* is taking it over — a slash-command picker, the
+           trust dialog at startup, a permission dialog that didn't
+           match the strict footer, etc.  This is structural so new
+           Claude pickers are caught without enumerating their footer
+           text.  Providers that don't implement detection inherit the
+           default True (assume idle visible) — their behaviour is
+           determined entirely by check #1, matching the legacy path.
 
         Returns False for providers with no ``dialog_patterns``
         (Codex / Cursor today) — they have no PTY-based dialog
@@ -1910,8 +1921,9 @@ class CLIStateTracker:
             all_lines = self._get_display_lines()
         filled = [ln for ln in all_lines if ln.strip()]
         tail_compact = ''.join(filled[-5:]).replace(' ', '')
-        return (self._provider.is_dialog_certain(tail_compact)
-                or self._provider.is_picker_screen(tail_compact))
+        if self._provider.is_dialog_certain(tail_compact):
+            return True
+        return not self._provider.is_idle_prompt_visible(filled)
 
     def get_prompt_output(self) -> str:
         """Return PTY output from the last permission/input prompt.
