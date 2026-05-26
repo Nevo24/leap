@@ -8,6 +8,8 @@ import glob
 import json
 import os
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -180,6 +182,37 @@ IDE.application.invokeLater {{
         pass
 
 
+def _server_alive_via_socket(sock_path: Path) -> bool:
+    """Liveness probe that survives PID reuse across reboots.
+
+    ``os.kill(pid, 0)`` only tests whether *some* process holds that
+    PID — it cannot distinguish a live Leap server from any random
+    process the kernel handed the old PID to after a reboot.  The
+    authoritative test is to ``connect()`` to the Unix socket: a dead
+    server can't accept connections even if a new process inherited
+    its PID number.
+
+    Mirrors the ``_server_alive`` semantics in ``scripts/leap-resume.py``
+    (Unix-socket connect probe with a 500 ms timeout).  Returns False
+    on any error: missing socket file, not a socket, connection
+    refused, or connection timeout.
+    """
+    try:
+        st = sock_path.stat()
+    except OSError:
+        return False
+    if not stat.S_ISSOCK(st.st_mode):
+        return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.5)
+    try:
+        s.connect(str(sock_path))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def _jetbrains_sweep_stale_tabs(
     storage_dir: Path,
     ide_name: str,
@@ -248,18 +281,17 @@ def _jetbrains_sweep_stale_tabs(
                 # tab (force-quit leftover) gets renamed to bare,
                 # freeing the name for our OSC to claim a moment later.
                 continue
-            # Verify the recorded PID is actually alive — ``kill -9``
-            # leaves the meta file lingering with no live server, and
-            # without this check the stale tab would be protected.
-            # ``os.kill(pid, 0)`` raises ProcessLookupError when the
-            # PID is gone; treat that as "session is dead, meta is
-            # garbage, tab is stale".
-            pid = data.get('pid')
-            if isinstance(pid, int) and pid > 0:
-                try:
-                    os.kill(pid, 0)
-                except (ProcessLookupError, OSError):
-                    continue
+            # Verify the recorded server is actually accepting
+            # connections.  A PID-only check (``os.kill(pid, 0)``)
+            # cannot distinguish a live Leap server from an unrelated
+            # process the kernel reassigned the old PID to after a
+            # reboot — in that scenario the dead session's tab would
+            # stay protected and the ``lps <tag>`` prefix would never
+            # clear.  Connecting to ``<tag>.sock`` is authoritative:
+            # if nobody is listening, the session is dead regardless
+            # of which process is holding the PID.
+            if not _server_alive_via_socket(sockets_dir / f'{tag}.sock'):
+                continue
             live_tags.append(tag)
 
     # Format the allow-list as a Groovy Set literal.  Empty list is
