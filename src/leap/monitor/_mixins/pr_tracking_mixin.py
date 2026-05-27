@@ -18,7 +18,9 @@ from leap.monitor.dialogs.add_local_dialog import AddLocalDialog
 from leap.monitor.dialogs.resume_session_dialog import ResumeSessionDialog
 from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import (
-    load_github_config, load_gitlab_config, save_pinned_sessions,
+    load_github_config, load_gitlab_config,
+    remove_pinned_session_tag, update_pinned_session_field,
+    write_pinned_session_entry,
 )
 from leap.monitor.pr_tracking.git_utils import (
     ParsedProjectUrl, SCMType, detect_default_branch, get_git_remote_info,
@@ -219,7 +221,7 @@ class PRTrackingMixin(_Base):
         pin = self._pinned_sessions.get(tag)
         if pin and pin.get('pr_tracked'):
             pin['pr_tracked'] = False
-            save_pinned_sessions(self._pinned_sessions)
+            update_pinned_session_field(tag, 'pr_tracked', False)
 
         # If server is dead AND the row has no remaining PR data
         # (no PR Branch keeper), remove the row entirely.  Otherwise
@@ -243,7 +245,7 @@ class PRTrackingMixin(_Base):
                     self._close_client(tag, session.get('client_pid'))
 
             self._pinned_sessions.pop(tag, None)
-            save_pinned_sessions(self._pinned_sessions)
+            remove_pinned_session_tag(tag)
             self._deleted_tags.add(tag)
             self.sessions = [s for s in self.sessions if s['tag'] != tag]
             self._cleanup_row_state(tag)
@@ -286,7 +288,7 @@ class PRTrackingMixin(_Base):
                         'pr_title', 'pr_url', 'pr_tracked'):
                 pin.pop(key, None)
             pin['branch'] = ''
-            save_pinned_sessions(self._pinned_sessions)
+            write_pinned_session_entry(tag, pin)
 
         # Invalidate the pr_branch cell cache
         self._cell_cache.pop((tag, 'pr_branch'), None)
@@ -333,13 +335,13 @@ class PRTrackingMixin(_Base):
                 'pr_tracked': True,
             })
             self._pinned_sessions[tag] = pin
-            save_pinned_sessions(self._pinned_sessions)
+            write_pinned_session_entry(tag, pin)
         else:
             # No context but PR found (e.g. auto-reconnect) — persist flag
             pin = self._pinned_sessions.get(tag)
             if pin and not pin.get('pr_tracked'):
                 pin['pr_tracked'] = True
-                save_pinned_sessions(self._pinned_sessions)
+                update_pinned_session_field(tag, 'pr_tracked', True)
 
         self._show_status(f"PR found for '{tag}' — tracking started")
         self._tracked_tags.add(tag)
@@ -990,7 +992,7 @@ class PRTrackingMixin(_Base):
             'project_path': '',
             'ide': '',
         }
-        save_pinned_sessions(self._pinned_sessions)
+        write_pinned_session_entry(tag, self._pinned_sessions[tag])
         self._show_status(f"Added row '{tag}' from PR: {details.source_branch}")
         self._refresh_and_show_row(tag)
         self._start_tracking(tag)
@@ -1034,7 +1036,7 @@ class PRTrackingMixin(_Base):
             'project_path': '',
             'ide': '',
         }
-        save_pinned_sessions(self._pinned_sessions)
+        write_pinned_session_entry(tag, self._pinned_sessions[tag])
         commit_suffix = f" @ {parsed.commit[:8]}" if parsed.commit else ""
         self._show_status(f"Added row '{tag}' from project: {project_name}{commit_suffix}")
 
@@ -1090,7 +1092,7 @@ class PRTrackingMixin(_Base):
                 'project_path': '',
                 'ide': '',
             }
-            save_pinned_sessions(self._pinned_sessions)
+            write_pinned_session_entry(tag, self._pinned_sessions[tag])
             self._show_status(f"Added row '{tag}' (clone from {remote_info.project_path})")
 
             # Start before refresh — see _add_row_from_project_url for why.
@@ -1110,7 +1112,7 @@ class PRTrackingMixin(_Base):
                 'project_path': str(path),
                 'ide': '',
             }
-            save_pinned_sessions(self._pinned_sessions)
+            write_pinned_session_entry(tag, self._pinned_sessions[tag])
             self._show_status(f"Added row '{tag}' from local path: {path.name}")
 
             # Start before refresh — see _add_row_from_resume for why.

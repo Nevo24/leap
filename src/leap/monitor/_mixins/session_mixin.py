@@ -17,7 +17,9 @@ from leap.utils.socket_utils import send_socket_request
 from leap.monitor.session_manager import (
     is_client_lock_held, load_session_metadata, read_client_pid, session_exists,
 )
-from leap.monitor.pr_tracking.config import save_monitor_prefs, save_pinned_sessions
+from leap.monitor.pr_tracking.config import (
+    remove_pinned_session_tag, save_monitor_prefs, write_pinned_session_entry,
+)
 from leap.monitor.scm_polling import BackgroundCallWorker
 from leap.monitor.monitor_utils import _remove_client_lock
 from leap.monitor.navigation import (
@@ -49,7 +51,6 @@ class SessionMixin(_Base):
             Merged session list sorted by tag.
         """
         active_by_tag = {s['tag']: s for s in active_sessions}
-        changed = False
 
         # Auto-pin all active sessions (skip explicitly deleted ones).
         # Merge with existing pin data to preserve PR-pinned fields
@@ -89,10 +90,15 @@ class SessionMixin(_Base):
             }
             if self._pinned_sessions.get(tag) != pin_data:
                 self._pinned_sessions[tag] = pin_data
-                changed = True
-
-        if changed:
-            save_pinned_sessions(self._pinned_sessions)
+                # Per-tag upsert (not a whole-state save) so we don't
+                # clobber recent server-side ``auto_send_mode`` writes
+                # for OTHER tags whose updates the monitor's in-memory
+                # cache hasn't seen yet.  The helper also discards
+                # ``pin_data['auto_send_mode']`` in favour of disk's
+                # value when disk has one — keeps the server the source
+                # of truth for that field even when ``s`` reflects a
+                # slightly stale socket snapshot.
+                write_pinned_session_entry(tag, pin_data)
 
         # Prune deleted tags that are no longer active (server fully gone)
         self._deleted_tags -= self._deleted_tags - set(active_by_tag.keys())
@@ -166,12 +172,14 @@ class SessionMixin(_Base):
                     'scm_type': pin.get('scm_type'),
                 })
 
-        # Remove dead rows without PR tracking
-        if tags_to_remove:
-            for tag in tags_to_remove:
-                self._pinned_sessions.pop(tag, None)
-                self._cleanup_row_state(tag)
-            save_pinned_sessions(self._pinned_sessions)
+        # Remove dead rows without PR tracking — per-tag removals so
+        # we don't write the whole in-memory map back (would risk
+        # clobbering concurrent server-side ``auto_send_mode`` writes
+        # for tags we're keeping).
+        for tag in tags_to_remove:
+            self._pinned_sessions.pop(tag, None)
+            self._cleanup_row_state(tag)
+            remove_pinned_session_tag(tag)
 
         # Include any active sessions not yet pinned (shouldn't happen, but safe)
         pinned_tags = set(self._pinned_sessions.keys())
@@ -412,7 +420,7 @@ class SessionMixin(_Base):
             # zombie rows if shutdown is slow
             if will_remove:
                 self._pinned_sessions.pop(tag, None)
-                save_pinned_sessions(self._pinned_sessions)
+                remove_pinned_session_tag(tag)
                 self._deleted_tags.add(tag)
 
         self._show_status(f"Closing server '{tag}'...")
@@ -549,7 +557,7 @@ class SessionMixin(_Base):
         if not session or session.get('server_pid') is not None:
             return  # Server is running — keep the row
         self._pinned_sessions.pop(tag, None)
-        save_pinned_sessions(self._pinned_sessions)
+        remove_pinned_session_tag(tag)
         self._deleted_tags.add(tag)
         self.sessions = [s for s in self.sessions if s['tag'] != tag]
         self._cleanup_row_state(tag)
@@ -558,7 +566,7 @@ class SessionMixin(_Base):
     def _remove_pinned_session(self, tag: str) -> None:
         """Remove a pinned session and clean up all tracking state."""
         self._pinned_sessions.pop(tag, None)
-        save_pinned_sessions(self._pinned_sessions)
+        remove_pinned_session_tag(tag)
 
         # Clean up PR tracking (skip prompt — _delete_row already
         # prompted; skip UI refresh — we do it ourselves at the end so

@@ -146,6 +146,209 @@ class TestUpdatePinnedSessionField:
         assert data['goodtag'] == {'auto_send_mode': 'pause'}
 
 
+class TestWritePinnedSessionEntry:
+    """``write_pinned_session_entry`` is the targeted upsert used by every
+    monitor-side write that isn't a pure field flip.
+
+    The critical invariant: server-owned ``auto_send_mode`` on disk is
+    preserved across monitor writes that ship a stale in-memory value.
+    Without this, ``_merge_sessions``-style writes could re-open the
+    cross-session leak by overwriting a fresh server-side toggle of
+    another tag's mode.
+    """
+
+    def test_creates_file_when_missing(self, pinned_file: Path) -> None:
+        assert not pinned_file.exists()
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/x',
+        })
+        assert json.loads(pinned_file.read_text()) == {
+            'mytag': {'tag': 'mytag', 'project_path': '/x'},
+        }
+
+    def test_creates_entry_when_tag_missing(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({
+            'othertag': {'project_path': '/o', 'auto_send_mode': 'always'},
+        }))
+        pr_config.write_pinned_session_entry('mytag', {'project_path': '/x'})
+        data = json.loads(pinned_file.read_text())
+        assert data['mytag'] == {'project_path': '/x'}
+        assert data['othertag'] == {
+            'project_path': '/o', 'auto_send_mode': 'always',
+        }
+
+    def test_replaces_existing_entry(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({
+            'mytag': {'tag': 'mytag', 'project_path': '/x', 'ide': 'Vim'},
+        }))
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/y', 'branch': 'main',
+        })
+        # Replaced — no 'ide' anymore.
+        assert json.loads(pinned_file.read_text())['mytag'] == {
+            'tag': 'mytag', 'project_path': '/y', 'branch': 'main',
+        }
+
+    def test_preserves_disk_auto_send_mode_over_callers(
+        self, pinned_file: Path,
+    ) -> None:
+        """Core invariant — disk's ``auto_send_mode`` wins over the
+        caller's stale in-memory copy.  Without this, a monitor refresh
+        that includes a tag's ``pin_data`` carrying an old
+        ``auto_send_mode`` would clobber a fresh server-side toggle."""
+        pinned_file.write_text(json.dumps({
+            'mytag': {'project_path': '/x', 'auto_send_mode': 'always'},
+        }))
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/x',
+            'auto_send_mode': 'pause',  # stale!
+        })
+        # Disk's 'always' won.
+        assert json.loads(pinned_file.read_text())['mytag']['auto_send_mode'] == 'always'
+
+    def test_uses_callers_auto_send_mode_if_disk_lacks_one(
+        self, pinned_file: Path,
+    ) -> None:
+        """If disk has no ``auto_send_mode`` yet (fresh entry), accept
+        the caller's value so the server's snapshot at session start
+        actually reaches disk."""
+        pinned_file.write_text(json.dumps({
+            'mytag': {'project_path': '/x'},  # no auto_send_mode
+        }))
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/x', 'auto_send_mode': 'always',
+        })
+        assert json.loads(pinned_file.read_text())['mytag']['auto_send_mode'] == 'always'
+
+    def test_preserves_other_tags_byte_for_byte(
+        self, pinned_file: Path,
+    ) -> None:
+        """The cross-session-leak guard: writing one tag must not touch
+        any other tag's pin entry on disk."""
+        pinned_file.write_text(json.dumps({
+            'A': {'auto_send_mode': 'pause', 'project_path': '/a'},
+            'B': {'auto_send_mode': 'always', 'project_path': '/b', 'branch': 'main'},
+        }))
+        pr_config.write_pinned_session_entry('A', {
+            'tag': 'A', 'project_path': '/a-new',
+        })
+        data = json.loads(pinned_file.read_text())
+        # A updated, A's disk auto_send_mode preserved.
+        assert data['A'] == {
+            'tag': 'A', 'project_path': '/a-new', 'auto_send_mode': 'pause',
+        }
+        # B untouched.
+        assert data['B'] == {
+            'auto_send_mode': 'always', 'project_path': '/b', 'branch': 'main',
+        }
+
+    def test_invalid_utf8_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_bytes(b'\xff\xfe{"mytag": {}}')
+        pr_config.write_pinned_session_entry('mytag', {'project_path': '/x'})
+
+    def test_corrupt_json_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_text('{not valid')
+        pr_config.write_pinned_session_entry('mytag', {'project_path': '/x'})
+
+    def test_non_dict_root_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps([]))
+        pr_config.write_pinned_session_entry('mytag', {'project_path': '/x'})
+
+    def test_noop_when_disk_already_matches(
+        self, pinned_file: Path,
+    ) -> None:
+        """No fsync when disk's tag entry already equals the computed
+        ``new_entry``.  Important because ``_merge_sessions`` can fire
+        this helper many times per refresh; without the short-circuit
+        each idle refresh costs one fsync per tag."""
+        pinned_file.write_text(json.dumps({
+            'mytag': {'tag': 'mytag', 'project_path': '/x', 'auto_send_mode': 'pause'},
+        }))
+        original_mtime = pinned_file.stat().st_mtime_ns
+        # Caller's entry happens to compute to identical new_entry once
+        # the helper merges in disk's ``auto_send_mode``.
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/x', 'auto_send_mode': 'pause',
+        })
+        assert pinned_file.stat().st_mtime_ns == original_mtime
+
+    def test_recovers_from_corrupt_disk(self, pinned_file: Path) -> None:
+        """Pre-fix ``save_pinned_sessions`` overwrote the disk
+        unconditionally — a corrupt file would self-heal after one
+        write.  Post-fix targeted writes were initially silent on
+        corrupt disk, which left the file broken forever (the monitor's
+        in-memory state could never reach disk again).  The recovery
+        path treats a corrupt file as empty so the next write produces
+        a valid JSON file with at least the current tag's entry."""
+        pinned_file.write_text('{not valid json')
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/x',
+        })
+        # Disk now parses + has our entry.
+        assert json.loads(pinned_file.read_text()) == {
+            'mytag': {'tag': 'mytag', 'project_path': '/x'},
+        }
+
+    def test_recovers_from_invalid_utf8(self, pinned_file: Path) -> None:
+        """Same recovery path for ``UnicodeDecodeError`` (also a
+        ``ValueError``)."""
+        pinned_file.write_bytes(b'\xff\xfe{"mytag": {}}')
+        pr_config.write_pinned_session_entry('mytag', {
+            'tag': 'mytag', 'project_path': '/x',
+        })
+        assert json.loads(pinned_file.read_text()) == {
+            'mytag': {'tag': 'mytag', 'project_path': '/x'},
+        }
+
+
+class TestRemovePinnedSessionTag:
+    """``remove_pinned_session_tag`` is the targeted removal for monitor-
+    side deletions (user closed/deleted a row, dead-row cleanup in
+    ``_merge_sessions``, etc.)."""
+
+    def test_removes_the_tag(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({
+            'mytag': {'auto_send_mode': 'pause'},
+        }))
+        pr_config.remove_pinned_session_tag('mytag')
+        assert json.loads(pinned_file.read_text()) == {}
+
+    def test_preserves_other_tags(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({
+            'A': {'auto_send_mode': 'pause', 'project_path': '/a'},
+            'B': {'auto_send_mode': 'always', 'project_path': '/b'},
+        }))
+        pr_config.remove_pinned_session_tag('A')
+        data = json.loads(pinned_file.read_text())
+        assert 'A' not in data
+        assert data['B'] == {'auto_send_mode': 'always', 'project_path': '/b'}
+
+    def test_noop_when_file_missing(self, pinned_file: Path) -> None:
+        assert not pinned_file.exists()
+        pr_config.remove_pinned_session_tag('mytag')
+        # Must not have created a file just to remove from it.
+        assert not pinned_file.exists()
+
+    def test_noop_when_tag_missing(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({'other': {'project_path': '/o'}}))
+        original_mtime = pinned_file.stat().st_mtime_ns
+        pr_config.remove_pinned_session_tag('mytag')
+        # Tag wasn't there — no rewrite (mtime stable).
+        assert pinned_file.stat().st_mtime_ns == original_mtime
+
+    def test_invalid_utf8_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_bytes(b'\xff\xfe{"mytag": {}}')
+        pr_config.remove_pinned_session_tag('mytag')
+
+    def test_corrupt_json_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_text('{not valid')
+        pr_config.remove_pinned_session_tag('mytag')
+
+    def test_non_dict_root_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps([]))
+        pr_config.remove_pinned_session_tag('mytag')
+
+
 class TestLoadPinnedSessions:
     def test_returns_empty_when_file_missing(self, pinned_file: Path) -> None:
         assert pr_config.load_pinned_sessions() == {}

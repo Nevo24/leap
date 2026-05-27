@@ -664,6 +664,30 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
     return {}
 
 
+def _safe_load_pinned() -> dict[str, Any]:
+    """Read ``pinned_sessions.json`` and return its content as a dict.
+
+    Returns ``{}`` if the file is missing, corrupt, mis-encoded, or has
+    a non-dict root.  Used by the targeted writers below — by treating
+    a corrupt file as empty rather than raising, the NEXT write
+    overwrites the corruption with a valid file (recovering the user's
+    disk state).  Pre-fix, ``save_pinned_sessions`` overwrote
+    unconditionally, so corrupt files self-healed after one write;
+    without this helper, post-fix targeted writers would skip the write
+    on corrupt disk and leave the file broken forever.
+    """
+    if not PINNED_SESSIONS_FILE.exists():
+        return {}
+    try:
+        with open(PINNED_SESSIONS_FILE, 'r') as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            return loaded
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
 def update_pinned_session_field(tag: str, field: str, value: Any) -> None:
     """Targeted read-modify-write of a single field on a single pin entry.
 
@@ -674,20 +698,14 @@ def update_pinned_session_field(tag: str, field: str, value: Any) -> None:
     own ``auto_send_mode`` between the monitor's last ``_merge_sessions``
     refresh and this toggle.
 
-    Re-reads the file, mutates only the requested ``field`` on the
+    Re-reads the file (via ``_safe_load_pinned`` so a corrupt file is
+    treated as empty), mutates only the requested ``field`` on the
     requested ``tag`` entry, writes back atomically.  Creates the file /
     entry if missing; coerces a non-dict entry to a fresh dict.  Silent
-    on corrupt / mis-encoded files — the toggle's in-memory effect is
-    still observed; only the disk cache fails to update, which
-    ``_merge_sessions`` will reconcile on its next pass.
+    on write failures.
     """
     try:
-        pinned: dict[str, Any] = {}
-        if PINNED_SESSIONS_FILE.exists():
-            with open(PINNED_SESSIONS_FILE, 'r') as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                pinned = loaded
+        pinned = _safe_load_pinned()
         entry = pinned.get(tag, {})
         if not isinstance(entry, dict):
             entry = {}
@@ -697,9 +715,85 @@ def update_pinned_session_field(tag: str, field: str, value: Any) -> None:
         pinned[tag] = entry
         atomic_write_json(PINNED_SESSIONS_FILE, pinned)
     except (OSError, ValueError):
+        # ``_safe_load_pinned`` already absorbs read-side ValueError;
+        # the only remaining ValueError path is ``json.dump`` (circular
+        # refs, etc.) inside atomic_write_json, which would indicate a
+        # programming error.  Swallowing it here matches the rest of
+        # the pin-file helpers' "best-effort write, don't crash callers"
+        # contract — the toggle still has its in-memory effect.
         pass
 
 
-def save_pinned_sessions(sessions: dict[str, dict[str, Any]]) -> None:
-    """Save pinned sessions to storage."""
-    atomic_write_json(PINNED_SESSIONS_FILE, sessions)
+def write_pinned_session_entry(tag: str, entry: dict[str, Any]) -> None:
+    """Atomic per-tag upsert that preserves disk-only fields.
+
+    The cross-session leak this guards against: ``auto_send_mode`` is
+    the only field the server writes to ``pinned_sessions.json`` (via
+    ``LeapServer._save_pinned_auto_send_mode``).  Any monitor-side write
+    that goes through ``save_pinned_sessions(self._pinned_sessions)``
+    sends the monitor's WHOLE in-memory map to disk — which can stomp a
+    fresh server-side ``auto_send_mode`` write for some OTHER tag that
+    the monitor's ``_merge_sessions`` refresh hasn't picked up yet.
+
+    To eliminate that race, monitor-side writes must be per-tag.  This
+    helper does the targeted upsert:
+
+    * Re-reads the pin file (gets disk's current state including any
+      server-side writes since the monitor's last refresh).
+    * Replaces ONLY the requested tag's entry with ``entry``.
+    * Preserves disk's ``auto_send_mode`` for the tag unless ``entry``
+      itself includes one — the server is the source of truth for
+      ``auto_send_mode``, so a monitor-side write that ships a stale
+      in-memory ``auto_send_mode`` would re-open the leak.  Per-session
+      toggle of the mode goes through ``update_pinned_session_field``
+      (which DOES set it explicitly), not through this helper.
+    * Writes back atomically; other tags' disk state is preserved
+      byte-for-byte.
+
+    Silent on corrupt / mis-encoded files — falls through and the next
+    ``_merge_sessions`` refresh reconciles.
+    """
+    try:
+        pinned = _safe_load_pinned()
+        disk_entry = pinned.get(tag, {})
+        new_entry: dict[str, Any] = {
+            k: v for k, v in entry.items() if k != 'auto_send_mode'
+        }
+        # Server is the source of truth for ``auto_send_mode`` — always
+        # carry disk's value over the caller's (possibly stale)
+        # in-memory copy.  ``update_pinned_session_field`` is the only
+        # legitimate writer of this field from the monitor side.
+        if isinstance(disk_entry, dict) and 'auto_send_mode' in disk_entry:
+            new_entry['auto_send_mode'] = disk_entry['auto_send_mode']
+        elif 'auto_send_mode' in entry:
+            new_entry['auto_send_mode'] = entry['auto_send_mode']
+        # Short-circuit when disk already matches — avoids an
+        # unnecessary fsync on no-op refreshes (e.g., monitor's
+        # ``_merge_sessions`` rebuilding the same ``pin_data`` that
+        # differs from in-memory only in fields the helper strips, so
+        # the on-disk result is identical to what's already there).
+        if pinned.get(tag) == new_entry:
+            return
+        pinned[tag] = new_entry
+        atomic_write_json(PINNED_SESSIONS_FILE, pinned)
+    except (OSError, ValueError):
+        pass
+
+
+def remove_pinned_session_tag(tag: str) -> None:
+    """Atomic per-tag removal.
+
+    Re-reads the pin file (via ``_safe_load_pinned`` so a corrupt file
+    is treated as empty), drops the requested tag, writes back
+    atomically.  Other tags' disk state is preserved byte-for-byte.
+    Silent on write failure.  Skips the write when the tag isn't on
+    disk — no point in rewriting the file just to remove nothing.
+    """
+    try:
+        pinned = _safe_load_pinned()
+        if tag not in pinned:
+            return
+        pinned.pop(tag, None)
+        atomic_write_json(PINNED_SESSIONS_FILE, pinned)
+    except (OSError, ValueError):
+        pass

@@ -19,7 +19,9 @@ from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QStyle, QVBoxLayout,
 )
 
-from leap.monitor.pr_tracking.config import save_pinned_sessions
+from leap.monitor.pr_tracking.config import (
+    update_pinned_session_field, write_pinned_session_entry,
+)
 from leap.monitor.pr_tracking.git_utils import detect_default_branch, resolve_ssh_alias
 from leap.monitor.navigation import (
     find_jetbrains_app, is_ide_app, open_terminal_with_command,
@@ -268,7 +270,7 @@ class ServerLauncher:
         new_host_url = f'{scheme}://{resolved}'
         pinned['host_url'] = new_host_url
         try:
-            save_pinned_sessions(self._w._pinned_sessions)
+            update_pinned_session_field(tag, 'host_url', new_host_url)
             logger.debug("Migrated host_url alias for tag %s: %s -> %s",
                          tag, host_only, resolved)
         except Exception:
@@ -1108,7 +1110,7 @@ class ServerLauncher:
         # Save local project path for future use
         pinned['project_path'] = str(project_dir)
         self._w._pinned_sessions[tag] = pinned
-        save_pinned_sessions(self._w._pinned_sessions)
+        write_pinned_session_entry(tag, pinned)
 
         preferred_ide = self._w._prefs.get('default_terminal')
         self._open_leap_in_terminal(tag, preferred_ide, str(project_dir))

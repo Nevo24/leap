@@ -182,6 +182,26 @@ class TestSavePinnedAutoSendMode:
         # Must not raise.
         LeapServer._save_pinned_auto_send_mode('mytag', 'always')
 
+    def test_recovers_from_corrupt_disk(self, storage: Path) -> None:
+        """Corrupt pin file used to stay corrupt forever — every
+        subsequent ``_save_pinned_auto_send_mode`` call bailed out on
+        the json.load exception.  Now we treat a corrupt file as empty
+        and proceed with the write, so the next toggle / session start
+        produces a valid pin file again."""
+        (storage / 'pinned_sessions.json').write_text('{not valid')
+        LeapServer._save_pinned_auto_send_mode('mytag', 'always')
+        assert _read_pinned(storage) == {
+            'mytag': {'auto_send_mode': 'always'},
+        }
+
+    def test_recovers_from_invalid_utf8(self, storage: Path) -> None:
+        """Same recovery path for non-UTF-8 garbage."""
+        (storage / 'pinned_sessions.json').write_bytes(b'\xff\xfe{"a": 1}')
+        LeapServer._save_pinned_auto_send_mode('mytag', 'always')
+        assert _read_pinned(storage) == {
+            'mytag': {'auto_send_mode': 'always'},
+        }
+
 
 # --------------------------------------------------------------------------
 # Regression guard: the server's set_auto_send_mode handler MUST NOT

@@ -382,20 +382,28 @@ class LeapServer:
         the hook would fall back to global, defeating the snapshot.
         """
         pinned_file = STORAGE_DIR / "pinned_sessions.json"
-        # Catch ``ValueError`` (covers ``UnicodeDecodeError`` and
-        # ``json.JSONDecodeError``) and ``OSError`` so a corrupt or
-        # mis-encoded pin file can't crash the server's ``__init__``
-        # snapshot path.  On any error we silently skip the persist —
-        # the in-memory mode is still correct; only the disk cache is
-        # stale, and the hook will fall back to global on the next
-        # tool call rather than crash.
+        # Inner try/except around the json.load — if the file is corrupt
+        # or mis-encoded, treat it as empty and proceed with the write.
+        # Without this, a corrupt pin file would stay corrupt forever:
+        # the snapshot at __init__ would silently fail, the hook would
+        # read the same corrupt file and fall back to global, and no
+        # subsequent toggle could heal the disk (every write would
+        # re-read the corrupt file and bail out).  Pre-fix
+        # ``save_pinned_sessions`` overwrote unconditionally, so corrupt
+        # files self-healed after one write — this preserves that
+        # recovery semantic at the targeted-write granularity.  The
+        # outer ``except OSError`` still swallows write-side failures
+        # (disk full, permission denied) without crashing __init__.
         try:
             pinned: dict[str, Any] = {}
             if pinned_file.exists():
-                with open(pinned_file, 'r') as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    pinned = loaded
+                try:
+                    with open(pinned_file, 'r') as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        pinned = loaded
+                except (OSError, ValueError):
+                    pass
             entry = pinned.get(tag, {})
             if not isinstance(entry, dict):
                 entry = {}

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -59,10 +59,14 @@ class _FakeMonitor(SessionMixin):
 
 @pytest.fixture
 def no_disk_write(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stop ``save_pinned_sessions`` from touching the real .storage dir."""
+    """Stop the targeted pin writers from touching the real .storage dir."""
     monkeypatch.setattr(
-        'leap.monitor._mixins.session_mixin.save_pinned_sessions',
-        lambda _sessions: None,
+        'leap.monitor._mixins.session_mixin.write_pinned_session_entry',
+        lambda _tag, _entry: None,
+    )
+    monkeypatch.setattr(
+        'leap.monitor._mixins.session_mixin.remove_pinned_session_tag',
+        lambda _tag: None,
     )
 
 
@@ -225,3 +229,106 @@ class TestPreservesOtherFields:
         assert pin['scm_type'] == 'gitlab'
         # PR-pinned branch must come from existing pin, not from `s`.
         assert pin['branch'] == 'feature-x'
+
+
+# --------------------------------------------------------------------------
+# Helper-call regression guard.  The in-memory assertions above pass even
+# if the disk write is silently dropped — so if a future refactor
+# replaces ``write_pinned_session_entry`` with a no-op (or, worse, with
+# the old full-state ``save_pinned_sessions``), the existing tests
+# wouldn't catch it.  These tests assert that the per-tag helper is
+# actually invoked with the right args.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def record_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, MagicMock]:
+    """Replace the targeted helpers with MagicMocks so tests can assert
+    on their call args."""
+    write_mock = MagicMock()
+    remove_mock = MagicMock()
+    monkeypatch.setattr(
+        'leap.monitor._mixins.session_mixin.write_pinned_session_entry',
+        write_mock,
+    )
+    monkeypatch.setattr(
+        'leap.monitor._mixins.session_mixin.remove_pinned_session_tag',
+        remove_mock,
+    )
+    return {'write': write_mock, 'remove': remove_mock}
+
+
+class TestHelpersAreCalled:
+    def test_new_session_triggers_write_entry(
+        self, record_writes: dict[str, MagicMock],
+    ) -> None:
+        """When _merge_sessions adds a new pin, it must call the per-tag
+        upsert helper (not the legacy full-state save)."""
+        m = _FakeMonitor(pinned={})
+        active = [_make_active(tag='mytag', auto_send_mode='pause')]
+        m._merge_sessions(active)
+        assert record_writes['write'].call_count == 1
+        call_tag, call_entry = record_writes['write'].call_args.args
+        assert call_tag == 'mytag'
+        assert call_entry['tag'] == 'mytag'
+        assert call_entry['auto_send_mode'] == 'pause'
+        assert record_writes['remove'].call_count == 0
+
+    def test_dead_row_triggers_remove_tag(
+        self, record_writes: dict[str, MagicMock],
+    ) -> None:
+        """When _merge_sessions removes a dead row, it must call the
+        per-tag removal helper, not write the whole map."""
+        m = _FakeMonitor(pinned={
+            'deadtag': {
+                'tag': 'deadtag',
+                'project_path': '/old',
+                'auto_send_mode': 'pause',
+            },
+        })
+        # No active sessions → deadtag is unreferenced → gets removed.
+        m._merge_sessions([])
+        record_writes['remove'].assert_called_once_with('deadtag')
+        # And no spurious upsert.
+        assert record_writes['write'].call_count == 0
+
+    def test_unchanged_session_no_helpers_called(
+        self, record_writes: dict[str, MagicMock],
+    ) -> None:
+        """No-op refresh — the in-memory pin already matches the live
+        socket data, so no disk write should fire."""
+        m = _FakeMonitor(pinned={
+            'mytag': {
+                'tag': 'mytag',
+                'project_path': '/Users/x/proj',
+                'ide': 'JetBrains',
+                'branch': 'main',
+                'cli_provider': 'claude',
+                'auto_send_mode': 'pause',
+            },
+        })
+        active = [_make_active(tag='mytag', auto_send_mode='pause')]
+        m._merge_sessions(active)
+        assert record_writes['write'].call_count == 0
+        assert record_writes['remove'].call_count == 0
+
+    def test_multiple_changed_sessions_each_get_own_write(
+        self, record_writes: dict[str, MagicMock],
+    ) -> None:
+        """Two new sessions → two per-tag upserts (not one batch save).
+        The whole point: each tag writes independently so a concurrent
+        server-side write for tag B can't be clobbered by the monitor
+        writing tag A."""
+        m = _FakeMonitor(pinned={})
+        active = [
+            _make_active(tag='A', auto_send_mode='pause'),
+            _make_active(tag='B', auto_send_mode='always'),
+        ]
+        m._merge_sessions(active)
+        assert record_writes['write'].call_count == 2
+        called_tags = {
+            call.args[0] for call in record_writes['write'].call_args_list
+        }
+        assert called_tags == {'A', 'B'}
