@@ -25,7 +25,7 @@ from leap.monitor.leap_sender import prepend_to_leap_queue, send_to_leap_session
 from leap.monitor.pr_tracking.base import PRState
 from leap.monitor.pr_tracking.config import (
     get_dock_enabled, get_notification_prefs,
-    load_saved_presets, save_pinned_sessions,
+    load_saved_presets, update_pinned_session_field,
 )
 from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name
 from leap.cli_providers.states import AutoSendMode, CLIState
@@ -1793,10 +1793,19 @@ class TableBuilderMixin(_Base):
             if s['tag'] == tag:
                 s['auto_send_mode'] = mode
                 break
-        # Persist in pinned sessions so dead rows survive refresh cycles
+        # Persist in pinned sessions so dead rows survive refresh cycles.
+        # Use the targeted ``update_pinned_session_field`` instead of
+        # ``save_pinned_sessions(self._pinned_sessions)`` — the latter
+        # writes the monitor's WHOLE in-memory ``_pinned_sessions`` to
+        # disk and would silently overwrite OTHER tags' recent
+        # server-side ``auto_send_mode`` writes (e.g., another session
+        # toggled via client between our last ``_merge_sessions``
+        # refresh and this toggle).  Per-session toggles must stay
+        # per-session — the cross-session leak the original fix closed
+        # would otherwise re-open through this back door.
         if tag in self._pinned_sessions:
             self._pinned_sessions[tag]['auto_send_mode'] = mode
-            save_pinned_sessions(self._pinned_sessions)
+            update_pinned_session_field(tag, 'auto_send_mode', mode)
         # Invalidate cache so next refresh rebuilds with new mode
         self._cell_cache.pop((tag, 'queue'), None)
         if response and response.get('status') == 'ok':

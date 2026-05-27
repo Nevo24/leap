@@ -664,6 +664,42 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
     return {}
 
 
+def update_pinned_session_field(tag: str, field: str, value: Any) -> None:
+    """Targeted read-modify-write of a single field on a single pin entry.
+
+    Used in narrow contexts (currently: monitor's ``_set_auto_send_mode``)
+    where a full ``save_pinned_sessions(self._pinned_sessions)`` would risk
+    overwriting OTHER tags' disk state with the monitor's stale in-memory
+    cache — e.g., when a different session's server has just written its
+    own ``auto_send_mode`` between the monitor's last ``_merge_sessions``
+    refresh and this toggle.
+
+    Re-reads the file, mutates only the requested ``field`` on the
+    requested ``tag`` entry, writes back atomically.  Creates the file /
+    entry if missing; coerces a non-dict entry to a fresh dict.  Silent
+    on corrupt / mis-encoded files — the toggle's in-memory effect is
+    still observed; only the disk cache fails to update, which
+    ``_merge_sessions`` will reconcile on its next pass.
+    """
+    try:
+        pinned: dict[str, Any] = {}
+        if PINNED_SESSIONS_FILE.exists():
+            with open(PINNED_SESSIONS_FILE, 'r') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                pinned = loaded
+        entry = pinned.get(tag, {})
+        if not isinstance(entry, dict):
+            entry = {}
+        if entry.get(field) == value:
+            return
+        entry[field] = value
+        pinned[tag] = entry
+        atomic_write_json(PINNED_SESSIONS_FILE, pinned)
+    except (OSError, ValueError):
+        pass
+
+
 def save_pinned_sessions(sessions: dict[str, dict[str, Any]]) -> None:
     """Save pinned sessions to storage."""
     atomic_write_json(PINNED_SESSIONS_FILE, sessions)

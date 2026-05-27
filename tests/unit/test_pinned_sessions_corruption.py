@@ -48,6 +48,104 @@ def pinned_file(
 # --------------------------------------------------------------------------
 
 
+class TestUpdatePinnedSessionField:
+    """``update_pinned_session_field`` does a targeted read-modify-write so
+    a monitor-side toggle of one tag's ``auto_send_mode`` can't silently
+    overwrite OTHER tags' recent server-side writes via the monitor's
+    stale in-memory cache.
+
+    Without it, the original cross-session leak would re-open through the
+    monitor: ``_set_auto_send_mode`` used to call
+    ``save_pinned_sessions(self._pinned_sessions)`` which writes the
+    WHOLE in-memory map.  If another session's server had just written
+    its ``auto_send_mode`` between the last refresh and now, that
+    server's write was lost.  Per-session toggles must stay
+    per-session — that means PER-TAG WRITES.
+    """
+
+    def test_creates_file_when_missing(self, pinned_file: Path) -> None:
+        assert not pinned_file.exists()
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+        assert json.loads(pinned_file.read_text()) == {
+            'mytag': {'auto_send_mode': 'always'},
+        }
+
+    def test_creates_entry_when_tag_missing(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({
+            'othertag': {'project_path': '/x', 'auto_send_mode': 'pause'},
+        }))
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+        data = json.loads(pinned_file.read_text())
+        assert data['mytag'] == {'auto_send_mode': 'always'}
+        assert data['othertag'] == {'project_path': '/x', 'auto_send_mode': 'pause'}
+
+    def test_preserves_other_tags(self, pinned_file: Path) -> None:
+        """The core regression guard: toggling tag A must not touch
+        tag B's pin entry on disk."""
+        pinned_file.write_text(json.dumps({
+            'A': {'auto_send_mode': 'pause', 'project_path': '/a'},
+            'B': {'auto_send_mode': 'always', 'project_path': '/b', 'branch': 'main'},
+        }))
+        pr_config.update_pinned_session_field('A', 'auto_send_mode', 'always')
+        data = json.loads(pinned_file.read_text())
+        assert data['A']['auto_send_mode'] == 'always'
+        assert data['B'] == {
+            'auto_send_mode': 'always', 'project_path': '/b', 'branch': 'main',
+        }
+
+    def test_preserves_other_fields_in_same_entry(
+        self, pinned_file: Path,
+    ) -> None:
+        pinned_file.write_text(json.dumps({
+            'mytag': {
+                'auto_send_mode': 'pause',
+                'project_path': '/x',
+                'ide': 'JetBrains',
+                'branch': 'main',
+            },
+        }))
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+        assert json.loads(pinned_file.read_text())['mytag'] == {
+            'auto_send_mode': 'always',
+            'project_path': '/x',
+            'ide': 'JetBrains',
+            'branch': 'main',
+        }
+
+    def test_noop_when_value_matches(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps({
+            'mytag': {'auto_send_mode': 'always', 'extra': 1},
+        }))
+        original_mtime = pinned_file.stat().st_mtime_ns
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+        assert pinned_file.stat().st_mtime_ns == original_mtime
+
+    def test_invalid_utf8_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_bytes(b'\xff\xfe{"mytag": {}}')
+        # Must not raise.
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+
+    def test_corrupt_json_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_text('{not valid')
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+
+    def test_non_dict_root_does_not_raise(self, pinned_file: Path) -> None:
+        pinned_file.write_text(json.dumps([]))
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+
+    def test_non_dict_entry_replaced(self, pinned_file: Path) -> None:
+        """If the entry is hand-edited to a string, replace it with a
+        fresh dict carrying just the field — better than crashing."""
+        pinned_file.write_text(json.dumps({
+            'mytag': 'not-a-dict',
+            'goodtag': {'auto_send_mode': 'pause'},
+        }))
+        pr_config.update_pinned_session_field('mytag', 'auto_send_mode', 'always')
+        data = json.loads(pinned_file.read_text())
+        assert data['mytag'] == {'auto_send_mode': 'always'}
+        assert data['goodtag'] == {'auto_send_mode': 'pause'}
+
+
 class TestLoadPinnedSessions:
     def test_returns_empty_when_file_missing(self, pinned_file: Path) -> None:
         assert pr_config.load_pinned_sessions() == {}
