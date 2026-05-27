@@ -62,6 +62,15 @@ class SessionMixin(_Base):
             # For PR-pinned rows, preserve the PR branch as source of truth
             # so we can detect when the local branch drifts.
             is_pr_pinned = bool(existing.get('remote_project_path'))
+            # ``auto_send_mode``: the live server is the source of truth
+            # (in-memory may have been updated by a client toggle since
+            # disk was last read).  Including it explicitly in pin_data
+            # closes a race where the server snapshotted the mode to
+            # disk at __init__ but the monitor's stale in-memory
+            # ``existing`` lacked the field — without this, the very
+            # first auto-pin write blew away the server's snapshot, and
+            # the Claude PermissionRequest hook fell back to global for
+            # the rest of the session.
             pin_data = {**existing,
                 'tag': tag,
                 'project_path': s.get('project_path') or '',
@@ -72,6 +81,11 @@ class SessionMixin(_Base):
                     else s.get('branch') or ''
                 ),
                 'cli_provider': s.get('cli_provider') or DEFAULT_PROVIDER,
+                'auto_send_mode': (
+                    s.get('auto_send_mode')
+                    or existing.get('auto_send_mode')
+                    or AutoSendMode.PAUSE
+                ),
             }
             if self._pinned_sessions.get(tag) != pin_data:
                 self._pinned_sessions[tag] = pin_data

@@ -636,6 +636,12 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
     Returns:
         Dict mapping tag to session info dict with keys:
         tag, project_path, ide, branch.
+
+    Tolerates a corrupt or mis-encoded file (``ValueError`` covers
+    both ``json.JSONDecodeError`` and ``UnicodeDecodeError``) and skips
+    non-dict tag entries during the mr→pr migration so a hand-edited
+    file with a stray string/int value can't crash the monitor at
+    startup.
     """
     if not PINNED_SESSIONS_FILE.exists():
         return {}
@@ -645,13 +651,15 @@ def load_pinned_sessions() -> dict[str, dict[str, Any]]:
         if isinstance(data, dict):
             migrated = False
             for tag, session in data.items():
+                if not isinstance(session, dict):
+                    continue
                 if any(k in session for k in ('mr_title', 'mr_url', 'mr_tracked', 'mr_branch')):
                     _migrate_mr_to_pr_keys(session)
                     migrated = True
             if migrated:
                 atomic_write_json(PINNED_SESSIONS_FILE, data)
             return data
-    except (json.JSONDecodeError, OSError):
+    except (OSError, ValueError):
         pass
     return {}
 

@@ -39,7 +39,7 @@ from leap.utils.atomic_write import atomic_write_json
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, NOTE_IMAGES_DIR, QUEUE_IMAGES_DIR,
     STORAGE_DIR, POLL_INTERVAL, TITLE_RESET_INTERVAL,
-    ensure_storage_dirs, load_settings, save_settings,
+    ensure_storage_dirs, load_settings,
 )
 from leap.utils.menu import extract_menu_options
 from leap.utils.terminal import (
@@ -122,9 +122,28 @@ class LeapServer:
         self.metadata = SessionMetadata(tag, SOCKET_DIR)
         self.socket_handler = SocketHandler(self.socket_path, self._handle_message)
 
-        # State tracking — per-session pinned mode overrides global default
+        # State tracking — per-session pinned mode overrides global default.
+        # Snapshot the resolved mode back to the pin so subsequent changes
+        # to the global default (via the Settings dialog) don't retroactively
+        # flip this session's auto-approve behavior at the hook layer — the
+        # Claude PermissionRequest hook re-reads from disk every tool call
+        # and falls back to global when the pin lacks ``auto_send_mode``,
+        # so an unsnapshotted session would silently inherit later global
+        # writes.  After the snapshot, only ``set_auto_send_mode`` for this
+        # tag (per-session toggle) can change this session's mode.
         global_mode = load_settings().get('auto_send_mode', AutoSendMode.PAUSE)
+        # Defensive coerce — a hand-edited settings.json with a non-string
+        # value (e.g. ``"auto_send_mode": 42``) would otherwise propagate
+        # through ``_load_pinned_auto_send_mode``'s ``default`` parameter
+        # straight into ``CLIStateTracker.auto_send_mode``, leaving the
+        # whole auto-send subsystem in a state where neither PAUSE nor
+        # ALWAYS comparisons ever match.
+        if global_mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
+            global_mode = AutoSendMode.PAUSE
         pinned_mode = self._load_pinned_auto_send_mode(tag, global_mode)
+        if pinned_mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
+            pinned_mode = AutoSendMode.PAUSE
+        self._save_pinned_auto_send_mode(tag, pinned_mode)
         self.state = CLIStateTracker(
             signal_file=SOCKET_DIR / f"{tag}.signal",
             auto_send_mode=pinned_mode,
@@ -324,30 +343,68 @@ class LeapServer:
 
     @staticmethod
     def _load_pinned_auto_send_mode(tag: str, default: str) -> str:
-        """Read auto_send_mode from pinned sessions if set for this tag."""
+        """Read auto_send_mode from pinned sessions if set for this tag.
+
+        Symmetric with ``_save_pinned_auto_send_mode`` — tolerates a
+        non-dict root (corrupt file or future schema migration) and
+        non-dict tag entries (hand-edited file).  Important because
+        this is on the server's ``__init__`` snapshot path: a crash
+        here would block session startup, not just lose the per-tag
+        mode.
+        """
         pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        # Catch ``ValueError`` (covers ``UnicodeDecodeError`` and
+        # ``json.JSONDecodeError``) and ``OSError`` so a corrupt or
+        # mis-encoded pin file can't crash the server's ``__init__``
+        # snapshot path — falling back to ``default`` is fine here.
         try:
             if pinned_file.exists():
                 with open(pinned_file, 'r') as f:
-                    pinned = json.load(f)
-                entry = pinned.get(tag, {})
-                return entry.get('auto_send_mode', default)
-        except (json.JSONDecodeError, OSError):
+                    loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    return default
+                entry = loaded.get(tag, {})
+                if not isinstance(entry, dict):
+                    return default
+                mode = entry.get('auto_send_mode', default)
+                return mode if isinstance(mode, str) and mode else default
+        except (OSError, ValueError):
             pass
         return default
 
     @staticmethod
     def _save_pinned_auto_send_mode(tag: str, mode: str) -> None:
-        """Persist auto_send_mode in pinned sessions for this tag."""
+        """Persist auto_send_mode in pinned sessions for this tag.
+
+        Creates the file / tag entry if missing — without this, a server
+        started before the monitor (or used from the CLI client with no
+        monitor running) would silently drop the per-session value and
+        the hook would fall back to global, defeating the snapshot.
+        """
         pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        # Catch ``ValueError`` (covers ``UnicodeDecodeError`` and
+        # ``json.JSONDecodeError``) and ``OSError`` so a corrupt or
+        # mis-encoded pin file can't crash the server's ``__init__``
+        # snapshot path.  On any error we silently skip the persist —
+        # the in-memory mode is still correct; only the disk cache is
+        # stale, and the hook will fall back to global on the next
+        # tool call rather than crash.
         try:
+            pinned: dict[str, Any] = {}
             if pinned_file.exists():
                 with open(pinned_file, 'r') as f:
-                    pinned = json.load(f)
-                if tag in pinned:
-                    pinned[tag]['auto_send_mode'] = mode
-                    atomic_write_json(pinned_file, pinned)
-        except (json.JSONDecodeError, OSError):
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    pinned = loaded
+            entry = pinned.get(tag, {})
+            if not isinstance(entry, dict):
+                entry = {}
+            if entry.get('auto_send_mode') == mode:
+                return
+            entry['auto_send_mode'] = mode
+            pinned[tag] = entry
+            atomic_write_json(pinned_file, pinned)
+        except (OSError, ValueError):
             pass
 
     def _handle_message(self, msg: dict[str, Any]) -> dict[str, Any]:
@@ -548,9 +605,14 @@ class LeapServer:
             if mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
                 return {'status': 'error', 'message': f"Invalid mode: {mode}. Use 'pause' or 'always'."}
             self.state.auto_send_mode = mode
-            settings = load_settings()
-            settings['auto_send_mode'] = mode
-            save_settings(settings)
+            # Per-session toggle MUST NOT touch the global default —
+            # the Claude PermissionRequest hook re-reads from disk on
+            # every tool call and falls back to global when the pin
+            # lacks ``auto_send_mode``, so writing global here would
+            # silently flip auto-approve behavior in every other open
+            # session that hadn't been individually toggled.  Global
+            # writes are reserved for the Settings dialog ("Default for
+            # new sessions").
             self._save_pinned_auto_send_mode(self.tag, mode)
             # If switching to ALWAYS while already at a permission
             # prompt, auto-approve immediately rather than waiting

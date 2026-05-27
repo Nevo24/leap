@@ -164,15 +164,22 @@ def load_settings() -> dict[str, Any]:
 
     Returns:
         Dictionary of settings with defaults for missing keys.
+
+    Tolerates corrupt or mis-encoded files: ``ValueError`` covers
+    ``json.JSONDecodeError`` and ``UnicodeDecodeError``, and the
+    isinstance guard handles a non-dict root.  This sits on the server's
+    ``__init__`` path (auto-send mode default lookup) so a crash here
+    would block session startup entirely.
     """
     defaults = get_default_settings()
     try:
         if SETTINGS_FILE.exists():
             with open(SETTINGS_FILE, 'r') as f:
                 user_settings = json.load(f)
+            if isinstance(user_settings, dict):
                 # Merge with defaults (user settings override defaults)
                 return {**defaults, **user_settings}
-    except (json.JSONDecodeError, OSError):
+    except (OSError, ValueError):
         pass
     return defaults
 

@@ -50,18 +50,24 @@ def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[
         return None
 
     if cfg_path.exists():
+        # ``ValueError`` covers ``UnicodeDecodeError`` and
+        # ``json.JSONDecodeError``; ``OSError`` covers I/O.  isinstance
+        # guard tolerates a non-dict config (corrupt or hand-edited)
+        # without crashing — this is on ``__init__``'s critical path
+        # via ``validate_pinned_session``.
         try:
             with open(cfg_path, 'r') as f:
                 cfg = json.load(f)
-            if cfg.get('token_mode') == 'env_var':
-                var_name = cfg.get(token_key, '')
-                token = os.environ.get(var_name) if var_name else None
-            else:
-                token = cfg.get(token_key)
-        except (json.JSONDecodeError, OSError):
+            if isinstance(cfg, dict):
+                if cfg.get('token_mode') == 'env_var':
+                    var_name = cfg.get(token_key, '')
+                    token = os.environ.get(var_name) if var_name else None
+                else:
+                    token = cfg.get(token_key)
+        except (OSError, ValueError):
             pass
 
-    if not token:
+    if not token or not isinstance(token, str):
         return None
 
     scheme_end = host_url.index('://') + 3
@@ -88,14 +94,22 @@ def validate_pinned_session(tag: str, storage_dir: Path) -> None:
     if not pinned_file.exists():
         return
 
+    # ``ValueError`` covers ``json.JSONDecodeError`` and
+    # ``UnicodeDecodeError`` (corrupt or mis-encoded file); ``OSError``
+    # covers I/O failures.  isinstance guards below tolerate a non-dict
+    # root or non-dict tag entry — without them a hand-edited file would
+    # crash ``__init__`` via this validator instead of failing gracefully.
     try:
         with open(pinned_file, 'r') as f:
             pinned_sessions = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (OSError, ValueError):
+        return
+
+    if not isinstance(pinned_sessions, dict):
         return
 
     entry = pinned_sessions.get(tag)
-    if not entry:
+    if not entry or not isinstance(entry, dict):
         return
 
     pinned_project = entry.get('remote_project_path')
