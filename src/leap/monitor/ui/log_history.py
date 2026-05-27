@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -28,17 +28,22 @@ class LogEntry:
     url: Optional[str] = None
 
 
-class LogHistory:
-    """In-memory log of status messages."""
+class LogHistory(QObject):
+    """In-memory log of status messages with an ``entry_added`` signal."""
 
-    def __init__(self) -> None:
+    entry_added = pyqtSignal(object)  # LogEntry
+
+    def __init__(self, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
         self._entries: List[LogEntry] = []
 
     def append(self, message: str, url: Optional[str] = None) -> None:
-        """Append a new status message."""
-        self._entries.append(LogEntry(
+        """Append a new status message and notify listeners."""
+        entry = LogEntry(
             timestamp=time.time(), message=message, url=url,
-        ))
+        )
+        self._entries.append(entry)
+        self.entry_added.emit(entry)
 
     def entries(self) -> List[LogEntry]:
         """Return all log entries."""
@@ -71,6 +76,32 @@ def _bumped_subtle_color() -> str:
         alpha = min(255, int(int(parts[3]) * 2.5))
         return f'rgba({parts[0]}, {parts[1]}, {parts[2]}, {alpha})'
     return bs
+
+
+_MONO_OPEN = '<span style="font-family: \'Menlo\', \'Monaco\', monospace;">'
+
+
+def _entry_html(entry: LogEntry) -> str:
+    """Render a LogEntry to the HTML string used by ``_LogEntryRow``."""
+    t = current_theme()
+    ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
+    msg = html.escape(entry.message)
+    if msg.startswith('[Notification]'):
+        rest = msg[len('[Notification]'):]
+        msg = (
+            f'<span style="color: {t.accent_orange};">'
+            f'[Notification]</span>{rest}'
+        )
+    elif _is_error_message(msg):
+        msg = f'<span style="color: {t.accent_red};">{msg}</span>'
+    line = f'[{ts}] {msg}'
+    if entry.url:
+        escaped_url = html.escape(entry.url)
+        line += (
+            f' <a href="{escaped_url}" '
+            f'style="color: {t.accent_blue};">(link)</a>'
+        )
+    return _MONO_OPEN + line + '</span>'
 
 
 class _LogEntryRow(QFrame):
@@ -107,6 +138,7 @@ class LogHistoryDialog(ZoomMixin, QDialog):
     """Dialog showing all past status messages with timestamps."""
 
     _DEFAULT_SIZE = (800, 400)
+    _EMPTY_TEXT = 'No status messages yet.'
 
     def __init__(self, log_history: LogHistory, parent: QWidget = None) -> None:
         super().__init__(parent)
@@ -116,56 +148,31 @@ class LogHistoryDialog(ZoomMixin, QDialog):
         if saved:
             self.resize(saved[0], saved[1])
 
-        layout = QVBoxLayout(self)
+        self._log_history = log_history
         self._entry_labels: List[QLabel] = []
+        self._empty_label: Optional[QLabel] = None
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        layout = QVBoxLayout(self)
 
-        container = QWidget()
-        vlayout = QVBoxLayout(container)
-        vlayout.setContentsMargins(0, 0, 0, 0)
-        vlayout.setSpacing(0)
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+
+        self._container = QWidget()
+        self._vlayout = QVBoxLayout(self._container)
+        self._vlayout.setContentsMargins(0, 0, 0, 0)
+        self._vlayout.setSpacing(0)
 
         entries = log_history.entries()
         if entries:
-            t = current_theme()
-            mono_open = (
-                '<span style="font-family: \'Menlo\', \'Monaco\', monospace;">'
-            )
             for entry in entries:
-                ts = time.strftime('%H:%M:%S', time.localtime(entry.timestamp))
-                msg = html.escape(entry.message)
-                if msg.startswith('[Notification]'):
-                    rest = msg[len('[Notification]'):]
-                    msg = (
-                        f'<span style="color: {t.accent_orange};">'
-                        f'[Notification]</span>{rest}'
-                    )
-                elif _is_error_message(msg):
-                    msg = f'<span style="color: {t.accent_red};">{msg}</span>'
-                line = f'[{ts}] {msg}'
-                if entry.url:
-                    escaped_url = html.escape(entry.url)
-                    line += (
-                        f' <a href="{escaped_url}" '
-                        f'style="color: {t.accent_blue};">(link)</a>'
-                    )
-                row = _LogEntryRow(mono_open + line + '</span>', container)
-                self._entry_labels.append(row.label)
-                vlayout.addWidget(row)
-            vlayout.addStretch(1)
+                self._append_row(entry)
         else:
-            empty = QLabel('No status messages yet.', container)
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setContentsMargins(20, 20, 20, 20)
-            self._entry_labels.append(empty)
-            vlayout.addWidget(empty)
-            vlayout.addStretch(1)
+            self._show_empty_label()
+        self._vlayout.addStretch(1)
 
-        scroll.setWidget(container)
-        layout.addWidget(scroll, 1)
+        self._scroll.setWidget(self._container)
+        layout.addWidget(self._scroll, 1)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -181,7 +188,60 @@ class LogHistoryDialog(ZoomMixin, QDialog):
             content_widgets=lambda: list(self._entry_labels),
         )
 
+        log_history.entry_added.connect(self._on_entry_added)
+
+    def _show_empty_label(self) -> None:
+        """Insert the 'no messages yet' placeholder at the top of the list."""
+        self._empty_label = QLabel(self._EMPTY_TEXT, self._container)
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setContentsMargins(20, 20, 20, 20)
+        self._entry_labels.append(self._empty_label)
+        # Insert at position 0 so it ends up above the trailing stretch
+        self._vlayout.insertWidget(0, self._empty_label)
+
+    def _append_row(self, entry: LogEntry) -> None:
+        """Build a row for *entry* and insert it before the trailing stretch."""
+        row = _LogEntryRow(_entry_html(entry), self._container)
+        self._entry_labels.append(row.label)
+        # Insert before the trailing stretch (which is always the last item
+        # once it has been added; before that, we're in initial build so
+        # appending also works — count() with no stretch == row count).
+        insert_at = self._vlayout.count()
+        last_item = self._vlayout.itemAt(insert_at - 1) if insert_at else None
+        if last_item is not None and last_item.spacerItem() is not None:
+            insert_at -= 1
+        self._vlayout.insertWidget(insert_at, row)
+
+    def _on_entry_added(self, entry: LogEntry) -> None:
+        """Slot: a new entry was appended to the underlying ``LogHistory``."""
+        # Drop the empty placeholder on the first real entry
+        if self._empty_label is not None:
+            try:
+                self._entry_labels.remove(self._empty_label)
+            except ValueError:
+                pass
+            self._empty_label.setParent(None)
+            self._empty_label.deleteLater()
+            self._empty_label = None
+
+        sb = self._scroll.verticalScrollBar()
+        was_at_bottom = sb.value() >= sb.maximum() - 4
+
+        self._append_row(entry)
+        # Re-apply the current zoom font size to the freshly-added label
+        # so it matches the rest (the mixin only writes on zoom events).
+        if hasattr(self, '_apply_zoom_content_font_size'):
+            self._apply_zoom_content_font_size()
+
+        if was_at_bottom:
+            # Defer until after layout so maximum() reflects the new row
+            QTimer.singleShot(0, lambda: sb.setValue(sb.maximum()))
+
     def done(self, result: int) -> None:
-        """Save dialog size on close."""
+        """Save dialog size and disconnect the live-update signal on close."""
+        try:
+            self._log_history.entry_added.disconnect(self._on_entry_added)
+        except (TypeError, RuntimeError):
+            pass
         save_dialog_geometry('log_history', self.width(), self.height())
         super().done(result)
