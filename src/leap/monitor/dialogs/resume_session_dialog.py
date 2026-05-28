@@ -138,7 +138,7 @@ class ResumeSessionDialog(ZoomMixin, QDialog):
         # Search filter
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText(
-            'Filter by tag or CLI…')
+            'Filter by tag, project, app, or CLI…')
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.textChanged.connect(self._apply_filter)
         layout.addWidget(self._search_edit)
@@ -367,7 +367,7 @@ QTableCornerButton::section {{ background: transparent; border: none; }}
             self._table.selectRow(0)
 
     def _apply_filter(self, text: str) -> None:
-        """Filter rows by substring match on tag or CLI."""
+        """Filter rows by substring match on tag, project, app, or CLI."""
         self._populate(self._filtered_rows(text))
 
     @staticmethod
@@ -384,28 +384,57 @@ QTableCornerButton::section {{ background: transparent; border: none; }}
         """Return the subset of ``self._rows`` matching *text*, sorted
         newest-first.
 
-        Tag/CLI matches come first, cwd-only matches after — typing a
-        tag fragment shouldn't be drowned out by a working-directory
-        hit on a different row.  Each priority bucket is then sorted
-        by freshness so the most recently used session always rises
-        to the top of its bucket.
+        Each row is bucketed by where the query first matches, then
+        each bucket is sorted by freshness so the most recently used
+        session rises to the top of its bucket.  Buckets, in order:
+
+        1. Tag (most specific identifier — typing a tag fragment
+           should never be drowned out by a broader match on a
+           different row)
+        2. Project (basename of ``project_path`` — usually how users
+           remember which session was which: "the leap one")
+        3. App (e.g. ``iTerm2``, ``PyCharm`` — terminal app the
+           session was last seen in)
+        4. CLI (e.g. ``claude``, ``Claude Code`` — least discriminating
+           field for most users, kept above Path so a CLI-name hit
+           still wins over an incidental path substring)
+        5. Path (full cwd — kept last because it's the longest field
+           and most likely to incidentally substring-match)
+
+        Each row appears in exactly one bucket (its highest-priority
+        match) so a tag match isn't duplicated by a coincidental path
+        match further down.
         """
         q = text.strip().lower()
         if not q:
             return sorted(self._rows, key=self._row_freshness, reverse=True)
         tag_hits: list[TagRow] = []
-        cwd_hits: list[TagRow] = []
+        project_hits: list[TagRow] = []
+        app_hits: list[TagRow] = []
+        cli_hits: list[TagRow] = []
+        path_hits: list[TagRow] = []
         for r in self._rows:
-            newest_cwd = _shorten_cwd(r.sessions[0].cwd) if r.sessions else ""
-            if (q in r.tag.lower()
-                    or q in r.cli.lower()
-                    or q in get_display_name(r.cli).lower()):
+            newest = r.sessions[0] if r.sessions else None
+            newest_cwd = _shorten_cwd(newest.cwd) if newest else ""
+            app = (newest.terminal_app or '') if newest else ''
+            project_basename = (
+                os.path.basename(newest.project_path.rstrip(os.sep))
+                if newest and newest.project_path else ''
+            )
+            if q in r.tag.lower():
                 tag_hits.append(r)
+            elif q in project_basename.lower():
+                project_hits.append(r)
+            elif q in app.lower():
+                app_hits.append(r)
+            elif (q in r.cli.lower()
+                    or q in get_display_name(r.cli).lower()):
+                cli_hits.append(r)
             elif q in newest_cwd.lower():
-                cwd_hits.append(r)
-        tag_hits.sort(key=self._row_freshness, reverse=True)
-        cwd_hits.sort(key=self._row_freshness, reverse=True)
-        return tag_hits + cwd_hits
+                path_hits.append(r)
+        for bucket in (tag_hits, project_hits, app_hits, cli_hits, path_hits):
+            bucket.sort(key=self._row_freshness, reverse=True)
+        return tag_hits + project_hits + app_hits + cli_hits + path_hits
 
     # ── Selection ─────────────────────────────────────────────────────
 
