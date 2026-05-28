@@ -9,7 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional
 
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QPainter
 from PyQt5.QtWidgets import (
     QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -18,6 +19,7 @@ from PyQt5.QtWidgets import (
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import current_theme
+from leap.monitor.ui.table_helpers import border_subtle_pen
 
 
 @dataclass
@@ -63,21 +65,6 @@ def _is_error_message(msg: str) -> bool:
     return any(kw in lower for kw in _ERROR_KEYWORDS)
 
 
-def _bumped_subtle_color() -> str:
-    """Subtle border color, alpha-bumped to match the main table's intra-group separator.
-
-    Mirrors the 2.5x alpha bump applied by ``border_subtle_pen()`` in
-    ``ui/table_helpers.py`` so the dividers in the log dialog read the
-    same weight as the lighter (intra-group) separators in the table.
-    """
-    bs = current_theme().border_subtle
-    if bs.startswith('rgba('):
-        parts = [p.strip() for p in bs[5:-1].split(',')]
-        alpha = min(255, int(int(parts[3]) * 2.5))
-        return f'rgba({parts[0]}, {parts[1]}, {parts[2]}, {alpha})'
-    return bs
-
-
 _MONO_OPEN = '<span style="font-family: \'Menlo\', \'Monaco\', monospace;">'
 
 
@@ -104,8 +91,59 @@ def _entry_html(entry: LogEntry) -> str:
     return _MONO_OPEN + line + '</span>'
 
 
+class _LogContainer(QWidget):
+    """Scroll-area container whose sizeHint respects heightForWidth.
+
+    Word-wrapped QLabels report a sizeHint that assumes a very narrow
+    width, which inflates the layout's sizeHint().height() by 3–4×.
+    QScrollArea trusts that value verbatim under setWidgetResizable=True,
+    which leaves a huge empty region below the last entry. Returning
+    layout.heightForWidth(current_width) instead pins the container to
+    the actual rendered content height.
+    """
+
+    def _hfw_height(self, fallback: int) -> int:
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            w = self.width() or fallback
+            return layout.heightForWidth(w)
+        return fallback
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        hint = super().sizeHint()
+        return QSize(hint.width(), self._hfw_height(hint.height()))
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        # QScrollArea sizes its child widget to at least minimumSizeHint.
+        # QLabel(wordWrap=True) reports a minimumSizeHint that assumes the
+        # narrowest reasonable width, which inflates the aggregated height
+        # via the layout. Anchor it to heightForWidth at the real width.
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), self._hfw_height(hint.height()))
+
+    def hasHeightForWidth(self) -> bool:  # type: ignore[override]
+        layout = self.layout()
+        if layout is not None:
+            return layout.hasHeightForWidth()
+        return super().hasHeightForWidth()
+
+    def heightForWidth(self, width: int) -> int:  # type: ignore[override]
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            return layout.heightForWidth(width)
+        return super().heightForWidth(width)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        # heightForWidth depends on the current width; tell parents to
+        # re-query our hints whenever the width changes (e.g. user
+        # resizes the dialog), so the scroll area shrinks the container
+        # back down to the new actual content height.
+        super().resizeEvent(event)
+        self.updateGeometry()
+
+
 class _LogEntryRow(QFrame):
-    """One log entry — subtle bottom border, hover highlight, word-wrapped rich text."""
+    """One log entry — subtle bottom separator, hover highlight, word-wrapped rich text."""
 
     def __init__(self, html_text: str, parent: QWidget = None) -> None:
         super().__init__(parent)
@@ -125,13 +163,23 @@ class _LogEntryRow(QFrame):
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         layout.addWidget(self.label, 1)
 
-        subtle = _bumped_subtle_color()
         hover = current_theme().hover_bg
-        # objectName-scoped so the hover/border doesn't leak to the inner QLabel
+        # objectName-scoped so the hover doesn't leak to the inner QLabel.
+        # Bottom separator is drawn in paintEvent via border_subtle_pen()
+        # so it's pixel-identical to the column separators used in the
+        # Resume dialog and the main table's intra-group dividers (QSS
+        # 1px borders render very faintly on macOS HiDPI).
         self.setStyleSheet(
-            f'QFrame#logEntryRow {{ border-bottom: 1px solid {subtle}; }}\n'
             f'QFrame#logEntryRow:hover {{ background-color: {hover}; }}\n'
         )
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setPen(border_subtle_pen())
+        y = self.height() - 1
+        painter.drawLine(0, y, self.width(), y)
+        painter.end()
 
 
 class LogHistoryDialog(ZoomMixin, QDialog):
@@ -158,7 +206,10 @@ class LogHistoryDialog(ZoomMixin, QDialog):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
 
-        self._container = QWidget()
+        # _LogContainer overrides sizeHint to use heightForWidth — see
+        # the class docstring for why the default would otherwise leave a
+        # huge empty region scrollable below the last entry.
+        self._container = _LogContainer()
         self._vlayout = QVBoxLayout(self._container)
         self._vlayout.setContentsMargins(0, 0, 0, 0)
         self._vlayout.setSpacing(0)
@@ -234,7 +285,24 @@ class LogHistoryDialog(ZoomMixin, QDialog):
             self._apply_zoom_content_font_size()
 
         if was_at_bottom:
-            # Defer until after layout so maximum() reflects the new row
+            # The new row triggers a chain of layout invalidations
+            # (insertWidget → stylesheet write from
+            # _apply_zoom_content_font_size → resizeEvent → updateGeometry)
+            # that don't all flush in a single event-loop tick.  A single
+            # singleShot(0) would read a stale sb.maximum() and leave us
+            # ~1 row short of the bottom.  rangeChanged fires whenever
+            # the scroll range actually updates — one-shot subscription
+            # snaps us to the freshly-extended bottom and unhooks.
+            def _snap_to_bottom(_min=0, _max=0, _sb=sb):
+                _sb.setValue(_sb.maximum())
+                try:
+                    _sb.rangeChanged.disconnect(_snap_to_bottom)
+                except (TypeError, RuntimeError):
+                    pass
+            sb.rangeChanged.connect(_snap_to_bottom)
+            # Belt-and-suspenders: if no rangeChanged fires (e.g. the
+            # new row didn't actually push past viewport), the timer
+            # below still does the no-op setValue.
             QTimer.singleShot(0, lambda: sb.setValue(sb.maximum()))
 
     def done(self, result: int) -> None:
