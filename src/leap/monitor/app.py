@@ -232,6 +232,12 @@ class MonitorWindow(
         super().__init__()
         self._wipe_icon_cache()
         self.sessions: list[dict] = []
+        # Substring filter for the main table — case-insensitive match on
+        # tag / project / app / CLI / path, same priority order as the
+        # Resume dialog.  Drag-drop reorder is suppressed while this is
+        # non-empty (see ``_perform_row_drag``) because the visible row
+        # index no longer maps 1:1 to ``self.sessions``.
+        self._search_query: str = ''
         self._pr_statuses: dict[str, PRStatus] = {}
         self._pr_widgets: dict[str, PulsingLabel] = {}
         self._pr_approval_widgets: dict[str, IndicatorLabel] = {}
@@ -680,6 +686,24 @@ class MonitorWindow(
             current_theme().accent_blue.encode()))
         self._add_btn.clicked.connect(self._add_row_menu)
         toolbar_layout.addWidget(self._add_btn)
+
+        # Substring filter — same priority order as the Resume dialog so
+        # the gestures feel consistent across surfaces.  Width capped so
+        # the box doesn't crowd out the sleep controls on the right; the
+        # stretch after it absorbs the remaining horizontal space.
+        self._search_edit = QLineEdit()
+        self._search_edit.setObjectName('_leapSearchEdit')
+        self._search_edit.setPlaceholderText(
+            'Filter by tag, project, app, or CLI…')
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.setToolTip(
+            'Filter rows. Matches against tag, project, app, CLI, and path '
+            '(in that priority order). Drag-drop reorder is disabled while '
+            'a filter is active.')
+        self._search_edit.setMaximumWidth(360)
+        self._search_edit.textChanged.connect(self._on_search_changed)
+        toolbar_layout.addWidget(self._search_edit)
+
         toolbar_layout.addStretch()
 
         # Right-aligned sleep-prevention group, sitting under the
@@ -1421,6 +1445,13 @@ class MonitorWindow(
         """Initiate a QDrag for row reordering."""
         if source_row < 0 or source_row >= len(self.sessions):
             return
+        # While a filter is active the table shows a subset of
+        # ``self.sessions``, so the source/target row indices the drop
+        # handler receives no longer map 1:1 to the list.  Reordering
+        # under those conditions would silently move the wrong row;
+        # bail so the user has to clear the filter first.
+        if self._search_query:
+            return
 
         tag = self.sessions[source_row]['tag']
 
@@ -1490,6 +1521,13 @@ class MonitorWindow(
         if source_row < 0 or target_row < 0:
             return
         if source_row >= len(self.sessions) or target_row >= len(self.sessions):
+            return
+        # Defence-in-depth: _perform_row_drag already short-circuits
+        # when a filter is active, so we shouldn't get here — but if a
+        # drop event somehow slips through (e.g. drag started, filter
+        # typed mid-drag), refuse rather than reorder against an index
+        # that no longer matches ``self.sessions``.
+        if self._search_query:
             return
 
         # Compute insertion index, adjusting for the pop shift

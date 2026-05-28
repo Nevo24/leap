@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QDialog, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
@@ -312,8 +313,95 @@ QTableCornerButton::section {{ background: transparent; border: none; }}
         All cells are centered horizontally + vertically per design
         request — keeps the picker visually balanced even when the
         Working-directory column stretches across the row.
+
+        When *rows* is empty AND the search box has text, render a
+        single spanned "No matches" placeholder row so the user has a
+        positive signal that their filter just didn't hit anything (vs
+        wondering if the dialog is broken).  No filter + no rows
+        leaves the table empty — the caller is expected to skip the
+        dialog entirely in that case via ``has_resumable_sessions``.
         """
+        header = self._table.horizontalHeader()
+
+        going_empty = (
+            (not rows) and getattr(self, '_was_populated', False)
+        )
+        going_populated_from_empty = (
+            bool(rows) and getattr(self, '_saved_col_modes', None) is not None
+        )
+
+        # ─── Transition: populated → empty ───────────────────────
+        # Capture widths AND modes, switch every column to Interactive,
+        # and immediately reapply the captured widths — all BEFORE any
+        # setRowCount call below.  Doing all three up-front means the
+        # upcoming setRowCount(0) (and subsequent setRowCount(1) in the
+        # placeholder branch) runs against a fully Interactive header,
+        # so Stretch/ResizeToContents can't fire and reflow the columns.
+        # The original empty-state code did the mode switch *after*
+        # setRowCount(0), by which point Stretch had already inflated
+        # PATH and shrunk the ResizeToContents columns — freezing the
+        # wrong widths regardless of subsequent setColumnWidth calls.
+        if going_empty:
+            self._saved_col_widths = [
+                self._table.columnWidth(c)
+                for c in range(self._table.columnCount())
+            ]
+            self._saved_col_modes = [
+                header.sectionResizeMode(c)
+                for c in range(self._table.columnCount())
+            ]
+            for c in range(self._table.columnCount()):
+                header.setSectionResizeMode(c, QHeaderView.Interactive)
+            for c, w in enumerate(self._saved_col_widths):
+                if 0 <= c < self._table.columnCount() and w > 0:
+                    self._table.setColumnWidth(c, w)
+
+        # Always drop any prior placeholder span/text BEFORE resizing
+        # the row count.  Cells in this dialog are pure ``QTableWidgetItem``
+        # (no ``setCellWidget`` overlays) so we don't have the
+        # bleed-through risk the main monitor table had, but stale text
+        # could still flash on transitions if we left it intact.
+        if self._table.columnSpan(0, 0) > 1:
+            self._table.setSpan(0, 0, 1, 1)
+            prior_item = self._table.item(0, 0)
+            if prior_item and prior_item.text():
+                prior_item.setText('')
+
         self._table.setRowCount(0)
+
+        if not rows:
+            self._was_populated = False
+            if self._search_edit.text().strip():
+                # All width preservation already happened in the
+                # ``going_empty`` block above (or on the previous empty
+                # tick when ``_saved_col_widths`` was first captured).
+                # Subsequent empty ticks with the same query just
+                # rebuild the placeholder row; columns are already
+                # Interactive at the saved widths from the first
+                # transition.
+                self._table.setRowCount(1)
+                total_cols = self._table.columnCount()
+                self._table.setSpan(0, 0, 1, total_cols)
+                placeholder = 'No matches'
+                item = self._table.item(0, 0)
+                if not item:
+                    item = QTableWidgetItem(placeholder)
+                    self._table.setItem(0, 0, item)
+                else:
+                    item.setText(placeholder)
+                item.setTextAlignment(Qt.AlignCenter)
+                # Strip selectable + enabled flags so the placeholder
+                # doesn't take focus, can't be selected, and won't
+                # respond to Enter / double-click.  ``_accept_if_selected``
+                # already guards against an out-of-range index, but
+                # disabling the row is cleaner UX — no hover highlight,
+                # no false sense that this is a pickable entry.
+                item.setFlags(
+                    item.flags() & ~Qt.ItemIsSelectable & ~Qt.ItemIsEnabled)
+                item.setForeground(QColor(current_theme().text_muted))
+            return
+
+        self._was_populated = True
         self._table.setRowCount(len(rows))
         for i, row in enumerate(rows):
             newest = row.sessions[0]
@@ -363,6 +451,20 @@ QTableCornerButton::section {{ background: transparent; border: none; }}
             ):
                 item.setTextAlignment(Qt.AlignCenter)
                 self._table.setItem(i, col, item)
+
+        # ─── Transition: empty → populated ───────────────────────
+        # Restore the captured resize modes now that the cells are in
+        # place.  Switching back to Stretch/ResizeToContents triggers
+        # Qt to remeasure based on the freshly-populated content, so
+        # PATH stretches into remaining space and the other columns
+        # auto-fit their data — naturally undoing the Interactive
+        # freeze we used to preserve widths during empty state.
+        if going_populated_from_empty:
+            for c, mode in enumerate(self._saved_col_modes):
+                if 0 <= c < self._table.columnCount():
+                    header.setSectionResizeMode(c, mode)
+            self._saved_col_modes = None
+
         if rows:
             self._table.selectRow(0)
 

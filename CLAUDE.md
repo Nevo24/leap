@@ -554,6 +554,17 @@ Display aliases for tags, set via right-click context menu on the Tag column. Pe
 - **Context menu**: Right-click tag cell → "Set alias" / "Rename alias" / "Remove alias" via `_show_tag_context_menu()` in `table_builder_mixin.py`
 - **Cleanup**: `_remove_pinned_session()` and `_merge_sessions()` in `session_mixin.py` delete the alias entry when a row is removed
 
+### Live Filter (Search Box)
+
+Substring filter next to the "+ Add Session" button. Same priority order and case-insensitivity as the Resume dialog's filter: Tag → Project → App → CLI → Path. Each row falls into the first bucket whose field substring-matches the query; rows that match nothing are dropped. Tag matches also check the user's alias (so a filter on an alias works the same as on the underlying tag).
+
+- **Wiring**: `QLineEdit` (`self._search_edit`) in the table toolbar; `textChanged` → `_on_search_changed` (in `table_builder_mixin.py`) → updates `self._search_query` → calls `_update_table()`.
+- **Filter execution**: `_apply_search_filter(sessions)` returns the filtered view. `_update_table` swaps `self.sessions` for the filtered list via try/finally so the rest of the table-build code path is unchanged; `_update_table_body` (split out from `_update_table`) renders against whatever the wrapper installed. Every other code path on the monitor — drag-drop, PR tracking, sleep guard — sees the full session list because the swap is undone before they read it.
+- **Manual row order survives**: each bucket appends rows in their original `self.sessions` order, so drag-drop reorder isn't reshuffled by filtering.
+- **Drag-drop disabled while filter is active**: visible row indices no longer map 1:1 to `self.sessions` when rows are hidden, so reordering would silently move the wrong session. `_perform_row_drag` and `_on_row_moved` both bail out when `self._search_query` is non-empty; user has to clear the filter first.
+- **Empty-state copy**: when the filter yields zero rows, the placeholder shows "No matching sessions" (not "No active sessions") so it's clear the filter — not the absence of servers — is what hid everything.
+- **Column-width preservation across empty round-trip**: ResizeToContents on COL_DELETE and the `_on_section_resized` redistribute handler both shrink columns when the table empties. Empty branch snapshots widths + COL_DELETE's resize mode, switches COL_DELETE to Interactive, and applies saved widths — all *before* `setRowCount(1)` / `removeCellWidget`, with `_resizing_columns = True` to block the redistribute handler. On the empty→populated transition the saved mode is restored at the start of the populated branch; the existing `resizeColumnToContents(COL_DELETE)` at the end refits the X-button widget. Same mode-toggle pattern in the Resume dialog (`_populate`), where every column gets switched to Interactive on the populated→empty transition and restored on the way back. Not persisted across monitor restarts — filter clears every launch.
+
 ## Slack Integration
 
 Optional Slack app for bidirectional Leap ↔ Slack communication. Each session gets a thread in the user's DM.

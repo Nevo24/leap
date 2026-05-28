@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QHBoxLayout, QInputDialog, QLabel,
+    QApplication, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
 from PyQt5.QtCore import QPoint, Qt
@@ -516,6 +516,80 @@ class TableBuilderMixin(_Base):
         self._cache_cell(tag, 'server_branch', branch_state,
                          row, self.COL_SERVER_BRANCH)
 
+    def _on_search_changed(self, text: str) -> None:
+        """Update the search filter and rebuild the table.
+
+        Filter is intentionally stateless across monitor restarts —
+        clears every time the app is launched so the user isn't
+        surprised by a stale filter hiding sessions they expect to
+        see.  The substring match itself happens in
+        ``_apply_search_filter`` and is wired into ``_update_table``
+        via a try/finally swap so the rest of the table-build code
+        path is unchanged.
+        """
+        self._search_query = text.strip()
+        self._update_table()
+
+    def _apply_search_filter(
+        self, sessions: list[dict],
+    ) -> list[dict]:
+        """Return *sessions* filtered by ``self._search_query``.
+
+        Mirrors the Resume dialog's filter: rows are bucketed by
+        where the query first matches (priority order Tag → Project
+        → App → CLI → Path), then each bucket is sorted by the
+        position the row already held in *sessions* so the user's
+        manual row order survives the filter.  Empty query short-
+        circuits to the input list unchanged.
+
+        Match targets per row:
+
+        * Tag — the raw tag and any user-set alias (so a filter on
+          an alias's first character behaves the same as a filter
+          on the underlying tag's).
+        * Project — ``s['project']`` (already the git project name,
+          basename-equivalent — same data the Project column shows).
+        * App — ``s['ide']`` (the terminal/IDE the session was last
+          launched from).
+        * CLI — ``s['cli_provider']`` AND its display name (e.g.
+          ``claude`` and ``Claude Code`` both match).
+        * Path — ``s['project_path']`` (full git root; kept last
+          because it's the longest field and most likely to match
+          incidentally on a fragment that means something else).
+        """
+        q = self._search_query.lower()
+        if not q:
+            return sessions
+        tag_hits: list[tuple[int, dict]] = []
+        project_hits: list[tuple[int, dict]] = []
+        app_hits: list[tuple[int, dict]] = []
+        cli_hits: list[tuple[int, dict]] = []
+        path_hits: list[tuple[int, dict]] = []
+        aliases = getattr(self, '_aliases', {}) or {}
+        for i, s in enumerate(sessions):
+            tag = s.get('tag', '') or ''
+            alias = aliases.get(tag, '') or ''
+            project = s.get('project', '') or ''
+            ide = s.get('ide', '') or ''
+            cli = s.get('cli_provider', '') or ''
+            try:
+                cli_display = get_display_name(cli) if cli else ''
+            except Exception:
+                cli_display = ''
+            project_path = s.get('project_path', '') or ''
+            if q in tag.lower() or (alias and q in alias.lower()):
+                tag_hits.append((i, s))
+            elif q in project.lower():
+                project_hits.append((i, s))
+            elif q in ide.lower():
+                app_hits.append((i, s))
+            elif q in cli.lower() or q in cli_display.lower():
+                cli_hits.append((i, s))
+            elif q in project_path.lower():
+                path_hits.append((i, s))
+        merged = tag_hits + project_hits + app_hits + cli_hits + path_hits
+        return [s for _, s in merged]
+
     def _update_table(self) -> None:
         """Update table with current sessions.
 
@@ -528,6 +602,30 @@ class TableBuilderMixin(_Base):
         PR status widgets (PulsingLabel, IndicatorLabel) are additionally
         cached in ``_pr_widgets`` / ``_pr_approval_widgets`` to preserve
         hover popups via ``set_preserve_popup()``.
+
+        While the search box is non-empty, ``self.sessions`` is
+        temporarily swapped to the filtered subset so the rest of
+        this method's logic (row count, cell building, _row_tags
+        property) sees only the visible rows.  The swap is undone in
+        the outer ``finally`` so every other code path on the
+        monitor — drag-drop, PR tracking, sleep guard — keeps seeing
+        the full session list.
+        """
+        _full_sessions = self.sessions
+        self.sessions = self._apply_search_filter(_full_sessions)
+        try:
+            self._update_table_body()
+        finally:
+            self.sessions = _full_sessions
+
+    def _update_table_body(self) -> None:
+        """Render the table from the current ``self.sessions`` view.
+
+        Split out from ``_update_table`` so the outer wrapper can swap
+        in the filtered session view via try/finally without touching
+        the body's existing structure.  All references to
+        ``self.sessions`` inside this method are intentional — they
+        read whatever the outer wrapper installed (filtered or full).
         """
         # Hide drag-drop indicator during table refresh (safety net)
         if hasattr(self, '_drop_indicator') and self._drop_indicator:
@@ -548,6 +646,42 @@ class TableBuilderMixin(_Base):
             stale_pr_tags = set(self._pr_widgets.keys())
 
             if not self.sessions:
+                # ─── Transition: populated → empty ───────────────
+                # Snapshot widths, capture COL_DELETE's resize mode
+                # (the only non-Interactive column in this table),
+                # switch it to Interactive, and apply the saved
+                # widths — ALL before the setRowCount(1) /
+                # removeCellWidget calls below.  Doing it up-front
+                # means those calls run against a fully-Interactive
+                # header, so Qt's auto-resize can't shrink COL_DELETE
+                # when the X-button widget is removed.  We guard the
+                # setColumnWidth loop with ``_resizing_columns`` so
+                # ``_on_section_resized`` doesn't fire after each
+                # call and redistribute — without that guard, the
+                # handler treats each restored width as a fresh user
+                # resize, accumulates overflow, and caps PR_BRANCH
+                # down to 30 px (making it visually vanish).
+                if getattr(self, '_last_render_was_populated', False):
+                    self._last_populated_widths = [
+                        self.table.columnWidth(c)
+                        for c in range(self.table.columnCount())
+                    ]
+                    header = self.table.horizontalHeader()
+                    self._saved_col_delete_mode = (
+                        header.sectionResizeMode(self.COL_DELETE))
+                    header.setSectionResizeMode(
+                        self.COL_DELETE, QHeaderView.Interactive)
+                    prior_resizing = getattr(
+                        self, '_resizing_columns', False)
+                    self._resizing_columns = True
+                    try:
+                        for c, w in enumerate(self._last_populated_widths):
+                            if 0 <= c < self.table.columnCount() and w > 0:
+                                self.table.setColumnWidth(c, w)
+                    finally:
+                        self._resizing_columns = prior_resizing
+                self._last_render_was_populated = False
+
                 # All PR widgets are stale — stop pulsing and clear
                 for w in self._pr_widgets.values():
                     try:
@@ -568,7 +702,14 @@ class TableBuilderMixin(_Base):
                 self.table.setSpan(0, 0, 1, total_cols)
                 item = self.table.item(0, 0)
                 t_empty = current_theme()
-                empty_text = 'No active sessions'
+                # Distinguish "really no sessions" from "filter hid them
+                # all" — without this the user can't tell if their search
+                # missed everything or the monitor just hasn't picked up
+                # any servers yet.
+                if self._search_query:
+                    empty_text = 'No matching sessions'
+                else:
+                    empty_text = 'No active sessions'
                 if not item:
                     item = QTableWidgetItem(empty_text)
                     self.table.setItem(0, 0, item)
@@ -589,10 +730,33 @@ class TableBuilderMixin(_Base):
             if self.table.columnSpan(0, 0) > 1:
                 self.table.setSpan(0, 0, 1, 1)
                 item = self.table.item(0, 0)
-                if item and item.text() == 'No active sessions':
+                # Clear any empty-state placeholder unconditionally — the
+                # transparent X-button widget that gets layered on top of
+                # COL_DELETE doesn't fully cover the cell, so leftover text
+                # bleeds through around the button.  We check for both
+                # known placeholder strings ("No active sessions" and
+                # "No matching sessions") and any future variants by
+                # treating ANY pre-existing text on cell (0,0) as stale
+                # placeholder copy that must go.
+                if item and item.text():
                     item.setText('')
                 self.table.setRowHeight(
                     0, self.table.verticalHeader().defaultSectionSize())
+
+            # ─── Transition: empty → populated ───────────────────
+            # Restore COL_DELETE to its original resize mode (typically
+            # ResizeToContents) so the column auto-fits the X-button
+            # widgets we're about to set on each row.  We saved the
+            # original mode in the empty branch and switched COL_DELETE
+            # to Interactive to keep the saved width stable; switching
+            # back here lets the explicit ``resizeColumnToContents``
+            # call at the end of this branch and the cell-widget
+            # measurements take over.
+            saved_mode = getattr(self, '_saved_col_delete_mode', None)
+            if saved_mode is not None:
+                self.table.horizontalHeader().setSectionResizeMode(
+                    self.COL_DELETE, saved_mode)
+                self._saved_col_delete_mode = None
 
             self.table.setRowCount(new_count)
 
@@ -1524,6 +1688,11 @@ class TableBuilderMixin(_Base):
             # → zoom-down round-trip the column stays inflated.  An explicit
             # call here keeps it honest on every rebuild.
             self.table.resizeColumnToContents(self.COL_DELETE)
+            # Mark this render as populated so the next empty-state
+            # transition knows it can snapshot the current widths for
+            # later restoration.  See the matching snapshot block in
+            # the empty branch above.
+            self._last_render_was_populated = True
         finally:
             app._suppress_tooltips = tooltips_were_enabled
             self.table.setUpdatesEnabled(True)
