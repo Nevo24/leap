@@ -786,7 +786,8 @@ configure-shell:
 							CONFIGURED_IDES="$$CONFIGURED_IDES|$$IDE_NAME"; \
 						fi; \
 					else \
-						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) - skipping$(NC)"; \
+						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above).$(NC)"; \
+						echo "     Set manually in $$IDE_NAME: Settings > Tools > Terminal engine = Classic, and Advanced Settings > Terminal > Show application title."; \
 					fi; \
 				else \
 					echo "  ✓ $$IDE_NAME already configured"; \
@@ -870,7 +871,8 @@ configure-shell:
 							echo "  $(YELLOW)⚠ Please restart Android Studio for changes to take effect$(NC)"; \
 						fi; \
 					else \
-						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) - skipping$(NC)"; \
+						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above).$(NC)"; \
+						echo "     Set manually in $$IDE_NAME: Settings > Tools > Terminal engine = Classic, and Advanced Settings > Terminal > Show application title."; \
 					fi; \
 				else \
 					echo "  ✓ $$IDE_NAME already configured"; \
