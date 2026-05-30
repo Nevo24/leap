@@ -99,14 +99,22 @@ endef
 # bundle identifier + signing cert — both unchanged — so the requirement
 # above stays byte-identical and Accessibility grants survive.
 #
-# Install strategy: we try user-level rm of the existing bundle and
-# only fall back to `sudo cp -R` for the overwrite (not `sudo rm`).
-# IT-managed Macs commonly block `sudo rm` with a loud "Sudo Command
-# Blocked" message that looks like an install failure even though we
-# `|| true` past it.  `sudo cp -R` is generally allowed on the same
-# fleets and will replace every file in the bundle that codesign
-# actually sealed — so the resulting cdhash matches the fresh build
-# even if some old top-level files end up lingering as harmless cruft.
+# Install strategy: we remove the existing bundle FIRST (user rm, with a
+# `sudo rm -rf` fallback), then `cp -R` (user, with a `sudo cp -R`
+# fallback) into the now-empty location.  The removal must succeed: if it
+# doesn't, `cp -R src /Applications/` copies INTO the existing
+# `Leap Monitor.app` directory and overwrites its files IN PLACE, reusing
+# the same inodes.  macOS caches a code-signing blob per inode, so an
+# in-place overwrite leaves the kernel validating the NEW bytes against
+# the OLD cached signature → `cs_invalid_page` at runtime → the process
+# runs as `<ID of InvalidCode>` → `usernotificationsd` refuses
+# `requestAuthorization` (the app silently never registers for
+# notifications). A clean remove gives fresh inodes and a valid runtime
+# signature.  Earlier this used only `rm -rf ... || true` (no sudo): on
+# Macs where `/Applications` needs admin, that rm failed silently and
+# produced exactly this bug.  If a locked-down fleet blocks `sudo rm`
+# with "Sudo Command Blocked", we still `|| true` past it (back to the
+# old in-place behavior — no worse than before).
 #
 # Re-launch: if the Monitor was running at the start, we close it
 # before the install, then `open` the freshly-installed bundle at the
@@ -144,7 +152,8 @@ if pgrep -f "Leap Monitor.app/Contents/MacOS/Leap Monitor" > /dev/null 2>&1; the
 fi; \
 echo "$(PROMPT_PREFIX) Installing Leap Monitor.app..."; \
 if [ -d "/Applications/Leap Monitor.app" ]; then \
-	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
+	rm -rf "/Applications/Leap Monitor.app" 2>/dev/null \
+		|| sudo rm -rf "/Applications/Leap Monitor.app" 2>/dev/null || true; \
 fi; \
 INSTALL_PATH=""; \
 if cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null || sudo cp -R "$(REPO_PATH)/.dist/Leap Monitor.app" /Applications/ 2>/dev/null; then \
