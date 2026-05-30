@@ -1146,12 +1146,13 @@ class PRTrackingMixin(_Base):
             return
         cli, original_tag, sess = picked
 
-        # Refuse to resume a session that's already running under a live
-        # Leap server — the same UUID can't be loaded twice.  Ownership
-        # rule mirrors leap-resume.py: a session counts as owned by a
-        # live tag when (a) the tag has a live server (server_pid set),
-        # (b) that server's cli_provider matches the recorded cli, and
-        # (c) the session is the newest one recorded for (cli, tag).
+        # A session can't be loaded twice, so resuming one that's already
+        # live is off the table — but rather than dead-ending, offer to
+        # jump to the running session's terminal (mirrors leap-resume.py).
+        # Ownership rule: a session counts as owned by a live tag when
+        # (a) the tag has a live server (server_pid set), (b) that
+        # server's cli_provider matches the recorded cli, and (c) the
+        # session is the newest one recorded for (cli, tag).
         live_clis: dict[str, Any] = {
             s['tag']: s.get('cli_provider')
             for s in self.sessions
@@ -1164,15 +1165,24 @@ class PRTrackingMixin(_Base):
             if r.sessions and r.sessions[0].session_id == sess.session_id:
                 owners.append((r.cli, r.tag))
         if owners:
+            # Jump target is the first owning tag — for today's CLIs a
+            # session can only be live under one tag, so the list is a
+            # single entry in practice.
+            owner_tag = owners[0][1]
             tags_str = ', '.join(
                 f"'{t}' ({get_display_name(c)})" for c, t in owners)
-            QMessageBox.warning(
+            reply = QMessageBox.question(
                 self, 'Session Already Running',
                 f"This CLI session is already running under Leap tag "
                 f"{tags_str}.\n\n"
-                f"Open that row in the monitor instead of resuming "
-                f"the same session twice.",
+                f"Jump to it?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
             )
+            if reply == QMessageBox.Yes:
+                # Same "Jump to server terminal" path the Terminal button
+                # uses — navigates to the live session's terminal tab.
+                self._focus_session(owner_tag, 'server')
             return
 
         self._show_status(

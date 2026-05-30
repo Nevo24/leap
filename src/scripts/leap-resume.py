@@ -72,6 +72,19 @@ except ImportError:
     load_raw_tag_rows = None  # type: ignore
     relocate_records = None  # type: ignore
 
+# The "jump to a running session" terminal-navigation helper lives in the
+# Monitor package's ``navigation`` module.  That module itself only needs
+# pyobjc (a *core* Leap dependency) — not the PyQt5 GUI stack — and
+# ``leap.monitor.__init__`` deliberately doesn't eager-import the GUI, so
+# this import succeeds on any healthy install (GUI monitor or not).  We
+# still guard it as optional: ``None`` here means pyobjc/navigation isn't
+# importable in this environment (e.g. a broken or non-macOS install),
+# which drives a graceful fallback in :func:`main` instead of a crash.
+try:
+    from leap.monitor.navigation import find_terminal_with_title
+except ImportError:
+    find_terminal_with_title = None  # type: ignore[assignment]
+
 DIM = "\033[2m"
 BOLD = "\033[1m"
 CYAN = "\033[36m"
@@ -676,6 +689,102 @@ def _ask_cwd_choice(
         # any other key: ignore and stay on the current selection
 
 
+_JUMP_CHOICE_OPTIONS: tuple[tuple[bool, str], ...] = (
+    # Default (idx 0) is "jump" — the common intent when a user lands on
+    # a session that's already live.
+    (True,  'Yes — jump to the running session'),
+    (False, 'No — leave it running and exit'),
+)
+
+
+def _render_jump_choice(idx: int, first: bool, last_n: int = 0) -> int:
+    """Draw the Yes/No "jump to it?" picker and return the body-line count.
+
+    Mirrors the redraw protocol of :func:`_render_cwd_choice` so the next
+    call erases exactly the right region (body + header + footer).
+    """
+    if not first:
+        sys.stderr.write(f"\033[{last_n + 2}A")
+    sys.stderr.write("\033[J")
+    sys.stderr.write(f"  {BOLD}Jump to it?{RESET}\n")
+    n = 0
+    for i, (_value, label) in enumerate(_JUMP_CHOICE_OPTIONS):
+        marker = "❯" if i == idx else " "
+        if i == idx:
+            sys.stderr.write(f"  {CYAN}{marker}{RESET} {BOLD}{label}{RESET}\n")
+        else:
+            sys.stderr.write(f"  {marker} {DIM}{label}{RESET}\n")
+        n += 1
+    footer = "  ↑/↓ navigate · Enter to confirm · Esc/q to cancel"
+    sys.stderr.write(f"{DIM}{footer}{RESET}\n")
+    sys.stderr.flush()
+    return n
+
+
+def _ask_jump_to() -> bool:
+    """Arrow-key Yes/No picker: jump to the already-running session?
+
+    Defaults to Yes (the first option), matching the ↑/↓ ❯-cursor style
+    of the tag / session / cwd pickers.  Returns ``True`` to jump and
+    ``False`` to stay — an explicit "No" *and* an Esc/q/Ctrl+C/Ctrl+D
+    cancel both map to ``False`` since the safe action in every case is
+    to leave the running session untouched.
+    """
+    idx = 0
+    n = _render_jump_choice(idx, first=True)
+    while True:
+        key = _get_key()
+        if key == 'up':
+            idx = (idx - 1) % len(_JUMP_CHOICE_OPTIONS)
+            n = _render_jump_choice(idx, first=False, last_n=n)
+        elif key == 'down':
+            idx = (idx + 1) % len(_JUMP_CHOICE_OPTIONS)
+            n = _render_jump_choice(idx, first=False, last_n=n)
+        elif key == 'enter':
+            sys.stderr.write(f"\033[{n + 2}A\033[J")
+            sys.stderr.flush()
+            return _JUMP_CHOICE_OPTIONS[idx][0]
+        elif key in ('quit', 'escape'):
+            sys.stderr.write(f"\033[{n + 2}A\033[J")
+            sys.stderr.flush()
+            return False
+        # any other key: ignore and stay on the current selection
+
+
+def _jump_to_running(tag: str) -> bool:
+    """Focus the terminal tab running the live Leap server for ``tag``.
+
+    Reads the IDE / project-path / terminal-title from the session's
+    ``<tag>.meta`` file and hands them to the Monitor's
+    :func:`find_terminal_with_title`, the same helper the GUI uses to
+    navigate to a session.  Returns ``True`` when the terminal was found
+    and focused.
+
+    Callers MUST verify ``find_terminal_with_title is not None`` first —
+    it is unavailable only when pyobjc/navigation couldn't be imported
+    (a broken or non-macOS install).
+    """
+    ide: Optional[str] = None
+    project_path: Optional[str] = None
+    title = f"lps {tag}"
+    try:
+        meta = json.loads((SOCKET_DIR / f"{tag}.meta").read_text())
+    except (OSError, ValueError):
+        meta = {}
+    if isinstance(meta, dict):
+        ide = meta.get('ide')
+        project_path = meta.get('project_path')
+        title = meta.get('terminal_title') or title
+    # ``find_terminal_with_title`` swallows its own subprocess/osascript
+    # errors and returns a bool, but guard against an unexpected raise
+    # (e.g. a pyobjc/AppKit hiccup) so a navigation glitch degrades to
+    # "couldn't locate" rather than crashing the resume script.
+    try:
+        return bool(find_terminal_with_title(title, ide, project_path, title))
+    except Exception:
+        return False
+
+
 def _try_relocate(
     *,
     cli: str,
@@ -870,19 +979,53 @@ def main() -> int:
     # every live tag to have a chance to claim the session.
     raw_rows = load_raw_tag_rows(STORAGE_DIR) if load_raw_tag_rows else rows
     owners = _live_session_owners(raw_rows).get(session_id, [])
-    # Filter out the obvious self-case where the picked tag's server *is*
-    # running exactly this session — we still want to tell the user where
-    # to go.
+    # Session is already live under one (or more) Leap tags.  Rather than
+    # dead-ending with an error, offer to jump straight to the running
+    # session's terminal (default Yes); declining leaves it untouched.
     if owners:
         tags_str = ", ".join(
             f"{BOLD}{u_tag}{RESET} {DIM}({get_display_name(u_cli)}){RESET}"
             for u_cli, u_tag in owners
         )
         sys.stderr.write(
-            f"  {RED}This CLI session is already running under Leap tag "
-            f"{tags_str}{RED}.{RESET}\n"
-            f"  {DIM}Check your open terminals (or use the Leap Monitor "
-            f"app, if installed) to find it.{RESET}\n"
+            f"  {YELLOW}This CLI session is already running under Leap tag "
+            f"{tags_str}{YELLOW}.{RESET}\n"
+        )
+        # Offer to jump to the live session instead of dead-ending.  The
+        # jump target is the first owning tag — for today's CLIs a
+        # session can only be live under one tag, so the list is a
+        # single entry in practice.
+        jump_cli, jump_tag = owners[0]
+        if not _ask_jump_to():
+            sys.stderr.write(f"  {DIM}Left the running session as-is.{RESET}\n")
+            return 0
+        # User chose to jump.  Navigation needs pyobjc (a core dependency);
+        # if it couldn't be imported this install is broken or unsupported,
+        # so explain rather than failing silently.
+        if find_terminal_with_title is None:
+            sys.stderr.write(
+                f"  {YELLOW}Can't jump — terminal-navigation support isn't "
+                f"available in this environment.{RESET}\n"
+                f"  {DIM}Reinstall Leap with `make install` to restore it, "
+                f"or switch to the running session's terminal manually.{RESET}\n"
+            )
+            return 1
+        # Navigation runs synchronously and can take a moment (it may
+        # spin up / focus an IDE), so give the user feedback first —
+        # focus is about to leave this terminal.
+        sys.stderr.write(f"  {DIM}Jumping to {jump_tag}…{RESET}\n")
+        sys.stderr.flush()
+        if _jump_to_running(jump_tag):
+            sys.stderr.write(
+                f"  {GREEN}Jumped to{RESET} {_cli_label(jump_cli)} "
+                f"{BOLD}{jump_tag}{RESET}.\n"
+            )
+            return 0
+        sys.stderr.write(
+            f"  {YELLOW}Couldn't locate the terminal for Leap tag "
+            f"{BOLD}{jump_tag}{RESET}{YELLOW}.{RESET}\n"
+            f"  {DIM}It may be in a closed window — check your open "
+            f"terminals manually.{RESET}\n"
         )
         return 1
 

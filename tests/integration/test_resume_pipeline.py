@@ -935,14 +935,11 @@ class TestPickerMainExitCodes:
         _, err = capsys.readouterr()
         assert "interactive terminal" in err.lower()
 
-    def test_picked_session_held_by_live_owner_is_blocked(
-        self, tmp_path, capsys, monkeypatch,
-    ):
-        """When the user picks a session that a live Leap server under
-        a DIFFERENT tag is holding, the picker prints an error and
-        returns 1 without exec'ing into leap-main.sh.
+    def _seed_live_owner(self, picker, tmp_path, monkeypatch):
+        """Seed a session held by a live owner under a DIFFERENT tag and
+        wire the picker to pick it.  Returns nothing — leaves the picker
+        ready for ``main()`` to reach the already-running branch.
         """
-        picker = _load_picker_module(tmp_path)
         self._stub_argv(picker, monkeypatch)
         monkeypatch.setattr(picker.sys.stdin, "isatty", lambda: True,
                             raising=False)
@@ -962,12 +959,70 @@ class TestPickerMainExitCodes:
         # Mark tag-a as live — it holds the session.
         picker._live_tag_cli_map = lambda: {"tag-a": "claude"}
         picker._server_alive = lambda tag: tag == "tag-a"
+        # Fail loudly if the already-running branch ever falls through to
+        # exec'ing a fresh server — it must not.
+        monkeypatch.setattr(
+            picker.os, "execvpe",
+            lambda *a, **k: pytest.fail("execvpe should not run when jumping"),
+        )
+
+    def test_held_by_live_owner_decline_jump_exits_0(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        """Picking a session a live server already holds offers to jump;
+        declining leaves it running and exits 0 (no fresh server).
+        """
+        picker = _load_picker_module(tmp_path)
+        self._seed_live_owner(picker, tmp_path, monkeypatch)
+        monkeypatch.setattr(picker, "_ask_jump_to", lambda: False)
+
+        rc = picker.main()
+        assert rc == 0
+        _, err = capsys.readouterr()
+        assert "already running under Leap tag" in err
+        assert "tag-a" in err
+        assert "Left the running session as-is" in err
+
+    def test_held_by_live_owner_accept_jump_navigates(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        """Accepting the jump navigates to the live owner's terminal
+        (tag-a) and exits 0 — never the picked tag-b.
+        """
+        picker = _load_picker_module(tmp_path)
+        self._seed_live_owner(picker, tmp_path, monkeypatch)
+        monkeypatch.setattr(picker, "_ask_jump_to", lambda: True)
+        # Navigation available; capture the tag it's asked to jump to.
+        monkeypatch.setattr(picker, "find_terminal_with_title", object(),
+                            raising=False)
+        jumped: list[str] = []
+        monkeypatch.setattr(
+            picker, "_jump_to_running",
+            lambda tag: (jumped.append(tag) or True),
+        )
+
+        rc = picker.main()
+        assert rc == 0
+        assert jumped == ["tag-a"]
+        _, err = capsys.readouterr()
+        assert "Jumped to" in err
+
+    def test_held_by_live_owner_accept_jump_without_nav_prompts_install(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        """Accepting the jump when terminal-navigation support is
+        unavailable surfaces a clear message and exits 1.
+        """
+        picker = _load_picker_module(tmp_path)
+        self._seed_live_owner(picker, tmp_path, monkeypatch)
+        monkeypatch.setattr(picker, "_ask_jump_to", lambda: True)
+        monkeypatch.setattr(picker, "find_terminal_with_title", None,
+                            raising=False)
 
         rc = picker.main()
         assert rc == 1
         _, err = capsys.readouterr()
-        assert "already running under Leap tag" in err
-        assert "tag-a" in err
+        assert "navigation support isn't available" in err
 
     def test_session_with_missing_cwd_is_blocked(
         self, tmp_path, capsys, monkeypatch,
