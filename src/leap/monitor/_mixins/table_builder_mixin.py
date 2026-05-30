@@ -201,7 +201,7 @@ class TableBuilderMixin(_Base):
         if not entry:
             return ''
         ago = int(time.time() - entry[1])
-        return f'PR status changed {ago}s ago \u2014 click to dismiss'
+        return f'PR status changed {ago}s ago - click to dismiss'
 
     def _build_tag_cell(self, row: int, tag: str,
                         row_color: Optional[str] = None) -> None:
@@ -992,11 +992,11 @@ class TableBuilderMixin(_Base):
                             show_fire = True
 
                     state_explanations = {
-                        CLIState.IDLE: 'Waiting for input — will accept next queued message',
+                        CLIState.IDLE: 'Waiting for input - will accept next queued message',
                         CLIState.RUNNING: 'Actively processing a request',
                         CLIState.NEEDS_PERMISSION: 'Needs your permission to use a tool',
                         CLIState.NEEDS_INPUT: 'Asking you a question',
-                        CLIState.INTERRUPTED: 'Was interrupted — will accept next queued message',
+                        CLIState.INTERRUPTED: 'Was interrupted - will accept next queued message',
                     }
 
                     # Adjust status color for row background contrast
@@ -1120,7 +1120,7 @@ class TableBuilderMixin(_Base):
                                 now - self._state_changed_at[tag][1])
                             explanation += (
                                 f' (changed {ago}s ago'
-                                ' — click to dismiss)')
+                                ' - click to dismiss)')
                     if s_item:
                         s_item.setToolTip('')
                     if w:
@@ -1375,7 +1375,7 @@ class TableBuilderMixin(_Base):
                     elif not bot_running:
                         slack_btn = QPushButton('Slack')
                         slack_btn.setStyleSheet(inactive_btn_style())
-                        tip = ('Slack bot is not running — will reconnect '
+                        tip = ('Slack bot is not running - will reconnect '
                                'when started' if slack_enabled
                                else 'Start the Slack bot first')
                         slack_btn.setToolTip(tip)
@@ -1873,11 +1873,11 @@ class TableBuilderMixin(_Base):
         pause_action.setToolTip(
             'Auto-send queued messages only when the CLI is idle.\n'
             '\n'
-            '\u25cb Idle — sends next queued message\n'
-            '\u25cf Running — waits until finished\n'
-            '\u25b2 Permission — queue waits for your answer\n'
-            '\u25c6 Question — queue waits for your answer\n'
-            '\u25c7 Interrupted — waits (needs manual resume)')
+            '\u25cb Idle - sends next queued message\n'
+            '\u25cf Running - waits until finished\n'
+            '\u25b2 Permission - queue waits for your answer\n'
+            '\u25c6 Question - queue waits for your answer\n'
+            '\u25c7 Interrupted - waits (needs manual resume)')
         pause_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.PAUSE)
         )
@@ -1892,11 +1892,11 @@ class TableBuilderMixin(_Base):
             'Auto-approve permission prompts and send queued\n'
             'messages when idle.\n'
             '\n'
-            '\u25cb Idle — sends next queued message\n'
-            '\u25cf Running — waits until finished\n'
-            '\u25b2 Permission — auto-approves "Yes"\n'
-            '\u25c6 Question — queue waits for your answer\n'
-            '\u25c7 Interrupted — waits (needs manual resume)')
+            '\u25cb Idle - sends next queued message\n'
+            '\u25cf Running - waits until finished\n'
+            '\u25b2 Permission - auto-approves "Yes"\n'
+            '\u25c6 Question - queue waits for your answer\n'
+            '\u25c7 Interrupted - waits (needs manual resume)')
         always_action.triggered.connect(
             lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.ALWAYS)
         )
@@ -2381,10 +2381,10 @@ class TableBuilderMixin(_Base):
 
         if not bot_running and count:
             self._show_status(
-                f'Slack bot stopped — {count} session(s) disconnected')
+                f'Slack bot stopped - {count} session(s) disconnected')
         elif bot_running and count:
             self._show_status(
-                f'Slack bot reconnected — {count} session(s) restored')
+                f'Slack bot reconnected - {count} session(s) restored')
 
     def _toggle_slack(self, tag: str, enabled: bool) -> None:
         """Send set_slack to the Leap server to enable/disable Slack."""

@@ -1769,7 +1769,7 @@ var allProjects = ProjectManager.getInstance().getOpenProjects()
 var targetProject = null
 {project_match}
 
-// When project_path is given, only accept an exact match — never
+// When project_path is given, only accept an exact match - never
 // fall back to ``allProjects[0]`` (which is some restored-session
 // project, not what the user asked for).  When project_path is
 // empty, any open project is acceptable.
@@ -1778,7 +1778,7 @@ if (targetProject == null && allProjects.length > 0 && {('false' if project_path
 }}
 
 if (targetProject == null) {{
-    // Project not loaded yet — Python's poll loop will retry.
+    // Project not loaded yet - Python's poll loop will retry.
     var fw = new FileWriter("{_escape_groovy(result_path)}")
     fw.write("WAITING")
     fw.close()
@@ -1810,7 +1810,7 @@ IDE.application.invokeLater {{
 
 // Synchronous: project found, EDT work queued.  Python treats this
 // as success even though the terminal hasn't actually been rendered
-// yet — the invokeLater above is what does that, asynchronously.
+// yet - the invokeLater above is what does that, asynchronously.
 var fw = new FileWriter("{_escape_groovy(result_path)}")
 fw.write("QUEUED")
 fw.close()

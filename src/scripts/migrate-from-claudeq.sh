@@ -75,7 +75,7 @@ fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "  ${YELLOW}Detected old ClaudeQ installation — migrating to Leap...${NC}"
+echo -e "  ${YELLOW}Detected old ClaudeQ installation - migrating to Leap...${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 

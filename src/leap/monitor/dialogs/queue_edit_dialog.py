@@ -36,7 +36,7 @@ class QueueEditDialog(ZoomMixin, QDialog):
         self._order_modified: bool = False  # True after drag reorder, until saved
         self._reordering: bool = False  # True from drop until reorder sync completes
 
-        self.setWindowTitle(f'Edit Queue — {tag}')
+        self.setWindowTitle(f'Edit Queue - {tag}')
         self.resize(*self._DEFAULT_SIZE)
         saved = load_dialog_geometry('queue_edit')
         if saved:

@@ -251,14 +251,14 @@ def _prompt_new_tag(old_tag: str) -> Optional[str]:
             return None
         if not _TAG_RE.match(line):
             sys.stderr.write(
-                f"  {RED}Invalid — letters, numbers, '-' and '_' only, "
+                f"  {RED}Invalid - letters, numbers, '-' and '_' only, "
                 f"starting with a letter or digit.  Try again.{RESET}\n"
             )
             continue
         if line == old_tag:
             sys.stderr.write(
                 f"  {RED}That's the same tag the running server is "
-                f"occupying — pick a different one.{RESET}\n"
+                f"occupying - pick a different one.{RESET}\n"
             )
             continue
         if _server_alive(line):
@@ -692,8 +692,8 @@ def _ask_cwd_choice(
 _JUMP_CHOICE_OPTIONS: tuple[tuple[bool, str], ...] = (
     # Default (idx 0) is "jump" — the common intent when a user lands on
     # a session that's already live.
-    (True,  'Yes — jump to the running session'),
-    (False, 'No — leave it running and exit'),
+    (True,  'Yes - jump to the running session'),
+    (False, 'No - leave it running and exit'),
 )
 
 
@@ -933,7 +933,7 @@ def main() -> int:
         found = _lookup_pre_picked(rows, args.cli, args.tag, args.session)
         if found is None:
             sys.stderr.write(
-                f"  {RED}The picked session is no longer recorded — it may "
+                f"  {RED}The picked session is no longer recorded - it may "
                 f"have been pruned, relocated, or its transcript deleted.{RESET}\n"
                 f"  {DIM}cli={args.cli} tag={args.tag} session={args.session[:8]}…{RESET}\n"
             )
@@ -1004,7 +1004,7 @@ def main() -> int:
         # so explain rather than failing silently.
         if find_terminal_with_title is None:
             sys.stderr.write(
-                f"  {YELLOW}Can't jump — terminal-navigation support isn't "
+                f"  {YELLOW}Can't jump - terminal-navigation support isn't "
                 f"available in this environment.{RESET}\n"
                 f"  {DIM}Reinstall Leap with `make install` to restore it, "
                 f"or switch to the running session's terminal manually.{RESET}\n"
@@ -1024,7 +1024,7 @@ def main() -> int:
         sys.stderr.write(
             f"  {YELLOW}Couldn't locate the terminal for Leap tag "
             f"{BOLD}{jump_tag}{RESET}{YELLOW}.{RESET}\n"
-            f"  {DIM}It may be in a closed window — check your open "
+            f"  {DIM}It may be in a closed window - check your open "
             f"terminals manually.{RESET}\n"
         )
         return 1

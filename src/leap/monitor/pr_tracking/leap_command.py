@@ -40,7 +40,7 @@ def format_leap_message(cmd: CqCommand) -> str:
     header = f"PR {prefix}{cmd.pr_iid}: \"{cmd.pr_title}\""
     if cmd.thread_notes:
         first_author = cmd.thread_notes[0].get('author', 'unknown')
-        header += f" — Thread from @{first_author}"
+        header += f" - Thread from @{first_author}"
     if cmd.file_path:
         line = cmd.new_line or cmd.old_line
         header += f" on {cmd.file_path}"

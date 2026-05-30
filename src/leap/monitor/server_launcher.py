@@ -783,12 +783,12 @@ class ServerLauncher:
             # at the pinned SHA. Without spelling this out, the "N commits
             # ahead" entry below reads as if the user has authored new commits.
             items.append(
-                f'HEAD is detached at {detached_sha} — '
+                f'HEAD is detached at {detached_sha} - '
                 f'sync will move it to origin/{branch}',
             )
         if fetch_failed:
             items.append(
-                f'(could not fetch — local state may already diverge '
+                f'(could not fetch - local state may already diverge '
                 f'from origin/{branch})',
             )
         elif ahead is None:
@@ -801,7 +801,7 @@ class ServerLauncher:
                 f'{ahead} local commit{plural} ahead of origin/{branch}',
             )
         if dirty is None:
-            items.append('(could not check working tree — proceeding may discard local changes)')
+            items.append('(could not check working tree - proceeding may discard local changes)')
         else:
             items.extend(dirty)
 
@@ -836,7 +836,7 @@ class ServerLauncher:
         if action == 'cancel':
             # Override the stale "Checking..." status the caller emitted,
             # so the user sees their cancel reflected immediately.
-            self._w._show_status(f"Cancelled — '{project_dir.name}' left as-is")
+            self._w._show_status(f"Cancelled - '{project_dir.name}' left as-is")
             self._cancel_start(tag)
             return
         if action == 'discard':

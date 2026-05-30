@@ -129,7 +129,7 @@ SIGN_OUT=$$(codesign --force --deep --sign "Leap Self-Signed" \
 SIGN_RC=$$?; \
 echo "$$SIGN_OUT" | grep -v "replacing existing signature" || true; \
 if [ "$$SIGN_RC" -ne 0 ] || ! codesign --verify "$(REPO_PATH)/.dist/Leap Monitor.app" >/dev/null 2>&1; then \
-	echo "$(YELLOW)  ⚠ Cert-based signing failed — bundle still has its py2app ad-hoc signature.$(NC)"; \
+	echo "$(YELLOW)  ⚠ Cert-based signing failed - bundle still has its py2app ad-hoc signature.$(NC)"; \
 	echo "  Accessibility will be lost on the next update.  Check the cert with:"; \
 	echo "    security find-certificate -c \"Leap Self-Signed\" \"$$HOME/Library/Keychains/login.keychain-db\""; \
 	echo "  If missing, remove the cert from Keychain Access and re-run 'make install-monitor'."; \
@@ -178,7 +178,7 @@ if [ "$$WAS_RUNNING" = "1" ] && [ -n "$$INSTALL_PATH" ]; then \
 		sleep 1; \
 	fi; \
 	echo "$(PROMPT_PREFIX) Re-launching Leap Monitor from $$INSTALL_PATH..."; \
-	open "$$INSTALL_PATH" 2>/dev/null || echo "$(YELLOW)  ⚠ Could not auto-relaunch — open Leap Monitor manually.$(NC)"; \
+	open "$$INSTALL_PATH" 2>/dev/null || echo "$(YELLOW)  ⚠ Could not auto-relaunch - open Leap Monitor manually.$(NC)"; \
 fi
 endef
 
@@ -203,7 +203,7 @@ endef
 		echo ""; \
 		echo "$(YELLOW)ℹ One-time step on next Leap Monitor launch:$(NC) the in-app banner will ask"; \
 		echo "  you to grant Accessibility (and Notifications, if not already granted)."; \
-		echo "  Future updates will preserve the grant — you'll never see this again."; \
+		echo "  Future updates will preserve the grant - you'll never see this again."; \
 		echo ""; \
 	fi
 
@@ -355,7 +355,7 @@ write-install-metadata: ensure-storage
 	    POETRY_OUT="$$(cat "$$TMP_VP" 2>/dev/null)"; \
 	    rm -f "$$TMP_VP"; \
 	    echo "$(RED)✗ poetry env info --path returned no usable venv$(NC)" >&2; \
-	    echo "  (got: '$$POETRY_OUT' — empty/invalid means poetry's tracked venv is missing)" >&2; \
+	    echo "  (got: '$$POETRY_OUT' - empty/invalid means poetry's tracked venv is missing)" >&2; \
 	    echo "  Existing .storage/venv-path left unchanged." >&2; \
 	    echo "  Fix: 'poetry env use $(PYTHON_VERSION)' (or 'make install' from scratch), then retry." >&2; \
 	    exit 1; \
@@ -381,7 +381,7 @@ install-monitor: .env ensure-storage write-install-metadata .gen-codesign-cert
 	@echo "  • Dock: Pin it for quick access"
 	@echo ""
 	@echo "$(YELLOW)Note:$(NC) Leap Monitor will prompt for Accessibility and Notifications"
-	@echo "      permissions on first launch. Grant them from the in-app banners —"
+	@echo "      permissions on first launch. Grant them from the in-app banners -"
 	@echo "      this is a one-time step that persists across future updates."
 
 .PHONY: install-slack-app
@@ -786,7 +786,7 @@ configure-shell:
 							CONFIGURED_IDES="$$CONFIGURED_IDES|$$IDE_NAME"; \
 						fi; \
 					else \
-						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) — skipping$(NC)"; \
+						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) - skipping$(NC)"; \
 					fi; \
 				else \
 					echo "  ✓ $$IDE_NAME already configured"; \
@@ -870,7 +870,7 @@ configure-shell:
 							echo "  $(YELLOW)⚠ Please restart Android Studio for changes to take effect$(NC)"; \
 						fi; \
 					else \
-						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) — skipping$(NC)"; \
+						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) - skipping$(NC)"; \
 					fi; \
 				else \
 					echo "  ✓ $$IDE_NAME already configured"; \

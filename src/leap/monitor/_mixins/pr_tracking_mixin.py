@@ -343,7 +343,7 @@ class PRTrackingMixin(_Base):
                 pin['pr_tracked'] = True
                 update_pinned_session_field(tag, 'pr_tracked', True)
 
-        self._show_status(f"PR found for '{tag}' — tracking started")
+        self._show_status(f"PR found for '{tag}' - tracking started")
         self._tracked_tags.add(tag)
         self._pr_statuses[tag] = status
         self._update_table()
@@ -385,7 +385,7 @@ class PRTrackingMixin(_Base):
             elapsed = time.monotonic() - self._scm_poll_started_at
             if elapsed > 60:
                 logger.debug("SCM poll stuck for %.0fs, force-resetting", elapsed)
-                self._show_status(f"SCM poll stuck for {elapsed:.0f}s — force-reset")
+                self._show_status(f"SCM poll stuck for {elapsed:.0f}s - force-reset")
                 self._scm_polling = False
                 if self._scm_worker:
                     old_worker = self._scm_worker
@@ -504,7 +504,7 @@ class PRTrackingMixin(_Base):
         if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
-                'Already sending comments — please wait.'
+                'Already sending comments - please wait.'
             )
             return
 
@@ -616,7 +616,7 @@ class PRTrackingMixin(_Base):
             QMessageBox.warning(
                 self, 'Send failed',
                 f"Couldn't queue any comments to session '{matched_tag}'.\n\n"
-                'The session server may have stopped — check it and try again.'
+                'The session server may have stopped - check it and try again.'
             )
 
     def _on_send_threads_partial_failure(
@@ -655,7 +655,7 @@ class PRTrackingMixin(_Base):
                 self, 'Send failed',
                 f"Couldn't deliver any of the {failed_count} comment(s) to "
                 f"session '{matched_tag}'.\n\n"
-                'The session server may have stopped — check it and try again.'
+                'The session server may have stopped - check it and try again.'
             )
 
     def _on_send_threads_error(self, message: str) -> None:
@@ -717,7 +717,7 @@ class PRTrackingMixin(_Base):
         already_warned = getattr(self, '_leap_send_failed_warned', set())
         if tag in already_warned:
             self._show_status(
-                f"/leap delivery to '{tag}' still failing — will keep retrying"
+                f"/leap delivery to '{tag}' still failing - will keep retrying"
             )
             return
         already_warned.add(tag)
@@ -753,7 +753,7 @@ class PRTrackingMixin(_Base):
         if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
-                'Already sending comments — please wait.'
+                'Already sending comments - please wait.'
             )
             return
 
@@ -820,7 +820,7 @@ class PRTrackingMixin(_Base):
         if self._is_send_in_progress():
             QMessageBox.information(
                 self, 'In Progress',
-                'Already sending comments — please wait.'
+                'Already sending comments - please wait.'
             )
             return
 
@@ -864,13 +864,13 @@ class PRTrackingMixin(_Base):
 
         local_action = menu.addAction('From Local Path')
         local_action.setToolTip(
-            'Add a row from a local Git repository —\n'
+            'Add a row from a local Git repository -\n'
             'clone to repos dir or open directly')
         local_action.triggered.connect(self._add_row_from_local)
 
         resume_action = menu.addAction('From Resume')
         resume_action.setToolTip(
-            'Resume a recorded CLI session — same picker as\n'
+            'Resume a recorded CLI session - same picker as\n'
             '`leap --resume`, opened in the default terminal.')
         resume_action.triggered.connect(self._add_row_from_resume)
 
@@ -1132,7 +1132,7 @@ class PRTrackingMixin(_Base):
             QMessageBox.information(
                 self, 'No Resumable Sessions',
                 'No resumable sessions found.\n\n'
-                'Run a CLI through Leap at least once — new sessions '
+                'Run a CLI through Leap at least once - new sessions '
                 'are recorded automatically and will appear here next '
                 'time.',
             )
@@ -1187,7 +1187,7 @@ class PRTrackingMixin(_Base):
 
         self._show_status(
             f"Resuming [{get_display_name(cli)}] '{original_tag}' "
-            f"(session {sess.session_id[:8]}) — see the new terminal"
+            f"(session {sess.session_id[:8]}) - see the new terminal"
         )
         # Mark the row as "starting" so the dead-pinned row sticks
         # around (escape hatch in ``_merge_sessions``) and renders the

@@ -265,12 +265,12 @@ class LeapClient:
                 bot_running = SLACK_BOT_LOCK.is_dir()
                 if last_bot_running is not None and bot_running != last_bot_running:
                     if not bot_running:
-                        print("\n⚠ Slack bot stopped — integration paused "
+                        print("\n⚠ Slack bot stopped - integration paused "
                               "for this session", flush=True)
                         print("  (will reconnect automatically "
                               "when the bot starts)", flush=True)
                     else:
-                        print("\n✓ Slack bot reconnected — integration "
+                        print("\n✓ Slack bot reconnected - integration "
                               "resumed for this session", flush=True)
                 last_bot_running = bot_running
             else:
@@ -384,11 +384,11 @@ class LeapClient:
             auto_send_mode = response.get('auto_send_mode', AutoSendMode.PAUSE)
 
             state_display = {
-                CLIState.IDLE: '\u2713 Idle \u2014 will accept next message',
-                CLIState.RUNNING: '\u23f3 Running \u2014 processing',
-                CLIState.NEEDS_PERMISSION: '\u26a0\ufe0f Needs Permission \u2014 waiting for tool approval',
-                CLIState.NEEDS_INPUT: '\u2753 Needs Input \u2014 asking you something',
-                CLIState.INTERRUPTED: '\u26a1 Interrupted \u2014 will auto-send next message',
+                CLIState.IDLE: '\u2713 Idle - will accept next message',
+                CLIState.RUNNING: '\u23f3 Running - processing',
+                CLIState.NEEDS_PERMISSION: '\u26a0\ufe0f Needs Permission - waiting for tool approval',
+                CLIState.NEEDS_INPUT: '\u2753 Needs Input - asking you something',
+                CLIState.INTERRUPTED: '\u26a1 Interrupted - will auto-send next message',
             }
             mode_display = {
                 AutoSendMode.PAUSE: 'Pause on input',

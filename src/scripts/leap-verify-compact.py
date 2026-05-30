@@ -59,24 +59,24 @@ def verdict(counts: dict[str, int]) -> str:
     cursor = counts["cursor"]
     wrongful_idle = counts["silence"] + counts["safety"]
     if ind > 0:
-        msg = "[OK] indicator-based fix fired — compacting detection works"
+        msg = "[OK] indicator-based fix fired - compacting detection works"
         if cursor > 0:
             msg += " (cursor fallback also fired, harmless)"
         return msg
     if cursor > 0:
         return (
-            "[INFO] only cursor-based auto-resume fired — the indicator "
+            "[INFO] only cursor-based auto-resume fired - the indicator "
             "pattern never matched. Either no compaction happened in this "
             "session, or pyte didn't render the spinner as a contiguous "
             '"Compacting conversation" substring. The fix is a no-op here.'
         )
     if wrongful_idle > 0:
         return (
-            "[WARN] idle fallback fired and no compact-indicator events — "
+            "[WARN] idle fallback fired and no compact-indicator events - "
             "if you saw 'Compacting conversation…' on screen during this "
             "session, the state likely went to idle. Pattern did not match."
         )
-    return "[INFO] no compaction-related transitions in log — probably no compact happened."
+    return "[INFO] no compaction-related transitions in log - probably no compact happened."
 
 
 def main() -> int:

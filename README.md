@@ -6,11 +6,11 @@ Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any t
 
 ## Key Features
 
-- **Smart message queueing** — Auto-sends when the CLI is ready
-- **Real-time GUI monitoring** — See all sessions, jump across IDEs and projects
-- **PR tracking** — GitLab & GitHub comment detection with `/leap` tag support
-- **Slack integration** — Bidirectional messaging between Slack and Leap sessions
-- **Prevent sleep while busy** — Mac stays awake until every session is idle (optional lid-close override)
+- **Smart message queueing** - Auto-sends when the CLI is ready
+- **Real-time GUI monitoring** - See all sessions, jump across IDEs and projects
+- **PR tracking** - GitLab & GitHub comment detection with `/leap` tag support
+- **Slack integration** - Bidirectional messaging between Slack and Leap sessions
+- **Prevent sleep while busy** - Mac stays awake until every session is idle (optional lid-close override)
 
 ## Installation
 
@@ -47,7 +47,7 @@ This migrates your storage, hooks, shell config, and monitor app automatically. 
 
 ## Usage
 
-Just run `leap <tag>` — that's it! Leap wraps your AI CLI with queueing and session tracking.
+Just run `leap <tag>` - that's it! Leap wraps your AI CLI with queueing and session tracking.
 
 ```bash
 leap my-feature         # First run starts a server
@@ -56,7 +56,7 @@ leap my-feature         # Second run connects a client (queue messages here)
 ^^                      # Inside ^^: save msg to history (↑↓ to browse)
 ^^!!                    # Inside ^^: force-send next queued msg (Enter to confirm)
 leap --resume           # Pick a past Leap tag; for Claude, resumes in your current cwd
-                        # (transcript is relocated automatically — no `cd` needed)
+                        # (transcript is relocated automatically - no `cd` needed)
 ```
 
 The **Monitor** is a native macOS app installed alongside Leap. Just open it from your Applications folder or Spotlight to see all your sessions at a glance:

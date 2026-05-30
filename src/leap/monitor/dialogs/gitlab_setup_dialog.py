@@ -108,12 +108,12 @@ def _check_gitlab_scopes(gl: Any) -> list[str]:
             return []  # Full access — no warnings
         if 'read_api' not in scopes:
             warnings.append(
-                'Missing read_api scope — PR tracking and code snippets will not work'
+                'Missing read_api scope - PR tracking and code snippets will not work'
             )
         else:
             # Has read_api but not api — can read but not write
             warnings.append(
-                'Missing api scope — /leap acknowledgment replies will not be posted'
+                'Missing api scope - /leap acknowledgment replies will not be posted'
             )
         return warnings
     except Exception:
@@ -128,12 +128,12 @@ def _check_gitlab_scopes(gl: Any) -> list[str]:
         status_code = getattr(e, 'response_code', None)
         if status_code == 403:
             warnings.append(
-                'Cannot access Todos API — notification tracking will not work '
+                'Cannot access Todos API - notification tracking will not work '
                 '(project/group tokens cannot access this endpoint)'
             )
         elif status_code == 401:
             warnings.append(
-                'Token rejected by Todos API (401) — token may have been '
+                'Token rejected by Todos API (401) - token may have been '
                 'revoked since auth() succeeded.  Notification tracking '
                 'will not work.'
             )

@@ -46,7 +46,7 @@ class AddLocalDialog(ZoomMixin, QDialog):
         )
         self._open_radio = QRadioButton('Open directly (use this directory as-is)')
         self._open_radio.setToolTip(
-            'Run the session directly inside the chosen directory — no '
+            'Run the session directly inside the chosen directory - no '
             'clone. Changes will apply to your existing workspace.'
         )
         self._clone_radio.setChecked(True)

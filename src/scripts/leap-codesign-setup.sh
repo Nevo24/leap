@@ -44,7 +44,7 @@ if security find-certificate -c "$CERT_NAME" "$LOGIN_KEYCHAIN" >/dev/null 2>&1; 
     EXISTING_SHA1=$(security find-certificate -c "$CERT_NAME" -p "$LOGIN_KEYCHAIN" \
         | openssl x509 -noout -fingerprint -sha1 \
         | sed -e 's/.*Fingerprint=//' -e 's/://g')
-    echo -e "${GREEN}✓ '$CERT_NAME' cert already in keychain (SHA1 $EXISTING_SHA1) — skipping generation.${NC}"
+    echo -e "${GREEN}✓ '$CERT_NAME' cert already in keychain (SHA1 $EXISTING_SHA1) - skipping generation.${NC}"
     exit 0
 fi
 

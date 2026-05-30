@@ -259,7 +259,7 @@ class SCMPollerWorker(QThread):
                         # the user knows something went wrong (otherwise
                         # the failure is logged at debug only).
                         logger.debug("Failed to send /leap message to session '%s' "
-                                     "— skipping ack so next poll retries", tag)
+                                     "- skipping ack so next poll retries", tag)
                         self.leap_send_failed.emit(tag)
                         continue
                     logger.debug("/leap from PR !%s sent to session '%s'",

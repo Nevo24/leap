@@ -173,7 +173,7 @@ FLAGS (server only):
         leap my-tag --model=opus                     (key=value)
         leap my-tag --model opus                     (space-separated value)
 
-    Use `--` to end flag parsing — useful when a message starts with `--`,
+    Use `--` to end flag parsing - useful when a message starts with `--`,
     or to pass a literal positional after a boolean flag:
         leap my-tag -- "--this is a literal message"
         leap my-tag --boolean -- "this is a message, not the flag value"

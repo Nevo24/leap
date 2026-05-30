@@ -93,7 +93,7 @@ class GitHubSetupDialog(SCMSetupDialog):
             return ConnectionTestResult(
                 success=False,
                 username='Server does not appear to be GitHub. '
-                         'Check your URL — you may be connecting to a GitLab instance.',
+                         'Check your URL - you may be connecting to a GitLab instance.',
                 warnings=[],
             )
 
@@ -172,7 +172,7 @@ def _check_github_scopes(gh: Any) -> list[str]:
     if scopes is None:
         # Fine-grained token — no X-OAuth-Scopes header
         warnings.append(
-            'Fine-grained token detected — notification tracking requires '
+            'Fine-grained token detected - notification tracking requires '
             'a classic personal access token with notifications scope'
         )
         return warnings
@@ -184,12 +184,12 @@ def _check_github_scopes(gh: Any) -> list[str]:
     scope_set = set(scopes)
     if 'repo' not in scope_set and 'public_repo' not in scope_set:
         warnings.append(
-            'Missing repo scope — PR tracking, code snippets, '
+            'Missing repo scope - PR tracking, code snippets, '
             'and /leap replies will not work'
         )
     if 'notifications' not in scope_set:
         warnings.append(
-            'Missing notifications scope — notification tracking will not work'
+            'Missing notifications scope - notification tracking will not work'
         )
 
     return warnings

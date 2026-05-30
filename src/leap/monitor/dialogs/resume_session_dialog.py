@@ -681,7 +681,7 @@ class _TagSessionPicker(ZoomMixin, QDialog):
         self.setLayout(layout)
         layout.addWidget(QLabel(
             f"Tag '{tag_row.tag}' has {len(tag_row.sessions)} recorded "
-            f"sessions — pick one to resume:"
+            f"sessions - pick one to resume:"
         ))
 
         self._table = QTableWidget(len(tag_row.sessions), 4, self)

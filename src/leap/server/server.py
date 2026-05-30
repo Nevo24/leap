@@ -1798,7 +1798,7 @@ class LeapServer:
                 '\r\x1b[K'
                 '\x1b[33m[Leap Q] \x1b[0m'
                 'Force-send next queued message'
-                ' \x1b[2m— Enter to confirm • any key to cancel\x1b[0m'
+                ' \x1b[2m- Enter to confirm • any key to cancel\x1b[0m'
             ).encode()
             os.write(sys.stdout.fileno(), payload)
         except OSError:
@@ -4239,7 +4239,7 @@ def _apply_resume_or_fail(
             f"but LEAP_RESUME_CLI is empty.{reset}\n"
             f"  Cannot apply resume {short} without a CLI provider name.\n"
             f"  This usually means the resume hand-off was constructed "
-            f"manually — re-run `leap --resume` to pick a session.\n",
+            f"manually - re-run `leap --resume` to pick a session.\n",
             file=sys.stderr,
         )
         _release_server_lock(tag)

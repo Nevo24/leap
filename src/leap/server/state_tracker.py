@@ -209,7 +209,7 @@ class CLIStateTracker:
             live_has_dialog = self._provider.has_dialog_indicator(live_text)
             if live_has_dialog:
                 _log.debug(
-                    'prompt snapshot: live screen has dialog — using live screen',
+                    'prompt snapshot: live screen has dialog - using live screen',
                 )
             else:
                 live_filled = sum(1 for ln in snapshot if ln.strip())
@@ -1021,7 +1021,7 @@ class CLIStateTracker:
             # Ignore self-written "interrupted" signals.
             if new_state == CLIState.INTERRUPTED:
                 _log.debug(
-                    'GET_STATE signal=interrupted but current=%s — '
+                    'GET_STATE signal=interrupted but current=%s - '
                     'ignoring (deleting)',
                     current,
                 )
@@ -1045,7 +1045,7 @@ class CLIStateTracker:
                 if running_indicator:
                     _log.debug(
                         'GET_STATE signal=idle but running indicator '
-                        'on screen — keeping running',
+                        'on screen - keeping running',
                     )
                     try:
                         self._signal_file.unlink(missing_ok=True)
@@ -1061,7 +1061,7 @@ class CLIStateTracker:
                 if self._transcript_says_running():
                     _log.debug(
                         'GET_STATE signal=idle but transcript shows '
-                        'unanswered tool_use — keeping running',
+                        'unanswered tool_use - keeping running',
                     )
                     try:
                         self._signal_file.unlink(missing_ok=True)
@@ -1221,7 +1221,7 @@ class CLIStateTracker:
                 else:
                     _log.debug(
                         'GET_STATE signal=idle but %s without '
-                        'user_responded — ignoring',
+                        'user_responded - ignoring',
                         current,
                     )
 
@@ -1285,7 +1285,7 @@ class CLIStateTracker:
                     if not has_dialog:
                         _log.debug(
                             'GET_STATE signal=%s from idle but no '
-                            'dialog patterns on screen — ignoring '
+                            'dialog patterns on screen - ignoring '
                             'stale notification',
                             new_state,
                         )
@@ -1347,7 +1347,7 @@ class CLIStateTracker:
                     if not screen_compact and snapshot_empty:
                         _log.debug(
                             'GET_STATE signal=%s from running with '
-                            'empty screen + empty snapshot — ignoring '
+                            'empty screen + empty snapshot - ignoring '
                             'stale notification (post-Enter race)',
                             new_state,
                         )
@@ -1665,7 +1665,7 @@ class CLIStateTracker:
                 if self._transcript_says_running():
                     _log.debug(
                         'GET_STATE cursor+silence would idle but '
-                        'transcript shows tool_use — keeping running',
+                        'transcript shows tool_use - keeping running',
                     )
                     return current
 
@@ -1743,7 +1743,7 @@ class CLIStateTracker:
                 if self._transcript_says_running():
                     _log.debug(
                         'GET_STATE safety timeout %.1fs but transcript '
-                        'shows tool_use — keeping running',
+                        'shows tool_use - keeping running',
                         silence,
                     )
                     return current
@@ -1788,7 +1788,7 @@ class CLIStateTracker:
                 if signal_state == current or self._trust_dialog_phase:
                     _log.debug(
                         'GET_STATE waiting timeout %s %.1fs but '
-                        '%s — keeping',
+                        '%s - keeping',
                         current, silence,
                         'trust dialog active'
                         if self._trust_dialog_phase

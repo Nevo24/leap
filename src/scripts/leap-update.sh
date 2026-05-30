@@ -135,7 +135,7 @@ for attempt in 1 2 3; do
     fi
     if [ "$attempt" -lt 3 ]; then
         sleep_for=$((attempt * 2 - 1))   # 1s, then 3s
-        echo -e "${YELLOW}⚠ git pull failed (attempt $attempt/3) — likely a concurrent fetch; retrying in ${sleep_for}s...${NC}"
+        echo -e "${YELLOW}⚠ git pull failed (attempt $attempt/3) - likely a concurrent fetch; retrying in ${sleep_for}s...${NC}"
         sleep "$sleep_for"
     else
         echo -e "${YELLOW}⚠ Git pull failed after 3 attempts. See errors above and try again.${NC}"

@@ -647,7 +647,7 @@ def rename_menu() -> None:
         elif key == "enter":
             clear_lines(prev_lines)
             name, current, original = providers[cursor]
-            sys.stderr.write(f"  {BOLD}{original}{RESET} — new name:\n")
+            sys.stderr.write(f"  {BOLD}{original}{RESET} - new name:\n")
             sys.stderr.write(f"  {DIM}(Ctrl+U to clear for default, Enter to confirm, Ctrl+C to cancel){RESET}\n")
             try:
                 new_name = read_line_raw("  name: ", current)
@@ -804,7 +804,7 @@ def create_custom_cli() -> None:
             break
         except ValueError as e:
             sys.stderr.write(
-                f"  {YELLOW}✗ Invalid shell quoting: {e} — try again.{RESET}\n"
+                f"  {YELLOW}✗ Invalid shell quoting: {e} - try again.{RESET}\n"
             )
 
     # Save

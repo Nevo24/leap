@@ -515,11 +515,11 @@ class MonitorWindow(
             self.COL_STATUS: (
                 'CLI session state:\n'
                 '\n'
-                '\u25cb Idle \u2014 waiting for input\n'
-                '\u25cf Running \u2014 actively processing\n'
-                '\u25b2 Permission \u2014 needs your approval\n'
-                '\u25c6 Question \u2014 asking a clarifying question\n'
-                '\u25c7 Interrupted \u2014 stopped, needs manual resume'
+                '\u25cb Idle - waiting for input\n'
+                '\u25cf Running - actively processing\n'
+                '\u25b2 Permission - needs your approval\n'
+                '\u25c6 Question - asking a clarifying question\n'
+                '\u25c7 Interrupted - stopped, needs manual resume'
             ),
             self.COL_TASK: 'The last message sent to the CLI',
             self.COL_QUEUE: 'Number of messages waiting in the queue',
@@ -731,7 +731,7 @@ class MonitorWindow(
             "Keep your Mac awake while any session is in 'Running' "
             "status. Sleep is allowed again once every session has "
             "stayed out of Running for 30 seconds.\n\n"
-            "Display sleep is unaffected — only idle / system sleep "
+            "Display sleep is unaffected - only idle / system sleep "
             "is blocked, so battery isn't drained by the screen.\n\n"
             "Note: closing the lid still puts the Mac to sleep "
             "regardless. Tick 'Also block lid-close' (click the ▶ "
@@ -775,8 +775,8 @@ class MonitorWindow(
             "been Idle for 30 seconds. Each time you tick this Leap "
             "asks for your macOS account password and saves it to "
             f"{SudoManager.password_path()} (mode 0600, base64-"
-            "encoded). If the password later stops working — e.g. "
-            "you changed it — Leap will pop a dialog and ask for the "
+            "encoded). If the password later stops working - e.g. "
+            "you changed it - Leap will pop a dialog and ask for the "
             "new one.\n\n"
             "Trade-off: anyone with read access to your home "
             "directory as you can decode that file. Don't tick this "
@@ -2378,7 +2378,7 @@ class MonitorWindow(
             self,
             "Lid-close override still active",
             "The previous Leap Monitor session enabled "
-            "'disablesleep' (block lid-close) but didn't clear it — "
+            "'disablesleep' (block lid-close) but didn't clear it - "
             "likely a crash or hard quit.\n\n"
             "Run this in Terminal to restore normal sleep:\n"
             "    sudo pmset -a disablesleep 0\n\n"
@@ -2397,14 +2397,14 @@ class MonitorWindow(
         self._lid_pw_dialog_open = True
         try:
             if first_time:
-                title = "Sudo password — block lid-close"
+                title = "Sudo password - block lid-close"
                 body = (
                     "Enter your macOS account password. It's saved to "
                     "disk to run 'sudo pmset' automatically, and "
                     "deleted when you untick the box."
                 )
             else:
-                title = "Sudo password — try again"
+                title = "Sudo password - try again"
                 body = (
                     "Saved password stopped working! Please enter your "
                     "current macOS account password."
@@ -2643,7 +2643,7 @@ class MonitorWindow(
             QCheckBox::indicator:hover {{
                 border-color: {t.accent_blue};
             }}
-            /* --- Disabled state — explicitly grey out so the user
+            /* --- Disabled state - explicitly grey out so the user
                    gets a visual cue that the checkbox isn't
                    clickable.  Without this rule a disabled QCheckBox
                    looks identical to an enabled one and clicking

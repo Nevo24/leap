@@ -131,7 +131,7 @@ class WhatsNewDialog(ZoomMixin, QDialog):
         sha = data.get('pre_pull_sha')
         if not isinstance(sha, str) or not _SHA_RE.match(sha):
             return default
-        banner = 'Update in progress — showing commits being installed.'
+        banner = 'Update in progress - showing commits being installed.'
         return (f'{sha}..origin/main', banner)
 
     def _load_commits(self) -> None:
@@ -214,7 +214,7 @@ class WhatsNewDialog(ZoomMixin, QDialog):
         t = current_theme()
         label = QLabel(
             f'<span style="color: {t.text_secondary};">'
-            f"You're up to date — no new commits on origin/main."
+            f"You're up to date - no new commits on origin/main."
             f'</span>'
         )
         label.setWordWrap(True)

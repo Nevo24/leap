@@ -284,7 +284,7 @@ class SCMSetupDialog(ZoomMixin, QDialog):
             self,
             f'Disconnect {name}?',
             f'Stop using your {name} credentials?\n\n'
-            f'The token, URL and other settings stay saved — only the '
+            f'The token, URL and other settings stay saved - only the '
             f'connection is cleared. Click Connect later to log in again '
             f'with the same values, or edit the fields first.',
             QMessageBox.Yes | QMessageBox.Cancel,

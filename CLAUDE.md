@@ -436,6 +436,7 @@ poetry run pytest tests/ -v       # All tests with verbose output
 
 ## Code Conventions
 
+- **No em-dashes in user-visible text**: Never put an em-dash `—` (or its `\u2014` escape) in anything the user sees: GUI labels/titles/tooltips, terminal banners, log messages, Slack text, install/update output (echoes), README, help text. Use a plain hyphen `-` instead. (Code comments and docstrings are exempt.)
 - **Type hints**: 100% coverage on all function signatures and return types. Use `Optional[X]` (not `X | None`) for consistency.
 - **Imports**: **Every `import` and `from X import Y` statement MUST live at the top of the module.** No inline imports inside `def` bodies, methods, class bodies, `if/for/while` blocks, or anywhere other than the module header — not for "lazy loading", not for "avoiding startup cost", not as a hotfix to dodge a circular import. Violating this rule has bitten us multiple times (stale references, import-error masking, duplication of the same import in 15 different methods); treat it as a hard ban.
   - **Only two allowed exceptions**, and both live at module top level:

@@ -412,7 +412,7 @@ class PRDisplayMixin(_Base):
             noun = 'comment' if n == 1 else 'comments'
             return (tag, f"{pr_ref} has {n} unresponded {noun}")
         elif event.type == NotificationType.PR_ALL_RESPONDED:
-            return (tag, f"{pr_ref} — all comments responded")
+            return (tag, f"{pr_ref} - all comments responded")
         elif event.type == NotificationType.PR_APPROVED:
             if event.approved_by:
                 names = ', '.join(event.approved_by)

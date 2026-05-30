@@ -1441,7 +1441,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
                     if is_checklist else '')
             QMessageBox.information(
                 self, 'Save as Preset',
-                f'Nothing to save \u2014 the note is empty{hint}.')
+                f'Nothing to save - the note is empty{hint}.')
             return
 
         save_named_preset(name, messages)
@@ -1466,7 +1466,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
                     if is_checklist else '')
             QMessageBox.information(
                 self, 'Run in Session',
-                f'Nothing to send \u2014 the note is empty{hint}.')
+                f'Nothing to send - the note is empty{hint}.')
             return
 
         if at_end:
@@ -1487,7 +1487,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             QMessageBox.warning(
                 self, 'Run in Session',
                 f'Sent {sent} of {total} {noun} to \u201c{tag}\u201d. '
-                f'Some failed \u2014 the session may have stopped.')
+                f'Some failed - the session may have stopped.')
         else:
             QMessageBox.warning(
                 self, 'Run in Session',

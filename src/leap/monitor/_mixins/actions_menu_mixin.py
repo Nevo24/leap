@@ -254,7 +254,7 @@ class ActionsMenuMixin(_Base):
         worker.finished.connect(worker.deleteLater)
         worker.start()
         self._show_status(
-            f"Session '{tag}' is already in {preferred_ide} — "
+            f"Session '{tag}' is already in {preferred_ide} - "
             f"focusing its terminal tab"
         )
 

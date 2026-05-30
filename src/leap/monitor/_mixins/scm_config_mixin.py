@@ -439,7 +439,7 @@ class SCMConfigMixin(_Base):
         if self._is_slack_bot_running():
             self.slack_bot_btn.setText('Slack Bot Running')
             self.slack_bot_btn.setStyleSheet(self._connected_btn_style())
-            self.slack_bot_btn.setToolTip('Slack bot is running — click to stop')
+            self.slack_bot_btn.setToolTip('Slack bot is running - click to stop')
         else:
             self.slack_bot_btn.setText('Run Slack Bot')
             self.slack_bot_btn.setStyleSheet('')
