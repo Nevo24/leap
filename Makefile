@@ -84,6 +84,21 @@ endef
 # requirement that invalidated TCC on every rebuild, which is why this
 # macro used to end with `tccutil reset Accessibility` (now removed).
 #
+# We sign with `--deep` because the bundle ships ~230 nested Mach-O
+# objects (Python.framework, the MacOS/python interpreter, and many
+# .dylib/.so files).  codesign refuses to seal the bundle when any
+# nested object is unsigned ("code object is not signed at all / In
+# subcomponent: .../python").  Whether the nested binaries arrive
+# ad-hoc-signed depends on which interpreter py2app copied in — Apple
+# Silicon framework pythons are ad-hoc-signed, but a python.org or
+# custom-built interpreter can be fully unsigned, which made the sign
+# fail on those machines.  `--deep` re-signs every nested object with
+# our cert in one pass.  `--identifier com.leap.monitor` is stamped on
+# every signed object (nested ones included), but TCC only matches the
+# TOP bundle's designated requirement, and that DR is derived from the
+# bundle identifier + signing cert — both unchanged — so the requirement
+# above stays byte-identical and Accessibility grants survive.
+#
 # Install strategy: we try user-level rm of the existing bundle and
 # only fall back to `sudo cp -R` for the overwrite (not `sudo rm`).
 # IT-managed Macs commonly block `sudo rm` with a loud "Sudo Command
@@ -108,7 +123,7 @@ define BUILD_MONITOR_APP
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
 echo "$(PROMPT_PREFIX) Signing Leap Monitor.app with Leap Self-Signed cert..."; \
-SIGN_OUT=$$(codesign --force --sign "Leap Self-Signed" \
+SIGN_OUT=$$(codesign --force --deep --sign "Leap Self-Signed" \
 	--identifier com.leap.monitor \
 	"$(REPO_PATH)/.dist/Leap Monitor.app" 2>&1); \
 SIGN_RC=$$?; \
@@ -755,18 +770,23 @@ configure-shell:
 					if [ -f "$$TERMINAL_XML" ]; then \
 						cp "$$TERMINAL_XML" "$$TERMINAL_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
+					CFG_RC=0; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML" || CFG_RC=1; \
 					\
 					if [ -f "$$ADVANCED_XML" ]; then \
 						cp "$$ADVANCED_XML" "$$ADVANCED_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML" || CFG_RC=1; \
 					\
-					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
-					if [ -z "$$CONFIGURED_IDES" ]; then \
-						CONFIGURED_IDES="$$IDE_NAME"; \
+					if [ "$$CFG_RC" = "0" ]; then \
+						echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
+						if [ -z "$$CONFIGURED_IDES" ]; then \
+							CONFIGURED_IDES="$$IDE_NAME"; \
+						else \
+							CONFIGURED_IDES="$$CONFIGURED_IDES|$$IDE_NAME"; \
+						fi; \
 					else \
-						CONFIGURED_IDES="$$CONFIGURED_IDES|$$IDE_NAME"; \
+						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) — skipping$(NC)"; \
 					fi; \
 				else \
 					echo "  ✓ $$IDE_NAME already configured"; \
@@ -836,16 +856,21 @@ configure-shell:
 					if [ -f "$$TERMINAL_XML" ]; then \
 						cp "$$TERMINAL_XML" "$$TERMINAL_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML"; \
+					CFG_RC=0; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" terminal "$$TERMINAL_XML" || CFG_RC=1; \
 					\
 					if [ -f "$$ADVANCED_XML" ]; then \
 						cp "$$ADVANCED_XML" "$$ADVANCED_XML.backup-$$(date +%Y%m%d-%H%M%S)"; \
 					fi; \
-					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML"; \
+					$$PY "$(SCRIPTS_DIR)/configure_jetbrains_xml.py" advanced "$$ADVANCED_XML" || CFG_RC=1; \
 					\
-					echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
-					if ps aux | grep -i "studio" | grep -v grep > /dev/null 2>&1; then \
-						echo "  $(YELLOW)⚠ Please restart Android Studio for changes to take effect$(NC)"; \
+					if [ "$$CFG_RC" = "0" ]; then \
+						echo "  $(GREEN)✓ Configured $$IDE_NAME$(NC)"; \
+						if ps aux | grep -i "studio" | grep -v grep > /dev/null 2>&1; then \
+							echo "  $(YELLOW)⚠ Please restart Android Studio for changes to take effect$(NC)"; \
+						fi; \
+					else \
+						echo "  $(YELLOW)⚠ Could not fully configure $$IDE_NAME (see warning above) — skipping$(NC)"; \
 					fi; \
 				else \
 					echo "  ✓ $$IDE_NAME already configured"; \
