@@ -1653,7 +1653,20 @@ class CLIStateTracker:
                         self._prompt_snapshot = all_lines
                         self._last_running_snapshot = list(
                             all_lines)
-                        self._reset_screen()
+                        # Deliberately do NOT _reset_screen() here.  The
+                        # dialog (e.g. AskUserQuestion, which fires no
+                        # permission hook) is on the live screen right
+                        # now, and the waiting→idle dismissal checks
+                        # below read the LIVE screen to decide whether it
+                        # has been answered.  Resetting wipes pyte, and
+                        # Ink — believing the dialog is already drawn —
+                        # then only partially repaints, so the footer
+                        # never returns to the buffer.  The dismissal
+                        # checks would see "no dialog" and flip the
+                        # session idle while the user still has to answer
+                        # (the Permission↔Idle oscillation).  The
+                        # _handle_idle_output proactive promotion avoids
+                        # the same reset for the same reason.
                     return CLIState.NEEDS_PERMISSION
 
                 # Transcript guard before falling to idle: a long
@@ -1785,14 +1798,37 @@ class CLIStateTracker:
             silence = self._clock() - self._last_output_time
             if silence > SAFETY_WAITING_TIMEOUT:
                 signal_state = self._read_signal_state()
-                if signal_state == current or self._trust_dialog_phase:
+                # Screen guard (PROMPT states only): a hookless dialog
+                # like AskUserQuestion writes no needs_permission signal,
+                # so without this the safety net force-demotes a dialog
+                # that is *still rendered on screen* to idle every
+                # SAFETY_WAITING_TIMEOUT seconds — the status then
+                # oscillates Permission↔Idle for as long as the dialog
+                # sits unanswered.  The promotion paths leave the dialog
+                # in pyte's buffer (no reset), so the live screen is an
+                # honest signal: footer still there ⇒ prompt still
+                # pending ⇒ keep.  ``has_dialog_indicator`` matches the
+                # indicator-gone fallback above, so both demotion paths
+                # agree on "is a dialog visible".  Scoped to PROMPT_STATES
+                # so a stuck INTERRUPTED still recovers via this timeout.
+                dialog_on_screen = False
+                if current in PROMPT_STATES:
+                    with self._screen_lock:
+                        compact = self._get_screen_text().replace(
+                            ' ', '').replace('\n', '')
+                    dialog_on_screen = (
+                        self._provider.has_dialog_indicator(compact)
+                    )
+                if (signal_state == current or self._trust_dialog_phase
+                        or dialog_on_screen):
                     _log.debug(
-                        'GET_STATE waiting timeout %s %.1fs but '
-                        '%s - keeping',
-                        current, silence,
+                        'GET_STATE waiting timeout %s %.1fs but %s - '
+                        'keeping', current, silence,
                         'trust dialog active'
                         if self._trust_dialog_phase
-                        else 'signal confirms',
+                        else 'signal confirms'
+                        if signal_state == current
+                        else 'dialog still on screen',
                     )
                 else:
                     _log.debug(

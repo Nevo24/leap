@@ -1033,6 +1033,106 @@ class TestSafetyTimeouts:
         t[0] = 1.0 + SAFETY_WAITING_TIMEOUT + 1.0
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
+    def test_cursor_silence_promotion_keeps_dialog_on_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """The running→needs_permission cursor+silence promotion must NOT
+        reset the pyte screen.  A hookless dialog (AskUserQuestion) has no
+        permission signal, so the waiting→idle dismissal checks read the
+        LIVE screen; if the promotion wiped it, a partial Ink repaint
+        leaves no footer and the dialog falsely reads as dismissed.  The
+        dialog must remain detectable on screen right after promotion."""
+        t = [100.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running (baseline > 0 so cursor+silence arms)
+        feed_screen_text(tracker, 'Pick one?  Enter to select  Esc to cancel')
+        # cursor visible + >5s silence + dialog footer on the last rows.
+        t[0] = 106.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # The promotion must have LEFT the dialog on the live screen.
+        with tracker._screen_lock:
+            compact = tracker._get_screen_text().replace(
+                ' ', '').replace('\n', '')
+        assert tracker._provider.has_dialog_indicator(compact)
+
+    def test_waiting_timeout_keeps_dialog_still_on_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """The 60s stuck-waiting safety timeout must not demote a dialog
+        that is still rendered on screen.  A hookless AskUserQuestion
+        writes no signal, so without this the status oscillates
+        Permission<->Idle for as long as the dialog sits unanswered."""
+        t = [100.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        footer = 'Pick one?  Enter to select  Esc to cancel'
+        feed_screen_text(tracker, footer)
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Dialog stays rendered (live), but the signal is gone.
+        t[0] = 101.0
+        feed_screen_text(tracker, footer)
+        tracker._signal_file.unlink(missing_ok=True)
+        t[0] = 101.0 + SAFETY_WAITING_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_waiting_timeout_demotes_when_no_dialog_on_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """Counterpart: with no dialog on screen and no confirming signal,
+        the 60s safety timeout must still force idle - the screen guard
+        must not pin a genuinely stuck waiting state forever."""
+        t = [100.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        feed_screen_text(tracker, 'thinking about it')
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # No dialog footer anywhere (signal path reset the screen); drop
+        # the signal so only a visible dialog could justify keeping it.
+        tracker._signal_file.unlink(missing_ok=True)
+        t[0] = 100.0 + SAFETY_WAITING_TIMEOUT + 5.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_incremental_repaint_after_promotion_keeps_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        """Faithful reproduction of the AskUserQuestion oscillation.
+
+        Mimics Ink's real redraw: a full dialog render via cursor
+        positioning, then an INCREMENTAL repaint that rewrites only the
+        top line (no full clear, no footer rewrite).  With the old
+        reset-on-promotion, the footer was wiped from pyte at promotion
+        and the incremental repaint never restored it, so the dialog
+        falsely read as dismissed and was demoted to idle.  The promotion
+        must leave pyte intact so the footer survives the repaint and the
+        prompt is held.  (Pre-fix this test demotes to idle; with the fix
+        it stays needs_permission.)
+        """
+        t = [100.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # running
+        # Full dialog render via cursor positioning (Ink-style), no hook.
+        tracker.on_output(
+            b"\x1b[2J\x1b[1;1HWhat's your preferred beverage?\x1b[K"
+            b"\x1b[2;1H  1. Coffee\x1b[K\x1b[3;1H  2. Tea\x1b[K"
+            b"\x1b[4;1HEnter to select  Esc to cancel\x1b[K"
+        )
+        # cursor+silence promotion (no permission signal, like the
+        # AskUserQuestion-as-first-action case).
+        t[0] = 106.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Incremental repaint of ONLY the top line - footer not rewritten.
+        t[0] = 107.0
+        tracker.on_output(
+            b"\x1b[1;1HWhat's your preferred beverage?  \x1b[K"
+        )
+        with tracker._screen_lock:
+            assert 'Esc to cancel' in tracker._get_screen_text()
+        # Past the 60s stuck-waiting safety timeout: must still hold.
+        t[0] = 107.0 + SAFETY_WAITING_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
 
 # ---------------------------------------------------------------------------
 # Trust dialog detection via pyte screen
