@@ -128,6 +128,17 @@ endef
 # inodes; a bare `open` would just bring that stale process to front.
 # Quit-then-launch forces a fresh spawn against the new bundle on disk.
 define BUILD_MONITOR_APP
+if [ "$$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] \
+	&& [ "$$(cd $(REPO_PATH) && poetry run python -c 'import platform; print(platform.machine())' 2>/dev/null)" = "x86_64" ] \
+	&& [ "$$LEAP_ALLOW_ROSETTA_BUILD" != "1" ]; then \
+	echo "$(RED)✗ Architecture mismatch: this is an Apple Silicon Mac, but the build Python is Intel (x86_64).$(NC)"; \
+	echo "  The Monitor would be built for x86_64 and run under Rosetta, where macOS (AMFI) rejects"; \
+	echo "  our self-signed binaries (error -423) and silently blocks its Notifications + Accessibility."; \
+	echo "  Fix: from the Leap repo, run 'make install' (installs an arm64 Python 3.12 and rebuilds natively):"; \
+	echo "      cd \"$(REPO_PATH)\" && make install"; \
+	echo "  (Set LEAP_ALLOW_ROSETTA_BUILD=1 to build for x86_64 anyway.)"; \
+	exit 1; \
+fi; \
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
 echo "$(PROMPT_PREFIX) Signing Leap Monitor.app with Leap Self-Signed cert..."; \
@@ -229,11 +240,19 @@ check-macos:
 .PHONY: check-python
 check-python:
 	@REQUIRED=$(PYTHON_VERSION); \
+	IS_ARM=$$(sysctl -n hw.optional.arm64 2>/dev/null); \
 	FOUND_PYTHON=""; \
 	for BIN in python$$REQUIRED python3; do \
 		if command -v $$BIN &>/dev/null; then \
 			VER=$$($$BIN -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null); \
 			if [ "$$VER" = "$$REQUIRED" ]; then \
+				if [ "$$IS_ARM" = "1" ]; then \
+					MACH=$$($$BIN -c "import platform; print(platform.machine())" 2>/dev/null); \
+					if [ "$$MACH" != "arm64" ]; then \
+						echo "  Ignoring $$BIN ($$MACH): need a native arm64 Python on Apple Silicon"; \
+						continue; \
+					fi; \
+				fi; \
 				FOUND_PYTHON="$$BIN"; \
 				break; \
 			fi; \
@@ -577,6 +596,14 @@ reconfigure:
 	fi; \
 	$(ENSURE_POETRY2); \
 	if [ "$$(poetry config virtualenvs.create)" = "true" ]; then \
+		if [ "$$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then \
+			ENV_PATH=$$(poetry env info --path 2>/dev/null); \
+			if [ -n "$$ENV_PATH" ] && [ -x "$$ENV_PATH/bin/python" ] \
+				&& [ "$$("$$ENV_PATH/bin/python" -c 'import platform; print(platform.machine())' 2>/dev/null)" = "x86_64" ]; then \
+				echo "$(PROMPT_PREFIX) Existing virtualenv is Intel (x86_64) on Apple Silicon; recreating as arm64..."; \
+				poetry env remove --all 2>/dev/null || true; \
+			fi; \
+		fi; \
 		poetry env use $(PYTHON_VERSION); \
 	else \
 		echo "Skipping .env target because virtualenv creation is disabled"; \
