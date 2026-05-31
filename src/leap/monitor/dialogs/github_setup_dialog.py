@@ -8,7 +8,11 @@ from github import Github
 from PyQt5.QtWidgets import QWidget
 
 from leap.monitor.pr_tracking.base import ConnectionTestResult
-from leap.monitor.pr_tracking.config import load_github_config, save_github_config
+from leap.monitor.pr_tracking.config import (
+    load_github_config,
+    normalize_github_api_url,
+    save_github_config,
+)
 from leap.monitor.dialogs.scm_setup_dialog import SCMSetupDialog
 
 logger = logging.getLogger(__name__)
@@ -79,12 +83,10 @@ class GitHubSetupDialog(SCMSetupDialog):
                 warnings=[],
             )
 
-        # Normalize: treat github.com URLs as default (need api.github.com)
-        use_url = url
-        if use_url:
-            stripped = use_url.lower().rstrip('/')
-            if stripped in ('https://github.com', 'http://github.com', 'github.com'):
-                use_url = ''
+        # Normalize: github.com → default (api.github.com), GitHub Enterprise
+        # → /api/v3 REST root.  This makes the /meta verification below hit the
+        # real API endpoint instead of the web host on GHE.
+        use_url = normalize_github_api_url(url)
         base = (use_url or 'https://api.github.com').rstrip('/')
 
         # Verify we're talking to GitHub BEFORE trusting auth results.

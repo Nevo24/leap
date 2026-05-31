@@ -43,6 +43,15 @@ class PRStatus:
 
 
 @dataclass
+class ClosedPRInfo:
+    """Summary of a non-open PR surfaced when no open PR matches a branch."""
+    pr_iid: int
+    pr_title: str
+    pr_url: str
+    merged: bool
+
+
+@dataclass
 class UserNotification:
     """A notification from an SCM provider (GitLab Todo / GitHub Notification)."""
     id: str
@@ -150,6 +159,18 @@ class SCMProvider(ABC):
         Returns:
             List of CqCommand instances for each unresponded thread.
         """
+
+    def find_latest_closed_pr(self, project_path: str,
+                              branch: str) -> Optional[ClosedPRInfo]:
+        """Return the most recently updated non-open PR for *branch*.
+
+        Used when an open-PR lookup returned NO_PR but a closed or merged
+        PR for the same branch is worth surfacing to the user.
+
+        Default returns None — providers opt in by overriding.
+        """
+        del project_path, branch
+        return None
 
     def supports_notifications(self) -> bool:
         """Whether this provider supports user notification tracking."""

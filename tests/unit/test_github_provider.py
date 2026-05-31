@@ -392,3 +392,69 @@ class TestCheckGithubScopesPublicRepoAcceptance:
         gh = SimpleNamespace(oauth_scopes=['notifications'])
         warnings = _check_github_scopes(gh)
         assert any('repo scope' in w for w in warnings)
+
+
+def _closed_pr(*, number: int, title: str = 't', html_url: str = 'u',
+               merged_at: Any = None) -> Any:
+    """Minimal stand-in for a PyGithub PullRequest from get_pulls(state='closed')."""
+    return SimpleNamespace(
+        number=number, title=title, html_url=html_url, merged_at=merged_at,
+    )
+
+
+class TestFindLatestClosedPR:
+    """The closed/merged-PR fallback shown when no OPEN PR matches a branch."""
+
+    def _provider_with_pulls(self, pulls: list) -> GitHubProvider:
+        p = _make_provider()
+        seen: dict = {}
+        repo = SimpleNamespace(get_pulls=lambda **kw: (seen.update(kw) or pulls))
+        p._get_repo = lambda project_path: repo  # type: ignore[method-assign]
+        p._last_pulls_kwargs = seen  # type: ignore[attr-defined]
+        return p
+
+    def test_merged_pr_reports_merged_true(self) -> None:
+        p = self._provider_with_pulls([_closed_pr(
+            number=108, title='IBOSS-5465', html_url='https://h/o/r/pull/108',
+            merged_at='2024-01-01T00:00:00Z')])
+        info = p.find_latest_closed_pr('o/r', 'feature-branch')
+        assert info is not None
+        assert info.pr_iid == 108
+        assert info.merged is True
+        assert info.pr_url == 'https://h/o/r/pull/108'
+
+    def test_closed_unmerged_reports_merged_false(self) -> None:
+        p = self._provider_with_pulls([_closed_pr(number=5, merged_at=None)])
+        info = p.find_latest_closed_pr('o/r', 'b')
+        assert info is not None and info.merged is False
+
+    def test_uses_owner_head_filter_sorted_recent(self) -> None:
+        p = self._provider_with_pulls([_closed_pr(number=1)])
+        p.find_latest_closed_pr('myorg/myrepo', 'topic')
+        kw = p._last_pulls_kwargs  # type: ignore[attr-defined]
+        assert kw['state'] == 'closed'
+        assert kw['head'] == 'myorg:topic'
+        assert kw['sort'] == 'updated' and kw['direction'] == 'desc'
+
+    def test_no_repo_returns_none(self) -> None:
+        p = _make_provider()
+        p._get_repo = lambda project_path: None  # type: ignore[method-assign]
+        assert p.find_latest_closed_pr('o/r', 'b') is None
+
+    def test_empty_pulls_returns_none(self) -> None:
+        p = self._provider_with_pulls([])
+        assert p.find_latest_closed_pr('o/r', 'b') is None
+
+    def test_api_exception_swallowed_returns_none(self) -> None:
+        p = _make_provider()
+
+        def _boom(**_kw: Any) -> Any:
+            raise RuntimeError('network')
+
+        p._get_repo = lambda project_path: SimpleNamespace(get_pulls=_boom)  # type: ignore[method-assign]
+        assert p.find_latest_closed_pr('o/r', 'b') is None
+
+    def test_title_none_coerced_to_empty(self) -> None:
+        p = self._provider_with_pulls([_closed_pr(number=2, title=None)])
+        info = p.find_latest_closed_pr('o/r', 'b')
+        assert info is not None and info.pr_title == ''

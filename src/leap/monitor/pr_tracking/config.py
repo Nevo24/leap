@@ -236,24 +236,72 @@ def save_gitlab_config(config: dict[str, Any]) -> None:
     atomic_write_json(GITLAB_CONFIG_FILE, config)
 
 
+def normalize_github_api_url(url: str) -> str:
+    """Ensure a GitHub Enterprise base URL ends with /api/v3.
+
+    Canonical github.com / api.github.com stays untouched (PyGithub treats an
+    empty base_url as api.github.com, and api.github.com already routes the
+    v3 REST namespace without the suffix). Empty / falsy input returns ''.
+
+    GitHub Enterprise Server exposes its REST API under ``/api/v3`` (and its
+    GraphQL endpoint under ``/api/graphql``).  ``GitHubProvider`` already
+    derives the GraphQL URL by stripping a ``/api/v3`` suffix, so a base URL
+    that lacks it breaks both the REST client and resolved-thread queries.
+    Normalizing on save/load keeps the stored config in that canonical form.
+    """
+    if not url:
+        return ''
+    stripped = url.lower().rstrip('/')
+    if stripped in ('https://github.com', 'http://github.com', 'github.com'):
+        return ''
+    # Exact-match the canonical API host (not endswith — that would also
+    # swallow a real GHE host like ``myapi.github.com``).
+    if stripped in ('https://api.github.com', 'http://api.github.com',
+                    'api.github.com'):
+        return url.rstrip('/')
+    if stripped.endswith('/api/v3'):
+        return url.rstrip('/')
+    return url.rstrip('/') + '/api/v3'
+
+
 def load_github_config() -> Optional[dict[str, Any]]:
     """Load GitHub configuration from storage.
 
+    Normalizes a saved GitHub Enterprise base URL to its ``/api/v3`` REST
+    form in the returned dict, so a config written before the URL-normalization
+    fix still works.  The fix is applied **in-memory only** and is NOT
+    persisted here: ``load_github_config`` runs on the SCM poll worker's
+    ``ThreadPoolExecutor`` threads (via ``refine_scm_type``), and a write-back
+    from there could race a concurrent ``save_github_config`` on the main
+    thread and clobber a just-saved config.  ``save_github_config`` rewrites
+    the file in canonical form the next time the user saves.
+
     Returns:
         Config dict with github_url, token, username, poll_interval,
-        or None if not configured.
+        or None if not configured (or the file is corrupt / not a dict).
     """
     if not GITHUB_CONFIG_FILE.exists():
         return None
     try:
         with open(GITHUB_CONFIG_FILE, 'r') as f:
-            return json.load(f)
+            config = json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+    if not isinstance(config, dict):
+        return None
+
+    raw_url = config.get('github_url', '') or ''
+    fixed_url = normalize_github_api_url(raw_url)
+    if fixed_url != raw_url:
+        config['github_url'] = fixed_url
+    return config
 
 
 def save_github_config(config: dict[str, Any]) -> None:
     """Save GitHub configuration to storage."""
+    if 'github_url' in config:
+        config['github_url'] = normalize_github_api_url(
+            config.get('github_url', '') or '')
     atomic_write_json(GITHUB_CONFIG_FILE, config)
 
 

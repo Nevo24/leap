@@ -8,7 +8,14 @@ from typing import Optional
 
 import gitlab
 
-from leap.monitor.pr_tracking.base import PRDetails, PRState, PRStatus, SCMProvider, UserNotification
+from leap.monitor.pr_tracking.base import (
+    ClosedPRInfo,
+    PRDetails,
+    PRState,
+    PRStatus,
+    SCMProvider,
+    UserNotification,
+)
 from leap.monitor.pr_tracking.leap_command import CqCommand
 
 logger = logging.getLogger(__name__)
@@ -239,6 +246,39 @@ class GitLabProvider(SCMProvider):
 
         self._status_cache[cache_key] = result
         return result
+
+    def find_latest_closed_pr(self, project_path: str,
+                              branch: str) -> Optional[ClosedPRInfo]:
+        project = self._get_project(project_path)
+        if not project:
+            return None
+        # Prefer merged over closed-without-merge; within each state pick the
+        # most recently updated.  GitLab's MR list defaults to
+        # order_by=created_at, so request updated_at explicitly to match the
+        # GitHub provider's "most recently updated" semantics.
+        for state, merged in (('merged', True), ('closed', False)):
+            try:
+                mrs = project.mergerequests.list(
+                    state=state,
+                    source_branch=branch,
+                    order_by='updated_at',
+                    sort='desc',
+                    get_all=False,
+                    per_page=1,
+                )
+            except Exception:
+                logger.debug("Failed to list %s MRs for %s branch %s",
+                             state, project_path, branch)
+                continue
+            if mrs:
+                mr = mrs[0]
+                return ClosedPRInfo(
+                    pr_iid=mr.iid,
+                    pr_title=getattr(mr, 'title', '') or '',
+                    pr_url=getattr(mr, 'web_url', '') or '',
+                    merged=merged,
+                )
+        return None
 
     def _is_unresponded_thread(self, discussion, project, pr_iid: int) -> bool:
         """Check if a discussion thread has unresponded comments from others.

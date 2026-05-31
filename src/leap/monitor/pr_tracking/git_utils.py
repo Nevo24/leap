@@ -189,12 +189,16 @@ def detect_scm_type(
         return SCMType.GITHUB
 
     if github_config:
-        github_url = github_config.get('github_url', '').lower().rstrip('/')
+        github_url = (github_config.get('github_url') or '').lower().rstrip('/')
+        # Saved URL may include the /api/v3 API suffix; strip it before
+        # comparing against the bare host URL from the git remote.
+        if github_url.endswith('/api/v3'):
+            github_url = github_url[: -len('/api/v3')]
         if github_url and github_url in host_lower:
             return SCMType.GITHUB
 
     if gitlab_config:
-        gitlab_url = gitlab_config.get('gitlab_url', '').lower().rstrip('/')
+        gitlab_url = (gitlab_config.get('gitlab_url') or '').lower().rstrip('/')
         if gitlab_url and gitlab_url in host_lower:
             return SCMType.GITLAB
 

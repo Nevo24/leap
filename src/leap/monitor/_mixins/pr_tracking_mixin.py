@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QCursor
+from PyQt5.QtCore import Qt, QTimer, QUrl
+from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
 from leap.cli_providers.registry import get_display_name
@@ -309,16 +309,24 @@ class PRTrackingMixin(_Base):
             return
 
         if status.state == PRState.NO_PR:
-            self._pending_tracking_context.pop(tag, None)
+            ctx = self._pending_tracking_context.pop(tag, None)
             if silent:
                 self._show_status(f"Auto-reconnect: no open PR found for '{tag}'")
+            # Resolve the provider BEFORE removing the (possibly dead) row.
+            # _remove_dead_untracked_row drops the session from self.sessions,
+            # after which _get_provider_for_session couldn't find it and the
+            # closed/merged-PR fallback would silently degrade to the plain
+            # alert.  Only the interactive path needs it.
+            provider = None
+            if not silent:
+                session = next(
+                    (s for s in self.sessions if s['tag'] == tag), None)
+                if session:
+                    provider = self._get_provider_for_session(session)
             self._remove_dead_untracked_row(tag)
             self._update_table()
             if not silent:
-                QMessageBox.information(
-                    self, 'No PR Found',
-                    'No open PR found for this branch.'
-                )
+                self._show_no_open_pr_alert(ctx, provider)
             return
 
         # PR found — promote to tracked and enrich pinned session
@@ -351,6 +359,77 @@ class PRTrackingMixin(_Base):
 
         if not self._scm_poll_timer.isActive():
             self._scm_poll_timer.start(self._get_poll_interval() * 1000)
+
+    def _show_no_open_pr_alert(self, ctx: Optional[dict[str, Any]],
+                               provider: Optional[Any]) -> None:
+        """Alert that no open PR matched, surfacing a closed/merged one if any.
+
+        When the provider can find a recent closed/merged PR for the same
+        branch, the alert grows an 'Open in Browser' button.  That lookup is
+        a network call, so it runs in a ``BackgroundCallWorker`` (never on the
+        UI thread) — mirroring ``_add_row_from_pr_url``.  Falls straight
+        through to the plain alert when there's nothing to look up.
+        """
+        can_lookup = bool(
+            provider is not None and ctx
+            and ctx.get('remote_project_path') and ctx.get('branch'))
+        if not can_lookup:
+            self._no_open_pr_dialog(None, ctx)
+            return
+
+        project_path = ctx['remote_project_path']
+        branch = ctx['branch']
+        result_holder: list[Optional[Any]] = [None]
+
+        def _fetch() -> None:
+            result_holder[0] = provider.find_latest_closed_pr(
+                project_path, branch)
+
+        self._set_busy(True)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        worker = BackgroundCallWorker(_fetch, self)
+        worker.finished.connect(
+            lambda: self._on_closed_pr_lookup(ctx, result_holder))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_closed_pr_lookup(self, ctx: Optional[dict[str, Any]],
+                             result_holder: list) -> None:
+        """Closed-PR lookup finished — restore busy state, then show alert."""
+        self._set_busy(False)
+        QApplication.restoreOverrideCursor()
+        self._no_open_pr_dialog(result_holder[0], ctx)
+
+    def _no_open_pr_dialog(self, closed: Optional[Any],
+                           ctx: Optional[dict[str, Any]]) -> None:
+        """Render the 'No open PR found' message box (+ optional Open button)."""
+        if closed is None or not closed.pr_url:
+            QMessageBox.information(
+                self, 'No PR Found',
+                'No open PR found for this branch.'
+            )
+            return
+
+        branch = (ctx or {}).get('branch', '')
+        intro = (f'No open PR found for "{branch}".' if branch
+                 else 'No open PR found for this branch.')
+        state_word = 'merged' if closed.merged else 'closed'
+        title = closed.pr_title or '(no title)'
+        text = (
+            f'{intro}\n\n'
+            f'Found a {state_word} PR for this branch:\n'
+            f'PR #{closed.pr_iid}: {title}'
+        )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle('No Open PR Found')
+        box.setText(text)
+        open_btn = box.addButton('Open in Browser', QMessageBox.AcceptRole)
+        box.addButton('OK', QMessageBox.RejectRole)
+        box.setDefaultButton(open_btn)
+        box.exec_()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl(closed.pr_url))
 
     def _on_tracking_error(self, tag: str, message: str) -> None:
         """Handle an error from a one-shot PR check."""

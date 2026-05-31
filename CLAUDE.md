@@ -237,6 +237,8 @@ assets/
 | `_resolve_cli_flags()` | `server/pty_handler.py` | Merge stored/env-var default flags with explicit CLI flags |
 | `send_socket_request()` | `utils/socket_utils.py` | Shared Unix socket send/recv utility |
 | `resolve_scm_token()` | `monitor/pr_tracking/config.py` | Resolve token from config (supports env var mode) |
+| `normalize_github_api_url()` | `monitor/pr_tracking/config.py` | Canonicalize a GitHub base URL (GitHub Enterprise → `/api/v3`; github.com/api.github.com → default). Applied in-memory on `load_github_config` (no write-back — runs on poll-worker threads) and persisted on `save_github_config` |
+| `find_latest_closed_pr()` | `monitor/pr_tracking/base.py` | Most-recent closed/merged PR for a branch (`ClosedPRInfo`); powers the Track-PR "no open PR found" fallback's "Open in Browser" button. Default returns None; GitLab/GitHub override |
 | `parse_pr_url()` | `monitor/pr_tracking/git_utils.py` | Parse GitLab/GitHub PR URLs |
 | `send_to_leap_session()` | `monitor/leap_sender.py` | Send message to Leap session (prepends PR context) |
 | `configure_hooks.py` | `scripts/configure_hooks.py` | Unified hook config (iterates providers, calls `provider.configure_hooks()`) |
@@ -471,6 +473,10 @@ Left-click the PR status label (when any comment is unresponded) for a 2-item me
 ### Environment Variable Token Mode
 
 SCM tokens support two modes: `token_mode: "direct"` (stored in config) or `"env_var"` (resolved from `os.environ`). Resolution via `resolve_scm_token()` in `config.py`. On startup, env var tokens are validated — invalid ones disable the provider until re-tested via the setup dialog. Tracked rows survive provider disconnection (they retain `pr_tracked: True` in `pinned_sessions.json` and auto-reconnect once the provider is restored).
+
+### GitHub Enterprise URL Handling
+
+GitHub Enterprise Server serves its REST API under `https://<host>/api/v3` (and GraphQL under `https://<host>/api/graphql`). `GitHubProvider.__init__` already assumes the stored base URL carries the `/api/v3` suffix when deriving the GraphQL endpoint, so a user who enters just `https://<host>` would get a broken REST client *and* broken resolved-thread queries. `normalize_github_api_url()` canonicalizes the URL: github.com/api.github.com map to the default (empty `base_url` → PyGithub uses api.github.com), and any other host gets `/api/v3` appended. It's applied in-memory on every `load_github_config` (NOT persisted there — `load_github_config` runs on the SCM poll worker's `ThreadPoolExecutor` threads via `refine_scm_type`, so a write-back could race a main-thread `save_github_config`; the canonical form is persisted whenever the user next saves). The companion gotcha: `detect_scm_type()` strips a trailing `/api/v3` from the saved URL before substring-matching it against the bare host from the git remote, so the suffix doesn't break SCM-type detection for self-hosted hosts.
 
 ### User Notifications
 

@@ -9,7 +9,14 @@ from typing import Optional
 import requests
 from github import Github
 
-from leap.monitor.pr_tracking.base import PRDetails, PRState, PRStatus, SCMProvider, UserNotification
+from leap.monitor.pr_tracking.base import (
+    ClosedPRInfo,
+    PRDetails,
+    PRState,
+    PRStatus,
+    SCMProvider,
+    UserNotification,
+)
 from leap.monitor.pr_tracking.leap_command import CqCommand
 
 logger = logging.getLogger(__name__)
@@ -121,6 +128,36 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to list PRs for %s branch %s",
                          project_path, branch)
             return []
+
+    def find_latest_closed_pr(self, project_path: str,
+                              branch: str) -> Optional[ClosedPRInfo]:
+        repo = self._get_repo(project_path)
+        if not repo:
+            return None
+        # head filter uses the BASE repo owner, so a merged/closed *fork* PR
+        # won't match — same accepted limitation as ``_find_open_prs``.  The
+        # caller degrades gracefully to the plain "no open PR" alert.
+        owner = project_path.split('/')[0]
+        try:
+            pulls = repo.get_pulls(
+                state='closed', head=f'{owner}:{branch}',
+                sort='updated', direction='desc',
+            )
+            for pr in pulls:
+                # ``merged_at`` is present in the list response, so this
+                # avoids the extra full-PR GET that reading ``pr.merged``
+                # would lazily trigger.
+                return ClosedPRInfo(
+                    pr_iid=pr.number,
+                    pr_title=pr.title or '',
+                    pr_url=pr.html_url,
+                    merged=pr.merged_at is not None,
+                )
+            return None
+        except Exception:
+            logger.debug("Failed to look up closed PRs for %s branch %s",
+                         project_path, branch)
+            return None
 
     def get_pr_details(self, project_path: str, pr_iid: int) -> Optional[PRDetails]:
         repo = self._get_repo(project_path)

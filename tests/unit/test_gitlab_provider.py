@@ -516,3 +516,89 @@ class TestNotificationEviction:
             'when max_historical is 0, no IDs should survive trimming — '
             'else current+historical exceeds the cap'
         )
+
+
+class _FakeMRList:
+    """Stand-in for ``project.mergerequests`` honoring state-keyed lookups."""
+
+    def __init__(self, by_state: dict[str, list]) -> None:
+        self._by_state = by_state
+        self.calls: list[dict] = []
+
+    def list(self, **kwargs: Any) -> list:
+        self.calls.append(kwargs)
+        return self._by_state.get(kwargs.get('state'), [])
+
+
+def _make_project(by_state: dict[str, list]) -> Any:
+    return SimpleNamespace(mergerequests=_FakeMRList(by_state))
+
+
+class TestFindLatestClosedMR:
+    """The closed/merged-MR fallback shown when no OPEN MR matches a branch."""
+
+    def test_prefers_merged_over_closed(self) -> None:
+        p = _make_gitlab_provider()
+        merged = SimpleNamespace(iid=42, title='merged', web_url='wu42')
+        closed = SimpleNamespace(iid=99, title='closed', web_url='wu99')
+        proj = _make_project({'merged': [merged], 'closed': [closed]})
+        p._get_project = lambda project_path: proj
+        info = p.find_latest_closed_pr('grp/x', 'b')
+        assert info is not None
+        assert info.pr_iid == 42 and info.merged is True
+        # Stops after the merged hit — never queries 'closed'.
+        assert [c['state'] for c in proj.mergerequests.calls] == ['merged']
+
+    def test_falls_back_to_closed_when_no_merged(self) -> None:
+        p = _make_gitlab_provider()
+        closed = SimpleNamespace(iid=99, title='c', web_url='wu99')
+        proj = _make_project({'closed': [closed]})
+        p._get_project = lambda project_path: proj
+        info = p.find_latest_closed_pr('grp/x', 'b')
+        assert info is not None
+        assert info.pr_iid == 99 and info.merged is False
+        assert [c['state'] for c in proj.mergerequests.calls] == ['merged', 'closed']
+
+    def test_queries_source_branch_one_result(self) -> None:
+        p = _make_gitlab_provider()
+        proj = _make_project({'merged': [SimpleNamespace(iid=1, title='t', web_url='u')]})
+        p._get_project = lambda project_path: proj
+        p.find_latest_closed_pr('grp/x', 'my-branch')
+        first = proj.mergerequests.calls[0]
+        assert first['source_branch'] == 'my-branch'
+        assert first['per_page'] == 1 and first['get_all'] is False
+        # Explicit "most recently updated" ordering — GitLab defaults to
+        # created_at, which wouldn't match the GitHub provider's semantics.
+        assert first['order_by'] == 'updated_at' and first['sort'] == 'desc'
+
+    def test_no_project_returns_none(self) -> None:
+        p = _make_gitlab_provider()
+        p._get_project = lambda project_path: None
+        assert p.find_latest_closed_pr('grp/x', 'b') is None
+
+    def test_no_matches_returns_none(self) -> None:
+        p = _make_gitlab_provider()
+        p._get_project = lambda project_path: _make_project({})
+        assert p.find_latest_closed_pr('grp/x', 'b') is None
+
+    def test_exception_in_one_state_continues_to_next(self) -> None:
+        p = _make_gitlab_provider()
+
+        class _Flaky:
+            def list(self, **kwargs: Any) -> list:
+                if kwargs['state'] == 'merged':
+                    raise RuntimeError('boom')
+                return [SimpleNamespace(iid=7, title='c', web_url='u')]
+
+        p._get_project = lambda project_path: SimpleNamespace(mergerequests=_Flaky())
+        info = p.find_latest_closed_pr('grp/x', 'b')
+        assert info is not None and info.pr_iid == 7 and info.merged is False
+
+    def test_missing_attrs_coerced(self) -> None:
+        p = _make_gitlab_provider()
+        # title/web_url absent on the object → getattr fallback to ''
+        bare = SimpleNamespace(iid=3)
+        p._get_project = lambda project_path: _make_project({'merged': [bare]})
+        info = p.find_latest_closed_pr('grp/x', 'b')
+        assert info is not None
+        assert info.pr_iid == 3 and info.pr_title == '' and info.pr_url == ''
