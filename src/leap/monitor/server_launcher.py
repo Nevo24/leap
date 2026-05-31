@@ -363,7 +363,7 @@ class ServerLauncher:
         Terminal.app.
 
         For plain terminals (iTerm2, Terminal.app, WezTerm, Warp,
-        Kitty, Ghostty) we leave ``project_path=None`` — those openers
+        cmux, Kitty, Ghostty) we leave ``project_path=None`` — those openers
         ignore it anyway, and ``leap-resume.py`` will prompt the user
         with the "Original / Current" choice for cwd-bound CLIs.
         """

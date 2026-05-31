@@ -50,7 +50,25 @@ def detect_ide() -> str:
         return 'Kitty'
 
     if term_program == 'ghostty':
+        # cmux is a Ghostty-based terminal: its own shells report
+        # TERM_PROGRAM='ghostty', but its shell integration also exports
+        # CMUX_* identifiers (CMUX_PANEL_ID, CMUX_BUNDLE_ID,
+        # CMUX_BUNDLED_CLI_PATH, ...).  Detect cmux by the presence of
+        # ANY CMUX_* var (not a fixed name — which vars are set varies by
+        # surface type and cmux version) so its sessions are navigable
+        # via cmux's AppleScript dictionary instead of treated as plain
+        # Ghostty.  Gating on the 'ghostty' TERM_PROGRAM (rather than
+        # checking CMUX_* unconditionally) avoids misdetecting a child
+        # terminal (VS Code, iTerm) launched *from* cmux, which inherits
+        # the leaked CMUX_* vars but reports its own TERM_PROGRAM.
+        if any(k.startswith('CMUX_') for k in os.environ):
+            return 'cmux'
         return 'Ghostty'
+
+    # Some cmux builds may report their own TERM_PROGRAM rather than
+    # Ghostty's; treat that as cmux directly.
+    if term_program == 'cmux':
+        return 'cmux'
 
     if term_program == 'WezTerm':
         return 'WezTerm'

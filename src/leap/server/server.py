@@ -325,7 +325,7 @@ class LeapServer:
         # duplicate and renamed to bare — the OSC then claims the
         # name on our brand-new tab a moment later.  Cost is
         # ~200-1000ms (warm JetBrains) and entirely no-op for
-        # iTerm2/Terminal.app/Warp/WezTerm (function self-gates on
+        # iTerm2/Terminal.app/Warp/WezTerm/cmux (function self-gates on
         # ``_resolve_jetbrains_cli``).
         ide_now = self.metadata.ide or ''
         proj_now = self.metadata.project_path or ''

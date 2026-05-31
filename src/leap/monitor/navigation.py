@@ -112,7 +112,7 @@ def is_ide_app(name: Optional[str]) -> bool:
     Used by GUI Resume to decide whether to thread the recorded ``cwd``
     through as ``project_path``: IDEs (VS Code, Cursor, JetBrains family)
     take a project path and open the project; plain terminals (iTerm2,
-    Terminal.app, WezTerm, Warp, Kitty, Ghostty, …) ignore project_path
+    Terminal.app, WezTerm, Warp, cmux, Kitty, Ghostty, …) ignore project_path
     and just open at the shell's default cwd.
 
     Match by substring against the JetBrains list so 'IntelliJ IDEA',
@@ -285,8 +285,8 @@ def open_terminal_with_command(
         preferred_ide: IDE or terminal app to open in (from session metadata).
         project_path: Project path for IDE navigation.
         fallback_terminal: User's configured default terminal
-            (``'iTerm2'`` / ``'Terminal.app'`` / ``'Warp'`` / ``'WezTerm'``)
-            to try if the primary path fails.  Spares an iTerm2 user
+            (``'iTerm2'`` / ``'Terminal.app'`` / ``'Warp'`` / ``'WezTerm'`` /
+            ``'cmux'``) to try if the primary path fails.  Spares an iTerm2 user
             from being dropped into Terminal.app when an IDE move
             fails.
         outcome: Optional mutable dict.  When provided, the function
@@ -360,6 +360,10 @@ def open_terminal_with_command(
             if _open_wezterm_terminal(command):
                 return _record('WezTerm')
             logger.debug("WezTerm open failed, falling back")
+        elif preferred_ide == 'cmux':
+            if _open_cmux_terminal(command):
+                return _record('cmux')
+            logger.debug("cmux open failed, falling back")
 
     # Preferred path failed or unknown.  Try the caller's configured
     # default terminal first (so an iTerm2 user isn't surprised with
@@ -380,6 +384,9 @@ def open_terminal_with_command(
         elif fallback_terminal == 'WezTerm':
             if _open_wezterm_terminal(command):
                 return _record('WezTerm')
+        elif fallback_terminal == 'cmux':
+            if _open_cmux_terminal(command):
+                return _record('cmux')
 
     if _open_terminal_app_terminal(command):
         return _record('Terminal.app')
@@ -422,6 +429,9 @@ def close_terminal_with_title(
         elif preferred_ide == 'WezTerm':
             if _close_wezterm(title_pattern):
                 return True
+        elif preferred_ide == 'cmux':
+            if _close_cmux(title_pattern):
+                return True
         elif preferred_ide == 'iTerm2':
             if _close_iterm2(title_pattern):
                 return True
@@ -438,6 +448,8 @@ def close_terminal_with_title(
     if _close_warp(title_pattern):
         return True
     if _close_wezterm(title_pattern):
+        return True
+    if _close_cmux(title_pattern):
         return True
 
     return False
@@ -477,6 +489,9 @@ def find_terminal_with_title(
         elif preferred_ide == 'WezTerm':
             if _navigate_wezterm(title_pattern):
                 return True
+        elif preferred_ide == 'cmux':
+            if _navigate_cmux(title_pattern):
+                return True
         elif preferred_ide == 'iTerm2':
             if _navigate_iterm2(title_pattern):
                 return True
@@ -496,6 +511,12 @@ def find_terminal_with_title(
     if _navigate_warp(title_pattern):
         return True
     if _navigate_wezterm(title_pattern):
+        return True
+    # probe=False: this is the generic fallback for a navigation that
+    # already failed for some other terminal — only do the cheap, focus-
+    # preserving workspace-name match, never the surface-probe (which
+    # would focus-cycle every cmux surface for a non-cmux session).
+    if _navigate_cmux(title_pattern, probe=False):
         return True
 
     return False
@@ -1159,6 +1180,247 @@ def _open_wezterm_terminal(command: str) -> bool:
         if result.returncode == 0:
             _activate_wezterm()
             return True
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
+_CMUX_BUNDLE_ID = 'com.cmuxterm.app'
+
+
+def _find_cmux_cli() -> Optional[str]:
+    """Find the bundled cmux CLI binary (``new-workspace`` etc.).
+
+    Checks PATH (the user-created ``/usr/local/bin/cmux`` symlink), then
+    the binary shipped inside ``cmux.app``, then Spotlight as a last
+    resort.
+    """
+    cli = shutil.which('cmux')
+    if cli:
+        return cli
+    for app_dir in ('/Applications', os.path.expanduser('~/Applications')):
+        candidate = os.path.join(
+            app_dir, 'cmux.app', 'Contents', 'Resources', 'bin', 'cmux')
+        if os.path.isfile(candidate):
+            return candidate
+    # Spotlight fallback — finds the app even if installed outside /Applications.
+    try:
+        result = subprocess.run(
+            ['mdfind', f'kMDItemCFBundleIdentifier == "{_CMUX_BUNDLE_ID}"'],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines():
+            candidate = os.path.join(
+                line.strip(), 'Contents', 'Resources', 'bin', 'cmux')
+            if os.path.isfile(candidate):
+                return candidate
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return None
+
+
+def _activate_cmux() -> bool:
+    """Bring cmux to the foreground."""
+    try:
+        result = subprocess.run(
+            ['open', '-a', 'cmux'],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
+def _navigate_cmux(title_pattern: str, probe: bool = True) -> bool:
+    """Navigate to (focus) a cmux terminal whose title contains *title_pattern*.
+
+    Driven via cmux's AppleScript dictionary (``cmux.sdef``:
+    ``application > windows > tabs (workspaces) > terminals``) rather
+    than its bundled CLI, which defaults to ``socketControlMode:
+    cmuxOnly`` and rejects an outside process like the monitor.
+
+    cmux is awkward to navigate because it does *not* expose a
+    per-surface title: every ``terminal``'s ``name`` reads as a generic
+    "Terminal", and a shell's OSC title (the server sets ``lps <tag>``)
+    is surfaced only as the **workspace (tab) name**, and only for the
+    workspace's *active* surface.  So we use two passes (both verified
+    against a live app):
+
+    1. Match the workspace name directly - hits when the session's
+       surface is the active one (or is the workspace's only surface).
+    2. If that misses, the target surface is inactive and its title is
+       hidden, so probe: focus each surface in a multi-surface workspace
+       and re-read the workspace name; on a match leave that surface
+       focused (that *is* the jump), otherwise restore the workspace's
+       original focus.  If no workspace matches at all (e.g. the session
+       was closed out-of-band), the surface that was frontmost before
+       probing is restored so the jump doesn't leave cmux parked on a
+       random workspace.
+
+    *probe* gates pass 2.  The preferred-IDE path (the recorded terminal
+    really is cmux) passes ``True``; the generic fallback chain passes
+    ``False`` so a *failed* navigation for some *other* terminal doesn't
+    focus-cycle every cmux surface hunting for a title that was never
+    there.  Pass 1 is always cheap and leaves focus untouched until a
+    match.
+
+    Per-workspace work is wrapped in ``try`` so one odd workspace (e.g. a
+    browser-only surface with no focused terminal) can't abort the whole
+    search.  The app-level ``terminals`` element is unreliable (reports
+    count 0), so both passes walk ``windows > tabs``.  Guarded on cmux
+    already running so a "jump to" whose recorded terminal is stale
+    doesn't cold-launch cmux.
+    """
+    if _get_app_pid(_CMUX_BUNDLE_ID) is None:
+        return False
+    safe_pattern = _escape_applescript(title_pattern)
+    probe_block = f'''
+        set savedTerm to missing value
+        try
+            set savedTerm to focused terminal of (selected tab of (front window))
+        end try
+        repeat with w in windows
+            repeat with tb in tabs of w
+                try
+                    set surfs to terminals of tb
+                    if (count of surfs) > 1 then
+                        set orig to focused terminal of tb
+                        repeat with t in surfs
+                            focus t
+                            delay 0.2
+                            if name of tb contains "{safe_pattern}" then
+                                activate
+                                return true
+                            end if
+                        end repeat
+                        focus orig
+                    end if
+                end try
+            end repeat
+        end repeat
+        try
+            if savedTerm is not missing value then focus savedTerm
+        end try
+    ''' if probe else ''
+    script = f'''
+    tell application "cmux"
+        repeat with w in windows
+            repeat with tb in tabs of w
+                try
+                    if name of tb contains "{safe_pattern}" then
+                        focus (focused terminal of tb)
+                        activate
+                        return true
+                    end if
+                end try
+            end repeat
+        end repeat
+        {probe_block}
+    end tell
+    return false
+    '''
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True, text=True, timeout=20,
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
+def _close_cmux(title_pattern: str) -> bool:
+    """Close a cmux terminal whose title contains *title_pattern*.
+
+    cmux exposes a surface's OSC title (``lps <tag>``) only as the
+    workspace (tab) name, and only while that surface is active (see
+    ``_navigate_cmux``).  We match the workspace name and close its
+    focused terminal; with cmux's default
+    ``keepWorkspaceOpenWhenClosingLastSurface = false`` that also closes
+    the now-empty workspace.  Unlike navigation we deliberately don't
+    probe inactive surfaces here — closing via the X button is rare and
+    focusing surfaces just to close one would be more disruptive than
+    the occasional miss.
+
+    Guarded on cmux running so the fallback close-chain never launches
+    cmux just to hunt for a tab that isn't there.
+    """
+    if _get_app_pid(_CMUX_BUNDLE_ID) is None:
+        return False
+    safe_pattern = _escape_applescript(title_pattern)
+    script = f'''
+    tell application "cmux"
+        repeat with w in windows
+            repeat with tb in tabs of w
+                try
+                    if name of tb contains "{safe_pattern}" then
+                        close (focused terminal of tb)
+                        return true
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    return false
+    '''
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0 and 'true' in result.stdout
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return False
+
+
+def _open_cmux_terminal(command: str) -> bool:
+    """Open a new cmux workspace (tab) and run *command*.
+
+    Primary path: the bundled ``cmux`` CLI's ``new-workspace --command``,
+    which sends the command text **plus Enter** so it actually runs.
+    This only works when the monitor can reach cmux's control socket
+    (``socketControlMode`` set to ``allowAll``/``password``, or the
+    monitor itself was launched from inside cmux); the default
+    ``cmuxOnly`` rejects outside processes, in which case we fall back.
+
+    Fallback path: AppleScript ``new tab`` + ``input text`` with a
+    trailing return.  Verified against a live cmux: ``input text`` runs
+    the line as a normal command (it is *not* held by bracketed paste),
+    so the session starts in the new tab with no manual keypress.
+    """
+    cli = _find_cmux_cli()
+    if cli:
+        try:
+            result = subprocess.run(
+                [cli, 'new-workspace', '--command', command, '--focus', 'true'],
+                capture_output=True, timeout=10,
+            )
+            if result.returncode == 0:
+                _activate_cmux()
+                return True
+        except (subprocess.SubprocessError, OSError):
+            pass
+
+    safe_command = _escape_applescript(command)
+    script = f'''
+    tell application "cmux"
+        activate
+        set newTab to new tab
+        set theTerm to focused terminal of newTab
+        input text ("{safe_command}" & return) to theTerm
+        focus theTerm
+    end tell
+    return true
+    '''
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
         pass
     return False

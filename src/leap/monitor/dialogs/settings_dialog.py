@@ -82,6 +82,7 @@ def _detect_installed_terminals() -> list[str]:
         ('iTerm2', [Path('/Applications/iTerm.app'), home / 'Applications' / 'iTerm.app']),
         ('Warp', [Path('/Applications/Warp.app'), home / 'Applications' / 'Warp.app']),
         ('WezTerm', [Path('/Applications/WezTerm.app'), home / 'Applications' / 'WezTerm.app']),
+        ('cmux', [Path('/Applications/cmux.app'), home / 'Applications' / 'cmux.app']),
     ]
     found = [name for name, paths in candidates if any(p.is_dir() for p in paths)]
     # WezTerm may be installed outside standard locations — use Spotlight
@@ -93,6 +94,17 @@ def _detect_installed_terminals() -> list[str]:
             )
             if result.returncode == 0 and result.stdout.strip():
                 found.append('WezTerm')
+        except (subprocess.SubprocessError, OSError):
+            pass
+    # cmux may be installed outside standard locations — use Spotlight
+    if 'cmux' not in found:
+        try:
+            result = subprocess.run(
+                ['mdfind', 'kMDItemCFBundleIdentifier == "com.cmuxterm.app"'],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                found.append('cmux')
         except (subprocess.SubprocessError, OSError):
             pass
     return found
