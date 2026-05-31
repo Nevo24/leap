@@ -200,6 +200,9 @@ class SCMSetupDialog(ZoomMixin, QDialog):
 
         # Status label
         self.status_label = QLabel('')
+        # Wrap long messages (e.g. the "not GitHub - check your URL" failure)
+        # so they don't get clipped to a single truncated line.
+        self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
         # Buttons: [Cancel]  [Connect|Disconnect]  [stretch]  [Save]
