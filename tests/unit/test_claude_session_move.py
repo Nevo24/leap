@@ -47,8 +47,11 @@ class TestSlugify:
     def test_existing_hyphens_preserved(self):
         assert slugify("/Users/me/my-app") == "-Users-me-my-app"
 
-    def test_underscores_preserved(self):
-        assert slugify("/Users/me/my_app") == "-Users-me-my_app"
+    def test_underscores_become_dash(self):
+        # Empirical: Claude replaces ``_`` with ``-`` (it is NOT
+        # preserved).  Verified against real ~/.claude/projects dirs,
+        # e.g. ``mwb-manifests_3`` → ``mwb-manifests-3``.
+        assert slugify("/Users/me/my_app") == "-Users-me-my-app"
 
     def test_numbers_preserved(self):
         assert slugify("/Users/me/proj42") == "-Users-me-proj42"

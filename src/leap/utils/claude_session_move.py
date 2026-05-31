@@ -47,17 +47,25 @@ __all__ = ['CLAUDE_PROJECTS_ROOT', 'RelocationError', 'relocate_claude_session',
 
 CLAUDE_PROJECTS_ROOT: Path = Path.home() / ".claude" / "projects"
 
-# Claude's per-cwd directory slug: every char *not* in ``[a-zA-Z0-9_-]``
+# Claude's per-cwd directory slug: every char *not* in ``[a-zA-Z0-9-]``
 # is replaced with ``-``, with no collapsing of consecutive dashes.
-# Empirically derived from inspection of ``~/.claude/projects/``:
-# ``Nevo.Mashiach`` → ``Nevo-Mashiach`` (single dot → single dash) and
-# ``/Users/me/.claude`` → ``-Users-me--claude`` (slash + dot → two
-# dashes preserved).  The pre-flight check in
-# :func:`relocate_claude_session` validates that our computed slug for
-# ``src_cwd`` matches the actual on-disk directory name — if Claude
-# changes its encoding in a future version, the move aborts before
-# touching any files.
-_SLUG_REPLACE_RE: re.Pattern[str] = re.compile(r'[^a-zA-Z0-9_-]')
+# Crucially, underscores ARE replaced (``_`` is *not* preserved) — an
+# earlier version of this regex kept ``_`` and so computed the wrong
+# slug for any cwd containing one, silently breaking every transcript
+# lookup (transcript_says_running / _interrupted) and the resume/move
+# pre-flight for those paths.  Empirically derived by matching computed
+# slugs against the real ``~/.claude/projects/`` directory names across
+# 40 recorded sessions:
+#   ``mwb-manifests_3``  → ``mwb-manifests-3``   (underscore → dash)
+#   ``ai-workflows_1``   → ``ai-workflows-1``
+#   ``Nevo.Mashiach``    → ``Nevo-Mashiach``     (dot → dash)
+#   ``/Users/me/.claude``→ ``-Users-me--claude`` (slash + dot → TWO
+#                                                  dashes, NOT collapsed)
+# The pre-flight check in :func:`relocate_claude_session` validates that
+# our computed slug for ``src_cwd`` matches the actual on-disk directory
+# name — if Claude changes its encoding in a future version, the move
+# aborts before touching any files.
+_SLUG_REPLACE_RE: re.Pattern[str] = re.compile(r'[^a-zA-Z0-9-]')
 
 
 def slugify(path: str) -> str:
