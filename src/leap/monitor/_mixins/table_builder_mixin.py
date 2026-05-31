@@ -1273,8 +1273,15 @@ class TableBuilderMixin(_Base):
                     else:
                         if branch_mismatch:
                             server_btn = QPushButton('\u26a0  Terminal')
+                            # Reuse the shared active-button geometry (same
+                            # padding/border/radius/height as the green
+                            # Terminal) tinted orange. A bare `color:` override
+                            # left padding/border at the stylesheet defaults,
+                            # which rendered the button wider than the green
+                            # one (verified on macOS: 175px vs 169px).
                             server_btn.setStyleSheet(
-                                f'QPushButton {{ color: {current_theme().accent_orange}; }}')
+                                active_btn_style(
+                                    fg_override=current_theme().accent_orange))
                             server_btn.setToolTip(
                                 f"Branch mismatch: expected '{pinned_branch}', "
                                 f"got '{session['branch']}'"
