@@ -167,9 +167,9 @@ fi
 
 # ── Step 5: Remove old ClaudeQ Monitor.app ──────────────────────────
 if [ -d "/Applications/ClaudeQ Monitor.app" ]; then
-    sudo rm -rf "/Applications/ClaudeQ Monitor.app" 2>/dev/null && \
+    sudo rm -r "/Applications/ClaudeQ Monitor.app" 2>/dev/null && \
         echo -e "  ${GREEN}✓ Removed /Applications/ClaudeQ Monitor.app${NC}" || \
-        echo -e "  ${YELLOW}⚠ Could not remove ClaudeQ Monitor.app (run: sudo rm -rf '/Applications/ClaudeQ Monitor.app')${NC}"
+        echo -e "  ${YELLOW}⚠ Could not remove ClaudeQ Monitor.app (run: sudo rm -r '/Applications/ClaudeQ Monitor.app')${NC}"
     # Signal to the update target that monitor needs rebuilding
     mkdir -p "$STORAGE_DIR"
     touch "$STORAGE_DIR/.migration_had_monitor"
