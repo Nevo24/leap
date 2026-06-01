@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
 )
-from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtCore import QPoint, QSize, Qt
 from PyQt5.QtGui import QColor, QCursor, QFont, QPalette
 
 from leap.monitor.dialogs.notes_dialog import NotesDialog
@@ -44,6 +44,7 @@ from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.table_helpers import (
     ColorPickerPopup, HoverIconButton,
     CELL_BTN_H, active_btn_style, close_btn_style, inactive_btn_style, menu_btn_style,
+    git_merge_icon, git_pr_closed_icon,
     _GIT_BRANCH_SVG, _OPEN_EXTERNAL_SVG, _PALETTE_SVG, _SEND_SVG,
     _THREE_DOT_SVG,
 )
@@ -376,6 +377,13 @@ class TableBuilderMixin(_Base):
             elif role == 'orange':
                 orange_fg = ensure_contrast(t.accent_orange, row_color)
                 btn.setStyleSheet(_solid_btn(orange_fg, orange_fg))
+            elif role == 'pr_accent':
+                # Merged/Closed PR badge — carries its own accent color
+                # (violet for merged, red for closed). Contrast-adjust it
+                # against the row color, same as the green/orange roles.
+                base = btn.property('_pr_accent_color') or t.accent_green
+                acc_fg = ensure_contrast(base, row_color)
+                btn.setStyleSheet(_solid_btn(acc_fg, acc_fg))
             elif role == 'menu':
                 menu_fg = ensure_contrast(t.icon_color, row_color)
                 btn.setStyleSheet(
@@ -585,6 +593,25 @@ class TableBuilderMixin(_Base):
             approval_label = IndicatorLabel()
             self._pr_approval_widgets[tag] = approval_label
 
+        # Draft / conflict / failing-checks marker icons ride on pr_widget's
+        # lifecycle: stashed on it so a cache-miss rebuild REPARENTS them
+        # (like pr_widget / approval) instead of destroying and recreating
+        # them.  Recreating them would orphan the hover-popup of a marker the
+        # user happened to be on during the rebuild, and they get cleaned up
+        # for free whenever pr_widget is dropped (no separate dict to prune).
+        markers = getattr(pr_widget, '_pr_markers', None)
+        reused_markers = bool(markers) and all(
+            not sip.isdeleted(m) for m in markers)
+        if not reused_markers:
+            markers = []
+            for _mname in ('_draftMarker', '_conflictMarker', '_checksMarker'):
+                _marker_lbl = IndicatorLabel()
+                _marker_lbl.setObjectName(_mname)
+                _marker_lbl.setAlignment(Qt.AlignCenter)
+                _marker_lbl.setVisible(False)
+                markers.append(_marker_lbl)
+            pr_widget._pr_markers = markers
+
         pr_state = ('tracked', self._should_show_pr_fire(tag))
         pr_cached = (
             reused_pr and reused_approval
@@ -597,6 +624,9 @@ class TableBuilderMixin(_Base):
                 pr_widget.set_preserve_popup(True)
             if reused_approval:
                 approval_label.set_preserve_popup(True)
+            if reused_markers:
+                for _m in markers:
+                    _m.set_preserve_popup(True)
 
             pr_container = QWidget()
             pr_layout = QHBoxLayout(pr_container)
@@ -613,6 +643,13 @@ class TableBuilderMixin(_Base):
 
             pr_layout.addStretch()
             pr_layout.addWidget(approval_label)
+            # Marker icons sit between the approval icon and the status,
+            # shown+populated per poll by _apply_pr_status (found via
+            # findChild by objectName).  Separate widgets so each gets its
+            # own hover tooltip and its own color - the conflict marker's
+            # orange never bleeds onto the ✓.
+            for _m in markers:
+                pr_layout.addWidget(_m)
             pr_layout.addWidget(pr_widget)
             pr_layout.addStretch()
 
@@ -647,15 +684,25 @@ class TableBuilderMixin(_Base):
                 pr_widget.set_preserve_popup(False)
             if reused_approval:
                 approval_label.set_preserve_popup(False)
+            if reused_markers:
+                for _m in markers:
+                    _m.set_preserve_popup(False)
 
         # Always update PR widget properties (change each poll)
         pr_status = self._pr_statuses.get(tag)
         if pr_status is None and checking_when_no_status:
             pr_widget.setText('Checking…')
-            pr_widget.setStyleSheet(f'color: {current_theme().text_muted};')
+            # set_pulsing(False) clears the stylesheet, so it must run before
+            # setStyleSheet or the muted color gets wiped to the default.
             pr_widget.set_pulsing(False)
+            pr_widget.setStyleSheet(f'color: {current_theme().text_muted};')
             pr_widget.set_pr_url(None)
             pr_widget.set_has_unresponded(False)
+            # This path skips _apply_pr_status, so hide the markers ourselves
+            # (otherwise a previously-shown marker would linger next to
+            # "Checking…").
+            for _m in markers:
+                _m.setVisible(False)
         else:
             self._apply_pr_status(pr_widget, approval_label, pr_status)
             pr_widget.set_has_unresponded(
@@ -680,6 +727,66 @@ class TableBuilderMixin(_Base):
             self._prefs.get('auto_fetch_leap', False)
         )
         return pr_status
+
+    def _render_closed_pr_cell(self, row: int, tag: str, kind: str,
+                               pr_url: str, pr_iid: Optional[int],
+                               pr_title: str,
+                               row_color: Optional[str]) -> None:
+        """Render the soft-tinted Merged / Closed PR badge in COL_PR.
+
+        ``kind`` is ``'merged'`` or ``'closed'``.  Layout mirrors a tracked
+        row's ``[× | status]``: a close-X that stops tracking the
+        merged/closed PR (drops the row's flags) plus a colored badge that
+        opens the PR in the browser.  The badge reuses ``active_btn_style``
+        - the same soft-tinted look as the green Terminal button - so it
+        sits calmly in every theme instead of glowing like a hardcoded pill.
+        """
+        pr_state = ('closed_pr', kind, pr_url, row_color)
+        if self._cell_cached(tag, 'pr', pr_state, row, self.COL_PR):
+            return
+        if self.table.columnSpan(row, self.COL_PR) > 1:
+            self.table.setSpan(row, self.COL_PR, 1, 1)
+
+        t = current_theme()
+        is_merged = (kind == 'merged')
+        color = t.pr_merged_color if is_merged else t.accent_red
+        label = 'Merged' if is_merged else 'Closed'
+        icon_px = max(12, self._zoomed_size(-1))
+        icon = (git_merge_icon(icon_px, color.encode()) if is_merged
+                else git_pr_closed_icon(icon_px, color.encode()))
+
+        container = QWidget()
+        hlayout = QHBoxLayout(container)
+        hlayout.setContentsMargins(0, 0, 0, 0)
+        hlayout.setSpacing(2)
+
+        x_btn = QPushButton('×')
+        x_btn.setFixedSize(self._zoomed_btn_w(28), x_btn.sizeHint().height())
+        x_btn.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
+        x_btn.setProperty('_btn_role', 'close')
+        x_btn.setToolTip(f'Stop tracking {kind} PR for {tag}')
+        x_btn.clicked.connect(
+            lambda checked, t_=tag: self._stop_tracking_closed_pr(t_))
+        hlayout.addWidget(x_btn, 0, Qt.AlignVCenter)
+
+        badge = QPushButton(label)
+        badge.setIcon(icon)
+        badge.setIconSize(QSize(icon_px, icon_px))
+        badge.setStyleSheet(active_btn_style(fg_override=color))
+        badge.setProperty('_btn_role', 'pr_accent')
+        badge.setProperty('_pr_accent_color', color)
+        if pr_iid and pr_title:
+            badge.setToolTip(f'Open {kind} PR !{pr_iid}: {pr_title}')
+        elif pr_iid:
+            badge.setToolTip(f'Open {kind} PR !{pr_iid}')
+        else:
+            badge.setToolTip(f'Open {kind} PR in browser')
+        badge.clicked.connect(lambda checked, u=pr_url: webbrowser.open(u))
+        hlayout.addWidget(badge, 1)
+
+        self._set_cell_widget(row, self.COL_PR, container)
+        self._apply_row_color_to_widget(container, row_color)
+        self._cache_cell(tag, 'pr', pr_state, row, self.COL_PR)
 
     def _build_cursor_gui_row(self, row: int, session: dict,
                               row_color: Optional[str]) -> None:
@@ -2024,30 +2131,46 @@ class TableBuilderMixin(_Base):
                                         row_color)
 
                 else:
-                    # Not tracked — "Track PR" button
-                    pr_state = ('untracked', is_dead,
+                    # Not tracked. A row that previously had its open PR
+                    # merged/closed remotely shows a Merged/Closed badge
+                    # (persisted on the pin); otherwise it's a "Track PR"
+                    # button.
+                    pr_url = pinned_data.get('pr_url') or ''
+                    is_merged_row = bool(pinned_data.get('pr_merged') and pr_url)
+                    is_closed_row = bool(
+                        pinned_data.get('pr_closed') and pr_url
+                        and not is_merged_row)
+                    if is_merged_row or is_closed_row:
+                        self._render_closed_pr_cell(
+                            row, tag,
+                            'merged' if is_merged_row else 'closed',
+                            pr_url, pinned_data.get('pr_iid'),
+                            pinned_data.get('pr_title') or '', row_color)
+                    else:
+                        # No closed/merged state — "Track PR" button
+                        pr_state = ('untracked', is_dead,
                                     bool(pinned_data.get('remote_project_path')))
-                    if not self._cell_cached(tag, 'pr', pr_state,
-                                             row, self.COL_PR):
-                        if self.table.columnSpan(row, self.COL_PR) > 1:
-                            self.table.setSpan(row, self.COL_PR, 1, 1)
-                        is_pr_pinned_row = bool(
-                            pinned_data.get('remote_project_path'))
-                        track_btn = QPushButton('Track PR')
-                        if is_dead and not is_pr_pinned_row:
-                            track_btn.setToolTip(
-                                'Start a server first to discover PR from branch')
-                            track_btn.setEnabled(False)
-                        else:
-                            track_btn.setToolTip(
-                                f'Start tracking PR for {tag}')
-                        track_btn.setStyleSheet(inactive_btn_style())
-                        track_btn.clicked.connect(
-                            lambda checked, t=tag: self._start_tracking(t)
-                        )
-                        self._set_cell_widget(row, self.COL_PR, track_btn)
-                        self._cache_cell(tag, 'pr', pr_state,
-                                         row, self.COL_PR)
+                        if not self._cell_cached(tag, 'pr', pr_state,
+                                                 row, self.COL_PR):
+                            if self.table.columnSpan(row, self.COL_PR) > 1:
+                                self.table.setSpan(row, self.COL_PR, 1, 1)
+                            is_pr_pinned_row = bool(
+                                pinned_data.get('remote_project_path'))
+                            track_btn = QPushButton('Track PR')
+                            if is_dead and not is_pr_pinned_row:
+                                track_btn.setToolTip(
+                                    'Start a server first to discover PR from branch')
+                                track_btn.setEnabled(False)
+                            else:
+                                track_btn.setToolTip(
+                                    f'Start tracking PR for {tag}')
+                            track_btn.setStyleSheet(inactive_btn_style())
+                            track_btn.clicked.connect(
+                                lambda checked, t=tag: self._start_tracking(t)
+                            )
+                            self._set_cell_widget(row, self.COL_PR, track_btn)
+                            self._cache_cell(tag, 'pr', pr_state,
+                                             row, self.COL_PR)
 
                     # PR Branch: show stored branch + X button if PR-pinned
                     is_pr_pinned = (

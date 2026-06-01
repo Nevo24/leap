@@ -62,6 +62,34 @@ _SEND_SVG = (
     b'</svg>'
 )
 
+# Pill icons for the Merged / Closed PR badges (git-merge + pr-closed).
+# Stroke uses #aaa so _render_svg can recolor it to the badge's accent.
+# Sized for a 24px viewBox so they read clearly at 12-16px display.
+_GIT_MERGE_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    b'<circle cx="6" cy="5" r="2.5" fill="none" stroke="#aaa" stroke-width="2"/>'
+    b'<circle cx="6" cy="19" r="2.5" fill="none" stroke="#aaa" stroke-width="2"/>'
+    b'<circle cx="18" cy="12" r="2.5" fill="none" stroke="#aaa" stroke-width="2"/>'
+    b'<line x1="6" y1="7.5" x2="6" y2="16.5" stroke="#aaa" '
+    b'stroke-width="2" stroke-linecap="round"/>'
+    b'<path d="M6 7.5 C6 11 9 12 15.5 12" fill="none" stroke="#aaa" '
+    b'stroke-width="2" stroke-linecap="round"/>'
+    b'</svg>'
+)
+
+_GIT_PR_CLOSED_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    b'<circle cx="7" cy="6" r="2.5" fill="none" stroke="#aaa" stroke-width="2"/>'
+    b'<circle cx="7" cy="18" r="2.5" fill="none" stroke="#aaa" stroke-width="2"/>'
+    b'<line x1="7" y1="8.5" x2="7" y2="15.5" stroke="#aaa" '
+    b'stroke-width="2" stroke-linecap="round"/>'
+    b'<line x1="14" y1="4" x2="20" y2="10" stroke="#aaa" '
+    b'stroke-width="2" stroke-linecap="round"/>'
+    b'<line x1="20" y1="4" x2="14" y2="10" stroke="#aaa" '
+    b'stroke-width="2" stroke-linecap="round"/>'
+    b'</svg>'
+)
+
 _PALETTE_SVG = (
     b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
     b'<defs><clipPath id="r"><rect x="256" y="0" width="256" height="512"/></clipPath></defs>'
@@ -168,6 +196,16 @@ def git_branch_icon(size: int = 16) -> QIcon:
 def send_icon(size: int = 16) -> QIcon:
     """Return a small paper-plane send icon."""
     return _render_svg(_SEND_SVG, size)
+
+
+def git_merge_icon(size: int = 16, color: Optional[bytes] = None) -> QIcon:
+    """Return a git-merge icon (used on the Merged PR badge)."""
+    return _render_svg(_GIT_MERGE_SVG, size, color)
+
+
+def git_pr_closed_icon(size: int = 16, color: Optional[bytes] = None) -> QIcon:
+    """Return a git-pull-request-closed icon (used on the Closed PR badge)."""
+    return _render_svg(_GIT_PR_CLOSED_SVG, size, color)
 
 
 class ColorPickerPopup(QFrame):

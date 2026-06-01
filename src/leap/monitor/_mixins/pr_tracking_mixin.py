@@ -55,6 +55,11 @@ class PRTrackingMixin(_Base):
                     and tag not in self._tracked_tags
                     and tag not in self._checking_tags):
                 self._start_tracking(tag, _silent=True)
+        # Merged/closed PR-pinned rows aren't in _tracked_tags, so the
+        # _start_tracking calls above won't start the poll timer for a
+        # session list that's *only* revisit rows.  Sync it explicitly so
+        # those rows still get re-checked for a re-opened PR.
+        self._sync_scm_poll_timer()
 
     def _start_tracking(self, tag: str, _silent: bool = False) -> None:
         """Start PR tracking for a session via a background one-shot check."""
@@ -258,6 +263,33 @@ class PRTrackingMixin(_Base):
             self._update_table()
             self._update_dock_badge()
 
+    def _stop_tracking_closed_pr(self, tag: str) -> None:
+        """X on a Merged/Closed PR badge — drop the merged/closed state.
+
+        Keeps ``remote_project_path`` + ``branch`` so the row survives and
+        its PR column flips back to a Track PR button.  The user can then
+        re-track a fresh PR on the same branch, or clear the pinned data
+        entirely with the X on the PR Branch column.
+        """
+        pin = self._pinned_sessions.get(tag)
+        if not pin:
+            return
+        pin = pin.copy()
+        for key in ('pr_merged', 'pr_closed', 'pr_title', 'pr_url',
+                    'pr_iid', 'pr_tracked'):
+            pin.pop(key, None)
+        self._pinned_sessions[tag] = pin
+        write_pinned_session_entry(tag, pin)
+        self._cell_cache.pop((tag, 'pr'), None)
+        # The row stops being polled, so its last (NO_PR) status would
+        # otherwise linger forever — clear it like _stop_tracking does.
+        self._pr_statuses.pop(tag, None)
+        self._dock_badge.discard_tag(tag)
+        # Dropping the badge may end the last reason to poll.
+        self._sync_scm_poll_timer()
+        self._show_status(f"Stopped tracking PR for '{tag}'")
+        self._update_table()
+
     def _clear_pinned_pr_data(self, tag: str) -> None:
         """Clear pinned PR data so Track PR falls back to the server's live git info."""
         # If clearing will remove the row, warn so the user can confirm.
@@ -283,13 +315,18 @@ class PRTrackingMixin(_Base):
         pin = self._pinned_sessions.get(tag)
         if pin:
             for key in ('remote_project_path', 'host_url', 'scm_type',
-                        'pr_title', 'pr_url', 'pr_tracked'):
+                        'pr_title', 'pr_url', 'pr_iid', 'pr_tracked',
+                        'pr_merged', 'pr_closed'):
                 pin.pop(key, None)
             pin['branch'] = ''
             write_pinned_session_entry(tag, pin)
 
-        # Invalidate the pr_branch cell cache
+        # Invalidate the pr + pr_branch cell caches (a Merged/Closed badge
+        # must rebuild as Track PR / vanish once its pinned data is gone).
         self._cell_cache.pop((tag, 'pr_branch'), None)
+        self._cell_cache.pop((tag, 'pr'), None)
+        # Dropping the pinned PR data may end the last reason to poll.
+        self._sync_scm_poll_timer()
 
         self._show_status(f"Cleared pinned PR data for '{tag}'")
         self._update_table()
@@ -310,24 +347,25 @@ class PRTrackingMixin(_Base):
             ctx = self._pending_tracking_context.pop(tag, None)
             if silent:
                 self._show_status(f"Auto-reconnect: no open PR found for '{tag}'")
-            # Resolve the provider BEFORE removing the (possibly dead) row.
-            # _remove_dead_untracked_row drops the session from self.sessions,
-            # after which _get_provider_for_session couldn't find it and the
-            # closed/merged-PR fallback would silently degrade to the plain
-            # alert.  Only the interactive path needs it.
-            provider = None
-            if not silent:
-                session = next(
-                    (s for s in self.sessions if s['tag'] == tag), None)
-                if session:
-                    provider = self._get_provider_for_session(session)
-            self._remove_dead_untracked_row(tag)
-            self._update_table()
-            if not silent:
-                self._show_no_open_pr_alert(ctx, provider)
+            # Resolve the provider while the session still exists.
+            # _remove_dead_untracked_row drops the session from
+            # self.sessions, after which _get_provider_for_session would
+            # come up empty and the closed/merged-PR fallback would
+            # degrade to the plain alert.  Dead-row removal is deferred
+            # into _finalize_no_open_pr: if the lookup finds a merged or
+            # closed PR for this branch, we keep the row alive so its PR
+            # column can show a "Merged"/"Closed" badge instead.
+            session = next(
+                (s for s in self.sessions if s['tag'] == tag), None)
+            provider = (
+                self._get_provider_for_session(session) if session else None)
+            self._show_no_open_pr_alert(tag, ctx, provider, silent=silent)
             return
 
-        # PR found — promote to tracked and enrich pinned session
+        # PR found — promote to tracked and enrich pinned session.
+        # A row coming back to OPEN supersedes any stale merged/closed
+        # state, so drop those flags (and the now-stale 'pr' cell cache)
+        # or the Merged/Closed badge would outlive its trigger.
         ctx = self._pending_tracking_context.pop(tag, None)
         if ctx:
             pin = self._pinned_sessions.get(tag, {})
@@ -340,8 +378,11 @@ class PRTrackingMixin(_Base):
                 'pr_url': status.pr_url or '',
                 'pr_tracked': True,
             })
+            pin.pop('pr_merged', None)
+            pin.pop('pr_closed', None)
             self._pinned_sessions[tag] = pin
             write_pinned_session_entry(tag, pin)
+            self._cell_cache.pop((tag, 'pr'), None)
         else:
             # No context but PR found (e.g. auto-reconnect) — persist flag
             pin = self._pinned_sessions.get(tag)
@@ -358,21 +399,29 @@ class PRTrackingMixin(_Base):
         if not self._scm_poll_timer.isActive():
             self._scm_poll_timer.start(self._get_poll_interval() * 1000)
 
-    def _show_no_open_pr_alert(self, ctx: Optional[dict[str, Any]],
-                               provider: Optional[Any]) -> None:
-        """Alert that no open PR matched, surfacing a closed/merged one if any.
+    def _show_no_open_pr_alert(self, tag: str,
+                               ctx: Optional[dict[str, Any]],
+                               provider: Optional[Any],
+                               silent: bool = False) -> None:
+        """Resolve the closed/merged-PR fallback for a NO_PR tracking result.
 
-        When the provider can find a recent closed/merged PR for the same
-        branch, the alert grows an 'Open in Browser' button.  That lookup is
-        a network call, so it runs in a ``BackgroundCallWorker`` (never on the
-        UI thread) — mirroring ``_add_row_from_pr_url``.  Falls straight
-        through to the plain alert when there's nothing to look up.
+        When the provider finds a recent closed/merged PR for the same
+        branch, the matching state is persisted on the pinned row so its PR
+        column flips to a "Merged"/"Closed" badge, and the interactive path
+        also pops an 'Open in Browser' dialog.  The lookup is a network call,
+        so it runs in a ``BackgroundCallWorker`` (never on the UI thread) —
+        mirroring ``_add_row_from_pr_url``.  Falls straight through to the
+        plain alert (or silent row removal) when there's nothing to look up.
+
+        ``silent`` controls user-facing UI:
+          - True  : no dialog, no busy spinner (auto-reconnect path).
+          - False : modal dialog + busy spinner (interactive Track PR).
         """
         can_lookup = bool(
             provider is not None and ctx
             and ctx.get('remote_project_path') and ctx.get('branch'))
         if not can_lookup:
-            self._no_open_pr_dialog(None, ctx)
+            self._finalize_no_open_pr(tag, ctx, closed=None, silent=silent)
             return
 
         project_path = ctx['remote_project_path']
@@ -383,20 +432,65 @@ class PRTrackingMixin(_Base):
             result_holder[0] = provider.find_latest_closed_pr(
                 project_path, branch)
 
-        self._set_busy(True)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        if not silent:
+            self._set_busy(True)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
         worker = BackgroundCallWorker(_fetch, self)
         worker.finished.connect(
-            lambda: self._on_closed_pr_lookup(ctx, result_holder))
+            lambda: self._on_closed_pr_lookup(tag, ctx, result_holder, silent))
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _on_closed_pr_lookup(self, ctx: Optional[dict[str, Any]],
-                             result_holder: list) -> None:
-        """Closed-PR lookup finished — restore busy state, then show alert."""
-        self._set_busy(False)
-        QApplication.restoreOverrideCursor()
-        self._no_open_pr_dialog(result_holder[0], ctx)
+    def _on_closed_pr_lookup(self, tag: str, ctx: Optional[dict[str, Any]],
+                             result_holder: list, silent: bool) -> None:
+        """Closed-PR lookup finished — restore busy state, then finalize."""
+        if not silent:
+            self._set_busy(False)
+            QApplication.restoreOverrideCursor()
+        self._finalize_no_open_pr(tag, ctx, result_holder[0], silent)
+
+    def _finalize_no_open_pr(self, tag: str, ctx: Optional[dict[str, Any]],
+                             closed: Optional[Any], silent: bool) -> None:
+        """Persist merged/closed state when there's a PR to surface, else
+        remove the (possibly dead) row; then show the dialog if interactive."""
+        has_closed = bool(closed is not None
+                          and getattr(closed, 'pr_url', None))
+        if has_closed and tag in self._pinned_sessions:
+            self._persist_closed_pr(tag, ctx, closed)
+        else:
+            # Nothing to surface — clean up dead rows as before.
+            self._remove_dead_untracked_row(tag)
+            self._update_table()
+        if not silent:
+            self._no_open_pr_dialog(closed, ctx)
+
+    def _persist_closed_pr(self, tag: str, ctx: Optional[dict[str, Any]],
+                           closed: Any) -> None:
+        """Mark a row as displaying a merged or closed-without-merge PR.
+
+        Keeps the row alive (via ``remote_project_path`` + ``branch``) and
+        switches its PR column from a Track PR button to a Merged/Closed
+        badge that opens the PR URL.  Also (re)starts the poll timer so the
+        row gets re-checked for a re-opened PR.
+        """
+        pin = self._pinned_sessions.get(tag, {}).copy()
+        if ctx:
+            pin['remote_project_path'] = ctx.get(
+                'remote_project_path', pin.get('remote_project_path'))
+            pin['host_url'] = ctx.get('host_url', pin.get('host_url'))
+            pin['scm_type'] = ctx.get('scm_type', pin.get('scm_type'))
+            pin['branch'] = ctx.get('branch', pin.get('branch'))
+        pin['pr_title'] = closed.pr_title or ''
+        pin['pr_url'] = closed.pr_url or ''
+        pin['pr_iid'] = closed.pr_iid
+        pin['pr_merged'] = bool(closed.merged)
+        pin['pr_closed'] = not bool(closed.merged)
+        pin['pr_tracked'] = False
+        self._pinned_sessions[tag] = pin
+        write_pinned_session_entry(tag, pin)
+        self._cell_cache.pop((tag, 'pr'), None)
+        self._sync_scm_poll_timer()
+        self._update_table()
 
     def _no_open_pr_dialog(self, closed: Optional[Any],
                            ctx: Optional[dict[str, Any]]) -> None:
@@ -451,17 +545,60 @@ class PRTrackingMixin(_Base):
         if not silent:
             QMessageBox.warning(self, 'Error', message)
 
+    def _revisit_tags(self) -> set[str]:
+        """Tags pinned with a merged/closed PR that we keep polling.
+
+        A merged/closed PR-pinned row shows a "Merged"/"Closed" badge but is
+        still polled each cycle so that if the branch gets a *new* open PR
+        (re-opened, or a fresh PR on the same branch) we can flip the badge
+        back to live tracking.  Requires the pinned PR-branch data the
+        poller needs to resolve the query (``remote_project_path`` +
+        ``branch``).
+        """
+        return {
+            tag for tag, pin in self._pinned_sessions.items()
+            if (pin.get('pr_merged') or pin.get('pr_closed'))
+            and pin.get('remote_project_path') and pin.get('branch')
+        }
+
+    def _revisit_poll_sessions(self) -> list[dict[str, Any]]:
+        """Build status-only poll sessions for merged/closed PR-pinned rows.
+
+        Each is a *fresh* dict (never the live ``self.sessions`` object, which
+        other code reads) carrying just what ``_poll_session`` needs to
+        resolve the query, marked ``_pr_only`` so the poller fetches PR state
+        - to catch a re-opened PR - but never scans or delivers ``/leap`` for
+        them: the PR is closed, and the row may be a dead row with no session
+        to receive a message.  Tags already in ``_tracked_tags`` are excluded
+        so a tag is never polled twice.
+        """
+        revisit_tags = self._revisit_tags() - self._tracked_tags
+        return [
+            {
+                'tag': s['tag'],
+                'remote_project_path': s.get('remote_project_path'),
+                'scm_type': s.get('scm_type'),
+                'branch': s.get('pr_branch') or s.get('branch'),
+                'pr_branch': s.get('pr_branch'),
+                'project_path': s.get('project_path'),
+                '_pr_only': True,
+            }
+            for s in self.sessions if s['tag'] in revisit_tags
+        ]
+
     def _sync_scm_poll_timer(self) -> None:
         """Start or stop the SCM poll timer based on whether anything needs
         polling: tracked PRs (which now includes opt-in-tracked Cursor
-        editor Agent-tab rows, whose tag joins ``_tracked_tags``) or user
-        notifications.
+        editor Agent-tab rows, whose tag joins ``_tracked_tags``), user
+        notifications, or merged/closed PR-pinned rows we keep watching for
+        a re-open.
 
         Without this, a user who only tracks a Cursor GUI row (no real
         tracked PR, no notifications) would never poll, since every other
         timer-start site keys off tracking/notifications too.
         """
-        want = bool(self._tracked_tags or self._get_notif_scm_types())
+        want = bool(self._tracked_tags or self._get_notif_scm_types()
+                    or self._revisit_tags())
         active = self._scm_poll_timer.isActive()
         if want and not active:
             self._scm_poll_timer.start(self._get_poll_interval() * 1000)
@@ -518,19 +655,25 @@ class PRTrackingMixin(_Base):
             if r.get('project_path') and r['tag'] in self._tracked_tags
         ]
         has_cursor = bool(cursor_poll_sessions)
-        if not has_tracked and not notif_types and not has_cursor:
+        # Merged/closed PR-pinned rows: polled (by branch, no pr_iid) so a
+        # fresh open PR on the same branch flips the badge back to tracking.
+        revisit_sessions = self._revisit_poll_sessions()
+        has_revisit = bool(revisit_sessions)
+        if not has_tracked and not notif_types and not has_cursor \
+                and not has_revisit:
             return
 
         tracked_sessions = [s for s in self.sessions if s['tag'] in self._tracked_tags]
         if has_tracked and not tracked_sessions:
-            if not notif_types and not has_cursor:
+            if not notif_types and not has_cursor and not has_revisit:
                 logger.debug("SCM poll skipped: no tracked sessions found in active sessions")
                 return
 
-        poll_sessions = tracked_sessions + cursor_poll_sessions
-        logger.debug("Starting SCM poll for tags: %s (cursor=%d notif=%s)",
+        poll_sessions = tracked_sessions + cursor_poll_sessions + revisit_sessions
+        logger.debug("Starting SCM poll for tags: %s (cursor=%d revisit=%d notif=%s)",
                       [s['tag'] for s in tracked_sessions],
-                      len(cursor_poll_sessions), notif_types)
+                      len(cursor_poll_sessions), len(revisit_sessions),
+                      notif_types)
         self._scm_polling = True
         self._scm_poll_started_at = time.monotonic()
         worker = SCMPollerWorker(self)
@@ -572,6 +715,8 @@ class PRTrackingMixin(_Base):
             if not self.isVisible():
                 return
             now = time.time()
+            transitions: list[str] = []
+            reopenings: list[tuple[str, PRStatus]] = []
             for tag, status in results.items():
                 logger.debug("SCM result: tag=%s state=%s unresponded=%s approved=%s",
                              tag, status.state.value, status.unresponded_count, status.approved)
@@ -580,6 +725,12 @@ class PRTrackingMixin(_Base):
                     status.unresponded_count,
                     status.approved,
                     tuple(sorted(status.approved_by or [])),
+                    # Flip the 🔥 "recently changed" nudge when a reviewer
+                    # requests changes or CI starts failing (these are
+                    # action-needed events worth surfacing); deliberately NOT
+                    # wired into dock/banner notifications.
+                    status.changes_requested,
+                    status.checks_failed,
                 )
                 prev = self._pr_changed_at.get(tag)
                 if prev is None:
@@ -588,11 +739,118 @@ class PRTrackingMixin(_Base):
                 elif prev[0] != new_snap:
                     self._pr_changed_at[tag] = (new_snap, now)
                     self._dismissed_pr_new_status.discard(tag)
+
+                # Tracked PR just disappeared (open -> NO_PR): confirm on the
+                # edge whether it was merged or closed.  ``self._pr_statuses``
+                # is updated AFTER this loop, so .get(tag) is still the
+                # previous status here.
+                if (status.state == PRState.NO_PR
+                        and tag in self._tracked_tags):
+                    prev_status = self._pr_statuses.get(tag)
+                    if (prev_status is not None
+                            and prev_status.state != PRState.NO_PR):
+                        transitions.append(tag)
+
+                # Merged/closed PR-pinned row whose branch now has an open PR
+                # again -> promote back to live tracking.
+                pin = self._pinned_sessions.get(tag, {})
+                if (status.state != PRState.NO_PR
+                        and (pin.get('pr_merged') or pin.get('pr_closed'))):
+                    reopenings.append((tag, status))
+
             self._pr_statuses.update(results)
-            self._update_pr_column()
+            for tag in transitions:
+                self._check_pr_closed_after_no_pr(tag)
+            for tag, status in reopenings:
+                self._reopen_tracked_pr(tag, status)
+            # A re-open swaps a badge cell for a live tracked cell, which
+            # only a full rebuild produces; otherwise the fast path suffices.
+            if reopenings:
+                self._update_table()
+            else:
+                self._update_pr_column()
             self._update_dock_badge()
         except Exception:
             logger.exception("Error handling SCM results")
+
+    def _reopen_tracked_pr(self, tag: str, status: PRStatus) -> None:
+        """A merged/closed PR-pinned row's branch has an open PR again —
+        promote it back to live tracking and clear the stale flags."""
+        pin = self._pinned_sessions.get(tag)
+        if not pin:
+            return
+        pin = pin.copy()
+        pin['pr_title'] = status.pr_title or pin.get('pr_title', '')
+        pin['pr_url'] = status.pr_url or pin.get('pr_url', '')
+        if status.pr_iid is not None:
+            pin['pr_iid'] = status.pr_iid
+        pin['pr_tracked'] = True
+        pin.pop('pr_merged', None)
+        pin.pop('pr_closed', None)
+        self._pinned_sessions[tag] = pin
+        write_pinned_session_entry(tag, pin)
+        self._tracked_tags.add(tag)
+        self._cell_cache.pop((tag, 'pr'), None)
+        self._show_status(f"PR for '{tag}' is open again - tracking resumed")
+
+    def _check_pr_closed_after_no_pr(self, tag: str) -> None:
+        """A tracked PR just went NO_PR — look up (in the background) whether
+        it was merged or closed-without-merge.  On success, drop the tag from
+        ``_tracked_tags`` and persist the Merged/Closed badge state."""
+        pin = self._pinned_sessions.get(tag)
+        if not pin:
+            return
+        ctx = {
+            'remote_project_path': pin.get('remote_project_path'),
+            'host_url': pin.get('host_url'),
+            'scm_type': pin.get('scm_type'),
+            'branch': pin.get('branch') or pin.get('pr_branch'),
+        }
+        if not ctx['remote_project_path'] or not ctx['branch']:
+            return
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        provider = (
+            self._get_provider_for_session(session) if session else None)
+        if provider is None:
+            return
+
+        project_path = ctx['remote_project_path']
+        branch = ctx['branch']
+        result_holder: list[Optional[Any]] = [None]
+
+        def _fetch() -> None:
+            result_holder[0] = provider.find_latest_closed_pr(
+                project_path, branch)
+
+        worker = BackgroundCallWorker(_fetch, self)
+        worker.finished.connect(
+            lambda: self._on_polled_pr_closed_lookup(tag, ctx, result_holder))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_polled_pr_closed_lookup(self, tag: str, ctx: dict[str, Any],
+                                    result_holder: list) -> None:
+        """Result of the polled tracked->NO_PR background lookup."""
+        # This fires from a background worker that may finish after the
+        # window started closing (the lookup can take up to the SCM timeout).
+        # _persist_closed_pr -> _update_table would then touch a torn-down
+        # table, so bail out like _on_scm_results does.
+        if self._shutting_down:
+            return
+        closed = result_holder[0]
+        if closed is None or not getattr(closed, 'pr_url', None):
+            # NO_PR with no surfacable closed PR: leave the tracked row alone
+            # (keeps showing "No PR"; the user can stop tracking manually).
+            return
+        if tag not in self._pinned_sessions:
+            return
+        self._tracked_tags.discard(tag)
+        self._pr_statuses.pop(tag, None)
+        self._pr_widgets.pop(tag, None)
+        self._pr_approval_widgets.pop(tag, None)
+        self._persist_closed_pr(tag, ctx, closed)
+        state_word = 'merged' if closed.merged else 'closed'
+        self._show_status(f"PR for '{tag}' was {state_word}")
 
     # ------------------------------------------------------------------
     #  Thread sending

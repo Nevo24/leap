@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import gitlab
 
@@ -96,6 +96,47 @@ class GitLabProvider(SCMProvider):
             logger.debug("Failed to get PR !%s in %s", pr_iid, project_path)
             return None
 
+    @staticmethod
+    def _mr_pipeline_failed(mr: Any) -> bool:
+        """Whether the MR's head pipeline reports a failed status."""
+        hp = getattr(mr, 'head_pipeline', None)
+        if isinstance(hp, dict):
+            return hp.get('status') == 'failed'
+        if hp is not None:
+            return getattr(hp, 'status', None) == 'failed'
+        return False
+
+    @staticmethod
+    def _mr_changes_requested(mr: Any) -> bool:
+        """Whether a reviewer requested changes (best-effort).
+
+        Recent GitLab servers expose this as
+        ``detailed_merge_status == 'requested_changes'``; older versions don't
+        surface per-reviewer review state over REST, so this returns False
+        there (the field defaults off and simply isn't shown).
+        """
+        return getattr(mr, 'detailed_merge_status', None) == 'requested_changes'
+
+    @staticmethod
+    def _mr_has_conflicts(mr: Any, default: Optional[bool] = False) -> Optional[bool]:
+        """Whether an MR object reports merge conflicts.
+
+        Prefers the canonical ``has_conflicts`` boolean; falls back to the
+        historical ``merge_status`` / ``detailed_merge_status`` strings when
+        that attribute is absent.  Returns ``default`` when the object
+        carries none of those fields (so callers can distinguish "no conflict
+        signal present" from a definite False).
+        """
+        has_conflicts = getattr(mr, 'has_conflicts', None)
+        if has_conflicts is not None:
+            return bool(has_conflicts)
+        merge_status = getattr(mr, 'merge_status', None)
+        detailed = getattr(mr, 'detailed_merge_status', None)
+        if merge_status or detailed:
+            return (merge_status == 'cannot_be_merged'
+                    or detailed == 'conflict')
+        return default
+
     def get_pr_status(self, project_path: str, branch: str,
                       pr_iid: Optional[int] = None) -> PRStatus:
         # pr_iid is accepted for SCMProvider symmetry but ignored here:
@@ -126,6 +167,20 @@ class GitLabProvider(SCMProvider):
         pr_url = mr.web_url
         pr_title = mr.title
 
+        # Draft + merge-conflict state, read from the list response first so
+        # we still have correct values if the full-fetch below fails.
+        # ``draft`` is the modern field; ``work_in_progress`` is the legacy
+        # alias older servers still return — accept either.  ``has_conflicts``
+        # is canonical; ``merge_status == 'cannot_be_merged'`` /
+        # ``detailed_merge_status == 'conflict'`` are the historical fallbacks.
+        draft = bool(getattr(mr, 'draft', False)
+                     or getattr(mr, 'work_in_progress', False))
+        has_conflicts = self._mr_has_conflicts(mr)
+        # Reviewer "request changes" + pipeline state are reliable only on the
+        # full MR object, so seed them False and fill in after the fetch below.
+        changes_requested = False
+        checks_failed = False
+
         # Fetch the full PR object once (used for approvals + discussions)
         try:
             pr_full = project.mergerequests.get(pr_iid)
@@ -137,7 +192,20 @@ class GitLabProvider(SCMProvider):
             return PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
+                draft=draft, has_conflicts=has_conflicts,
             )
+
+        # Prefer the full-fetch values when present (the list response can be
+        # stale).  Only override when the full object actually carries the
+        # field, so a missing attribute doesn't reset the list-response read.
+        if hasattr(pr_full, 'draft') or hasattr(pr_full, 'work_in_progress'):
+            draft = bool(getattr(pr_full, 'draft', False)
+                         or getattr(pr_full, 'work_in_progress', False))
+        full_conflicts = self._mr_has_conflicts(pr_full, default=None)
+        if full_conflicts is not None:
+            has_conflicts = full_conflicts
+        changes_requested = self._mr_changes_requested(pr_full)
+        checks_failed = self._mr_pipeline_failed(pr_full)
 
         # Check approval status
         approval_failed = False
@@ -208,12 +276,16 @@ class GitLabProvider(SCMProvider):
                         first_unresponded_note_id=cached.first_unresponded_note_id,
                         first_unresponded_url=cached.first_unresponded_url,
                         approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                        draft=draft, has_conflicts=has_conflicts,
+                        changes_requested=changes_requested, checks_failed=checks_failed,
                     )
                 return cached
             return PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                draft=draft, has_conflicts=has_conflicts,
+                changes_requested=changes_requested, checks_failed=checks_failed,
             )
 
         unresponded = 0
@@ -236,12 +308,16 @@ class GitLabProvider(SCMProvider):
                 first_unresponded_note_id=first_note_id,
                 first_unresponded_url=first_url,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                draft=draft, has_conflicts=has_conflicts,
+                changes_requested=changes_requested, checks_failed=checks_failed,
             )
         else:
             result = PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                draft=draft, has_conflicts=has_conflicts,
+                changes_requested=changes_requested, checks_failed=checks_failed,
             )
 
         self._status_cache[cache_key] = result

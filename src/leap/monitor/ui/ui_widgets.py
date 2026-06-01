@@ -96,6 +96,8 @@ class ElidedLabel(QLabel):
 class IndicatorPopup(QLabel):
     """Floating popup that explains PR indicator icons."""
 
+    _MAX_WIDTH = 280
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent, Qt.ToolTip)
         self.setWordWrap(True)
@@ -112,7 +114,7 @@ class IndicatorPopup(QLabel):
             f'  padding: 8px 12px;'
             '}'
         )
-        self.setMaximumWidth(280)
+        self.setMaximumWidth(self._MAX_WIDTH)
         # Apply the current popup-zoom font size explicitly so the widget
         # shows the right size even if the app-level popup rule isn't
         # reaching top-level tool-tip windows on some platforms.
@@ -123,6 +125,20 @@ class IndicatorPopup(QLabel):
             self.setFont(f)
         except Exception:
             pass
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        # Word-wrap QLabels have a flaky sizeHint: adjustSize() can collapse a
+        # short, newline-free string to the width of its longest WORD, wrapping
+        # one word per line (e.g. "Has / merge / conflicts").  Pin the width to
+        # the widest line's natural (unwrapped) width - capped at _MAX_WIDTH -
+        # so short tips stay on one line and only genuinely long lines wrap.
+        fm = self.fontMetrics()
+        lines = (text or '').split('\n')
+        natural = max((fm.horizontalAdvance(ln) for ln in lines), default=0)
+        # + horizontal CSS padding (12*2) + border (1*2) + a little slack.
+        self.setFixedWidth(min(self._MAX_WIDTH, natural + 30))
+        self.adjustSize()
 
 
 class IndicatorLabel(QLabel):

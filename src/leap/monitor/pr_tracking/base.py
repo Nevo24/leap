@@ -40,6 +40,10 @@ class PRStatus:
     approved: bool = False
     approved_by: Optional[list[str]] = None
     self_approved: bool = False  # True if the current user is among the approvers
+    draft: bool = False  # True if the PR is a draft / work-in-progress
+    has_conflicts: bool = False  # True if the PR cannot be merged (conflicts)
+    changes_requested: bool = False  # True if a reviewer requested changes
+    checks_failed: bool = False  # True if CI / pipeline checks are failing
 
 
 @dataclass

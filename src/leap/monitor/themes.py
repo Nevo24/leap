@@ -77,6 +77,13 @@ class Theme:
     status_interrupted: str = '#ffd54f'
     status_idle: str = '#ffffff'  # idle / default text
 
+    # PR-status accent colors.  Closed PRs reuse ``accent_red`` (already
+    # tuned per theme); "merged" has no native accent, so it gets its own
+    # violet — the universal git "merged" hue.  This dark-bg default reads
+    # well on the seven dark themes; the two light themes (Dawn, Leap)
+    # override it with a darker violet for contrast.
+    pr_merged_color: str = '#a371f7'
+
 
 # ---------------------------------------------------------------------------
 #  Built-in themes
@@ -302,6 +309,7 @@ _DAWN = Theme(
     status_input='#2563eb',
     status_interrupted='#ca8a04',
     status_idle='#1e1e2e',
+    pr_merged_color='#7c3aed',
 )
 
 _COSMOS = Theme(
@@ -376,6 +384,7 @@ _LEAP = Theme(
     status_input='#2563eb',
     status_interrupted='#ca8a04',
     status_idle='#3a2810',
+    pr_merged_color='#7c3aed',
 )
 
 _AMBER = Theme(

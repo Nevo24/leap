@@ -245,22 +245,55 @@ class PRDisplayMixin(_Base):
         self, widget: PulsingLabel, approval_widget: Optional[IndicatorLabel],
         status: Optional[PRStatus]
     ) -> None:
-        """Apply PR status to the status and approval indicator widgets."""
-        # Hide approval label by default
+        """Apply PR status to the status label + approval/marker indicators."""
+        # The draft / conflict / failing-checks markers are standalone
+        # IndicatorLabels in the cell container (built by
+        # _render_tracked_pr_cell), found here by objectName so each carries
+        # its own color and its own hover tooltip - and so the conflict
+        # marker's orange never tints the ✓.
+        container = widget.parentWidget()
+
+        def _show_marker(name: str, show: bool, glyph: str, tip: str,
+                         color: Optional[str] = None) -> None:
+            m = (container.findChild(IndicatorLabel, name)
+                 if container is not None else None)
+            if m is None:
+                return
+            if not show:
+                m.setVisible(False)
+                return
+            m.setText(glyph)
+            m.setStyleSheet(f'color: {color};' if color else '')
+            m.set_indicator_help(tip)
+            m.set_click_url(status.pr_url if status else None)
+            m.setVisible(True)
+
+        # Hide approval + all markers by default; shown below as warranted.
         if approval_widget:
             approval_widget.setVisible(False)
+        for _nm in ('_draftMarker', '_conflictMarker', '_checksMarker'):
+            _show_marker(_nm, False, '', '')
 
         if not status or not self._scm_providers:
             widget.setText('N/A')
+            # set_pulsing(False) clears the widget stylesheet, so it MUST run
+            # before setStyleSheet or it would wipe the color we set.
+            widget.set_pulsing(False)
             widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('No SCM provider configured')
-            widget.set_pulsing(False)
             widget.set_pr_url(None)
             widget.set_indicator_help(None)
             return
 
-        # Show/hide approval indicator
-        if approval_widget and status.approved:
+        # Show/hide approval indicator.  👎 (a reviewer requested changes)
+        # takes priority over 👍 (approved) — it's the blocking signal, and a
+        # PR can carry both when reviewers disagree.
+        if approval_widget and getattr(status, 'changes_requested', False):
+            approval_widget.setText('\U0001f44e')  # 👎
+            approval_widget.setVisible(True)
+            approval_widget.set_click_url(status.pr_url)
+            approval_widget.set_indicator_help('Changes requested')
+        elif approval_widget and status.approved:
             approval_widget.setText('\U0001f44d')
             approval_widget.setVisible(True)
             approval_widget.set_click_url(status.pr_url)
@@ -270,28 +303,48 @@ class PRDisplayMixin(_Base):
             else:
                 approval_widget.set_indicator_help('PR approved')
 
+        # Draft / conflict / failing-checks markers - only meaningful on an
+        # OPEN PR.  Each is its own icon with its own hover tooltip; the
+        # conflict one is tinted orange while 📝 / 🔴 keep their emoji colors.
+        # ⚠ carries U+FE0E (text-presentation selector) so it renders as the
+        # monochrome glyph and actually takes the orange - otherwise it falls
+        # back to the amber color-emoji and ignores the color.
+        is_open = status.state in (PRState.ALL_RESPONDED, PRState.UNRESPONDED)
+        _show_marker('_draftMarker',
+                     is_open and bool(getattr(status, 'draft', False)),
+                     '\U0001f4dd', 'Draft PR')
+        _show_marker('_conflictMarker',
+                     is_open and bool(getattr(status, 'has_conflicts', False)),
+                     '⚠︎', 'Has merge conflicts', current_theme().accent_orange)
+        _show_marker('_checksMarker',
+                     is_open and bool(getattr(status, 'checks_failed', False)),
+                     '\U0001f534', 'Pipeline failed')
+
         if status.state == PRState.NOT_CONFIGURED:
             widget.setText('N/A')
+            widget.set_pulsing(False)  # clears CSS — must precede setStyleSheet
             widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('')
-            widget.set_pulsing(False)
             widget.set_pr_url(None)
             widget.set_indicator_help('No SCM provider configured')
 
         elif status.state == PRState.NO_PR:
             widget.setText('No PR')
+            widget.set_pulsing(False)  # clears CSS — must precede setStyleSheet
             widget.setStyleSheet(f'color: {current_theme().text_muted};')
             widget.setToolTip('')
-            widget.set_pulsing(False)
             widget.set_pr_url(None)
             widget.set_indicator_help('No open PR for this branch')
 
         elif status.state == PRState.ALL_RESPONDED:
             widget.setText('\u2713')
-            widget.setStyleSheet(f'color: {current_theme().accent_green}; font-weight: bold;')
+            widget.set_pulsing(False)  # clears CSS - must precede setStyleSheet
+            # Always green: a conflict shows via its own orange \u26a0 icon, so the
+            # responded-\u2713 keeps its meaning instead of being tinted.
+            widget.setStyleSheet(
+                f'color: {current_theme().accent_green}; font-weight: bold;')
             approval_line = self._format_approval_line(status)
             widget.setToolTip('')
-            widget.set_pulsing(False)
             widget.set_pr_url(status.pr_url)
             widget.set_indicator_help(
                 f'PR !{status.pr_iid}: {status.pr_title}\n'

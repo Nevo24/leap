@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 from github import Github
@@ -50,7 +50,8 @@ class GitHubProvider(SCMProvider):
         # with same head ref) don't share cache slots.
         self._approval_cache: dict[
             tuple[str, str, Optional[int]],
-            tuple[bool, list[str], bool],
+            # (approved, approved_by, self_approved, changes_requested)
+            tuple[bool, list[str], bool, bool],
         ] = {}
         self._status_cache: dict[tuple[str, str, Optional[int]], PRStatus] = {}
         # comment_id -> True iff we know this comment has a reaction by the
@@ -187,6 +188,43 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to get PR #%s in %s", pr_iid, project_path)
             return None
 
+    def _github_checks_failed(self, repo: Any, pr: Any) -> bool:
+        """Whether the PR's head commit has a *failed* check (not just pending).
+
+        Called only when ``mergeable_state`` is 'unstable'/'blocked' (so clean
+        PRs incur no extra API calls).  Reads the head commit's check-runs
+        (GitHub Actions) and, as a fallback, the legacy combined commit status.
+        Pending/running checks are NOT treated as failures — distinguishing
+        those from real failures is the whole reason ``mergeable_state`` alone
+        isn't enough.  Best-effort: any read failure returns False.
+        """
+        try:
+            sha = pr.head.sha
+        except Exception:
+            return False
+        try:
+            commit = repo.get_commit(sha)
+        except Exception:
+            logger.debug("Failed to fetch head commit %s for checks", sha, exc_info=True)
+            return False
+        # 'failure'/'timed_out'/'action_required' are conclusive failures;
+        # 'success'/'neutral'/'skipped'/'stale'/'cancelled' and a None
+        # conclusion (still running) are not.
+        failing = {'failure', 'timed_out', 'action_required'}
+        try:
+            for run in commit.get_check_runs():
+                if getattr(run, 'conclusion', None) in failing:
+                    return True
+        except Exception:
+            logger.debug("Failed to read check-runs for %s", sha, exc_info=True)
+        try:
+            combined = commit.get_combined_status()
+            if getattr(combined, 'state', None) in ('failure', 'error'):
+                return True
+        except Exception:
+            logger.debug("Failed to read combined status for %s", sha, exc_info=True)
+        return False
+
     def get_pr_status(self, project_path: str, branch: str,
                       pr_iid: Optional[int] = None) -> PRStatus:
         # Cache key includes pr_iid so two PRs that share the same branch
@@ -206,11 +244,38 @@ class GitHubProvider(SCMProvider):
         pr_url = pr.html_url
         pr_title = pr.title
 
+        # Draft + merge-conflict + failing-checks state.  ``draft`` is on the
+        # list response.  ``mergeable_state`` may be lazy-fetched by PyGithub
+        # (one extra GET) — 'dirty' = conflicts; 'None'/'unknown' = still
+        # computing (treated as not-known).
+        #
+        # ``mergeable_state`` alone can't tell "CI failed" from "CI pending"
+        # ('unstable' / 'blocked' cover both), so when it signals a possible
+        # problem we confirm with a head-commit check-runs lookup.  That
+        # lookup is GATED on 'unstable'/'blocked' so clean PRs (the majority)
+        # cost no extra calls.
+        draft = False
+        has_conflicts = False
+        checks_failed = False
+        try:
+            draft = bool(getattr(pr, 'draft', False))
+        except Exception:
+            logger.debug("Failed to read draft for PR #%s", pr_number, exc_info=True)
+        try:
+            mergeable_state = getattr(pr, 'mergeable_state', None)
+            has_conflicts = (mergeable_state == 'dirty')
+            if mergeable_state in ('unstable', 'blocked'):
+                checks_failed = self._github_checks_failed(repo, pr)
+        except Exception:
+            logger.debug("Failed to read mergeable_state for PR #%s",
+                         pr_number, exc_info=True)
+
         # Check approval status
         approval_failed = False
         approved = False
         approved_by: list[str] = []
         self_approved = False
+        changes_requested = False
         try:
             reviews = list(pr.get_reviews())
             # Track latest review state per reviewer
@@ -224,7 +289,13 @@ class GitHubProvider(SCMProvider):
                     approved_by.append(reviewer)
                     if reviewer == self._username:
                         self_approved = True
-            self._approval_cache[cache_key] = (approved, list(approved_by), self_approved)
+            # A reviewer whose *latest* review is CHANGES_REQUESTED is still
+            # blocking (a later APPROVED by the same reviewer overrides it,
+            # since latest_reviews keeps only the last state per reviewer).
+            changes_requested = any(
+                s == 'CHANGES_REQUESTED' for s in latest_reviews.values())
+            self._approval_cache[cache_key] = (
+                approved, list(approved_by), self_approved, changes_requested)
         except Exception:
             logger.debug("Failed to fetch review status for PR #%s", pr_number)
             approval_failed = True
@@ -232,6 +303,8 @@ class GitHubProvider(SCMProvider):
             if cached_approval is not None:
                 approved, approved_by = cached_approval[0], list(cached_approval[1])
                 self_approved = cached_approval[2]
+                if len(cached_approval) > 3:
+                    changes_requested = cached_approval[3]
 
         # Count unresponded review comment threads (+ PR conversation)
         try:
@@ -250,12 +323,16 @@ class GitHubProvider(SCMProvider):
                         first_unresponded_note_id=cached.first_unresponded_note_id,
                         first_unresponded_url=cached.first_unresponded_url,
                         approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                        draft=draft, has_conflicts=has_conflicts,
+                        changes_requested=changes_requested, checks_failed=checks_failed,
                     )
                 return cached
             return PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                draft=draft, has_conflicts=has_conflicts,
+                changes_requested=changes_requested, checks_failed=checks_failed,
             )
 
         if unresponded > 0:
@@ -271,12 +348,16 @@ class GitHubProvider(SCMProvider):
                 first_unresponded_note_id=first_comment_id,
                 first_unresponded_url=first_url,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                draft=draft, has_conflicts=has_conflicts,
+                changes_requested=changes_requested, checks_failed=checks_failed,
             )
         else:
             result = PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                draft=draft, has_conflicts=has_conflicts,
+                changes_requested=changes_requested, checks_failed=checks_failed,
             )
 
         self._status_cache[cache_key] = result

@@ -499,6 +499,31 @@ Rows persist via `pinned_sessions.json`. Key rules:
 - PR auto-reconnects on monitor restart for rows with `pr_tracked: True` — that flag is also what keeps the row alive across the startup window before `_auto_track_pr_pinned` populates `_tracked_tags`/`_checking_tags`
 - `_deleted_tags` set prevents auto-refresh from re-pinning just-deleted rows
 
+### PR Status Markers, Approval Icons & Merged/Closed Badges
+
+The PR column surfaces more than open/responded state. `PRStatus` (in `pr_tracking/base.py`) carries four qualitative flags, each populated from data the providers already fetch:
+
+| Field | GitHub source | GitLab source |
+|-------|---------------|---------------|
+| `draft` | `pr.draft` | `draft` / legacy `work_in_progress` |
+| `has_conflicts` | `mergeable_state == 'dirty'` | `_mr_has_conflicts` (`has_conflicts` / `merge_status=='cannot_be_merged'` / `detailed_merge_status=='conflict'`) |
+| `changes_requested` | latest review per reviewer == `CHANGES_REQUESTED` | `detailed_merge_status == 'requested_changes'` (best-effort: single top-reason, older servers omit it) |
+| `checks_failed` | `_github_checks_failed` (head-commit check-runs + legacy combined status), **gated on `mergeable_state in ('unstable','blocked')`** so clean PRs cost no extra API call; distinguishes failed from pending | `_mr_pipeline_failed` (`head_pipeline.status == 'failed'` only - never running/pending) |
+
+**Rendering** (`_apply_pr_status` in `pr_display_mixin.py`; cell built by `_render_tracked_pr_cell`). An open tracked PR cell is `[× | 👍/👎 | 📝 ⚠ 🔴 | ✓ / 💬 N | 🔥]`:
+- **Status**: `✓` (green, all responded) or `💬 N` (pulsing orange, N unresponded); `No PR` / `N/A` muted.
+- **Markers** (📝 draft, ⚠ conflict, 🔴 CI/pipeline) are **standalone `IndicatorLabel`s**, NOT text glued onto the status - so each has its own hover tooltip ("Draft PR" / "Has merge conflicts" / "Pipeline failed") and its own color: the conflict ⚠ is `accent_orange` while the `✓` stays green. Found in the cell by `objectName` (`_draftMarker`/`_conflictMarker`/`_checksMarker`) and **ride on `pr_widget`'s lifecycle** (stashed as `pr_widget._pr_markers`, reused + reparented across cache-miss rebuilds with `set_preserve_popup`, so a rebuild mid-hover doesn't orphan a tooltip popup). Only shown on `ALL_RESPONDED`/`UNRESPONDED` (meaningless without an open PR).
+- **Approval** indicator: `👍` approved or `👎` changes-requested; `👎` takes priority when a PR is both.
+- `set_pulsing(False)` clears the widget stylesheet, so each non-pulsing branch calls it **before** `setStyleSheet(color)` - otherwise the color is wiped to default (the bug that made `✓` render white).
+
+**Merged / Closed badges** (`_render_closed_pr_cell` in `table_builder_mixin.py`). When a tracked PR's open lookup returns NO_PR but `find_latest_closed_pr` finds a merged/closed PR for the branch, `_persist_closed_pr` writes `pr_merged`/`pr_closed` + `pr_url`/`pr_iid`/`pr_title` to the pin. The untracked-row PR cell then renders a soft-tinted badge (`active_btn_style`, same look as the green Terminal button): violet `Merged` (theme `pr_merged_color`, `#a371f7` dark / `#7c3aed` light) or red `Closed`, with a git-merge / pr-closed icon (`git_merge_icon`/`git_pr_closed_icon`, recolored SVGs in `table_helpers.py`). Clicking opens the PR. Two X buttons mirror a tracked row: leftmost `×` (`_stop_tracking_closed_pr`) drops the merged/closed flags (row reverts to Track PR); the PR-Branch `×` (`_clear_pinned_pr_data`) clears all pinned PR data.
+
+**Re-open detection.** Merged/closed PR-pinned rows keep being polled - `_revisit_tags` / `_revisit_poll_sessions` builds `_pr_only` status-only watcher dicts (so they never participate in `/leap` delivery while closed). A non-NO_PR result drives `_reopen_tracked_pr` (promote back to live tracking, drop the stale flags). The inverse - a tracked PR going NO_PR - schedules `_check_pr_closed_after_no_pr` (one background `find_latest_closed_pr` per edge) → `_on_polled_pr_closed_lookup` → badge. `_sync_scm_poll_timer` keeps the poll timer alive while any merged/closed row needs watching; `_on_polled_pr_closed_lookup` is `_shutting_down`-guarded (it can fire after the window starts closing).
+
+**GitHub vs GitLab nuance.** `find_latest_closed_pr` diverges intentionally (pinned by `test_prefers_merged_over_closed`): GitHub returns the *most-recently-updated* closed PR; GitLab *prefers merged*. So a reused branch can show `Closed` on GitHub but `Merged` on GitLab.
+
+**Tooltip popups** (`IndicatorPopup`): word-wrap `QLabel`s have a flaky `sizeHint`, so the popup pins its width to the widest line's natural width (capped at 280px) - short tips stay on one line instead of collapsing to one word per row.
+
 ### Add Row (+ Button)
 
 Three options:
@@ -537,7 +562,7 @@ Safety guards:
 A fire icon (🔥) appears on the far right of the Status and PR columns when the value recently changed. Controlled by `new_status_seconds` in monitor prefs (default: 60, 0 = disabled). Click the indicator to dismiss it; dismissal resets when the value changes again.
 
 - **Status column**: Never shown for `running` or `interrupted` states. Tracked in `_state_changed_at` and `_dismissed_new_status` on `MonitorWindow`.
-- **PR column**: Triggers on changes to PR state, unresponded count, approval status, or who approved. First-time discovery is seeded with epoch 0 (no fire on startup). Tracked in `_pr_changed_at` and `_dismissed_pr_new_status` on `MonitorWindow`.
+- **PR column**: Triggers on changes to PR state, unresponded count, approval status, who approved, changes-requested, or failing-checks. First-time discovery is seeded with epoch 0 (no fire on startup). Tracked in `_pr_changed_at` and `_dismissed_pr_new_status` on `MonitorWindow`.
 
 ### Branch Mismatch & Server Startup Validation
 
