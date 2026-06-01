@@ -39,6 +39,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtSvg import QSvgRenderer
 
 from leap.cli_providers.states import CLIState
+from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
 from leap.monitor.dialogs.settings_dialog import detect_default_difftool
 from leap.monitor.dialogs.whats_new_dialog import WhatsNewDialog
 from leap.monitor.permissions import (
@@ -1458,21 +1459,30 @@ class MonitorWindow(
 
     def _perform_row_drag(self, source_row: int) -> None:
         """Initiate a QDrag for row reordering."""
-        if source_row < 0 or source_row >= len(self.sessions):
+        # Map visible rows via the table's ``_row_tags`` property (set each
+        # render), NOT ``self.sessions`` - the latter is the leap-only list
+        # outside _update_table, but the visible rows are the row_order-
+        # interleaved leap + Cursor combined view.  This is what lets Cursor
+        # rows be dragged like any other row.
+        row_tags = self.table.property('_row_tags') or []
+        if source_row < 0 or source_row >= len(row_tags):
             return
-        # While a filter is active the table shows a subset of
-        # ``self.sessions``, so the source/target row indices the drop
-        # handler receives no longer map 1:1 to the list.  Reordering
-        # under those conditions would silently move the wrong row;
-        # bail so the user has to clear the filter first.
+        # While a filter is active the table shows a subset of the rows, so
+        # the source/target indices the drop handler receives no longer map
+        # 1:1 to ``row_order``.  Reordering then would silently move the
+        # wrong row; bail so the user has to clear the filter first.
         if self._search_query:
             return
 
-        tag = self.sessions[source_row]['tag']
+        tag = row_tags[source_row]
 
         drag = QDrag(self.table)
         mime = QMimeData()
-        mime.setData('application/x-leap-row', str(source_row).encode())
+        # Carry the dragged row's TAG (not its index): the drag runs a nested
+        # event loop, so an in-flight refresh can rebuild the table mid-drag
+        # and shift row indices.  A tag is stable, so the drop always moves
+        # the row the user actually grabbed.
+        mime.setData('application/x-leap-row', tag.encode())
         drag.setMimeData(mime)
 
         # Capture a snapshot of the row as the drag pixmap
@@ -1524,39 +1534,48 @@ class MonitorWindow(
         """Compute the target row and whether the drop is below it."""
         target_row = self.table.rowAt(pos.y())
         if target_row < 0:
-            return len(self.sessions) - 1, True
+            # Dropped below the last row -> target the last VISIBLE row
+            # (leap + Cursor combined), per the _row_tags mapping.
+            row_tags = self.table.property('_row_tags') or []
+            return len(row_tags) - 1, True
         row_y = self.table.rowViewportPosition(target_row)
         row_h = self.table.rowHeight(target_row)
         drop_below = pos.y() > row_y + row_h // 2
         return target_row, drop_below
 
-    def _on_row_moved(self, source_row: int, target_row: int,
+    def _on_row_moved(self, source_tag: str, target_row: int,
                       drop_below: bool) -> None:
-        """Handle row reorder from drag-and-drop."""
-        if source_row < 0 or target_row < 0:
+        """Handle row reorder from drag-and-drop.
+
+        ``source_tag`` is the dragged row's tag (carried in the drag payload,
+        so it's stable even if the table rebuilt mid-drag); ``target_row`` is
+        the drop position, resolved to a tag against the CURRENT ``_row_tags``
+        (so the drop lands where the user visually dropped).  Reorders the
+        persisted ``row_order``, which preserves the slots of tags not
+        currently visible (a dead-but-pinned session, or a closed Cursor tab
+        still remembered by composer id).
+        """
+        if not source_tag or target_row < 0:
             return
-        if source_row >= len(self.sessions) or target_row >= len(self.sessions):
-            return
-        # Defence-in-depth: _perform_row_drag already short-circuits
-        # when a filter is active, so we shouldn't get here — but if a
-        # drop event somehow slips through (e.g. drag started, filter
-        # typed mid-drag), refuse rather than reorder against an index
-        # that no longer matches ``self.sessions``.
+        # Defence-in-depth: _perform_row_drag already short-circuits when a
+        # filter is active; refuse here too rather than reorder against a
+        # drop position that no longer maps 1:1 to the full row list.
         if self._search_query:
             return
-
-        # Compute insertion index, adjusting for the pop shift
-        insert_at = target_row + (1 if drop_below else 0)
-        if source_row < insert_at:
-            insert_at -= 1
-
-        if source_row == insert_at:
+        row_tags = self.table.property('_row_tags') or []
+        if target_row >= len(row_tags):
+            return
+        tgt_tag = row_tags[target_row]
+        if source_tag == tgt_tag:
             return
 
-        session = self.sessions.pop(source_row)
-        self.sessions.insert(insert_at, session)
+        order = list(self._prefs.get('row_order', []))
+        new_order = self._reorder_tags_for_drag(
+            order, source_tag, tgt_tag, drop_below)
+        if new_order == order:
+            return  # no-op drop (same position / missing tag) - skip rebuild
 
-        self._prefs['row_order'] = [s['tag'] for s in self.sessions]
+        self._prefs['row_order'] = new_order
         self._save_prefs()
         self._update_table()
 
@@ -1893,10 +1912,10 @@ class MonitorWindow(
             mime = event.mimeData()
             if mime.hasFormat('application/x-leap-row'):
                 self._hide_drop_indicator()
-                source_row = int(
-                    bytes(mime.data('application/x-leap-row')).decode())
+                source_tag = bytes(
+                    mime.data('application/x-leap-row')).decode()
                 target_row, drop_below = self._drop_target_row(event.pos())
-                self._on_row_moved(source_row, target_row, drop_below)
+                self._on_row_moved(source_tag, target_row, drop_below)
                 event.acceptProposedAction()
                 return True
 

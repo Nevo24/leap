@@ -1259,13 +1259,32 @@ class TableBuilderMixin(_Base):
         the full session list.
         """
         _full_sessions = self.sessions
-        # Overlay read-only Cursor editor Agent-tab rows after the real
-        # sessions.  They render last (highest row indices), so drag-drop
-        # - which maps visible rows to ``self.sessions`` and is restored
-        # to the leap-only list in the ``finally`` - never targets them
-        # (their index is >= len(self.sessions), and the drag guards bail).
+        # Interleave read-only Cursor editor Agent-tab rows WITH the real
+        # sessions by the persisted ``row_order`` (instead of appending them
+        # at the bottom), so they can be dragged and ordered exactly like
+        # regular rows.  A Cursor tag joins ``row_order`` like any other and
+        # remembers its slot by composer id across tab close/reopen.  They
+        # still live only in ``_cursor_gui_rows`` and are merged into
+        # ``self.sessions`` ONLY for the render below (restored in the
+        # ``finally``), so the server-centric paths stay isolated.  Drag-drop
+        # and the status-fire click handler are tag-based (via the
+        # ``_row_tags`` property the body sets), so they work regardless of
+        # where a Cursor row lands in the combined order.
         cursor_rows = getattr(self, '_cursor_gui_rows', []) or []
-        self.sessions = self._apply_search_filter(_full_sessions + cursor_rows)
+        combined = _full_sessions + cursor_rows
+        order = self._prefs.get('row_order', [])
+        # Give any not-yet-ordered tag (a freshly-seen Cursor tab, or a new
+        # session _merge_sessions hasn't appended yet) a slot at the end so
+        # it sorts deterministically; persist so the slot is stable.
+        order_set = set(order)
+        missing = [s['tag'] for s in combined if s['tag'] not in order_set]
+        if missing:
+            order = order + missing
+            self._prefs['row_order'] = order
+            self._save_prefs()
+        order_map = {tag: i for i, tag in enumerate(order)}
+        combined.sort(key=lambda s: order_map.get(s['tag'], float('inf')))
+        self.sessions = self._apply_search_filter(combined)
         try:
             self._update_table_body()
         finally:
@@ -2941,17 +2960,47 @@ class TableBuilderMixin(_Base):
         dialog = PresetEditorDialog(self)
         dialog.exec_()
 
+    @staticmethod
+    def _reorder_tags_for_drag(order: list, src_tag: str, tgt_tag: str,
+                               drop_below: bool) -> list:
+        """Return a new ``row_order`` with *src_tag* moved to just before
+        (or after, when *drop_below*) *tgt_tag*.
+
+        Returns a copy of *order* unchanged when the tags are equal, either
+        is missing, or the move resolves to the same position (a drop into
+        the gap adjacent to the dragged row) - so the caller can skip the
+        save + table rebuild on a no-op.  Removing the source first means
+        ``index(tgt_tag)`` is already shift-adjusted.  Pure - unit-tested.
+        """
+        if src_tag == tgt_tag or src_tag not in order or tgt_tag not in order:
+            return list(order)
+        new = list(order)
+        new.remove(src_tag)
+        new.insert(new.index(tgt_tag) + (1 if drop_below else 0), src_tag)
+        return new
+
     def _on_cell_clicked(self, row: int, col: int) -> None:
         """Handle cell click — dismiss fire indicator on Status column."""
         if col != self.COL_STATUS:
             return
-        if row < 0 or row >= len(self.sessions):
+        # Visible rows are the row_order-interleaved leap + Cursor view, so
+        # map by the table's ``_row_tags`` property rather than indexing the
+        # leap-only ``self.sessions`` (whose indices no longer match the
+        # visible rows once Cursor rows are interleaved).
+        row_tags = self.table.property('_row_tags') or []
+        if row < 0 or row >= len(row_tags):
             return
-        tag = self.sessions[row]['tag']
+        tag = row_tags[row]
+        # Cursor rows have no status-fire indicator.
+        if tag.startswith(CURSOR_GUI_TAG_PREFIX):
+            return
         if tag not in self._state_changed_at or tag in self._dismissed_new_status:
             return
+        session = next((s for s in self.sessions if s['tag'] == tag), None)
+        if session is None:
+            return
         threshold = self._prefs.get('new_status_seconds', 60)
-        cli_state = self.sessions[row].get('cli_state', CLIState.IDLE)
+        cli_state = session.get('cli_state', CLIState.IDLE)
         changed_at = self._state_changed_at[tag][1]
         if (threshold > 0
                 and cli_state not in (CLIState.RUNNING, CLIState.INTERRUPTED)

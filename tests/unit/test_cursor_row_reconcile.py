@@ -199,3 +199,58 @@ def test_untrack_keeps_live_row_in_overlay() -> None:
     _untrack(s, PREFIX + 'live')
     assert [r['tag'] for r in s._cursor_gui_rows] == [PREFIX + 'live']
     assert PREFIX + 'live' not in s._tracked_tags
+
+
+# --------------------------------------------------------------------------
+# _reorder_tags_for_drag: the pure row_order move math behind drag-drop
+# (shared by regular + Cursor rows now that they interleave by row_order).
+# --------------------------------------------------------------------------
+
+
+def _reorder(order, src, tgt, drop_below):
+    return TableBuilderMixin._reorder_tags_for_drag(order, src, tgt, drop_below)
+
+
+def test_reorder_move_down_drop_below() -> None:
+    assert _reorder(['A', 'B', 'C', 'D'], 'A', 'C', True) == ['B', 'C', 'A', 'D']
+
+
+def test_reorder_move_up_drop_above() -> None:
+    assert _reorder(['A', 'B', 'C', 'D'], 'D', 'B', False) == ['A', 'D', 'B', 'C']
+
+
+def test_reorder_onto_self_is_unchanged() -> None:
+    assert _reorder(['A', 'B', 'C'], 'A', 'A', True) == ['A', 'B', 'C']
+
+
+def test_reorder_adjacent_drop_is_noop() -> None:
+    # Drop A into the gap just before B -> resolves to the same position.
+    assert _reorder(['A', 'B', 'C', 'D'], 'A', 'B', False) == ['A', 'B', 'C', 'D']
+    # Drop B into the gap just after A -> same position.
+    assert _reorder(['A', 'B', 'C', 'D'], 'B', 'A', True) == ['A', 'B', 'C', 'D']
+
+
+def test_reorder_missing_tag_unchanged() -> None:
+    assert _reorder(['A', 'B'], 'X', 'B', True) == ['A', 'B']
+    assert _reorder(['A', 'B'], 'A', 'X', True) == ['A', 'B']
+
+
+def test_reorder_preserves_hidden_tags() -> None:
+    # A tag not currently visible (X) keeps its slot relative to the move.
+    assert _reorder(['A', 'X', 'B', 'C'], 'A', 'B', True) == ['X', 'B', 'A', 'C']
+
+
+def test_reorder_interleaves_cursor_and_leap() -> None:
+    order = ['leap1', PREFIX + 'c1', 'leap2']
+    # Drag the cursor row to below leap2.
+    assert _reorder(order, PREFIX + 'c1', 'leap2', True) == [
+        'leap1', 'leap2', PREFIX + 'c1']
+    # Drag leap2 above the cursor row.
+    assert _reorder(order, 'leap2', PREFIX + 'c1', False) == [
+        'leap1', 'leap2', PREFIX + 'c1']
+
+
+def test_reorder_does_not_mutate_input() -> None:
+    order = ['A', 'B', 'C']
+    _reorder(order, 'A', 'C', True)
+    assert order == ['A', 'B', 'C']  # original untouched
