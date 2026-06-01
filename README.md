@@ -1,14 +1,15 @@
 # Leap
 
-**A queueing system and dashboard for managing multiple AI CLI sessions.**
+**A queueing system and dashboard for managing multiple AI CLI sessions + Cursor Editor Agent Sessions**
 
 Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, Cursor, iTerm2, cmux, WezTerm, Arduino IDE, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
+
+**NEW!** Manage your Cursor Editor Agent sessions right in the monitor too - live status, PR tracking, and one-click jump to the exact tab.
 
 ## Key Features
 
 - **Smart message queueing** - Auto-sends when the CLI is ready
 - **Real-time GUI monitoring** - See all sessions, jump across IDEs and projects
-- **Cursor editor Agent tabs** - Surface your Cursor (editor) Agent chats in the monitor with live status, PR tracking, and one-click jump
 - **PR tracking** - GitLab & GitHub comment detection with `/leap` tag support
 - **Slack integration** - Bidirectional messaging between Slack and Leap sessions
 - **Prevent sleep while busy** - Mac stays awake until every session is idle (optional lid-close override)
