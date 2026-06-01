@@ -15,11 +15,13 @@ Two utility functions also live here:
 
 import re
 import textwrap
+import unicodedata
 from typing import Optional
 
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QUrl, Qt
 from PyQt5.QtGui import (
-    QColor, QFont, QImage, QTextCharFormat, QTextCursor, QTextImageFormat,
+    QColor, QFont, QImage, QTextBlockFormat, QTextCharFormat, QTextCursor,
+    QTextImageFormat,
 )
 from PyQt5.QtWidgets import QApplication, QTextEdit, QWidget
 
@@ -38,6 +40,88 @@ from leap.utils.constants import NOTE_IMAGES_DIR
 # A line that looks like a fresh list item (bullet or enumerated) must
 # NOT be merged into the line above — it begins a new row.
 _LIST_MARKER_RE = re.compile(r'^\s*(?:[-*+•]|\d+[.)]|[A-Za-z][.)])\s')
+
+
+def _is_preformatted_line(line: str) -> bool:
+    """Return True if *line* is part of a box/pipe table or aligned block.
+
+    Two signals, either of which marks a line whose shape depends on a
+    left-to-right, fixed-column layout:
+
+    * any Unicode box-drawing or block-element glyph (U+2500-U+259F) —
+      the ``┌─┬─┐ │ ├─┼─┤ └─┴─┘`` skeleton of an ASCII/Unicode table;
+    * two or more ASCII pipes — a markdown ``| a | b |`` table row.
+
+    Such lines are pinned to LTR base direction (see
+    :meth:`_NoteTextEdit._pin_preformatted_blocks_ltr`) so RTL cell text
+    (e.g. Hebrew) can't flip the whole row and shatter the columns.
+    """
+    # U+2500-U+257F Box Drawing + U+2580-U+259F Block Elements.
+    if any('─' <= ch <= '▟' for ch in line):
+        return True
+    return line.count('|') >= 2
+
+
+# Vertical column separators in a box-drawing / markdown table.  Splitting
+# a preformatted row on these (NOT on the horizontal ─ fill) yields its
+# cells.
+_CELL_SEP_CHARS = frozenset('│┌┬┐├┼┤└┴┘|')
+
+# First-Strong Isolate / Pop Directional Isolate.  Each RTL table cell is
+# wrapped in these at *display* time (see _isolate_table_cells) so the
+# cell's own bidi reordering can't drag the column separators around.
+# They are invisible formatting controls, stripped back out on serialize
+# so the stored note stays byte-clean.
+_FSI = chr(0x2068)  # FIRST STRONG ISOLATE
+_PDI = chr(0x2069)  # POP DIRECTIONAL ISOLATE
+
+
+def _wrap_cell(cell: str) -> str:
+    """Wrap *cell* in FSI...PDI iff it contains a strong-RTL character."""
+    if cell and any(
+            unicodedata.bidirectional(ch) in ('R', 'AL') for ch in cell):
+        return _FSI + cell + _PDI
+    return cell
+
+
+def _isolate_table_cells(text: str) -> str:
+    """Isolate the RTL cells of every box/pipe-table line in *text*.
+
+    For each preformatted line (see :func:`_is_preformatted_line`), split
+    it on the vertical column separators and wrap any cell containing RTL
+    text in FSI...PDI.  Non-table lines, and purely LTR/numeric cells,
+    pass through untouched.
+
+    This is the display-time companion to the block-direction pin in
+    :meth:`_NoteTextEdit._pin_preformatted_blocks_ltr`: the pin keeps the
+    row left-to-right as a whole, the isolates keep each cell's internal
+    bidi from shifting the separators — so the columns line up while each
+    Hebrew cell still reads right-to-left.
+    """
+    out: list[str] = []
+    for line in text.split('\n'):
+        if not _is_preformatted_line(line):
+            out.append(line)
+            continue
+        parts: list[str] = []
+        cell: list[str] = []
+        for ch in line:
+            if ch in _CELL_SEP_CHARS:
+                parts.append(_wrap_cell(''.join(cell)))
+                cell = []
+                parts.append(ch)
+            else:
+                cell.append(ch)
+        parts.append(_wrap_cell(''.join(cell)))
+        out.append(''.join(parts))
+    return '\n'.join(out)
+
+
+def _strip_cell_isolates(text: str) -> str:
+    """Remove the FSI/PDI controls inserted by :func:`_isolate_table_cells`."""
+    if _FSI in text or _PDI in text:
+        return text.replace(_FSI, '').replace(_PDI, '')
+    return text
 
 
 def _unwrap_continuations(text: str) -> str:
@@ -250,7 +334,7 @@ class _NoteTextEdit(QTextEdit):
                                 parts.append(text)
                 it += 1
             block = block.next()
-        return ''.join(parts)
+        return _strip_cell_isolates(''.join(parts))
 
     def _toggle_bold(self) -> None:
         """Flip bold on the selection, or on subsequent typing if no selection.
@@ -325,13 +409,51 @@ class _NoteTextEdit(QTextEdit):
             text = source.text()
             if self._flatten_on_paste:
                 text = _flatten_indent(text)
+            text = _isolate_table_cells(text)
+            paste_start = cursor.selectionStart()
             self._insert_text_with_links(cursor, text)
+            # Box/pipe-table rows in the pasted run only keep their
+            # columns aligned when laid out LTR — pin them so RTL cell
+            # text can't flip a row to RTL and shatter the table.
+            doc = self.document()
+            self._pin_preformatted_blocks_ltr(
+                doc.findBlock(paste_start).blockNumber(),
+                doc.findBlock(cursor.position()).blockNumber())
             # Push the mutated cursor back so the caret + selection
             # reflect the end of the paste, matching Qt's default
             # insertPlainText behaviour.
             self.setTextCursor(cursor)
             return
         super().insertFromMimeData(source)
+
+    def _pin_preformatted_blocks_ltr(
+            self, first_block: int, last_block: int) -> None:
+        """Force LTR base direction on box/pipe-table rows in a range.
+
+        A box-drawing or markdown table only keeps its columns aligned
+        when every row is laid out left-to-right.  But ``QTextEdit``
+        auto-detects each paragraph's base direction from its first
+        strong directional character, so a row whose first strong char
+        is RTL (e.g. Hebrew) flips the whole row to RTL: it gets
+        bidi-reordered and right-shifted while the all-Latin header and
+        ``├──┼──┤`` border rows stay LTR, and the columns shatter.
+
+        Pinning the preformatted rows to LTR via the *block* format
+        overrides that per-paragraph auto-detection (the block-format
+        direction wins over content detection), so the grid stays
+        intact; the RTL text inside each cell still renders
+        right-to-left, which is correct.  Non-preformatted blocks are
+        left untouched, so genuine RTL prose still auto-aligns.
+        """
+        doc = self.document()
+        fmt = QTextBlockFormat()
+        fmt.setLayoutDirection(Qt.LeftToRight)
+        cur = QTextCursor(doc)
+        for n in range(first_block, last_block + 1):
+            block = doc.findBlockByNumber(n)
+            if block.isValid() and _is_preformatted_line(block.text()):
+                cur.setPosition(block.position())
+                cur.mergeBlockFormat(fmt)
 
     def _insert_image(self, filename: str) -> None:
         """Insert an image into the document at the cursor."""
@@ -397,6 +519,8 @@ class _NoteTextEdit(QTextEdit):
         cursor = self.textCursor()
         cursor.movePosition(QTextCursor.Start)
 
+        # Isolate RTL table cells so box/pipe tables keep their columns.
+        text = _isolate_table_cells(text)
         parts = _IMAGE_MARKER_RE.split(text)
         # parts alternates: [text, filename, text, filename, ...]
         for i, part in enumerate(parts):
@@ -422,6 +546,9 @@ class _NoteTextEdit(QTextEdit):
                 else:
                     # Image file missing — keep marker as text
                     cursor.insertText(f'![image]({part})')
+        # Pin box/pipe-table rows to LTR so RTL (e.g. Hebrew) cell text
+        # doesn't flip them and break the column alignment on load.
+        self._pin_preformatted_blocks_ltr(0, self.document().blockCount() - 1)
         self.setTextCursor(cursor)
 
     def get_note_content(self, include_bold_markers: bool = True) -> str:
@@ -466,7 +593,7 @@ class _NoteTextEdit(QTextEdit):
                         result.append(txt)
                 it += 1
             block = block.next()
-        return ''.join(result)
+        return _strip_cell_isolates(''.join(result))
 
 
 # ── QTextEdit enhancers ─────────────────────────────────────────────

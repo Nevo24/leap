@@ -126,7 +126,7 @@ src/
     │   │       ├── ordering.py             # Folder + per-folder child ordering
     │   │       ├── text_helpers.py         # Markdown link/bold helpers + URL highlighter
     │   │       ├── image_helpers.py        # Note-image save / refs / cleanup / preview popup
-    │   │       ├── note_text_edit.py       # _NoteTextEdit rich editor (image paste, links, Cmd+B/C)
+    │   │       ├── note_text_edit.py       # _NoteTextEdit rich editor (image paste, links, Cmd+B/C; RTL box/pipe-table fix: per-block LTR pin + per-cell FSI isolation, stripped on save)
     │   │       ├── checklist_io.py         # _parse_checklist / _serialize_checklist round-trip
     │   │       ├── checklist_widgets.py    # Google Keep-style checklist editor (4 inter-referencing classes)
     │   │       ├── tree_widget.py          # _NotesTreeWidget — left-panel QTreeWidget with custom DnD

@@ -23,6 +23,10 @@ import leap.monitor.dialogs.notes_dialog as nd
 from leap.monitor.dialogs.notes import image_helpers as nd_images
 from leap.monitor.dialogs.notes import ordering as nd_ordering
 from leap.monitor.dialogs.notes import persistence as nd_persist
+from leap.monitor.dialogs.notes.note_text_edit import (
+    _FSI, _PDI, _is_preformatted_line, _isolate_table_cells,
+    _strip_cell_isolates, _wrap_cell,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -816,3 +820,144 @@ class TestTextIsRtl:
         # Digits do not count as a directional letter — first L/R/AL/AN wins.
         assert nd._text_is_rtl('5 שלום') is True
         assert nd._text_is_rtl('A שלום') is False
+
+
+class TestIsPreformattedLine:
+    """`_is_preformatted_line` flags rows whose shape depends on a
+    fixed-column LTR layout — box/ASCII tables and markdown pipe rows —
+    so the editor can pin just those rows to LTR and stop RTL cell text
+    (e.g. Hebrew) from flipping the row and shattering the columns.
+    """
+
+    def test_box_drawing_border(self) -> None:
+        assert _is_preformatted_line('┌─────┬───────┬──────┐') is True
+        assert _is_preformatted_line('├─────┼───────┼──────┤') is True
+        assert _is_preformatted_line('└─────┴───────┴──────┘') is True
+
+    def test_box_drawing_data_row_with_hebrew(self) -> None:
+        # The exact failing shape: a vertical-bar cell row with Hebrew.
+        assert _is_preformatted_line('│ 1 │ ת"ק 23258-06-18 │ חדרה │') is True
+
+    def test_double_line_box_chars(self) -> None:
+        # U+2550-U+256C double-line box drawing is in the same range.
+        assert _is_preformatted_line('╔═════╦═════╗') is True
+
+    def test_block_element_glyph(self) -> None:
+        # U+2580-U+259F block elements (bar charts / shading) also count.
+        assert _is_preformatted_line('load ████░░░░ 50%') is True
+
+    def test_markdown_pipe_table_row(self) -> None:
+        assert _is_preformatted_line('| a | b | c |') is True
+        assert _is_preformatted_line('|---|---|---|') is True
+
+    def test_two_pipes_is_the_threshold(self) -> None:
+        # >=2 ASCII pipes -> treated as a column row; exactly 1 does not.
+        assert _is_preformatted_line('a | b | c') is True   # 2 pipes
+        assert _is_preformatted_line('a | b') is False       # 1 pipe
+
+    def test_plain_hebrew_prose_is_not_preformatted(self) -> None:
+        # Genuine RTL prose must stay untouched (auto-detect -> RTL).
+        assert _is_preformatted_line('שלום זו שורת פרוזה בעברית') is False
+        assert _is_preformatted_line('- "חופש הביטוי" (free speech)') is False
+
+    def test_plain_ltr_prose_is_not_preformatted(self) -> None:
+        assert _is_preformatted_line('For this query, the Supreme Court') is False
+
+    def test_empty_line(self) -> None:
+        assert _is_preformatted_line('') is False
+
+
+class TestWrapCell:
+    """`_wrap_cell` wraps a single cell in FSI...PDI iff it has RTL."""
+
+    def test_hebrew_cell_wrapped(self) -> None:
+        assert _wrap_cell(' שלום ') == _FSI + ' שלום ' + _PDI
+
+    def test_arabic_cell_wrapped(self) -> None:
+        assert _wrap_cell('عربي') == _FSI + 'عربي' + _PDI
+
+    def test_numeric_cell_untouched(self) -> None:
+        assert _wrap_cell(' 2.11.2017 ') == ' 2.11.2017 '
+
+    def test_latin_cell_untouched(self) -> None:
+        assert _wrap_cell(' Case ') == ' Case '
+
+    def test_empty_cell_untouched(self) -> None:
+        # Empty cell never gets a (pointless) wrapper.
+        assert _wrap_cell('') == ''
+
+    def test_mixed_cell_with_any_rtl_wrapped(self) -> None:
+        # A digit+Hebrew cell still counts as RTL-bearing.
+        assert _wrap_cell('123 ק') == _FSI + '123 ק' + _PDI
+
+
+class TestIsolateTableCells:
+    """`_isolate_table_cells` wraps the RTL cells of box/pipe-table lines
+    so each cell's bidi can't drag the column separators around, while
+    leaving non-table lines and pure-LTR cells alone.
+    """
+
+    def test_box_row_wraps_only_rtl_cells(self) -> None:
+        line = '│ 1 │ ת"ק 123 │'
+        assert _isolate_table_cells(line) == (
+            '│ 1 │' + _FSI + ' ת"ק 123 ' + _PDI + '│'
+        )
+
+    def test_border_row_untouched(self) -> None:
+        # No RTL anywhere -> nothing wrapped (but still a valid passthrough).
+        line = '├─────┼───────┤'
+        assert _isolate_table_cells(line) == line
+
+    def test_header_row_untouched(self) -> None:
+        line = '│  #  │  Case  │  Date  │'
+        assert _isolate_table_cells(line) == line
+
+    def test_non_table_hebrew_prose_untouched(self) -> None:
+        # Not preformatted -> passes through, so genuine RTL prose is
+        # never wrapped (it must stay free to auto-align right).
+        assert _isolate_table_cells('שלום זו פרוזה') == 'שלום זו פרוזה'
+
+    def test_markdown_pipe_row_wraps_rtl_cells(self) -> None:
+        assert _isolate_table_cells('| א | ב |') == (
+            '|' + _FSI + ' א ' + _PDI + '|' + _FSI + ' ב ' + _PDI + '|'
+        )
+
+    def test_multiline_only_table_lines_touched(self) -> None:
+        text = 'שלום פרוזה\n│ 1 │ עברית │\nplain english'
+        out = _isolate_table_cells(text)
+        lines = out.split('\n')
+        assert lines[0] == 'שלום פרוזה'           # prose untouched
+        assert _FSI in lines[1]                      # table row isolated
+        assert lines[2] == 'plain english'           # ltr prose untouched
+
+
+class TestStripCellIsolates:
+    def test_removes_fsi_pdi(self) -> None:
+        s = 'a' + _FSI + 'ב' + _PDI + 'c'
+        assert _strip_cell_isolates(s) == 'aבc'
+
+    def test_no_isolates_is_noop(self) -> None:
+        assert _strip_cell_isolates('plain') == 'plain'
+
+
+class TestIsolateStripRoundTrip:
+    """The storage-safety invariant: stripping after isolating must
+    reproduce the input exactly, so the on-disk note never accumulates
+    invisible isolate controls.
+    """
+
+    @pytest.mark.parametrize('text', [
+        '│ 1 │ ת"ק 23258-06-18 │ 7.1.2019 │ חדרה │',
+        '┌─────┬───────┐\n│ # │ עברית │\n└─────┴───────┘',
+        '| א | ב | ג |',
+        'שלום זו פרוזה בעברית',
+        'For this query, the Supreme Court',
+        '',
+        'mixed\n│ 1 │ עברית │\ntail',
+    ])
+    def test_strip_of_isolate_is_identity(self, text: str) -> None:
+        assert _strip_cell_isolates(_isolate_table_cells(text)) == text
+
+    def test_isolates_are_balanced(self) -> None:
+        out = _isolate_table_cells('│ 1 │ עברית │ עוד │')
+        assert out.count(_FSI) == out.count(_PDI)
