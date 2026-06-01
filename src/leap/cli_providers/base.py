@@ -661,11 +661,12 @@ class CLIProvider(ABC):
         cwd — leap then needs to either ``chdir`` into the recorded cwd
         or relocate the transcript via :meth:`relocate_session`.
 
-        Default ``False``: the CLI keys sessions by UUID alone (Codex)
-        or handles cross-cwd resume natively in its own UI (Cursor's
-        built-in prompt).  In that case ``leap --resume`` skips its
-        cwd-choice prompt and lets the CLI take over from the user's
-        current working directory.
+        Default ``False``: the CLI keys sessions by UUID alone (Codex), so
+        ``leap --resume`` skips its cwd-choice prompt and lets the CLI take
+        over from the user's current working directory.  (Cursor Agent,
+        despite resuming by chat UUID, stores its chats in a cwd-derived
+        directory, so it overrides this to ``True`` and relocates via
+        :meth:`relocate_session`.)
         """
         return False
 

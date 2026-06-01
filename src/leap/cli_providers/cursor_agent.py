@@ -150,8 +150,12 @@ class CursorAgentProvider(CLIProvider):
         del cwd  # Cursor history is global
         path = CURSOR_CONFIG_DIR / 'prompt_history.json'
         try:
-            raw = path.read_text()
-        except OSError:
+            # Pin UTF-8 and catch decode errors: read_text() with the
+            # platform default would raise UnicodeDecodeError (a ValueError,
+            # NOT an OSError) on a non-UTF-8 locale, silently disabling ↑/↓
+            # recall.  Sibling providers already guard this.
+            raw = path.read_text(encoding='utf-8')
+        except (OSError, ValueError):
             return None
         try:
             data = json.loads(raw)
@@ -210,8 +214,13 @@ class CursorAgentProvider(CLIProvider):
         transcript path under ``~/.cursor/chats/<project>/<uuid>/``.
         """
         for key in ('conversation_id', 'chatId', 'chat_id', 'session_id'):
-            sid = hook_data.get(key) or ''
-            if sid:
+            sid = hook_data.get(key)
+            # Must be a non-empty STRING.  A truthy non-string (a JSON
+            # array/object from an odd hook payload) would otherwise be
+            # returned, then later joined into a Path by session_exists ->
+            # find_chat_dir, raising TypeError and crashing the whole
+            # `leap --resume` picker (for every CLI, not just Cursor).
+            if isinstance(sid, str) and sid:
                 return sid
         path = hook_data.get('transcript_path', '') or ''
         if path and '.cursor/' in path:
@@ -276,11 +285,21 @@ class CursorAgentProvider(CLIProvider):
         if CURSOR_HOOKS_FILE.exists():
             try:
                 with open(CURSOR_HOOKS_FILE, "r") as f:
-                    hooks_data = json.load(f)
-            except (json.JSONDecodeError, OSError):
+                    loaded = json.load(f)
+                # Only adopt a dict-shaped file.  A malformed root (list /
+                # string / number) would make the ``hooks_data["hooks"]``
+                # assignment below raise TypeError and abort the whole
+                # `leap --reconfigure` / `make install` run; keep the fresh
+                # default instead and rewrite the file into valid shape.
+                # ValueError covers UnicodeDecodeError on a non-UTF-8 file.
+                if isinstance(loaded, dict):
+                    hooks_data = loaded
+            except (json.JSONDecodeError, OSError, ValueError):
                 pass
 
-        if "hooks" not in hooks_data:
+        # Defensive shape-coercion: every nested container we index must be
+        # the expected type even if a hand-edited file got them wrong.
+        if not isinstance(hooks_data.get("hooks"), dict):
             hooks_data["hooks"] = {}
         if "version" not in hooks_data:
             hooks_data["version"] = 1
@@ -288,14 +307,15 @@ class CursorAgentProvider(CLIProvider):
         hooks = hooks_data["hooks"]
 
         # Stop hook → writes "idle" state to signal file
-        if "stop" not in hooks:
+        if not isinstance(hooks.get("stop"), list):
             hooks["stop"] = []
 
         legacy_marker = "claudeq-hook.sh"
         hooks["stop"] = [
             e for e in hooks["stop"]
-            if not (HOOK_MARKER in e.get("command", "")
-                    or legacy_marker in e.get("command", ""))
+            if isinstance(e, dict)
+            and not (HOOK_MARKER in e.get("command", "")
+                     or legacy_marker in e.get("command", ""))
         ]
         hooks["stop"].append({
             "command": f"{hook_script_path} idle",

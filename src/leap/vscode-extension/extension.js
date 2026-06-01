@@ -24,6 +24,20 @@ function log(msg) {
 }
 
 /**
+ * True only when this extension host is Cursor (not VS Code).
+ * The same .vsix is installed in both editors and they share one
+ * request file, so any Cursor-specific behavior must gate on this.
+ */
+function isCursor() {
+    try {
+        const name = (vscode.env.appName || '').toLowerCase();
+        return name.includes('cursor') || vscode.env.uriScheme === 'cursor';
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
  * Find a terminal matching the given name.
  * Checks Terminal.name first, then our tracked Leap names map.
  */
@@ -83,6 +97,25 @@ function processRequestFile(requireFocus) {
             openTerminalWithCommand(content.substring(5));
         } else if (content.startsWith('rename:')) {
             renameActiveTerminal(content.substring(7));
+        } else if (content.startsWith('focusComposer:')) {
+            // Cursor only: focus a specific Agent/Composer tab by id.
+            // The request file is shared with VS Code, so a VS Code
+            // window must NOT consume it — return early (before the
+            // unlink below) and leave it for a Cursor window to handle.
+            // requireFocus (above) plus this guard mean only the
+            // foreground Cursor window (the one the monitor just raised,
+            // which owns the tab) acts on it.
+            if (!isCursor()) {
+                return;
+            }
+            focusComposer(content.substring('focusComposer:'.length));
+        } else if (content.startsWith('closeComposer:')) {
+            // Cursor only (same shared-file rationale as focusComposer):
+            // a VS Code window must not consume it.
+            if (!isCursor()) {
+                return;
+            }
+            closeComposer(content.substring('closeComposer:'.length));
         } else {
             selectTerminalByName(content);
         }
@@ -97,7 +130,7 @@ function processRequestFile(requireFocus) {
  */
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Leap');
-    log('Leap extension v1.5.0 activated');
+    log('Leap extension v1.6.4 activated');
     log(`Watching for: ${REQUEST_FILE}`);
 
     // Register command (for manual use via command palette)
@@ -108,6 +141,21 @@ function activate(context) {
         }
     });
     context.subscriptions.push(disposable);
+
+    // Manual test command: prompts for a composer id and focuses that
+    // Agent tab. Lets you verify the Cursor focus-by-id commands work in
+    // your Cursor build, independent of the monitor wiring.
+    const focusDisposable = vscode.commands.registerCommand('leap.focusCursorComposer', async () => {
+        const id = await vscode.window.showInputBox({
+            prompt: 'Composer id to focus (from a Leap monitor Cursor row)',
+            placeHolder: 'e.g. c00c071b-ec6e-46f7-bc26-dd10cf8b458f',
+            ignoreFocusOut: true,
+        });
+        if (id && id.trim()) {
+            await focusComposer(id.trim());
+        }
+    });
+    context.subscriptions.push(focusDisposable);
 
     // Watch for request file changes (monitor → extension communication)
     let watcher;
@@ -190,10 +238,93 @@ function activate(context) {
 
             log('Terminal data listener registered (auto-rename enabled)');
         } else {
-            log('onDidWriteTerminalData not available, relying on Terminal.name matching');
+            log('Terminal auto-rename: onDidWriteTerminalData unavailable; using Terminal.name matching');
         }
     } catch (err) {
-        log(`Could not register terminal data listener: ${err}`);
+        // onDidWriteTerminalData is a *proposed* API.  Installed extensions
+        // (not dev-mode, not built-in) can't use it in VS Code OR Cursor, so
+        // the call above throws - this is expected, not a real failure.  Tab
+        // auto-rename then relies on Terminal.name matching (VS Code/Cursor
+        // already surface the shell's OSC `lps <tag>` title in the tab name,
+        // which is what findTerminal() matches on).  Detect that specific
+        // case and log it calmly instead of dumping a scary stack.
+        const msg = String(err && err.message ? err.message : err);
+        if (msg.indexOf('terminalDataWriteEvent') !== -1
+            || msg.indexOf('API proposal') !== -1) {
+            log('Terminal auto-rename: onDidWriteTerminalData proposed API '
+                + 'is not available to installed extensions (expected); '
+                + 'using Terminal.name matching instead');
+        } else {
+            log(`Could not register terminal data listener: ${err}`);
+        }
+    }
+}
+
+/**
+ * Cursor only: focus an existing Agent/Composer tab by its composer id.
+ *
+ * Cursor registers id-based composer-focus commands in its command
+ * registry (`composer.openComposer` takes `{type:'local', id}`;
+ * `glass.openAgentById` takes the bare id and looks the tab up). Both
+ * are reachable via the standard extension command API. We try them in
+ * order and stop at the first that doesn't throw. There is no public
+ * API for this, so it is best-effort: a Cursor version that renames or
+ * gates these commands simply leaves the monitor at window-level focus.
+ */
+async function focusComposer(composerId) {
+    if (!composerId) {
+        return;
+    }
+    if (!isCursor()) {
+        // The composer commands only exist in Cursor; never attempt them
+        // in VS Code (defensive - the manual test command routes here too).
+        log('focusComposer: not running in Cursor, ignoring');
+        return;
+    }
+    // Order matters: only `composer.openComposer` with the BARE id string
+    // reaches Cursor's `openComposerImpl` fast-path
+    //   selectedComposerIds.includes(id) -> showAndFocus(id)
+    // which is the actual visible tab switch. (Passing an object skips
+    // that branch - which is why glass.openAgentById "succeeds" but never
+    // switches: internally it calls openComposer({type,id}).) The
+    // notification command is Cursor's own "return to this chat" action.
+    const attempts = [
+        ['composer.openComposer', composerId],
+        ['composer.openComposerFromNotification', { composerId: composerId }],
+        ['glass.openAgentById', composerId],
+    ];
+    for (const [cmd, arg] of attempts) {
+        try {
+            await vscode.commands.executeCommand(cmd, arg);
+            log(`focusComposer: ${cmd} succeeded for ${composerId}`);
+            return;
+        } catch (err) {
+            log(`focusComposer: ${cmd} failed: ${err}`);
+        }
+    }
+    log(`focusComposer: no command succeeded for ${composerId}`);
+}
+
+/**
+ * Cursor only: close an Agent/Composer tab by its composer id.
+ *
+ * `composer.closeComposerTab` takes the bare id (falls back to the active
+ * composer if not a string) and closes that tab - the chat stays in
+ * Cursor's history (this is a close, not the destructive deleteComposer).
+ */
+async function closeComposer(composerId) {
+    if (!composerId) {
+        return;
+    }
+    if (!isCursor()) {
+        log('closeComposer: not running in Cursor, ignoring');
+        return;
+    }
+    try {
+        await vscode.commands.executeCommand('composer.closeComposerTab', composerId);
+        log(`closeComposer: composer.closeComposerTab succeeded for ${composerId}`);
+    } catch (err) {
+        log(`closeComposer: composer.closeComposerTab failed: ${err}`);
     }
 }
 

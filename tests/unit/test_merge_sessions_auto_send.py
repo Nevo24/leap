@@ -46,6 +46,7 @@ class _FakeMonitor(SessionMixin):
         self._checking_tags: set[str] = set()
         self._starting_tags: set[str] = set()
         self._moving_tags: set[str] = set()
+        self._moving_old_pid: dict[str, Any] = {}
         self._prefs: dict[str, Any] = {'row_order': []}
 
     def _save_prefs(self) -> None:
@@ -74,6 +75,7 @@ def _make_active(
     tag: str = 'mytag',
     auto_send_mode: str = AutoSendMode.PAUSE,
     cli_provider: str = 'claude',
+    server_pid: Any = None,
 ) -> dict[str, Any]:
     """Mimic the dict shape session_manager.get_active_sessions() emits."""
     return {
@@ -86,6 +88,7 @@ def _make_active(
         'cli_state': 'idle',
         'queue_size': 0,
         'recently_sent': [],
+        'server_pid': server_pid,
     }
 
 
@@ -202,6 +205,66 @@ class TestFallback:
 # --------------------------------------------------------------------------
 # Unrelated pin fields must remain untouched (PR fields, IDE, branch …).
 # --------------------------------------------------------------------------
+
+
+class TestMoveGuardClears:
+    """``_merge_sessions`` must drop the Move-to-IDE guard once the
+    RELAUNCHED server (a different pid than the one we moved away from)
+    registers — otherwise the guard stayed armed for the full 12-min
+    safety window and a quick close-in-IDE flipped the row to a stuck
+    'Starting...' dead row.
+    """
+
+    def _pin(self, tag: str = 'mytag') -> dict[str, Any]:
+        return {
+            'tag': tag,
+            'project_path': '/Users/x/proj',
+            'ide': 'JetBrains',
+            'branch': 'main',
+            'cli_provider': 'claude',
+            'auto_send_mode': 'pause',
+        }
+
+    def test_new_pid_clears_guard(self, no_disk_write: None) -> None:
+        m = _FakeMonitor(pinned={'mytag': self._pin()})
+        m._moving_tags.add('mytag')
+        m._moving_old_pid['mytag'] = 111  # the server we moved away from
+        # Relaunched server registers with a different pid.
+        m._merge_sessions([_make_active(tag='mytag', server_pid=222)])
+        assert 'mytag' not in m._moving_tags
+        assert 'mytag' not in m._moving_old_pid
+
+    def test_same_pid_keeps_guard(self, no_disk_write: None) -> None:
+        # During the close the OLD server is briefly still alive (same
+        # pid).  Clearing then would drop the dead-row bridge, so the
+        # guard must survive while the live pid still matches the old one.
+        m = _FakeMonitor(pinned={'mytag': self._pin()})
+        m._moving_tags.add('mytag')
+        m._moving_old_pid['mytag'] = 111
+        m._merge_sessions([_make_active(tag='mytag', server_pid=111)])
+        assert 'mytag' in m._moving_tags
+        assert m._moving_old_pid['mytag'] == 111
+
+    def test_dead_gap_keeps_guard(self, no_disk_write: None) -> None:
+        # Old server gone, new one not up yet → no live server for the
+        # tag.  The guard (and the dead row it protects) must persist.
+        m = _FakeMonitor(pinned={'mytag': self._pin()})
+        m._moving_tags.add('mytag')
+        m._moving_old_pid['mytag'] = 111
+        merged = m._merge_sessions([])  # nothing active
+        assert 'mytag' in m._moving_tags  # bridge preserved
+        # And the row itself survived as a dead row (not auto-removed).
+        assert any(r['tag'] == 'mytag' for r in merged)
+
+    def test_missing_old_pid_clears_on_any_live(
+        self, no_disk_write: None,
+    ) -> None:
+        # No recorded old pid → there was no old server to confuse the
+        # new one with, so the first live server clears the guard.
+        m = _FakeMonitor(pinned={'mytag': self._pin()})
+        m._moving_tags.add('mytag')  # no _moving_old_pid entry
+        m._merge_sessions([_make_active(tag='mytag', server_pid=222)])
+        assert 'mytag' not in m._moving_tags
 
 
 class TestPreservesOtherFields:

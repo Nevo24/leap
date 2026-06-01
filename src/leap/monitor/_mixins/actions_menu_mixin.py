@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QCursor
 
 from leap.cli_providers.registry import DEFAULT_PROVIDER
+from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
 from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
 from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
 from leap.monitor.navigation import (
@@ -142,6 +143,13 @@ class ActionsMenuMixin(_Base):
                 path = s['project_path']
                 break
         if not path:
+            # Cursor editor Agent-tab rows (read-only overlay, not in
+            # self.sessions) carry their project folder directly.
+            for r in getattr(self, '_cursor_gui_rows', []):
+                if r['tag'] == tag and r.get('project_path'):
+                    path = r['project_path']
+                    break
+        if not path:
             # Fall back to pinned sessions
             pin = self._pinned_sessions.get(tag, {})
             path = pin.get('project_path') or None
@@ -157,6 +165,10 @@ class ActionsMenuMixin(_Base):
         for s in self.sessions:
             if s['tag'] == tag:
                 project = s.get('project', '')
+                return bool(project) and project != 'N/A'
+        for r in getattr(self, '_cursor_gui_rows', []):
+            if r['tag'] == tag:
+                project = r.get('project', '')
                 return bool(project) and project != 'N/A'
         return False
 
@@ -206,6 +218,12 @@ class ActionsMenuMixin(_Base):
 
         self._prefs['last_ide_app'] = path
         self._save_prefs()
+
+        if tag.startswith(CURSOR_GUI_TAG_PREFIX):
+            # Cursor editor Agent-tab rows aren't Leap sessions - there's
+            # nothing to "move", so just open the folder in the chosen app.
+            self._just_open_ide(tag, path, project_path)
+            return
 
         preferred_ide = detect_supported_ide_for_move(path)
         if preferred_ide is None:
@@ -595,9 +613,18 @@ class ActionsMenuMixin(_Base):
         # ``row_order``) before the new server registers — at which
         # point the new server re-pins as a fresh row at the bottom.
         self._moving_tags.add(_tag)
-        QTimer.singleShot(
-            720_000, lambda: self._moving_tags.discard(_tag),  # 12 min
-        )
+        # Record the pid we're moving away from so _merge_sessions can clear
+        # the guard the moment the relaunched server (a different pid) is up,
+        # instead of leaving it armed for the whole 12-min safety window
+        # (which made a quick close-in-IDE flip the row to a stuck
+        # "Starting..." dead row).
+        self._moving_old_pid[_tag] = server_pid
+
+        def _clear_move_guard(t: str = _tag) -> None:
+            self._moving_tags.discard(t)
+            self._moving_old_pid.pop(t, None)
+
+        QTimer.singleShot(720_000, _clear_move_guard)  # 12 min backstop
         # Close the server (same path as the X button), then run our
         # follow-up.  ``_from_delete=True`` skips _close_server's own
         # confirmation popups (we already asked "Move?").

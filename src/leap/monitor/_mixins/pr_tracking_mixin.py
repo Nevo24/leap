@@ -250,11 +250,9 @@ class PRTrackingMixin(_Base):
             self.sessions = [s for s in self.sessions if s['tag'] != tag]
             self._cleanup_row_state(tag)
 
-        # Stop poll timer if no tags are being tracked and no notifications enabled
-        if (not self._tracked_tags
-                and not self._get_notif_scm_types()
-                and self._scm_poll_timer.isActive()):
-            self._scm_poll_timer.stop()
+        # Start/stop the poll timer based on whether anything still needs
+        # polling (tracked PRs, notifications, or Cursor GUI rows).
+        self._sync_scm_poll_timer()
 
         if not _skip_ui:
             self._update_table()
@@ -453,6 +451,23 @@ class PRTrackingMixin(_Base):
         if not silent:
             QMessageBox.warning(self, 'Error', message)
 
+    def _sync_scm_poll_timer(self) -> None:
+        """Start or stop the SCM poll timer based on whether anything needs
+        polling: tracked PRs (which now includes opt-in-tracked Cursor
+        editor Agent-tab rows, whose tag joins ``_tracked_tags``) or user
+        notifications.
+
+        Without this, a user who only tracks a Cursor GUI row (no real
+        tracked PR, no notifications) would never poll, since every other
+        timer-start site keys off tracking/notifications too.
+        """
+        want = bool(self._tracked_tags or self._get_notif_scm_types())
+        active = self._scm_poll_timer.isActive()
+        if want and not active:
+            self._scm_poll_timer.start(self._get_poll_interval() * 1000)
+        elif not want and active:
+            self._scm_poll_timer.stop()
+
     def _start_scm_poll(self) -> None:
         """Start a background SCM poll for tracked sessions and/or notifications."""
         if self._shutting_down:
@@ -485,22 +500,42 @@ class PRTrackingMixin(_Base):
 
         has_tracked = bool(self._tracked_tags)
         notif_types = self._get_notif_scm_types()
-        if not has_tracked and not notif_types:
+        # Cursor editor Agent-tab rows the user opted to track (their tag
+        # is in _tracked_tags).  Marked ``_pr_only`` so the worker fetches
+        # PR state but skips /leap handling (they're not Leap sessions).
+        # Polled on the same ~30s SCM cadence, not the 1s table refresh.
+        # Only ``project_path`` is required: _poll_session resolves the
+        # branch from the folder's git remote itself (the passed ``branch``
+        # is unused on that path), so requiring a non-empty ``branch`` here
+        # only served to permanently exclude a tracked Cursor row whose
+        # folder reported no branch (non-git / detached HEAD) - leaving its
+        # PR cell stuck on "Checking…" forever.  Without the filter such a
+        # row is polled and resolves to a normal "No PR" instead.
+        cursor_poll_sessions = [
+            {'tag': r['tag'], 'project_path': r.get('project_path'),
+             'branch': r.get('branch'), '_pr_only': True}
+            for r in getattr(self, '_cursor_gui_rows', [])
+            if r.get('project_path') and r['tag'] in self._tracked_tags
+        ]
+        has_cursor = bool(cursor_poll_sessions)
+        if not has_tracked and not notif_types and not has_cursor:
             return
 
         tracked_sessions = [s for s in self.sessions if s['tag'] in self._tracked_tags]
         if has_tracked and not tracked_sessions:
-            if not notif_types:
+            if not notif_types and not has_cursor:
                 logger.debug("SCM poll skipped: no tracked sessions found in active sessions")
                 return
 
-        logger.debug("Starting SCM poll for tags: %s (notif=%s)",
-                      [s['tag'] for s in tracked_sessions], notif_types)
+        poll_sessions = tracked_sessions + cursor_poll_sessions
+        logger.debug("Starting SCM poll for tags: %s (cursor=%d notif=%s)",
+                      [s['tag'] for s in tracked_sessions],
+                      len(cursor_poll_sessions), notif_types)
         self._scm_polling = True
         self._scm_poll_started_at = time.monotonic()
         worker = SCMPollerWorker(self)
         worker.configure(
-            self._scm_providers, tracked_sessions,
+            self._scm_providers, poll_sessions,
             auto_fetch_leap=self._prefs.get('auto_fetch_leap', False),
             notif_scm_types=notif_types,
         )

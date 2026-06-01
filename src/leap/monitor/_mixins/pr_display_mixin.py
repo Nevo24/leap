@@ -326,17 +326,27 @@ class PRDisplayMixin(_Base):
             return f'\nApproved by {names}'
         return '\nApproved'
 
+    def _badge_pr_statuses(self) -> dict:
+        """PR statuses eligible for dock/banner notifications.
+
+        Excludes Cursor editor Agent-tab rows: their PR status is shown
+        read-only in the table, but they aren't Leap sessions and the
+        user didn't opt into notifications for them.
+        """
+        return {t: s for t, s in self._pr_statuses.items()
+                if not t.startswith('cursor-gui:')}
+
     def _update_dock_badge(self) -> None:
         """Update the dock badge with number of PRs changed since last window focus."""
         dock_enabled = get_dock_enabled(self._prefs)
         events = self._dock_badge.update(
-            self._pr_statuses, self.isActiveWindow(), dock_enabled,
+            self._badge_pr_statuses(), self.isActiveWindow(), dock_enabled,
         )
         self._send_banner_notifications(events)
 
     def _clear_dock_badge(self) -> None:
         """Clear the dock badge and snapshot current PR statuses as seen."""
-        self._dock_badge.clear(self._pr_statuses)
+        self._dock_badge.clear(self._badge_pr_statuses())
         self._banner_notified = set()
 
     def _send_banner_notifications(self, events: list[NotificationEvent]) -> None:

@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 from leap.monitor.dialogs.github_setup_dialog import (
     GitHubSetupDialog, _check_github_scopes, _verify_github_server,
 )
+from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
 from leap.monitor.dialogs.gitlab_setup_dialog import (
     GitLabSetupDialog, _check_gitlab_scopes,
 )
@@ -315,6 +316,13 @@ class SCMConfigMixin(_Base):
         # Build {tag: provider_value} for tracked rows we can attribute
         attribution: dict[str, Optional[str]] = {}
         for tag in list(self._tracked_tags):
+            if tag.startswith(CURSOR_GUI_TAG_PREFIX):
+                # Cursor GUI rows aren't pinned and re-resolve their provider
+                # from project_path on every poll, so a provider reconnect must
+                # not clear them — _auto_track_pr_pinned won't re-track them
+                # (they're not in pinned_sessions), so clearing here would
+                # silently stop Cursor PR tracking until the user re-clicks.
+                continue
             pinned = self._pinned_sessions.get(tag, {})
             pinned_type = pinned.get('scm_type')
             if pinned_type:

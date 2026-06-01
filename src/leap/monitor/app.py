@@ -232,6 +232,15 @@ class MonitorWindow(
         super().__init__()
         self._wipe_icon_cache()
         self.sessions: list[dict] = []
+        # Read-only overlay rows for Cursor editor Agent tabs (scanned
+        # from disk).  Kept out of ``self.sessions`` so they never touch
+        # the pinned-session / PR / sleep-guard machinery; merged into
+        # the rendered view in ``_update_table`` only.
+        self._cursor_gui_rows: list[dict] = []
+        # Last-seen live row dict per Cursor tag, so a PR-tracked tab that's
+        # later closed can still be rendered as a "tab closed" row (keeping
+        # its PR monitored, like a dead-but-tracked regular row).
+        self._cursor_row_cache: dict[str, dict] = {}
         # Substring filter for the main table — case-insensitive match on
         # tag / project / app / CLI / path, same priority order as the
         # Resume dialog.  Drag-drop reorder is suppressed while this is
@@ -289,9 +298,15 @@ class MonitorWindow(
         # for any currently-alive tag, which would race with our close — we'd
         # add to it while the old server is alive, the next 1s auto-refresh
         # tick would clear it, and the dead-row would be wiped on the merge
-        # right after.  ``_moving_tags`` has no auto-clear; entries are removed
-        # only by the explicit safety-net timeout in ``_move_session_to_ide``.
+        # right after.  ``_moving_tags`` has no time-based auto-clear; entries
+        # are removed when the NEW server registers (``_merge_sessions``
+        # compares the live pid against ``_moving_old_pid``) or, as a backstop,
+        # by the explicit safety-net timeout in ``_move_session_to_ide``.
         self._moving_tags: set[str] = set()
+        # tag -> the server_pid we are moving AWAY from, so _merge_sessions can
+        # tell the (briefly still-alive) old server apart from the relaunched
+        # new one and clear ``_moving_tags`` only once the new one is up.
+        self._moving_old_pid: dict[str, Optional[int]] = {}
         self._ui_ready = False  # suppress resizeEvent during init
         self._state_changed_at: dict[str, tuple[str, float]] = {}  # tag -> (state, timestamp)
         self._dismissed_new_status: set[str] = set()  # tags where user dismissed fire icon

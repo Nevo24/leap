@@ -1040,10 +1040,10 @@ def main() -> int:
         tag = new_tag
 
     # Cross-cwd resume: only providers with cwd-bound resume need the
-    # picker (Claude, Gemini).  CLIs that key sessions by UUID alone
-    # (Codex) or handle cross-cwd resume in their own UI (Cursor's
-    # built-in prompt) keep working from the current cwd unmodified —
-    # asking would just be a redundant prompt before their own.
+    # picker (Claude, Gemini, Cursor Agent - all store transcripts/chats
+    # in a cwd-derived location).  CLIs that key sessions by UUID alone
+    # (Codex) keep working from the current cwd unmodified.  Decided
+    # data-driven via ``provider.requires_cwd_bound_resume`` below.
     current_cwd = os.getcwd()
     needs_cwd_pick = False
     if get_provider is not None:

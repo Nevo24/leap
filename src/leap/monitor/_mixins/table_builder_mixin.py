@@ -22,7 +22,7 @@ from leap.monitor.dialogs.queue_edit_dialog import QueueEditDialog
 from leap.monitor.dialogs.scm_template_dialog import PresetEditorDialog
 from leap.monitor.dialogs.settings_dialog import DEFAULT_REPOS_DIR, SettingsDialog
 from leap.monitor.leap_sender import prepend_to_leap_queue, send_to_leap_session_raw
-from leap.monitor.pr_tracking.base import PRState
+from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import (
     get_dock_enabled, get_notification_prefs,
     load_saved_presets, update_pinned_session_field,
@@ -37,6 +37,8 @@ from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
 from leap.utils.menu import extract_menu_options
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
+from leap.monitor.cursor_gui_scan import CURSOR_GUI_ROW_TYPE, CURSOR_GUI_TAG_PREFIX
+from leap.monitor.navigation import close_cursor_composer, focus_cursor_window
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.table_helpers import (
@@ -530,6 +532,539 @@ class TableBuilderMixin(_Base):
         self._search_query = text.strip()
         self._update_table()
 
+    def _set_badge_cell(self, row: int, col: int, text: str,
+                        row_color: Optional[str]) -> None:
+        """Render a cell as the outlined-pill badge used by the CLI/App
+        columns, so non-server rows match the styling of normal rows."""
+        t = current_theme()
+        label = QLabel(text)
+        label.setAlignment(Qt.AlignCenter)
+        fg = t.text_secondary
+        border_c = t.border_solid
+        if row_color:
+            fg = ensure_contrast(t.text_secondary, row_color)
+            border_c = ensure_contrast(t.border_solid, row_color)
+        label.setFixedHeight(self._zoomed_btn_w(24))
+        label.setStyleSheet(
+            f'QLabel {{'
+            f'  color: {fg};'
+            f'  border: 1px solid {border_c};'
+            f'  border-radius: 12px;'
+            f'  padding: 0px 10px;'
+            f'  font-size: {self._zoomed_size()}px;'
+            f'}}'
+        )
+        self._set_cell_widget(row, col, label)
+
+    def _render_tracked_pr_cell(self, row: int, tag: str,
+                                row_color: Optional[str], *,
+                                on_stop: Callable[[str], None],
+                                server_running: bool,
+                                wire_send_callbacks: bool,
+                                checking_when_no_status: bool = False) -> Optional[PRStatus]:
+        """Render/refresh the tracked-PR status cell in COL_PR.
+
+        Builds (or reuses, via the cell cache + per-tag PulsingLabel /
+        IndicatorLabel) the X-to-stop + approval + status + fire layout,
+        then applies the current PRStatus.  Shared by normal session rows
+        and Cursor editor-tab rows; callers vary only the stop callback,
+        the server-running flag, and whether the send-to-Leap callbacks
+        are wired.  ``checking_when_no_status`` shows "Checking…" while a
+        freshly-tracked row's first poll is still in flight (Cursor rows,
+        which skip the normal ``_checking_tags`` flow).  Returns the
+        applied PRStatus (or None).
+        """
+        pr_widget = self._pr_widgets.get(tag)
+        reused_pr = bool(pr_widget) and not sip.isdeleted(pr_widget)
+        if not reused_pr:
+            pr_widget = PulsingLabel()
+            self._pr_widgets[tag] = pr_widget
+        approval_label = self._pr_approval_widgets.get(tag)
+        reused_approval = bool(approval_label) and not sip.isdeleted(approval_label)
+        if not reused_approval:
+            approval_label = IndicatorLabel()
+            self._pr_approval_widgets[tag] = approval_label
+
+        pr_state = ('tracked', self._should_show_pr_fire(tag))
+        pr_cached = (
+            reused_pr and reused_approval
+            and self._cell_cached(tag, 'pr', pr_state, row, self.COL_PR)
+        )
+        if not pr_cached:
+            if self.table.columnSpan(row, self.COL_PR) > 1:
+                self.table.setSpan(row, self.COL_PR, 1, 1)
+            if reused_pr:
+                pr_widget.set_preserve_popup(True)
+            if reused_approval:
+                approval_label.set_preserve_popup(True)
+
+            pr_container = QWidget()
+            pr_layout = QHBoxLayout(pr_container)
+            pr_layout.setContentsMargins(0, 0, 0, 0)
+            pr_layout.setSpacing(2)
+
+            pr_x = QPushButton('×')
+            pr_x.setFixedSize(self._zoomed_btn_w(28), pr_x.sizeHint().height())
+            pr_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
+            pr_x.setProperty('_btn_role', 'close')
+            pr_x.setToolTip(f'Stop tracking PR for {tag}')
+            pr_x.clicked.connect(lambda checked, t=tag: on_stop(t))
+            pr_layout.addWidget(pr_x, 0, Qt.AlignVCenter)
+
+            pr_layout.addStretch()
+            pr_layout.addWidget(approval_label)
+            pr_layout.addWidget(pr_widget)
+            pr_layout.addStretch()
+
+            show_pr_fire = self._should_show_pr_fire(tag)
+            pr_fire_label = QLabel('\U0001f525' if show_pr_fire else '')
+            pr_fire_label.setObjectName('_prFireLabel')
+            pr_fire_px = max(10, self._zoomed_size(-3))
+            pr_fire_label.setFixedWidth(int(pr_fire_px * 1.4))
+            pr_fire_label.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+            if show_pr_fire:
+                t_pf = current_theme()
+                pf_color = (ensure_contrast(t_pf.accent_orange, row_color)
+                            if row_color else t_pf.accent_orange)
+                pr_fire_label.setStyleSheet(
+                    f'color: {pf_color}; font-size: {pr_fire_px}px;')
+                pr_fire_label.setToolTip(self._pr_fire_tooltip(tag))
+
+            def _make_pr_dismiss(t: str = tag) -> Callable:
+                def _dismiss(event: object) -> None:
+                    if t not in self._dismissed_pr_new_status:
+                        self._dismissed_pr_new_status.add(t)
+                        self._update_table()
+                return _dismiss
+            pr_fire_label.mousePressEvent = _make_pr_dismiss()
+            pr_layout.addWidget(pr_fire_label)
+
+            self._set_cell_widget(row, self.COL_PR, pr_container)
+            self._apply_row_color_to_widget(pr_container, row_color)
+            self._cache_cell(tag, 'pr', pr_state, row, self.COL_PR)
+
+            if reused_pr:
+                pr_widget.set_preserve_popup(False)
+            if reused_approval:
+                approval_label.set_preserve_popup(False)
+
+        # Always update PR widget properties (change each poll)
+        pr_status = self._pr_statuses.get(tag)
+        if pr_status is None and checking_when_no_status:
+            pr_widget.setText('Checking…')
+            pr_widget.setStyleSheet(f'color: {current_theme().text_muted};')
+            pr_widget.set_pulsing(False)
+            pr_widget.set_pr_url(None)
+            pr_widget.set_has_unresponded(False)
+        else:
+            self._apply_pr_status(pr_widget, approval_label, pr_status)
+            pr_widget.set_has_unresponded(
+                pr_status is not None
+                and pr_status.state == PRState.UNRESPONDED
+            )
+        pr_widget.set_server_running(server_running)
+        if wire_send_callbacks and not reused_pr:
+            pr_widget.set_send_to_leap_callback(
+                lambda t=tag: self._send_all_threads_to_leap(t)
+            )
+            pr_widget.set_send_combined_to_leap_callback(
+                lambda t=tag: self._send_all_threads_combined_to_leap(t)
+            )
+            pr_widget.set_send_leap_threads_callback(
+                lambda t=tag: self._send_leap_threads_to_leap(t)
+            )
+            pr_widget.set_send_leap_threads_combined_callback(
+                lambda t=tag: self._send_leap_threads_combined_to_leap(t)
+            )
+        pr_widget.set_auto_fetch_leap(
+            self._prefs.get('auto_fetch_leap', False)
+        )
+        return pr_status
+
+    def _build_cursor_gui_row(self, row: int, session: dict,
+                              row_color: Optional[str]) -> None:
+        """Render a read-only Cursor editor Agent-tab row.
+
+        These rows have no Leap server: they show the tab's title, a
+        best-effort status read from Cursor's on-disk state, and an
+        "Open" button that raises the Cursor *window* (tab-level focus
+        is impossible - Cursor exposes nothing clickable to
+        Accessibility).  Every column is painted explicitly, clearing
+        any widget left by a previous occupant of this grid row, so no
+        stale cells bleed through.  Not cell-cached (few rows, cheap).
+        """
+        tag = session['tag']
+        t = current_theme()
+        # A synthesized "tab closed" row (the tab was closed via the Open-cell
+        # X but the PR is still tracked, so the row stays to monitor it).
+        tab_closed = bool(session.get('_tab_closed'))
+
+        # Clear any widgets a prior occupant of this row left behind.
+        # COL_PR is skipped: its PulsingLabel/IndicatorLabel are reused
+        # across rebuilds (preserving pulse + hover popup), and setting a
+        # fresh container below replaces the old one without deleting the
+        # reparented widgets.
+        for col in range(self.table.columnCount()):
+            # COL_PR + COL_SERVER_BRANCH + COL_PATH are built by
+            # cached/reused helpers below (PulsingLabel reuse;
+            # _build_branch_cell / _build_path_cell have their own cache);
+            # blanket-removing them would defeat the reuse and churn the
+            # button hover state every tick.
+            if col in (self.COL_PR, self.COL_SERVER_BRANCH, self.COL_PATH):
+                continue
+            self.table.removeCellWidget(row, col)
+
+        # ── Delete column: the "full close" X - stops PR tracking AND
+        # closes the Agent tab in Cursor (the chat stays in Cursor's
+        # history), so the row goes away entirely.  This mirrors a normal
+        # row's leftmost X (remove the whole row); the Open-cell X below
+        # closes only the tab and keeps a tracked row alive. ──
+        close_container = QWidget()
+        close_layout = QHBoxLayout(close_container)
+        close_layout.setContentsMargins(0, 0, 0, 0)
+        close_layout.setSpacing(0)
+        close_btn = QPushButton('×')
+        close_btn.setFixedSize(self._zoomed_btn_w(28),
+                               close_btn.sizeHint().height())
+        close_btn.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
+        close_btn.setProperty('_btn_role', 'close')
+        close_btn.setToolTip('Stop tracking and close this Agent tab in Cursor'
+                             if not tab_closed else 'Stop tracking (remove row)')
+        close_btn.clicked.connect(
+            lambda checked, fol=session.get('cursor_window_folder') or '',
+            cid=session.get('composer_id'), tg=tag, closed=tab_closed,
+            lbl=(self._aliases.get(tag)
+                 or session.get('display_label') or tag):
+                self._close_cursor_tab_and_untrack(fol, cid, lbl, tg, closed))
+        close_layout.addWidget(close_btn, 0, Qt.AlignCenter)
+        self._set_cell_widget(row, self.COL_DELETE, close_container)
+        self._apply_row_color_to_widget(close_container, row_color)
+
+        # ── Tag: Leap alias if set, else the composer-derived label.
+        # Right-click offers the same Set/Rename/Remove alias menu as
+        # real rows, so a Cursor tab can be named purely Leap-side
+        # (persists by composer id, works even for unnamed tabs).
+        alias = self._aliases.get(tag)
+        display = alias or session.get('display_label') or tag
+        tag_container = QWidget()
+        tlay = QHBoxLayout(tag_container)
+        tlay.setContentsMargins(0, 0, 0, 0)
+        tlay.setSpacing(2)
+        tag_label = ElidedLabel(display)
+        tag_label.setAlignment(Qt.AlignCenter)
+        # Italic ONLY when a Leap alias is set - same convention as normal
+        # rows (alias = italic).  The default chat name stays upright: the
+        # auto-generated Cursor name shouldn't read as a user alias, and the
+        # CLI column ("Cursor Editor") already signals this is an editor tab.
+        if alias:
+            font = tag_label.font()
+            font.setItalic(True)
+            tag_label.setFont(font)
+        tip = ('Cursor Agent tab (read-only)\nChat: '
+               + (session.get('composer_name') or 'New Agent'))
+        if alias:
+            tip = f'Alias: {alias}\n' + tip
+        tag_label.setToolTip(tip)
+        tag_label.setProperty('always_tooltip', True)
+        tlay.addWidget(tag_label, 1)
+        # Row-color picker - same as normal rows (color persists by
+        # composer id via _row_colors; the SeparatorDelegate fills the row).
+        palette_btn = HoverIconButton(_PALETTE_SVG, self._zoomed_btn_w(14))
+        palette_btn.setFixedSize(self._zoomed_btn_w(22),
+                                 palette_btn.sizeHint().height())
+        palette_btn.setStyleSheet(menu_btn_style(font_size=self._zoomed_size()))
+        palette_btn.setToolTip('Set row color')
+        palette_btn.clicked.connect(
+            lambda checked, t=tag, btn=palette_btn:
+                self._show_color_picker(t, btn))
+        tlay.addWidget(palette_btn, 0, Qt.AlignVCenter)
+        tag_container.setContextMenuPolicy(Qt.CustomContextMenu)
+        tag_container.customContextMenuRequested.connect(
+            lambda pos, _t=tag, w=tag_container:
+                self._show_tag_context_menu(_t, w.mapToGlobal(pos)))
+        self._set_cell_widget(row, self.COL_TAG, tag_container)
+        self._apply_row_color_to_widget(tag_container, row_color)
+
+        # ── CLI / App as outlined-pill badges (match normal rows) ──
+        self._set_badge_cell(row, self.COL_CLI, 'Cursor Editor', row_color)
+        self._set_badge_cell(row, self.COL_APP, 'Cursor', row_color)
+        self._set_cell_text(row, self.COL_PROJECT,
+                            session.get('project') or 'N/A', row_color)
+        # Last Msg: the most recent user prompt in this Agent tab (read
+        # from Cursor's message bubbles on disk; blank if none readable).
+        self._set_cell_text(row, self.COL_TASK,
+                            session.get('last_msg') or '', row_color)
+        # Path: same label + actions button as normal rows (Open in
+        # Terminal / Open in IDE - both operate on this row's folder).
+        self._build_path_cell(row, tag, session.get('project_path') or 'N/A',
+                              row_color)
+        # Server Branch: same label + git-changes button as normal rows
+        # (the git menu resolves this row's project_path; the button is
+        # disabled for a non-git folder, i.e. when branch is 'N/A').
+        self._build_branch_cell(row, tag, session.get('branch') or 'N/A',
+                                row_color)
+
+        # ── Server column → close-tab "×" + window-level "Open" jump,
+        # mirroring a normal running row's [× | Terminal] layout.  The ×
+        # closes ONLY the Cursor Agent tab (PR tracking stays, so a tracked
+        # row survives as a "tab closed" row).  Hidden once the tab is
+        # already closed - there's nothing left to close. ──
+        folder = session.get('cursor_window_folder') or ''
+        jump_container = QWidget()
+        jlay = QHBoxLayout(jump_container)
+        jlay.setContentsMargins(0, 0, 0, 0)
+        jlay.setSpacing(2)
+        if not tab_closed:
+            srv_close_btn = QPushButton('×')
+            srv_close_btn.setFixedSize(self._zoomed_btn_w(28),
+                                       srv_close_btn.sizeHint().height())
+            srv_close_btn.setStyleSheet(
+                close_btn_style(font_size=self._zoomed_size()))
+            srv_close_btn.setProperty('_btn_role', 'close')
+            srv_close_btn.setToolTip('Close only this Agent tab in Cursor '
+                                     '(keeps PR tracking)')
+            srv_close_btn.clicked.connect(
+                lambda checked, fol=folder,
+                cid=session.get('composer_id'),
+                lbl=(self._aliases.get(tag)
+                     or session.get('display_label') or tag):
+                    self._close_cursor_tab(fol, cid, lbl))
+            jlay.addWidget(srv_close_btn, 0, Qt.AlignVCenter)
+        jump_btn = QPushButton('Open')
+        jump_btn.setStyleSheet(active_btn_style())
+        jump_btn.setProperty('_btn_role', 'active')
+        proj = session.get('project') or 'this project'
+        jump_btn.setToolTip(
+            f'Reopen this Agent tab in Cursor ({proj})' if tab_closed
+            else f'Open the Cursor window for {proj} and focus this Agent tab')
+        jump_btn.clicked.connect(
+            lambda checked, fol=folder, cid=session.get('composer_id'):
+                self._jump_to_cursor_window(fol, cid))
+        jlay.addWidget(jump_btn)
+        self._set_cell_widget(row, self.COL_SERVER, jump_container)
+        self._apply_row_color_to_widget(jump_container, row_color)
+
+        # ── Status (custom kind → theme-color mapping) ──
+        kind = session.get('status_kind', 'idle')
+        status_text = session.get('status_text', '')
+        color_by_kind = {
+            'running': t.status_running,
+            'unread': t.status_input,
+            'idle': t.status_idle,
+        }
+        color = color_by_kind.get(kind, t.status_idle)
+        if row_color:
+            color = ensure_contrast(color, row_color)
+        st_container = QWidget()
+        slay = QHBoxLayout(st_container)
+        slay.setContentsMargins(0, 0, 2, 0)
+        slay.setSpacing(0)
+        st_label = ElidedLabel(status_text)
+        st_label.setAlignment(Qt.AlignCenter)
+        pal = st_label.palette()
+        pal.setColor(QPalette.WindowText, QColor(color))
+        st_label.setPalette(pal)
+        sf = st_label.font()
+        sf.setBold(True)
+        st_label.setFont(sf)
+        st_label.setToolTip(status_text)
+        slay.addWidget(st_label, 1)
+        s_item = self.table.item(row, self.COL_STATUS)
+        if not s_item:
+            s_item = QTableWidgetItem('')
+            self.table.setItem(row, self.COL_STATUS, s_item)
+        s_item.setText('')
+        self._set_cell_widget(row, self.COL_STATUS, st_container)
+        # NOTE: do NOT call _apply_row_color_to_widget here - it overrides
+        # every child QLabel's color to the generic text color, which would
+        # clobber the status-specific color (running/idle/unread) we just
+        # set above (already contrast-adjusted for row_color).  This matches
+        # the normal status cell, which bakes the color and skips it too.
+
+        # ── Queue: always N/A (a Cursor tab has no Leap queue behind it).
+        # Rendered exactly like the PR Branch column's N/A - dimmed +
+        # centered (both via _set_cell_text's N/A handling) + monospace.
+        # COL_QUEUE isn't a _MONO_COLS column (normal rows overlay a widget
+        # there, so their item font never shows), so apply the same Menlo
+        # font _set_cell_text uses for the mono columns here. ──
+        self._set_cell_text(row, self.COL_QUEUE, 'N/A', row_color)
+        q_item = self.table.item(row, self.COL_QUEUE)
+        if q_item is not None:
+            mono = QFont('Menlo')
+            mono.setStyleHint(QFont.Monospace)
+            mono.setPointSize(max(10, self._zoomed_size(-1)))
+            q_item.setFont(mono)
+        # ── Client / Slack: blank (no Leap server behind a tab) ──
+        for col in (self.COL_CLIENT, self.COL_SLACK):
+            self._set_cell_text(row, col, '', row_color)
+
+        # ── PR cell: opt-in tracking, exactly like normal rows ──
+        # Untracked -> "Track PR" button; tracked -> live status (reusing
+        # the per-tag PulsingLabel so pulse/popup survive the 1s rebuilds)
+        # plus an X to stop.  Cursor rows are tracked in-memory only
+        # (their tag goes in _tracked_tags; they are NEVER pinned).
+        pr_status = None
+        if tag in self._tracked_tags:
+            # Shared tracked-PR cell (same widget reuse / pulse / fire as
+            # normal rows).  Cursor differences: stop = _untrack_cursor_pr
+            # (no unpin), no Leap server, no send-to-Leap callbacks, and
+            # "Checking…" until the first poll returns.
+            pr_status = self._render_tracked_pr_cell(
+                row, tag, row_color,
+                on_stop=self._untrack_cursor_pr,
+                server_running=False,
+                wire_send_callbacks=False,
+                checking_when_no_status=True,
+            )
+        else:
+            # Untracked -> "Track PR" button (opt-in, like normal rows).
+            self._pr_widgets.pop(tag, None)
+            self._pr_approval_widgets.pop(tag, None)
+            track_container = QWidget()
+            track_layout = QHBoxLayout(track_container)
+            track_layout.setContentsMargins(0, 0, 0, 0)
+            track_layout.setSpacing(2)
+            track_btn = QPushButton('Track PR')
+            track_btn.setStyleSheet(inactive_btn_style())
+            track_btn.setToolTip("Track this Agent tab's branch PR")
+            track_btn.clicked.connect(
+                lambda checked, t=tag: self._track_cursor_pr(t))
+            track_layout.addWidget(track_btn)
+            self._set_cell_widget(row, self.COL_PR, track_container)
+            self._apply_row_color_to_widget(track_container, row_color)
+
+        # ── PR Branch: the PR's source branch when an open PR exists,
+        # else N/A (dimmed) - matches normal rows. ──
+        has_pr = pr_status is not None and pr_status.state in (
+            PRState.UNRESPONDED, PRState.ALL_RESPONDED)
+        self._set_cell_text(
+            row, self.COL_PR_BRANCH,
+            (session.get('branch') or 'N/A') if has_pr else 'N/A', row_color)
+
+    def _jump_to_cursor_window(self, folder: str,
+                               composer_id: Optional[str] = None) -> None:
+        """Raise the Cursor window for *folder* and focus the Agent tab.
+
+        Window raise is via the System Events bridge; tab-level focus is
+        handed off to the Leap Cursor extension (best-effort).  Runs in a
+        background thread so the osascript call doesn't block the UI.
+        """
+        if not folder:
+            self._show_status('No project folder recorded for this Cursor tab')
+            return
+        self._show_status(
+            f'Opening Cursor window for {Path(folder).name}...')
+        worker = BackgroundCallWorker(
+            lambda: focus_cursor_window(folder, composer_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _close_cursor_tab(self, folder: str, composer_id: Optional[str],
+                          label: str) -> None:
+        """Close a Cursor Agent tab (with confirmation, background).
+
+        Acts on the Cursor app - distinct from the normal row X (which
+        just removes the monitor row) - so it confirms first.
+        """
+        if not composer_id:
+            self._show_status('No composer id recorded for this Cursor tab')
+            return
+        reply = QMessageBox.question(
+            self, 'Close Cursor Agent Tab',
+            f"Close the Cursor Agent tab '{label}'?\n\n"
+            "This closes the tab in Cursor. The chat stays in Cursor's "
+            "history, so you can reopen it there.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._show_status(f"Closing Cursor tab '{label}'...")
+        worker = BackgroundCallWorker(
+            lambda: close_cursor_composer(folder, composer_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _close_cursor_tab_and_untrack(self, folder: str,
+                                      composer_id: Optional[str], label: str,
+                                      tag: str, tab_closed: bool) -> None:
+        """Leftmost-X action: stop PR tracking AND close the Agent tab, so
+        the row goes away entirely (mirror of a normal row's delete-X).
+
+        For an already-closed tab (a synthesized "tab closed" row that only
+        persists because it's tracked) there's no tab to close - it just
+        stops tracking, dropping the row.
+        """
+        if tab_closed:
+            self._untrack_cursor_pr(tag)  # nothing to close; just drop it
+            return
+        if not composer_id:
+            self._show_status('No composer id recorded for this Cursor tab')
+            return
+        tracked = tag in self._tracked_tags
+        extra = ' and stop tracking its PR' if tracked else ''
+        reply = QMessageBox.question(
+            self, 'Close Cursor Agent Tab',
+            f"Close the Cursor Agent tab '{label}'{extra}?\n\n"
+            "This closes the tab in Cursor (the chat stays in history) and "
+            "removes the row from Leap.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        # Stop tracking first (also drops the cache so no "tab closed" row is
+        # synthesized once the tab leaves the next scan), then close the tab.
+        self._untrack_cursor_pr(tag)
+        self._show_status(f"Closing Cursor tab '{label}'...")
+        worker = BackgroundCallWorker(
+            lambda: close_cursor_composer(folder, composer_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _track_cursor_pr(self, tag: str) -> None:
+        """Start tracking a Cursor row's branch PR (opt-in, in-memory).
+
+        Unlike `_start_tracking` (for real sessions), this never writes to
+        pinned_sessions.json - the tag just joins `_tracked_tags`, the SCM
+        poll picks it up (see `_start_scm_poll`), and the next poll fills
+        in the live status.
+        """
+        if not self._scm_providers:
+            QMessageBox.information(
+                self, 'No SCM Connected',
+                'Connect to GitLab or GitHub first using the buttons at '
+                'the bottom.')
+            return
+        self._tracked_tags.add(tag)
+        self._show_status('Tracking PR for this Cursor tab...')
+        self._sync_scm_poll_timer()
+        self._start_scm_poll()  # kick an immediate poll
+        self._update_table()
+
+    def _untrack_cursor_pr(self, tag: str) -> None:
+        """Stop tracking a Cursor row's PR (mirror of `_track_cursor_pr`)."""
+        self._tracked_tags.discard(tag)
+        self._pr_statuses.pop(tag, None)
+        self._pr_widgets.pop(tag, None)
+        self._pr_approval_widgets.pop(tag, None)
+        self._pr_changed_at.pop(tag, None)
+        self._dismissed_pr_new_status.discard(tag)
+        # Drop the cached row so a closed-tab tag isn't re-synthesized once
+        # it's no longer tracked (for a live tab it's harmlessly re-cached on
+        # the next scan).
+        self._cursor_row_cache.pop(tag, None)
+        # A synthesized "tab closed" row exists ONLY because it was tracked,
+        # so drop it from the overlay right now - otherwise the immediate
+        # _update_table() below would re-render it (untracked) as a stray
+        # "Tab closed" row with a "Track PR" button until the next scan
+        # reconciles it away.  A live row (no `_tab_closed`) is left in place
+        # so it stays visible with a "Track PR" button while its tab is open.
+        self._cursor_gui_rows = [
+            r for r in (getattr(self, '_cursor_gui_rows', []) or [])
+            if not (r.get('tag') == tag and r.get('_tab_closed'))
+        ]
+        self._sync_scm_poll_timer()
+        self._update_table()
+
     def _apply_search_filter(
         self, sessions: list[dict],
     ) -> list[dict]:
@@ -544,9 +1079,9 @@ class TableBuilderMixin(_Base):
 
         Match targets per row:
 
-        * Tag — the raw tag and any user-set alias (so a filter on
-          an alias's first character behaves the same as a filter
-          on the underlying tag's).
+        * Tag — the raw tag, any user-set alias, and (for Cursor GUI
+          rows) the ``display_label`` shown in the Tag column, so a
+          filter on the chat name the user actually sees matches.
         * Project — ``s['project']`` (already the git project name,
           basename-equivalent — same data the Project column shows).
         * App — ``s['ide']`` (the terminal/IDE the session was last
@@ -569,6 +1104,10 @@ class TableBuilderMixin(_Base):
         for i, s in enumerate(sessions):
             tag = s.get('tag', '') or ''
             alias = aliases.get(tag, '') or ''
+            # Cursor GUI rows show their chat name (display_label), not the
+            # raw cursor-gui:<id> tag, in the Tag column — match it so the
+            # filter finds what the user actually sees.
+            label = s.get('display_label', '') or ''
             project = s.get('project', '') or ''
             ide = s.get('ide', '') or ''
             cli = s.get('cli_provider', '') or ''
@@ -577,7 +1116,8 @@ class TableBuilderMixin(_Base):
             except Exception:
                 cli_display = ''
             project_path = s.get('project_path', '') or ''
-            if q in tag.lower() or (alias and q in alias.lower()):
+            if (q in tag.lower() or (alias and q in alias.lower())
+                    or (label and q in label.lower())):
                 tag_hits.append((i, s))
             elif q in project.lower():
                 project_hits.append((i, s))
@@ -612,7 +1152,13 @@ class TableBuilderMixin(_Base):
         the full session list.
         """
         _full_sessions = self.sessions
-        self.sessions = self._apply_search_filter(_full_sessions)
+        # Overlay read-only Cursor editor Agent-tab rows after the real
+        # sessions.  They render last (highest row indices), so drag-drop
+        # - which maps visible rows to ``self.sessions`` and is restored
+        # to the leap-only list in the ``finally`` - never targets them
+        # (their index is >= len(self.sessions), and the drag guards bail).
+        cursor_rows = getattr(self, '_cursor_gui_rows', []) or []
+        self.sessions = self._apply_search_filter(_full_sessions + cursor_rows)
         try:
             self._update_table_body()
         finally:
@@ -772,6 +1318,17 @@ class TableBuilderMixin(_Base):
             for row, session in enumerate(self.sessions):
                 tag = session['tag']
                 row_color = self._row_colors.get(tag)
+                # Read-only Cursor editor Agent-tab rows are rendered by a
+                # dedicated, self-contained helper (paints all columns,
+                # no server semantics) and skip the normal cell pipeline.
+                if session.get('row_type') == CURSOR_GUI_ROW_TYPE:
+                    # This row's PR PulsingLabel/IndicatorLabel are reused
+                    # across rebuilds (like normal rows) - keep them out of
+                    # the stale-cleanup below, which would otherwise pop
+                    # them and stop the pulse every 1s.
+                    stale_pr_tags.discard(tag)
+                    self._build_cursor_gui_row(row, session, row_color)
+                    continue
                 server_pid = session.get('server_pid')
                 is_dead = server_pid is None
                 client_pid = session.get('client_pid')
@@ -1456,128 +2013,11 @@ class TableBuilderMixin(_Base):
 
                 elif tag in self._tracked_tags:
                     stale_pr_tags.discard(tag)
-
-                    # Get or create PR widgets
-                    pr_widget = self._pr_widgets.get(tag)
-                    if pr_widget and not sip.isdeleted(pr_widget):
-                        reused_pr = True
-                    else:
-                        pr_widget = PulsingLabel()
-                        self._pr_widgets[tag] = pr_widget
-                        reused_pr = False
-
-                    approval_label = self._pr_approval_widgets.get(tag)
-                    if approval_label and not sip.isdeleted(approval_label):
-                        reused_approval = True
-                    else:
-                        approval_label = IndicatorLabel()
-                        self._pr_approval_widgets[tag] = approval_label
-                        reused_approval = False
-
-                    # Reuse PR container if widgets survived and cell is
-                    # still at the right row.
-                    pr_state = ('tracked', self._should_show_pr_fire(tag))
-                    pr_cached = (
-                        reused_pr and reused_approval
-                        and self._cell_cached(tag, 'pr', pr_state,
-                                              row, self.COL_PR)
-                    )
-                    if not pr_cached:
-                        if self.table.columnSpan(row, self.COL_PR) > 1:
-                            self.table.setSpan(row, self.COL_PR, 1, 1)
-
-                        if reused_pr:
-                            pr_widget.set_preserve_popup(True)
-                        if reused_approval:
-                            approval_label.set_preserve_popup(True)
-
-                        pr_container = QWidget()
-                        pr_layout = QHBoxLayout(pr_container)
-                        pr_layout.setContentsMargins(0, 0, 0, 0)
-                        pr_layout.setSpacing(2)
-
-                        pr_x = QPushButton('\u00d7')
-                        pr_x.setFixedSize(self._zoomed_btn_w(28),pr_x.sizeHint().height())
-                        pr_x.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
-                        pr_x.setProperty('_btn_role', 'close')
-                        pr_x.setToolTip(f'Stop tracking PR for {tag}')
-                        pr_x.clicked.connect(
-                            lambda checked, t=tag: self._stop_tracking(t)
-                        )
-                        pr_layout.addWidget(pr_x, 0, Qt.AlignVCenter)
-
-                        pr_layout.addStretch()
-                        pr_layout.addWidget(approval_label)
-                        pr_layout.addWidget(pr_widget)
-                        pr_layout.addStretch()
-
-                        # Right-aligned change indicator dot
-                        show_pr_fire = self._should_show_pr_fire(tag)
-                        pr_fire_label = QLabel(
-                            '\U0001f525' if show_pr_fire else '')
-                        pr_fire_label.setObjectName('_prFireLabel')
-                        pr_fire_px = max(10, self._zoomed_size(-3))
-                        pr_fire_label.setFixedWidth(int(pr_fire_px * 1.4))
-                        pr_fire_label.setAlignment(
-                            Qt.AlignCenter | Qt.AlignVCenter)
-                        if show_pr_fire:
-                            t_pf = current_theme()
-                            pf_color = t_pf.accent_orange
-                            if row_color:
-                                pf_color = ensure_contrast(
-                                    t_pf.accent_orange, row_color)
-                            pr_fire_label.setStyleSheet(
-                                f'color: {pf_color}; font-size: {pr_fire_px}px;')
-                            pr_fire_label.setToolTip(
-                                self._pr_fire_tooltip(tag))
-
-                        def _make_pr_dismiss(t: str = tag) -> Callable:
-                            def _dismiss(event: object) -> None:
-                                if t not in self._dismissed_pr_new_status:
-                                    self._dismissed_pr_new_status.add(t)
-                                    self._update_table()
-                            return _dismiss
-                        pr_fire_label.mousePressEvent = _make_pr_dismiss()
-                        pr_layout.addWidget(pr_fire_label)
-
-                        self._set_cell_widget(row, self.COL_PR,
-                                              pr_container)
-                        self._apply_row_color_to_widget(
-                            pr_container, row_color)
-                        self._cache_cell(tag, 'pr', pr_state,
-                                         row, self.COL_PR)
-
-                        if reused_pr:
-                            pr_widget.set_preserve_popup(False)
-                        if reused_approval:
-                            approval_label.set_preserve_popup(False)
-
-                    # Always update PR widget properties (change each poll)
-                    pr_status = self._pr_statuses.get(tag)
-                    self._apply_pr_status(pr_widget, approval_label,
-                                          pr_status)
-                    pr_widget.set_has_unresponded(
-                        pr_status is not None
-                        and pr_status.state == PRState.UNRESPONDED
-                    )
-                    pr_widget.set_server_running(not is_dead)
-                    if not reused_pr:
-                        pr_widget.set_send_to_leap_callback(
-                            lambda t=tag: self._send_all_threads_to_leap(t)
-                        )
-                        pr_widget.set_send_combined_to_leap_callback(
-                            lambda t=tag:
-                                self._send_all_threads_combined_to_leap(t)
-                        )
-                        pr_widget.set_send_leap_threads_callback(
-                            lambda t=tag: self._send_leap_threads_to_leap(t)
-                        )
-                        pr_widget.set_send_leap_threads_combined_callback(
-                            lambda t=tag:
-                                self._send_leap_threads_combined_to_leap(t)
-                        )
-                    pr_widget.set_auto_fetch_leap(
-                        self._prefs.get('auto_fetch_leap', False)
+                    self._render_tracked_pr_cell(
+                        row, tag, row_color,
+                        on_stop=self._stop_tracking,
+                        server_running=not is_dead,
+                        wire_send_callbacks=True,
                     )
                     self.table.removeCellWidget(row, self.COL_PR_BRANCH)
                     self._set_cell_text(row, self.COL_PR_BRANCH, pr_branch,
@@ -1724,7 +2164,10 @@ class TableBuilderMixin(_Base):
         if self._refresh_worker is not None:
             self._refresh_worker.wait(500)  # ms – should be near-instant
 
-        self._refresh_worker = SessionRefreshWorker(self)
+        self._refresh_worker = SessionRefreshWorker(
+            self,
+            scan_cursor_gui=bool(self._prefs.get('show_cursor_gui_agents', True)),
+        )
         self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
         self._refresh_worker.finished.connect(self._on_refresh_worker_finished)
         self._refresh_worker.start()
@@ -1743,8 +2186,80 @@ class TableBuilderMixin(_Base):
         if self._refresh_worker is worker:
             self._refresh_worker = None
 
-    def _on_sessions_refreshed(self, sessions: list) -> None:
-        """Handle background session refresh result."""
+    def _reconcile_cursor_gui_rows(self, cursor_gui_rows: list) -> None:
+        """Set ``self._cursor_gui_rows`` from a fresh scan, synthesizing a
+        "tab closed" row for each tracked Cursor tag whose tab is no longer
+        open, and pruning per-tag state / caches for tags we no longer show.
+
+        This is what makes the two close buttons differ: the Open-cell X
+        closes only the tab (tracking stays → the tag is synthesized here →
+        the row survives as "tab closed", like a dead-but-tracked regular
+        row), while the leftmost X also stops tracking (no synthesis → the
+        row drops).  Pure state transform, factored out for unit testing.
+        """
+        live_cursor_tags = {r['tag'] for r in cursor_gui_rows}
+        # Cache each live Cursor row (a shallow copy, so a later in-place
+        # mutation of the live row dict can't corrupt the cached snapshot)
+        # so a PR-tracked tab that's later closed can still be rendered as a
+        # "tab closed" row.
+        for r in cursor_gui_rows:
+            self._cursor_row_cache[r['tag']] = dict(r)
+        # Synthesize a "tab closed" row for each tracked Cursor tag whose tab
+        # is no longer open.
+        synthesized: list[dict] = []
+        for t in self._tracked_tags:
+            if (t.startswith(CURSOR_GUI_TAG_PREFIX) and t not in live_cursor_tags
+                    and t in self._cursor_row_cache):
+                closed = dict(self._cursor_row_cache[t])
+                closed['_tab_closed'] = True
+                closed['status_kind'] = 'idle'
+                closed['status_text'] = '○  Tab closed'
+                synthesized.append(closed)
+        self._cursor_gui_rows = list(cursor_gui_rows) + synthesized
+        # Tags we keep showing (live tabs + synthesized closed-but-tracked)
+        # must survive the prune below; everything else cursor-ish that's
+        # neither shown nor tracked is stale and gets cleaned up.
+        kept_cursor_tags = live_cursor_tags | {r['tag'] for r in synthesized}
+        stale_cursor_tags = {
+            t for t in (set(self._pr_statuses) | set(self._tracked_tags)
+                        | set(self._pr_widgets))
+            if t.startswith(CURSOR_GUI_TAG_PREFIX) and t not in kept_cursor_tags
+        }
+        for t in stale_cursor_tags:
+            self._tracked_tags.discard(t)
+            self._pr_statuses.pop(t, None)
+            self._pr_widgets.pop(t, None)
+            self._pr_approval_widgets.pop(t, None)
+            self._pr_changed_at.pop(t, None)
+            self._dismissed_pr_new_status.discard(t)
+            # Drop cached cell widgets for gone Cursor tabs so the
+            # cache can't grow unbounded.
+            for key in [k for k in self._cell_cache if k[0] == t]:
+                self._cell_cache.pop(key, None)
+        # Prune the row cache to tags we still care about (live or kept).
+        for t in [t for t in self._cursor_row_cache
+                  if t not in kept_cursor_tags]:
+            self._cursor_row_cache.pop(t, None)
+
+    def _on_sessions_refreshed(self, sessions: list,
+                               cursor_gui_rows: list) -> None:
+        """Handle background session refresh result.
+
+        ``cursor_gui_rows`` are read-only Cursor editor Agent-tab rows.
+        They are stashed separately (not merged into ``self.sessions``)
+        so the pinned-session / PR / sleep-guard machinery never sees
+        them; ``_update_table`` overlays them at render time only.
+        """
+        # Respect the CURRENT toggle, not the value captured when this scan's
+        # worker was launched: if the feature was turned off mid-scan, an
+        # in-flight worker (built with scan_cursor_gui=True) would otherwise
+        # briefly resurrect the rows here for one refresh tick.
+        if not self._prefs.get('show_cursor_gui_agents', True):
+            cursor_gui_rows = []
+        self._reconcile_cursor_gui_rows(cursor_gui_rows)
+        # A tracked Cursor row keeps the SCM poll timer running - keep it
+        # in sync (also stops it when the last tracked thing goes away).
+        self._sync_scm_poll_timer()
         self.sessions = self._merge_sessions(sessions)
         # Dynamically show/hide Slack column if install state changed
         slack_now = self._is_slack_installed()
@@ -1776,6 +2291,7 @@ class TableBuilderMixin(_Base):
             active_paths_fn=self._get_active_project_paths,
             log_fn=self._show_status,
             show_tooltips=self._prefs.get('show_tooltips', True),
+            show_cursor_gui_agents=self._prefs.get('show_cursor_gui_agents', True),
             notification_prefs=get_notification_prefs(self._prefs),
             current_auto_send_mode=server_settings.get('auto_send_mode', AutoSendMode.PAUSE),
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
@@ -1791,6 +2307,22 @@ class TableBuilderMixin(_Base):
             self._prefs['default_terminal'] = dialog.selected_terminal()
             self._prefs['repos_dir'] = dialog.selected_repos_dir()
             self._prefs['show_tooltips'] = dialog.show_tooltips()
+            cursor_gui_now = dialog.show_cursor_gui_agents()
+            if not cursor_gui_now:
+                # Turning the feature off: drop any overlay rows now so they
+                # vanish immediately rather than lingering until the next
+                # refresh tick (which would no longer repopulate them).  Also
+                # tear down any in-memory Cursor PR tracking right away (those
+                # tags are never pinned, so nothing else would clean them up)
+                # and re-sync the SCM poll timer so it stops if nothing else
+                # is tracked.
+                for t in [t for t in self._tracked_tags
+                          if t.startswith(CURSOR_GUI_TAG_PREFIX)]:
+                    self._untrack_cursor_pr(t)
+                self._cursor_gui_rows = []
+                self._cursor_row_cache.clear()
+                self._sync_scm_poll_timer()
+            self._prefs['show_cursor_gui_agents'] = cursor_gui_now
             self._prefs['notifications'] = dialog.notification_prefs()
             self._prefs['default_diff_tool'] = dialog.selected_diff_tool()
             self._prefs['new_status_seconds'] = dialog.new_status_seconds()

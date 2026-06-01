@@ -18,6 +18,7 @@ from leap.monitor.pr_tracking.git_utils import (
 )
 from leap.monitor.leap_sender import send_to_leap_session
 from leap.monitor.session_manager import get_active_sessions
+from leap.monitor.cursor_gui_scan import scan_open_cursor_agents
 
 # Maximum time to wait for all poll futures to complete
 _POLL_TIMEOUT_SECONDS = 30
@@ -211,7 +212,11 @@ class SCMPollerWorker(QThread):
             status = PRStatus(state=PRState.NO_PR)
 
         leap_commands: list[tuple[Any, SCMProvider]] = []
-        if self._auto_fetch_leap:
+        # ``_pr_only`` rows (Cursor editor Agent tabs) get PR *status* but
+        # never participate in /leap handling - they have no Leap session
+        # to receive a message, and scanning here would also duplicate the
+        # scan a real session for the same project already does.
+        if self._auto_fetch_leap and not session.get('_pr_only'):
             try:
                 raw_commands = provider.scan_leap_commands(
                     scm_project_path, scm_branch, pr_iid=pr_iid
@@ -236,6 +241,10 @@ class SCMPollerWorker(QThread):
                 # Match sessions by SCM project path
                 matching_tags: list[str] = []
                 for session in self._sessions:
+                    # Never deliver /leap to a PR-only row (Cursor GUI tab) -
+                    # it isn't a Leap session.
+                    if session.get('_pr_only'):
+                        continue
                     # Check pinned remote_project_path first
                     rpp = session.get('remote_project_path')
                     if rpp and rpp == cmd.project_path:
@@ -490,17 +499,42 @@ class SendThreadsCombinedWorker(_BaseSendWorker):
 
 
 class SessionRefreshWorker(QThread):
-    """Background worker for refreshing active sessions (avoids blocking on socket I/O)."""
+    """Background worker for refreshing active sessions (avoids blocking on socket I/O).
 
-    sessions_ready = pyqtSignal(list)  # list of session dicts
+    Emits two lists: the real Leap sessions, and (when ``scan_cursor_gui``
+    is enabled) read-only rows for Cursor editor Agent tabs scanned from
+    disk.  The two are kept separate so Cursor-GUI rows never enter the
+    monitor's ``self.sessions`` / pinned-session machinery - they are a
+    pure display overlay added at render time.
+    """
+
+    sessions_ready = pyqtSignal(list, list)  # (leap_sessions, cursor_gui_rows)
+
+    def __init__(self, parent: Optional[QWidget] = None,
+                 scan_cursor_gui: bool = False) -> None:
+        super().__init__(parent)
+        self._scan_cursor_gui = scan_cursor_gui
 
     def run(self) -> None:
         try:
             sessions = get_active_sessions()
-            self.sessions_ready.emit(sessions)
         except Exception:
+            # A transient leap-session fetch failure must NOT take the
+            # Cursor scan down with it: emitting ([], []) here would make
+            # _on_sessions_refreshed see zero live Cursor tags and prune
+            # every cursor-gui PR the user opted into (cursor tracking is
+            # in-memory only, so there's no auto-reconnect).  Fall through
+            # with an empty leap list but still scan Cursor below.
             logger.debug("Error refreshing sessions", exc_info=True)
-            self.sessions_ready.emit([])
+            sessions = []
+        cursor_rows: list = []
+        if self._scan_cursor_gui:
+            try:
+                cursor_rows = scan_open_cursor_agents()
+            except Exception:
+                logger.debug("Error scanning Cursor agent tabs", exc_info=True)
+                cursor_rows = []
+        self.sessions_ready.emit(sessions, cursor_rows)
 
 
 class TestConnectionWorker(QThread):

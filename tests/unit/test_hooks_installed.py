@@ -29,6 +29,7 @@ from typing import Final, Iterator
 
 import pytest
 
+from leap.cli_providers import cursor_agent as cursor_mod
 from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
 from leap.cli_providers.cursor_agent import CursorAgentProvider
@@ -464,3 +465,58 @@ def test_other_providers_do_not_install_permission_request(
         f"{provider.name} configure_hooks must not write a "
         f"PermissionRequest entry (Claude-only)"
     )
+
+
+# --------------------------------------------------------------------------
+# Cursor Agent: configure_hooks must survive a malformed hooks.json instead
+# of crashing the whole `leap --reconfigure` / `make install` run.
+# --------------------------------------------------------------------------
+
+
+def test_cursor_configure_hooks_survives_non_dict_root(
+    isolated_home: Path,
+) -> None:
+    """A hooks.json whose root is a JSON list (hand-edited / future schema)
+    must not raise — it should be rewritten into a valid dict shape with
+    our hook installed."""
+    provider = CursorAgentProvider()
+    dest = _install_hook_script(provider, isolated_home)
+    cursor_mod.CURSOR_HOOKS_FILE.write_text("[]")  # non-dict root
+    provider.configure_hooks(str(dest))  # must not raise
+    assert provider.hooks_installed() is True
+    data = json.loads(cursor_mod.CURSOR_HOOKS_FILE.read_text())
+    assert isinstance(data, dict)
+    assert isinstance(data.get("hooks"), dict)
+
+
+def test_cursor_configure_hooks_survives_garbage_stop_entries(
+    isolated_home: Path,
+) -> None:
+    """Non-dict junk in hooks.stop (and a non-list stop) must be tolerated:
+    foreign dict entries preserved, junk dropped, our hook appended."""
+    provider = CursorAgentProvider()
+    dest = _install_hook_script(provider, isolated_home)
+    cursor_mod.CURSOR_HOOKS_FILE.write_text(json.dumps({
+        "version": 1,
+        "hooks": {"stop": ["junk", 123, {"command": "/usr/bin/foo bar"}]},
+    }))
+    provider.configure_hooks(str(dest))  # must not raise
+    assert provider.hooks_installed() is True
+    data = json.loads(cursor_mod.CURSOR_HOOKS_FILE.read_text())
+    cmds = [e.get("command", "") for e in data["hooks"]["stop"]
+            if isinstance(e, dict)]
+    assert any("/usr/bin/foo bar" in c for c in cmds)   # foreign kept
+    assert any("leap-hook.sh" in c for c in cmds)        # ours appended
+
+
+def test_cursor_configure_hooks_survives_non_dict_hooks_value(
+    isolated_home: Path,
+) -> None:
+    """``hooks`` present but not a dict must be coerced, not indexed-into."""
+    provider = CursorAgentProvider()
+    dest = _install_hook_script(provider, isolated_home)
+    cursor_mod.CURSOR_HOOKS_FILE.write_text(json.dumps(
+        {"version": 1, "hooks": "oops"}
+    ))
+    provider.configure_hooks(str(dest))  # must not raise
+    assert provider.hooks_installed() is True

@@ -193,11 +193,21 @@ def _record(cli: str, tag: str, hook_data: dict) -> None:
             project_path = data.get('project_path') or ''
     except (OSError, json.JSONDecodeError):
         pass
+    transcript_path = hook_data.get('transcript_path', '') or ''
+    # Cursor Agent resumes by chat UUID (``--resume <id>``) and stores chats
+    # in a cwd-derived directory, not a transcript file - the rest of the
+    # resume machinery assumes its records carry no transcript_path (see
+    # relocate_records / leap-resume.py).  If Cursor's hook ever sends one,
+    # the picker's path-based stale filter (os.path.getsize) would drop a
+    # perfectly resumable chat before session_exists could confirm it.
+    # Enforce the convention at write time so read-time stays consistent.
+    if cli == 'cursor-agent':
+        transcript_path = ''
     _debug_log('record-ok', cli=cli, tag=tag, session_id=session_id)
     record_session(
         storage_dir, cli, tag,
         session_id=session_id,
-        transcript_path=hook_data.get('transcript_path', '') or '',
+        transcript_path=transcript_path,
         cwd=hook_data.get('cwd', '') or os.getcwd(),
         terminal_app=terminal_app,
         project_path=project_path,

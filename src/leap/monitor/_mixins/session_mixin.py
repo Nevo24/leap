@@ -52,6 +52,25 @@ class SessionMixin(_Base):
         """
         active_by_tag = {s['tag']: s for s in active_sessions}
 
+        # Move-to-IDE completed: drop the Move guard once the NEW server has
+        # registered.  We compare the live server_pid against the pid we were
+        # moving away from (``_moving_old_pid``) rather than just "is it
+        # alive", because during the close the OLD server is briefly alive too
+        # and clearing then would drop the dead-row bridge before the relaunch
+        # lands.  Without this clear the guard stayed armed for its full 12-min
+        # safety window, so closing the moved CLI inside that window flipped
+        # the row back to a stuck "Starting..." dead row.  (No recorded old
+        # pid → clear on any live server; there was no old server to confuse
+        # it with.)
+        for t in list(self._moving_tags):
+            live = active_by_tag.get(t)
+            pid = live.get('server_pid') if live else None
+            if pid:
+                old = self._moving_old_pid.get(t)
+                if old is None or pid != old:
+                    self._moving_tags.discard(t)
+                    self._moving_old_pid.pop(t, None)
+
         # Auto-pin all active sessions (skip explicitly deleted ones).
         # Merge with existing pin data to preserve PR-pinned fields
         # (remote_project_path, host_url, scm_type, etc.).
@@ -577,6 +596,7 @@ class SessionMixin(_Base):
         # leak when a row is deleted mid-server-start or mid-Move-to-IDE.
         self._starting_tags.discard(tag)
         self._moving_tags.discard(tag)
+        self._moving_old_pid.pop(tag, None)
 
         # Clean up per-tag display state
         self._cleanup_row_state(tag)

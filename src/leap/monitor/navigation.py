@@ -140,8 +140,12 @@ def detect_supported_ide_for_move(app_path: str) -> Optional[str]:
           exact-lookup against ``_IDE_CMD_MAP`` succeeds.
         * ``'VS Code'`` for any ``Visual Studio Code(*).app``
           (stable or Insiders).
-        * ``None`` for everything else (Cursor, Sublime, Xcode,
-          Arduino, RubyMine/CLion/DataGrip/Rider/Fleet — not in
+        * ``'Cursor'`` for ``Cursor(*).app`` — a VS Code fork driven
+          by the same integrated-terminal + Leap-extension plumbing
+          (``open_terminal_with_command`` routes 'Cursor' through
+          ``_open_vscode_terminal`` with the ``cursor`` CLI).
+        * ``None`` for everything else (Sublime, Xcode, Arduino,
+          RubyMine/CLion/DataGrip/Rider/Fleet — not in
           ``_IDE_CMD_MAP`` so we'd fall back to Terminal.app
           silently, which would surprise the user).
 
@@ -159,11 +163,15 @@ def detect_supported_ide_for_move(app_path: str) -> Optional[str]:
         if canonical in bundle:
             return canonical
     # VS Code stable bundle = ``Visual Studio Code.app``; Insiders =
-    # ``Visual Studio Code - Insiders.app``.  Cursor is a VS Code
-    # fork but we deliberately exclude it from the move flow per
-    # product decision (treat as 'just open').
+    # ``Visual Studio Code - Insiders.app``.
     if bundle.startswith('Visual Studio Code'):
         return 'VS Code'
+    # Cursor (bundle ``Cursor.app``) is a VS Code fork: same integrated
+    # terminal, same Leap extension, and open_terminal_with_command
+    # already routes 'Cursor' through _open_vscode_terminal (cursor CLI),
+    # so the move flow drives it identically to VS Code.
+    if bundle.startswith('Cursor'):
+        return 'Cursor'
     return None
 
 
@@ -714,15 +722,11 @@ def _navigate_vscode(
         time.sleep(0.3)
 
         # Use file-based trigger for Leap extension
-        # Extension watches ~/.leap-terminal-request and selects the terminal
-        request_file = os.path.expanduser('~/.leap-terminal-request')
-        try:
-            with open(request_file, 'w') as f:
-                f.write(terminal_name)
-            # Give the extension a moment to process
-            time.sleep(0.1)
-        except OSError:
-            pass
+        # Extension watches ~/.leap-terminal-request and selects the terminal.
+        # Atomic write so the extension never reads a half-written request.
+        _write_terminal_request(terminal_name)
+        # Give the extension a moment to process
+        time.sleep(0.1)
 
         return True
 
@@ -730,6 +734,130 @@ def _navigate_vscode(
         pass
 
     return False
+
+
+def _write_terminal_request(content: str) -> bool:
+    """Atomically write *content* to ``~/.leap-terminal-request``.
+
+    The Leap editor extension watches this file (fs.watch + a 500 ms poll)
+    and reads it with a plain ``readFileSync``.  A non-atomic
+    truncate-then-write can be read mid-flight: a partial payload misses
+    the known ``focusComposer:`` / ``closeComposer:`` prefix, falls through
+    to the extension's catch-all "select terminal by name", and is then
+    ``unlink``-ed - silently dropping the request.  Writing to a temp file
+    in the same directory and ``os.replace``-ing it onto the target makes
+    the swap atomic, so a reader always sees either the previous file or
+    the complete new one.  ``os.replace`` also overwrites any stale,
+    never-consumed request in one step.  Returns False on failure.
+    """
+    request_file = os.path.expanduser('~/.leap-terminal-request')
+    target_dir = os.path.dirname(request_file)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=target_dir, prefix='.leap-req-')
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+        os.replace(tmp, request_file)
+        return True
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def focus_cursor_window(folder: str,
+                        composer_id: Optional[str] = None) -> bool:
+    """Bring the Cursor window for *folder* to the front, and optionally
+    focus a specific Agent tab inside it.
+
+    Cursor exposes nothing clickable to Accessibility (its Agent tabs are
+    invisible to AX), so the *window* is raised via the System Events
+    bridge: match the native window whose title contains the project
+    folder's basename, ``AXRaise`` it, and make Cursor frontmost.
+
+    For tab-level focus we hand off to the Leap Cursor extension: after
+    raising the window we drop a ``focusComposer:<composer_id>`` request
+    in ``~/.leap-terminal-request``.  The extension running in the now
+    foreground window calls Cursor's id-based composer-focus command.
+    This is best-effort - if the extension isn't installed or the Cursor
+    build gates that command, the window-level raise still happened.
+
+    Returns ``True`` when Cursor was brought forward, ``False`` when it
+    isn't running or the raise script failed.
+    """
+    if not _is_vscode_running('Cursor'):
+        return False
+    base = os.path.basename(folder.rstrip('/')) if folder else ''
+    safe = _escape_applescript(base)
+    script = (
+        'with timeout of 8 seconds\n'
+        'tell application "System Events"\n'
+        '  if not (exists process "Cursor") then return "noproc"\n'
+        '  tell process "Cursor"\n'
+        '    set frontmost to true\n'
+        '    repeat with w in windows\n'
+        f'      if name of w contains "{safe}" then\n'
+        '        try\n'
+        '          perform action "AXRaise" of w\n'
+        '        end try\n'
+        '        exit repeat\n'
+        '      end if\n'
+        '    end repeat\n'
+        '  end tell\n'
+        'end tell\n'
+        'return "ok"\n'
+        'end timeout'
+    )
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True, text=True, timeout=12,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    raised = result.returncode == 0 and 'noproc' not in (result.stdout or '')
+
+    # Hand off tab-level focus to the Leap Cursor extension.  Write the
+    # request AFTER raising the window so the (now foreground) window
+    # that owns the tab is the one whose extension acts on it - other
+    # windows skip it via the extension's focus gate.  AXRaise returns
+    # before the WindowServer finishes activating the window, so settle
+    # briefly first: otherwise, with multiple Cursor windows open, a
+    # still-foreground non-owning window's extension could consume the
+    # request (its focus gate passes) and silently drop it (it doesn't own
+    # the composer, so no tab switches, but it unlinks the file).
+    if raised:
+        time.sleep(0.3)
+        if composer_id:
+            _write_terminal_request(f'focusComposer:{composer_id}')
+
+    return raised
+
+
+def close_cursor_composer(folder: str, composer_id: str) -> bool:
+    """Close a Cursor Agent/Composer tab by id (the chat stays in history).
+
+    Raises the owning Cursor window first (so the now-foreground window -
+    the only one whose extension acts, via its focus gate, and the only
+    one that has this composer in ``selectedComposerIds``) then drops a
+    ``closeComposer:<id>`` request for the Leap Cursor extension, which
+    runs ``composer.closeComposerTab``.  Best-effort; returns whether the
+    window raise succeeded.
+    """
+    if not composer_id:
+        return False
+    # focus_cursor_window already settles after the raise (the now-foreground
+    # window that owns this composer in its selectedComposerIds is the one
+    # whose extension consumes the close request - not a different still-
+    # foreground window), so no extra sleep is needed here.
+    raised = focus_cursor_window(folder)  # raise the window (no tab focus)
+    if raised:
+        _write_terminal_request(f'closeComposer:{composer_id}')
+    return raised
 
 
 def _navigate_terminal_app(title_pattern: str) -> bool:
@@ -960,9 +1088,7 @@ def _close_vscode(
             )
             time.sleep(0.3)
 
-        request_file = os.path.expanduser('~/.leap-terminal-request')
-        with open(request_file, 'w') as f:
-            f.write(f'close:{terminal_name}')
+        _write_terminal_request(f'close:{terminal_name}')
         time.sleep(0.1)
         return True
     except (subprocess.SubprocessError, OSError):
@@ -2329,15 +2455,13 @@ def _open_vscode_terminal(
                 pass
 
         request_file = os.path.expanduser('~/.leap-terminal-request')
-        # Clear any stale request from a previous attempt so we don't
-        # mistake an old still-pending request for the extension
-        # consuming ours.
-        try:
-            os.unlink(request_file)
-        except OSError:
-            pass
-        with open(request_file, 'w') as f:
-            f.write(f'open:{command}')
+        # Atomic write (temp + os.replace) so the extension never reads a
+        # half-written ``open:`` request (a partial read misses the prefix,
+        # hits the catch-all, and gets unlinked — silently dropping it).
+        # The replace also overwrites any stale request from a prior attempt
+        # in one step, so we don't mistake it for the extension consuming
+        # ours when we poll for the file to disappear below.
+        _write_terminal_request(f'open:{command}')
 
         # Poll for the extension to process and unlink the request.
         deadline = time.monotonic() + 600.0  # 10 minutes

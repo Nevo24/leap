@@ -124,6 +124,23 @@ class TestCursorAgentProviderResume:
         sid = p.extract_session_id({"chatId": "cursor-chat-uuid"})
         assert sid == "cursor-chat-uuid"
 
+    def test_extract_session_id_rejects_non_string_value(self):
+        # A truthy non-string id (odd hook payload) must NOT be returned -
+        # it would later be Path-joined by session_exists/find_chat_dir and
+        # crash the whole `leap --resume` picker.  None is the safe result.
+        p = get_provider("cursor-agent")
+        assert p.extract_session_id({"conversation_id": ["x"]}) is None
+        assert p.extract_session_id({"chatId": {"id": "x"}}) is None
+        assert p.extract_session_id({"session_id": 12345}) is None
+
+    def test_extract_session_id_skips_bad_value_for_next_valid(self):
+        # A non-string in the first key must be skipped in favour of a
+        # valid string in a later key, not abort the lookup.
+        p = get_provider("cursor-agent")
+        sid = p.extract_session_id(
+            {"conversation_id": ["bad"], "chatId": "good-uuid"})
+        assert sid == "good-uuid"
+
     def test_extract_session_id_from_transcript_path(self):
         p = get_provider("cursor-agent")
         sid = p.extract_session_id({
