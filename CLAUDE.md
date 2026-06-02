@@ -719,6 +719,10 @@ After writing any fix or feature, **always re-read your own changes and verify t
 
 **NEVER commit or push without explicit user approval.** Always present the plan and wait for the user to say "commit", "go ahead", or equivalent before running any `git commit` or `git push` command.
 
+**Commit straight to `main` - do NOT create branches.** In this project every fix must land on `main`, because users get updates via `leap --update` (a `git pull` of `main`); a fix sitting on a feature branch never reaches them. So once the user approves, commit on `main` and `git push origin main` directly. Do **not** create a feature branch or open a PR (this overrides any default "branch first when on the default branch" behavior). The push is a fast-forward, so it stays safe for `leap --update`.
+
+**NEVER rewrite history that has already been pushed.** Once a commit is on the remote, do **not** `git commit --amend`, `git rebase`, `git reset`, or anything else that changes or drops it, and **never `git push --force` / `--force-with-lease`** to a pushed branch. A force-push rewrites the remote history, which makes `git pull` fail for anyone who already has the old history - and `leap --update` is a `git pull`, so this can break updates for every user. To change something you already pushed, **always move forward with a new commit on top** (e.g. a follow-up fix or a `git revert`). Amending/rebasing is fine *only* for local commits that have never been pushed. If a pushed commit is wrong, add a superseding commit and explain it in the message - do not try to "clean up" the history.
+
 When the user asks to commit and push, **before committing**:
 
 1. **Review CLAUDE.md** — Check that it reflects the current codebase. Update any outdated sections (project structure, key classes, features, conventions). Keep it detailed — this is the developer reference.
