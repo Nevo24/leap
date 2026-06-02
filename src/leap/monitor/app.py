@@ -436,6 +436,11 @@ class MonitorWindow(
         QTimer.singleShot(3000, self._run_update_check)
         # Synchronous initial load — UI needs sessions before first paint
         self.sessions = self._merge_sessions(get_active_sessions())
+        # Purge colour/alias entries left behind by rows that were removed
+        # while the monitor wasn't running to clean them up, so a reused
+        # tag starts fresh.  Must run after the merge (so pins reflect
+        # live sessions) and before the first paint.
+        self._prune_orphan_row_prefs()
         self._update_table()
         self._init_scm_providers()
         self._auto_track_pr_pinned()

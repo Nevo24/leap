@@ -14,6 +14,7 @@ from leap.cli_providers.registry import DEFAULT_PROVIDER
 from leap.cli_providers.states import AutoSendMode
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
+from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
 from leap.monitor.session_manager import (
     is_client_lock_held, load_session_metadata, read_client_pid, session_exists,
 )
@@ -441,6 +442,16 @@ class SessionMixin(_Base):
                 self._pinned_sessions.pop(tag, None)
                 remove_pinned_session_tag(tag)
                 self._deleted_tags.add(tag)
+                # This is the fifth row-removal path — route it through
+                # the shared cleanup like the other four, or the row's
+                # colour / alias / row_order slot / fire-state outlive the
+                # row and bleed onto a future ``leap <same-tag>``.  Only
+                # reached when ``will_remove`` is True, i.e. the Close-server
+                # button on a non-PR row.  Move-to-IDE and Delete-row both
+                # pass ``_from_delete=True`` so ``will_remove`` stays False
+                # here: Move-to-IDE keeps its colour, Delete-row already
+                # cleans up via ``_remove_pinned_session``.
+                self._cleanup_row_state(tag)
 
         self._show_status(f"Closing server '{tag}'...")
         self._set_busy(True)
@@ -536,10 +547,13 @@ class SessionMixin(_Base):
         or PR-tracking state (caller invokes
         ``_stop_tracking(_skip_prompt=True)`` for that, if needed).
         Cleans: row color, alias, row order, status-fire-icon
-        tracking dicts.  Keep all four removal paths
+        tracking dicts.  Keep all five removal paths
         (``_merge_sessions`` auto-remove, ``_remove_dead_untracked_row``,
-        ``_stop_tracking`` removal block, ``_remove_pinned_session``)
-        going through here so they can't drift out of sync.
+        ``_stop_tracking`` removal block, ``_remove_pinned_session``,
+        and ``_close_server``'s ``will_remove`` block) going through here
+        so they can't drift out of sync.  ``_prune_orphan_row_prefs``
+        backstops the lot at startup for removals the monitor wasn't
+        running to observe.
         """
         prefs_changed = False
         if tag in self._row_colors:
@@ -563,6 +577,44 @@ class SessionMixin(_Base):
         # through ``_stop_tracking``.
         self._pr_changed_at.pop(tag, None)
         self._dismissed_pr_new_status.discard(tag)
+
+    def _prune_orphan_row_prefs(self) -> None:
+        """Drop ``row_colors`` / ``aliases`` entries whose tag no longer
+        has a row, so a fresh ``leap <tag>`` that reuses the name doesn't
+        inherit a removed session's colour or alias.
+
+        Colour and alias are keyed by tag and normally cleaned on row
+        removal (``_cleanup_row_state``), but a removal the monitor wasn't
+        running to observe (app closed when the session ended) strands the
+        entry on disk, and an orphan is sticky - nothing revisits a tag you
+        never reuse.  Call this once at startup, AFTER the initial
+        ``_merge_sessions`` has auto-pinned every live session: at that
+        point ``_pinned_sessions`` holds exactly the tags that have a row
+        (live + dead-but-pinned + PR-tracked), so anything keyed outside it
+        is a ghost.  A colour on a currently-running session is therefore
+        kept (it is pinned), and a monitor restart never strips a live
+        row's colour.  Cursor editor Agent-tab rows own their tags via a
+        distinct prefix and are skipped defensively.
+        """
+        keep = (set(self._pinned_sessions)
+                | self._tracked_tags | self._checking_tags
+                | self._starting_tags | self._moving_tags)
+
+        def _is_orphan(t: str) -> bool:
+            return t not in keep and not t.startswith(CURSOR_GUI_TAG_PREFIX)
+
+        changed = False
+        for tag in [t for t in self._row_colors if _is_orphan(t)]:
+            del self._row_colors[tag]
+            changed = True
+        for tag in [t for t in self._aliases if _is_orphan(t)]:
+            del self._aliases[tag]
+            changed = True
+        if changed:
+            self._prefs['row_colors'] = self._row_colors
+            self._prefs['aliases'] = self._aliases
+            self._save_prefs()
+            self.table.setProperty('_row_colors', self._row_colors)
 
     def _remove_dead_untracked_row(self, tag: str) -> None:
         """Silently remove a dead row whose PR has been definitively

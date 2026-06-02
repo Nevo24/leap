@@ -132,7 +132,7 @@ Per-row background colors selectable via a droplet icon button in the Tag column
 - **Picker**: `ColorPickerPopup` (in `table_helpers.py`) — 4x4 grid of muted color swatches + Clear button, opened via `_show_color_picker()` in `table_builder_mixin.py`
 - **Rendering**: `SeparatorDelegate.paint()` reads `_row_colors` / `_row_tags` table properties and `fillRect`s the row background before the hover overlay
 - **Text contrast**: `ensure_contrast()` adjusts text foreground against the row color for both `QTableWidgetItem` cells and child `QLabel`s in widget cells (skips `PulsingLabel`/`IndicatorLabel`)
-- **Cleanup**: `_remove_pinned_session()` in `session_mixin.py` deletes the color entry when a row is removed
+- **Cleanup**: color is **keyed by tag**, so it must be deleted when the row is removed or it bleeds onto the next `leap <same-tag>`. All removal paths route through `_cleanup_row_state()` (color + alias + row_order + fire-state). There are **five**: `_merge_sessions` auto-remove, `_remove_dead_untracked_row`, `_stop_tracking`'s removal block, `_remove_pinned_session` (Delete-row X), and `_close_server`'s `will_remove` block (the Close-server × button on a non-PR row — the one historically missed, which orphaned colors). Move-to-IDE and Delete-row call `_close_server(_from_delete=True)` so `will_remove` stays False there (Move-to-IDE deliberately *keeps* the color). Because the cleanup only fires while the monitor is running to observe the removal, a removal during a monitor-down window strands the entry on disk (orphans are sticky). `_prune_orphan_row_prefs()` backstops this at **startup** (after the first `_merge_sessions`): any `row_colors`/`aliases` tag not in `_pinned_sessions` / in-flight guards / a `cursor-gui:` prefix is a ghost and gets dropped — a running session is pinned, so a restart never strips a live row's color.
 
 ### Tag Aliases
 
@@ -141,7 +141,7 @@ Display aliases for tags, set via right-click context menu on the Tag column. Pe
 - **Display**: Aliased tags show the alias in *italic*; the real tag is unchanged everywhere else (files, sockets, server, client)
 - **Tooltip**: Aliased tags always show "Alias: X / Tag: Y" (regardless of tooltip setting). Regular tags show on hover when truncated or when "Show hover explanations" is on
 - **Context menu**: Right-click tag cell → "Set alias" / "Rename alias" / "Remove alias" via `_show_tag_context_menu()` in `table_builder_mixin.py`
-- **Cleanup**: `_remove_pinned_session()` and `_merge_sessions()` in `session_mixin.py` delete the alias entry when a row is removed
+- **Cleanup**: same mechanism as row colors above — aliases are tag-keyed, cleaned via `_cleanup_row_state()` on all five removal paths and backstopped by `_prune_orphan_row_prefs()` at startup, so a reused tag doesn't inherit a removed row's alias
 
 ### Live Filter (Search Box)
 
