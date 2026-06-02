@@ -1,3 +1,8 @@
+---
+name: create-macos-icon
+description: How to convert a PNG image into a proper macOS .icns icon bundle for Leap Monitor. Use when creating or updating the application icon or the .icns asset.
+---
+
 # Create macOS App Icon
 
 Convert a PNG image to a proper macOS .icns icon file for Leap Monitor.

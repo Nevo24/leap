@@ -1,3 +1,8 @@
+---
+name: add-cli-provider
+description: Step-by-step guide for adding a new AI CLI backend (provider) to Leap, such as a new coding assistant. Covers the CLIProvider Strategy pattern, state detection, input protocol, menu handling, configure_hooks and hooks_installed, and registry wiring, including custom CLI variants of the four base CLIs. Use when adding, implementing, or registering a new CLI provider.
+---
+
 # Add a New CLI Provider
 
 Guide for adding a new AI CLI backend to Leap (e.g., a new coding assistant).

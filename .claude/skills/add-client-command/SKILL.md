@@ -1,3 +1,8 @@
+---
+name: add-client-command
+description: Checklist for adding a new client command (for example !mycmd) to the Leap interactive client. Lists every location to update so the command handler, help text, and dispatcher stay in sync. Use when adding or modifying a Leap client command.
+---
+
 # Add a New Client Command
 
 When adding a new client command to Leap, update ALL of these locations to keep them in sync.

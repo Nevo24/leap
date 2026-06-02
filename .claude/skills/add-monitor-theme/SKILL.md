@@ -1,3 +1,8 @@
+---
+name: add-monitor-theme
+description: Guide for adding a new visual theme to the Leap Monitor GUI. Covers the Theme dataclass, required color properties, contrast safety, and theme-manager registration. Use when adding or editing a monitor color theme.
+---
+
 # Add a New Monitor Theme
 
 Guide for adding a new visual theme to the Leap Monitor GUI.

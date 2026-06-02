@@ -1,3 +1,8 @@
+---
+name: add-dialog
+description: Guide for adding a new dialog or window to the Leap Monitor GUI. Covers ZoomMixin font-zoom setup, dialog geometry persistence, theme integration, the Cancel-bottom-left button-row convention, and the prefs persistence model that ad-hoc dialogs tend to get wrong. Use when creating a new monitor QDialog or window.
+---
+
 # Add a New Monitor Dialog
 
 Guide for adding a new dialog/window to the Leap Monitor GUI — covering the non-obvious wiring (zoom, geometry, theme, prefs persistence) that ad-hoc implementations tend to get wrong.
@@ -43,6 +48,25 @@ class MyDialog(ZoomMixin, QDialog):
 4. Call `self._init_zoom(...)` at the end of `__init__`.
 
 Trivial info/warning popups (one-off `QMessageBox` / `QInputDialog`) don't need this — the global `PopupZoomManager` handles their font.
+
+## Button Row Layout — Cancel bottom-left, primary bottom-right
+
+Project convention for every monitor `QDialog` with a Cancel button: add Cancel first, then `addStretch()`, then the primary action(s) on the right:
+
+```python
+btn_row = QHBoxLayout()
+cancel_btn = QPushButton('Cancel')
+cancel_btn.clicked.connect(self.reject)
+btn_row.addWidget(cancel_btn)
+btn_row.addStretch()
+ok_btn = QPushButton('OK')  # or 'Send' / 'Save' / 'Confirm' / etc.
+ok_btn.setDefault(True)
+ok_btn.clicked.connect(self.accept)
+btn_row.addWidget(ok_btn)
+layout.addLayout(btn_row)
+```
+
+Do **not** use `QDialogButtonBox(Ok | Cancel)` for new dialogs — on macOS it groups Cancel next to OK on the right, which violates the convention. For 3-button cases (e.g. Cancel + secondary + primary), keep Cancel on the outside-left and group the other two on the right of the stretch — see `_mixins/actions_menu_mixin.py` and `dialogs/git_changes_dialog.py:CommitListDialog`. Close-labeled dismissal buttons (one-button viewer dialogs like `WhatsNewDialog`, `NotesDialog`) are not covered by this rule — they're a different paradigm ("I'm done viewing" vs "discard my edits").
 
 ## Zoom: Single-Target vs Split
 
