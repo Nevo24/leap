@@ -23,6 +23,7 @@ unexport VIRTUAL_ENV
 GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 RED    := \033[0;31m
+CYAN   := \033[0;36m
 NC     := \033[0m
 
 # Shell helper: ensure Poetry 2.x is available, upgrade if needed
@@ -169,6 +170,7 @@ fi; \
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
 echo "$(PROMPT_PREFIX) Signing Leap Monitor.app with Leap Self-Signed cert..."; \
+echo "$(CYAN)  ℹ If a 'codesign wants to access key' prompt appears, click 'Always Allow' (not 'Allow').$(NC)"; \
 SIGN_OUT=$$(codesign --force --deep --sign "Leap Self-Signed" \
 	--identifier com.leap.monitor \
 	"$(REPO_PATH)/.dist/Leap Monitor.app" 2>&1); \
