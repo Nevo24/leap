@@ -2650,6 +2650,120 @@ class TestScreenHasActiveDialog:
 
 
 # ---------------------------------------------------------------------------
+# Answering a dialog must NOT reset the pyte screen.  A multi-question
+# AskUserQuestion advances to the next question via an Ink INCREMENTAL
+# repaint that never re-emits the unchanged footer.  If the answer-Enter
+# reset wipes the footer, then for the ~5 s until Claude's next full
+# re-render the live screen has no dialog footer, which drives two bugs
+# (both confirmed against a real Claude session log):
+#   * the cursor+silence check reads "no dialog" and flips RUNNING->idle,
+#     falsely marking the still-pending question as done, and
+#   * the up/down input filter steals the arrows for history recall.
+# Leaving pyte intact for PROMPT-state answers keeps the footer, so both
+# stay correct; IDLE/INTERRUPTED answers still reset (stale scrollback).
+# ---------------------------------------------------------------------------
+
+class TestDialogAnswerKeepsScreen:
+    # Real Ink AskUserQuestion shape: cursor VISIBLE (the real terminal
+    # promotes via cursor+silence, which needs a visible cursor) + footer.
+    @staticmethod
+    def _render_q1(tracker: ClaudeStateTracker) -> None:
+        tracker.on_output(
+            b"\x1b[?25h\x1b[2J"
+            b"\x1b[1;1HWhat is your favorite color?\x1b[K"
+            b"\x1b[2;1H  1. Red\x1b[K"
+            b"\x1b[3;1H  2. Green\x1b[K"
+            b"\x1b[4;1H  3. Blue\x1b[K"
+            b"\x1b[5;1HEnter to select \xc2\xb7 Esc to cancel\x1b[K"
+        )
+
+    @staticmethod
+    def _render_incremental_q2(tracker: ClaudeStateTracker) -> None:
+        # Advancing to the next question: only the changed cells (question
+        # text + option labels) are rewritten.  The footer is identical, so
+        # Ink never re-emits it - with the reset skipped it survives from Q1.
+        tracker.on_output(
+            b"\x1b[1;1HWhat is your favorite food? \x1b[K"
+            b"\x1b[2;6HPizza\x1b[K"
+            b"\x1b[3;6HSushi\x1b[K"
+            b"\x1b[4;6HTacos\x1b[K"
+        )
+
+    def _answer_q1(self, tracker: ClaudeStateTracker, t: List[float]) -> None:
+        # Q1 reaches needs_permission via cursor+silence (cursor visible),
+        # exactly as the real log shows; then the user answers with Enter.
+        tracker.on_send()
+        self._render_q1(tracker)
+        t[0] = 106.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        tracker.on_input(b'\r')   # answer -> running, NO reset (the fix)
+        assert tracker.current_state == 'running'
+
+    def test_answer_keeps_footer_so_next_question_is_navigable(
+        self, tmp_path: Path,
+    ) -> None:
+        """Arrow regression: after answering Q1, the next question
+        (incremental repaint) keeps its footer because pyte is not reset,
+        so screen_has_active_dialog() stays True and up/down navigate it.
+        Pre-fix the reset wiped the footer and this returned False."""
+        t = [100.0]
+        tracker = make_tracker(tmp_path, t)
+        self._answer_q1(tracker, t)
+        t[0] = 106.3
+        self._render_incremental_q2(tracker)
+        with tracker._screen_lock:
+            assert 'Esc to cancel' in tracker._get_screen_text()  # preserved
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_no_false_idle_after_answering_multi_question_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        """False-idle regression (the reported bug: the 2nd question showed
+        Idle).  The preserved footer keeps is_dialog_certain True, so the
+        cursor+silence check promotes the next question to needs_permission
+        instead of falsely flipping to idle.  Pre-fix (reset) this idled."""
+        t = [100.0]
+        tracker = make_tracker(tmp_path, t)
+        self._answer_q1(tracker, t)
+        t[0] = 106.3
+        self._render_incremental_q2(tracker)   # footer survives
+        # 5s+ of post-answer silence with the cursor visible: must promote
+        # back to needs_permission (dialog still on screen), NOT idle.
+        t[0] = 112.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
+    def test_new_prompt_from_idle_still_resets_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression guard: a fresh prompt (Enter from IDLE) MUST still
+        reset, clearing the previous turn's scrollback."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)   # starts IDLE
+        tracker.on_output(
+            b"\x1b[2J\x1b[1;1Hstale scrollback from a previous turn")
+        tracker.on_input(b'\r')   # IDLE -> running, MUST reset
+        with tracker._screen_lock:
+            assert 'stale scrollback' not in tracker._get_screen_text()
+
+    def test_interrupt_reply_still_resets_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression guard: replying to the interrupt prompt (Enter from
+        INTERRUPTED) MUST still reset, clearing the 'Interrupted' marker so
+        stale-interrupt detection doesn't re-fire."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')   # Esc -> interrupt pending
+        feed_screen_text(tracker, 'Interrupted')
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'interrupted'
+        tracker.on_input(b'fix it\r')   # INTERRUPTED -> running, MUST reset
+        with tracker._screen_lock:
+            assert 'Interrupted' not in tracker._get_screen_text()
+
+
+# ---------------------------------------------------------------------------
 # Claude conversation-compaction detection
 # ---------------------------------------------------------------------------
 

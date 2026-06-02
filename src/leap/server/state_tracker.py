@@ -561,6 +561,29 @@ class CLIStateTracker:
             _log.debug(
                 'ON_INPUT Enter in %s → running', self._state,
             )
+            # Answering a permission/question dialog (Enter from a PROMPT
+            # state) must NOT reset the pyte screen.  Claude advances to
+            # the next view (a later tab of a multi-question
+            # AskUserQuestion) via an Ink INCREMENTAL repaint that never
+            # re-emits the unchanged footer.  Resetting wipes that footer,
+            # and for the ~5 s until Claude's next full re-render the live
+            # screen then has no dialog footer - which drives two bugs,
+            # both confirmed against a real session log:
+            #   * the cursor+silence check reads "no dialog" and flips
+            #     RUNNING->idle, falsely marking the still-pending question
+            #     as done (and letting the auto-sender fire into it), and
+            #   * the ↑/↓ input filter's screen_has_active_dialog() also
+            #     reads "no dialog" and steals the arrows for history
+            #     recall, so the next question can't be navigated by arrow.
+            # Leaving pyte intact lets the footer survive the incremental
+            # repaint, so both the promotion (->needs_permission) and the
+            # arrow check stay correct.  The running->needs_permission
+            # promotion path already skips _reset_screen() for the same
+            # reason; mirror it here.  IDLE (a fresh prompt) and INTERRUPTED
+            # (an interrupt reply) DO reset - there the prior screen is
+            # stale scrollback we want gone, with nothing rendered
+            # incrementally on top of it.
+            from_prompt = self._state in PROMPT_STATES
             if self._state == CLIState.INTERRUPTED:
                 self._suppress_stale_interrupt = True
             self._running_since = self._clock()
@@ -569,7 +592,8 @@ class CLIStateTracker:
             self._user_input_since_idle = False
             self._query_in_flight = True
             with self._screen_lock:
-                self._reset_screen()
+                if not from_prompt:
+                    self._reset_screen()
                 self._prompt_snapshot = []
                 self._last_running_snapshot = []
                 with self._lock:
