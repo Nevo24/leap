@@ -7,7 +7,7 @@ import subprocess
 import time
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
@@ -56,6 +56,12 @@ else:
     _Base = object
 
 logger = logging.getLogger(__name__)
+
+# Sort modes that group rows by a shared categorical value and get a thick
+# horizontal divider at each group change.  Subset of MonitorWindow's
+# ``_SORT_MODE_ORDER``; kept here next to the sort/boundary logic that
+# consumes it (and so the pure-logic tests don't need MonitorWindow).
+_GROUPED_SORT_MODES = frozenset({'project', 'app', 'cli'})
 
 
 def _hex_to_rgb_str(hex_color: str) -> str:
@@ -1177,65 +1183,245 @@ class TableBuilderMixin(_Base):
     ) -> list[dict]:
         """Return *sessions* filtered by ``self._search_query``.
 
-        Mirrors the Resume dialog's filter: rows are bucketed by
-        where the query first matches (priority order Tag → Project
-        → App → CLI → Path), then each bucket is sorted by the
-        position the row already held in *sessions* so the user's
-        manual row order survives the filter.  Empty query short-
-        circuits to the input list unchanged.
+        Per-row matching (priority order Tag → Project → App → CLI →
+        Path) lives in ``_row_match_rank``.  How the matches are
+        *ordered* depends on the active sort mode:
+
+        * **Manual** mode has no inherent order, so it mirrors the
+          Resume dialog: rows are bucketed by where the query first
+          matches (tag matches first, path last), each bucket keeping
+          its original order — a lightweight relevance ranking.
+        * **Any automatic mode** (Recently active / Project / Name)
+          already orders the list deliberately, so re-bucketing would
+          silently override the user's chosen sort (and, in Project
+          mode, scatter a single project across buckets so the group
+          dividers no longer line up).  There we filter in place: keep
+          matching rows, drop the rest, preserve the sorted order.
+
+        Empty query short-circuits to the input list unchanged.
+        """
+        q = self._search_query.lower()
+        if not q:
+            return sessions
+        if getattr(self, '_row_sort_mode', 'manual') != 'manual':
+            # Honor the active sort — filter only, never reorder.
+            return [s for s in sessions
+                    if self._row_match_rank(s, q) is not None]
+        # Manual mode: Resume-style relevance bucketing.
+        buckets: list[list[dict]] = [[], [], [], [], []]
+        for s in sessions:
+            rank = self._row_match_rank(s, q)
+            if rank is not None:
+                buckets[rank].append(s)
+        return [s for bucket in buckets for s in bucket]
+
+    def _row_match_rank(self, s: dict, q: str) -> Optional[int]:
+        """Priority rank of the field *q* first matches in row *s*.
+
+        Returns 0=Tag, 1=Project, 2=App, 3=CLI, 4=Path, or ``None`` if
+        nothing matches.  *q* must already be lowercased.
 
         Match targets per row:
 
         * Tag — the raw tag, any user-set alias, and (for Cursor GUI
           rows) the ``display_label`` shown in the Tag column, so a
           filter on the chat name the user actually sees matches.
-        * Project — ``s['project']`` (already the git project name,
-          basename-equivalent — same data the Project column shows).
-        * App — ``s['ide']`` (the terminal/IDE the session was last
-          launched from).
+        * Project — ``s['project']`` (the git project name, same data
+          the Project column shows).
+        * App — ``s['ide']`` (the terminal/IDE last launched from).
         * CLI — ``s['cli_provider']`` AND its display name (e.g.
           ``claude`` and ``Claude Code`` both match).
         * Path — ``s['project_path']`` (full git root; kept last
           because it's the longest field and most likely to match
           incidentally on a fragment that means something else).
         """
-        q = self._search_query.lower()
-        if not q:
-            return sessions
-        tag_hits: list[tuple[int, dict]] = []
-        project_hits: list[tuple[int, dict]] = []
-        app_hits: list[tuple[int, dict]] = []
-        cli_hits: list[tuple[int, dict]] = []
-        path_hits: list[tuple[int, dict]] = []
+        tag = s.get('tag', '') or ''
         aliases = getattr(self, '_aliases', {}) or {}
-        for i, s in enumerate(sessions):
-            tag = s.get('tag', '') or ''
-            alias = aliases.get(tag, '') or ''
-            # Cursor GUI rows show their chat name (display_label), not the
-            # raw cursor-gui:<id> tag, in the Tag column — match it so the
-            # filter finds what the user actually sees.
-            label = s.get('display_label', '') or ''
-            project = s.get('project', '') or ''
-            ide = s.get('ide', '') or ''
-            cli = s.get('cli_provider', '') or ''
+        alias = aliases.get(tag, '') or ''
+        label = s.get('display_label', '') or ''
+        if (q in tag.lower() or (alias and q in alias.lower())
+                or (label and q in label.lower())):
+            return 0
+        if q in (s.get('project', '') or '').lower():
+            return 1
+        if q in (s.get('ide', '') or '').lower():
+            return 2
+        cli = s.get('cli_provider', '') or ''
+        try:
+            cli_display = get_display_name(cli) if cli else ''
+        except Exception:
+            cli_display = ''
+        if q in cli.lower() or (cli_display and q in cli_display.lower()):
+            return 3
+        if q in (s.get('project_path', '') or '').lower():
+            return 4
+        return None
+
+    def _sort_for_display(
+        self, combined: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Order the combined (sessions + Cursor rows) view for rendering.
+
+        'manual' (the default) honors the user's drag-arranged
+        ``row_order``.  The automatic modes compute a primary key and use
+        the manual ``row_order`` position as a STABLE tiebreaker, which:
+
+        * keeps rows with equal keys in their manual order (no thrash on
+          every refresh), and
+        * lets 'recent' degrade gracefully to manual order at startup,
+          before any activity has been observed (all fire timestamps are
+          still 0).
+
+        ``row_order`` is always topped up with any not-yet-seen tag (a
+        freshly-discovered Cursor tab, or a session ``_merge_sessions``
+        hasn't appended yet) regardless of mode, so the manual order
+        stays complete and ready the moment the user switches back to it.
+        """
+        order = self._prefs.get('row_order', [])
+        order_set = set(order)
+        missing = [s['tag'] for s in combined if s['tag'] not in order_set]
+        if missing:
+            order = order + missing
+            self._prefs['row_order'] = order
+            self._save_prefs()
+        order_map = {tag: i for i, tag in enumerate(order)}
+
+        def manual_pos(s: dict[str, Any]) -> float:
+            return order_map.get(s['tag'], float('inf'))
+
+        mode = getattr(self, '_row_sort_mode', 'manual')
+        if mode == 'recent':
+            # Most-recently-active first.  Negate the timestamp for
+            # descending order; manual position breaks ties (and is the
+            # whole order at startup, when every timestamp is still 0).
+            combined.sort(key=lambda s: (
+                -self._recent_activity_ts(s.get('tag', '')),
+                manual_pos(s),
+            ))
+        elif mode in _GROUPED_SORT_MODES:
+            # Categorical grouping (Project / App / CLI): sort by the
+            # displayed value (A-Z, case-insensitive), manual order within
+            # a group.  The leading 0/1 flag in the key sinks blank /
+            # unknown values to the bottom.  A thick divider is drawn at
+            # each group change (see ``_group_boundaries``).
+            combined.sort(key=lambda s: (
+                self._category_sort_key(s, mode),
+                manual_pos(s),
+            ))
+        elif mode == 'tag':
+            combined.sort(key=lambda s: (
+                self._tag_sort_key(s),
+                manual_pos(s),
+            ))
+        else:  # 'manual' (default) - pure drag order
+            combined.sort(key=manual_pos)
+        return combined
+
+    def _recent_activity_ts(self, tag: str) -> float:
+        """Most recent 'fire' timestamp for *tag* (status or PR change).
+
+        Mirrors what drives the fire indicator: the later of the status-
+        change and PR-change timestamps.  0.0 when nothing has changed
+        since the monitor started watching this tag.
+        """
+        ts = 0.0
+        st = self._state_changed_at.get(tag)
+        if st:
+            ts = max(ts, st[1])
+        pr = self._pr_changed_at.get(tag)
+        if pr:
+            ts = max(ts, pr[1])
+        return ts
+
+    def _category_value(self, session: dict[str, Any], mode: str) -> str:
+        """The grouping value for *session* in a categorical sort *mode*.
+
+        Matches exactly what the corresponding column shows, so the sort
+        groups by what the user sees:
+
+        * ``project`` → ``s['project']`` (``N/A`` treated as blank).
+        * ``app`` → ``s['ide']`` (the terminal/IDE; Cursor editor rows
+          carry ``'Cursor'``).
+        * ``cli`` → the CLI's display name: ``get_display_name`` of the
+          live ``cli_provider``, falling back to the pinned provider for
+          a dead row (mirroring the CLI column), and the fixed
+          ``'Cursor Editor'`` label for Cursor editor rows.
+
+        Returns ``''`` for a blank / unknown value (sorted to the bottom).
+        """
+        if mode == 'app':
+            return (session.get('ide') or '').strip()
+        if mode == 'cli':
+            if session.get('row_type') == CURSOR_GUI_ROW_TYPE:
+                return 'Cursor Editor'
+            cli = (session.get('cli_provider') or '').strip()
+            if not cli:
+                pinned = getattr(self, '_pinned_sessions', {}).get(
+                    session.get('tag', ''), {})
+                cli = (pinned.get('cli_provider') or '').strip()
+            if not cli:
+                return ''
             try:
-                cli_display = get_display_name(cli) if cli else ''
+                return get_display_name(cli)
             except Exception:
-                cli_display = ''
-            project_path = s.get('project_path', '') or ''
-            if (q in tag.lower() or (alias and q in alias.lower())
-                    or (label and q in label.lower())):
-                tag_hits.append((i, s))
-            elif q in project.lower():
-                project_hits.append((i, s))
-            elif q in ide.lower():
-                app_hits.append((i, s))
-            elif q in cli.lower() or q in cli_display.lower():
-                cli_hits.append((i, s))
-            elif q in project_path.lower():
-                path_hits.append((i, s))
-        merged = tag_hits + project_hits + app_hits + cli_hits + path_hits
-        return [s for _, s in merged]
+                return cli
+        # 'project'
+        project = (session.get('project') or '').strip()
+        return '' if project == 'N/A' else project
+
+    def _category_sort_key(
+        self, session: dict[str, Any], mode: str,
+    ) -> tuple[int, str]:
+        """Sort key for a categorical mode: ``(has_value, value)``.
+
+        The leading flag (0 = has a real value, 1 = blank/unknown) keeps
+        every blank-value row at the bottom; the case-insensitive value
+        orders the rest A-Z.
+        """
+        value = self._category_value(session, mode)
+        if not value:
+            return (1, '')
+        return (0, value.casefold())
+
+    def _group_boundaries(
+        self, sessions: list[dict[str, Any]]
+    ) -> set[int]:
+        """Row indices that begin a new group in a categorical sort mode.
+
+        Empty unless the active mode is one of ``_GROUPED_SORT_MODES``
+        (Project / App / CLI).  Keyed by ``_category_sort_key`` (the
+        sort's own key) so a boundary lands exactly on a sort-group edge
+        and blank / unknown values share a single group.  Row 0 is never
+        a boundary (nothing above it).
+        """
+        mode = getattr(self, '_row_sort_mode', 'manual')
+        if mode not in _GROUPED_SORT_MODES:
+            return set()
+        boundaries: set[int] = set()
+        prev_key = None
+        for r, s in enumerate(sessions):
+            key = self._category_sort_key(s, mode)
+            if r > 0 and key != prev_key:
+                boundaries.add(r)
+            prev_key = key
+        return boundaries
+
+    def _tag_sort_key(self, session: dict[str, Any]) -> str:
+        """Case-insensitive key matching the row's visible Tag-column text.
+
+        Prefers the user's display alias; for a read-only Cursor editor
+        row (which has no alias) it's the chat's display label rather
+        than the synthetic ``cursor-gui:<id>`` tag; otherwise the tag.
+        """
+        tag = session.get('tag', '')
+        alias = (getattr(self, '_aliases', {}) or {}).get(tag)
+        if alias:
+            return str(alias).casefold()
+        if session.get('row_type') == CURSOR_GUI_ROW_TYPE:
+            label = (session.get('display_label')
+                     or session.get('composer_name') or tag)
+            return str(label).casefold()
+        return str(tag).casefold()
 
     def _update_table(self) -> None:
         """Update table with current sessions.
@@ -1272,18 +1458,11 @@ class TableBuilderMixin(_Base):
         # where a Cursor row lands in the combined order.
         cursor_rows = getattr(self, '_cursor_gui_rows', []) or []
         combined = _full_sessions + cursor_rows
-        order = self._prefs.get('row_order', [])
-        # Give any not-yet-ordered tag (a freshly-seen Cursor tab, or a new
-        # session _merge_sessions hasn't appended yet) a slot at the end so
-        # it sorts deterministically; persist so the slot is stable.
-        order_set = set(order)
-        missing = [s['tag'] for s in combined if s['tag'] not in order_set]
-        if missing:
-            order = order + missing
-            self._prefs['row_order'] = order
-            self._save_prefs()
-        order_map = {tag: i for i, tag in enumerate(order)}
-        combined.sort(key=lambda s: order_map.get(s['tag'], float('inf')))
+        # Order the combined view per the active sort mode (default
+        # 'manual' = the persisted drag order).  ``_sort_for_display``
+        # also tops up ``row_order`` with any not-yet-seen tag, so the
+        # manual order stays complete in every mode.
+        combined = self._sort_for_display(combined)
         self.sessions = self._apply_search_filter(combined)
         try:
             self._update_table_body()
@@ -1367,6 +1546,7 @@ class TableBuilderMixin(_Base):
                 self.table.setRowHeight(0, 80)
                 # Clear row tags so SeparatorDelegate won't paint stale row colors
                 self.table.setProperty('_row_tags', [])
+                self.table.setProperty('_group_boundary_rows', set())
                 for col in range(self.table.columnCount()):
                     self.table.removeCellWidget(0, col)
                 total_cols = self.table.columnCount()
@@ -1435,6 +1615,15 @@ class TableBuilderMixin(_Base):
             # Update row_tags property for SeparatorDelegate row coloring
             self.table.setProperty(
                 '_row_tags', [s['tag'] for s in self.sessions])
+
+            # In a categorical sort mode (Project / App / CLI), mark the
+            # rows that begin a new group so SeparatorDelegate draws a
+            # thick horizontal divider at the boundary (only where the
+            # value changes, not on every row).  Empty in every other
+            # mode, so no dividers render.
+            self.table.setProperty(
+                '_group_boundary_rows',
+                self._group_boundaries(self.sessions))
 
             # Clear starting guard for tags whose server is now running
             if self._starting_tags:

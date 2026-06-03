@@ -78,7 +78,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Client lock | `.storage/sockets/<tag>.client.lock` |
 | Server lock | `.storage/sockets/<tag>.server.lock/` (directory) |
 | Pinned sessions | `.storage/pinned_sessions.json` |
-| Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`, `aliases`) |
+| Monitor prefs | `.storage/monitor_prefs.json` (includes `row_order`, `row_sort_mode`, `aliases`) |
 | Notification seen state | `.storage/notification_seen.json` |
 | PR context preset selection | `.storage/leap_selected_preset` |
 | Auto-fetch /leap preset selection | `.storage/leap_auto_fetch_preset` |
@@ -179,7 +179,7 @@ poetry run pytest tests/ -v       # All tests with verbose output
 
 ## SCM Polling & PR Tracking
 
-The monitor polls GitLab/GitHub for PR status + user notifications, renders PR markers and merged/closed badges, sends PR comments and `/leap` commands into sessions, manages pinned/persistent rows and managed-clone dirty-tree sync, validates branches at startup, and owns the session-table UX (drag-reorder, row colors, tag aliases, live filter, new-change fire indicator). Token modes: direct or env-var; GitHub Enterprise URLs are normalized to `/api/v3`. Key timeouts: 15s/request, 30s/poll-cycle, 60s stuck-poll reset, 30s default interval. Full subsystem reference: see the `monitor-pr-tracking` skill.
+The monitor polls GitLab/GitHub for PR status + user notifications, renders PR markers and merged/closed badges, sends PR comments and `/leap` commands into sessions, manages pinned/persistent rows and managed-clone dirty-tree sync, validates branches at startup, and owns the session-table UX (sort modes + drag-reorder, row colors, tag aliases, live filter, new-change fire indicator). Token modes: direct or env-var; GitHub Enterprise URLs are normalized to `/api/v3`. Key timeouts: 15s/request, 30s/poll-cycle, 60s stuck-poll reset, 30s default interval. Full subsystem reference: see the `monitor-pr-tracking` skill.
 
 ## Slack Integration
 

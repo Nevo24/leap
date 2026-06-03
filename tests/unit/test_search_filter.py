@@ -11,7 +11,11 @@ from __future__ import annotations
 from leap.monitor._mixins.table_builder_mixin import TableBuilderMixin
 
 
-class _Stub:
+class _Stub(TableBuilderMixin):
+    # Subclasses the mixin so the helper it now delegates to
+    # (``_row_match_rank``) resolves.  No ``_row_sort_mode`` is set, so
+    # ``_apply_search_filter`` takes the default 'manual' path (relevance
+    # bucketing) - which is exactly what these tests assert.
     def __init__(self, query: str, aliases: dict | None = None) -> None:
         self._search_query = query
         self._aliases = aliases or {}

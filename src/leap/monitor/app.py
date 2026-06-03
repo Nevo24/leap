@@ -23,10 +23,11 @@ from AppKit import (
 )
 from Foundation import NSDate, NSMakeRect, NSRunLoop
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFrame, QInputDialog,
-    QLineEdit, QMainWindow, QMenu, QScrollBar, QShortcut, QToolButton,
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout, QTableWidget,
-    QPushButton, QCheckBox, QHeaderView, QMessageBox, QProgressBar,
+    QAction, QActionGroup, QApplication, QComboBox, QDialog, QFrame,
+    QInputDialog, QLineEdit, QMainWindow, QMenu, QScrollBar, QShortcut,
+    QToolButton, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
+    QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QProgressBar,
 )
 from PyQt5.QtCore import (
     QByteArray, QEvent, QMimeData, QPoint, QProcess, QRect, QSize, QThread,
@@ -228,6 +229,32 @@ class MonitorWindow(
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
 
+    # Row sort modes for the toolbar Sort control.  'manual' is the
+    # default: it honors the user's drag-arranged ``row_order``.  The
+    # automatic modes are computed in ``_sort_for_display`` and disable
+    # drag-reorder while active (drag would have nothing stable to write
+    # back to).  ``_SORT_MODE_ORDER`` drives the menu order (a separator
+    # is inserted after 'manual' to set the hands-off default apart from
+    # the computed sorts); ``_LABELS`` are the menu captions and
+    # ``_SHORT`` are the compact captions shown on the button itself.
+    _SORT_MODE_ORDER = ('manual', 'recent', 'project', 'app', 'cli', 'tag')
+    _SORT_MODE_LABELS = {
+        'manual': 'Manual (drag)',
+        'recent': 'Recently active',
+        'project': 'Project',
+        'app': 'App',
+        'cli': 'CLI',
+        'tag': 'Tag (A-Z)',
+    }
+    _SORT_MODE_SHORT = {
+        'manual': 'Manual',
+        'recent': 'Recently active',
+        'project': 'Project',
+        'app': 'App',
+        'cli': 'CLI',
+        'tag': 'Tag',
+    }
+
     def __init__(self) -> None:
         """Initialize the monitor window."""
         super().__init__()
@@ -315,6 +342,12 @@ class MonitorWindow(
         self._dismissed_pr_new_status: set[str] = set()  # tags where user dismissed PR fire
         self._row_colors: dict[str, str] = self._prefs.get('row_colors', {})
         self._aliases: dict[str, str] = self._prefs.get('aliases', {})
+        # Persisted table sort mode (see ``_SORT_MODE_*``).  Validate the
+        # stored value so a hand-edited / stale pref can't wedge the table
+        # in an unknown mode - fall back to manual drag order.
+        self._row_sort_mode: str = self._prefs.get('row_sort_mode', 'manual')
+        if self._row_sort_mode not in self._SORT_MODE_LABELS:
+            self._row_sort_mode = 'manual'
         self._hovered_row: int = -1
         self._pending_tracking_context: dict[str, dict[str, Any]] = {}
         self._silent_tracking_tags: set[str] = set()  # suppress popups for auto-reconnect
@@ -724,6 +757,38 @@ class MonitorWindow(
         self._search_edit.setMaximumWidth(360)
         self._search_edit.textChanged.connect(self._on_search_changed)
         toolbar_layout.addWidget(self._search_edit)
+
+        # ── Sort control ─────────────────────────────────────────────
+        # Grouped with the filter as the table's "view" controls.  A
+        # checkable, exclusive action group means exactly one mode is
+        # ever active; the chosen mode shows a checkmark in the menu and
+        # its name on the button.  Manual (drag) is set apart by a
+        # separator so it reads as "arrange it yourself" vs the computed
+        # sorts below it.
+        self._sort_btn = QToolButton()
+        self._sort_btn.setObjectName('_leapSortBtn')
+        self._sort_btn.setPopupMode(QToolButton.InstantPopup)
+        self._sort_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self._sort_btn.setCursor(Qt.PointingHandCursor)
+        self._sort_menu = QMenu(self._sort_btn)
+        self._sort_action_group = QActionGroup(self._sort_btn)
+        self._sort_action_group.setExclusive(True)
+        self._sort_actions: dict[str, QAction] = {}
+        for mode in self._SORT_MODE_ORDER:
+            act = self._sort_menu.addAction(self._SORT_MODE_LABELS[mode])
+            act.setCheckable(True)
+            act.setData(mode)
+            self._sort_action_group.addAction(act)
+            self._sort_actions[mode] = act
+            if mode == 'manual':
+                self._sort_menu.addSeparator()
+        self._sort_action_group.triggered.connect(
+            lambda act: self._set_sort_mode(act.data()))
+        self._sort_btn.setMenu(self._sort_menu)
+        toolbar_layout.addSpacing(8)
+        toolbar_layout.addWidget(self._sort_btn)
+        # Sync the button caption + checked item to the persisted mode.
+        self._refresh_sort_button()
 
         toolbar_layout.addStretch()
 
@@ -1478,6 +1543,12 @@ class MonitorWindow(
         # wrong row; bail so the user has to clear the filter first.
         if self._search_query:
             return
+        # Automatic sort modes derive the visible order from session data
+        # (activity / project / name), so it no longer maps to the
+        # writable ``row_order``.  A drag would have nothing meaningful to
+        # persist - require switching back to Manual first.
+        if self._row_sort_mode != 'manual':
+            return
 
         tag = row_tags[source_row]
 
@@ -1563,9 +1634,12 @@ class MonitorWindow(
         if not source_tag or target_row < 0:
             return
         # Defence-in-depth: _perform_row_drag already short-circuits when a
-        # filter is active; refuse here too rather than reorder against a
-        # drop position that no longer maps 1:1 to the full row list.
+        # filter is active or an automatic sort is on; refuse here too
+        # rather than reorder against a drop position that no longer maps
+        # 1:1 to the full row list / writable ``row_order``.
         if self._search_query:
+            return
+        if self._row_sort_mode != 'manual':
             return
         row_tags = self.table.property('_row_tags') or []
         if target_row >= len(row_tags):
@@ -1583,6 +1657,47 @@ class MonitorWindow(
         self._prefs['row_order'] = new_order
         self._save_prefs()
         self._update_table()
+
+    def _set_sort_mode(self, mode: Optional[str]) -> None:
+        """Switch the table sort mode, persist it, and re-render.
+
+        Wired to the Sort menu's exclusive action group.  Re-selecting
+        the active mode is a no-op (beyond keeping the button label and
+        checkmark in sync).  ``row_order`` is never touched here, so the
+        user's manual arrangement survives a round-trip through any
+        automatic mode and back to Manual.
+        """
+        if mode not in self._SORT_MODE_LABELS:
+            mode = 'manual'
+        if mode == self._row_sort_mode:
+            self._refresh_sort_button()
+            return
+        self._row_sort_mode = mode
+        self._prefs['row_sort_mode'] = mode
+        self._save_prefs()
+        self._refresh_sort_button()
+        self._update_table()
+
+    def _refresh_sort_button(self) -> None:
+        """Sync the Sort button's caption, tooltip, and checked item."""
+        mode = self._row_sort_mode
+        btn = getattr(self, '_sort_btn', None)
+        if btn is not None:
+            btn.setText(f'Sort: {self._SORT_MODE_SHORT[mode]}')
+            if mode == 'manual':
+                btn.setToolTip(
+                    'Row order: Manual. Drag any row to arrange the list '
+                    'yourself.\nPick an automatic sort to order rows by '
+                    'activity, project, or name (drag is disabled in those '
+                    'modes).')
+            else:
+                btn.setToolTip(
+                    f'Row order: {self._SORT_MODE_LABELS[mode]} (automatic). '
+                    'Rows reorder themselves as sessions change.\nSwitch '
+                    'back to Manual to drag-reorder rows.')
+        act = getattr(self, '_sort_actions', {}).get(mode)
+        if act is not None and not act.isChecked():
+            act.setChecked(True)
 
     # ------------------------------------------------------------------
     #  Window geometry
@@ -3040,6 +3155,30 @@ class MonitorWindow(
             }}
             #_leapAddBtn:pressed {{
                 background-color: rgba({self._hex_rgb(t.accent_blue)}, 30);
+            }}
+
+            /* --- Sort menu button (neutral outline + chevron) --- */
+            #_leapSortBtn {{
+                color: {t.text_secondary};
+                background-color: {btn_bg};
+                border: 1px solid {btn_border};
+                border-radius: {r}px;
+                padding: 6px 28px 6px 12px;
+                font-weight: normal;
+                font-size: {t.font_size_base}px;
+            }}
+            #_leapSortBtn:hover {{
+                color: {t.text_primary};
+                background-color: {btn_hover};
+                border-color: {t.input_focus_border};
+            }}
+            #_leapSortBtn::menu-indicator {{
+                image: url({self._ensure_chevron_icon(t.text_secondary)});
+                width: 11px;
+                height: 11px;
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+                right: 9px;
             }}
 
             /* --- Close button (danger outline) --- */

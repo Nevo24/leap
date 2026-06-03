@@ -741,6 +741,27 @@ class SeparatorDelegate(QStyledItemDelegate):
             x = option.rect.right()
             painter.drawLine(x, option.rect.top(), x, option.rect.bottom())
             painter.restore()
+        # Horizontal group divider (Project / App / CLI sort modes): a 2px
+        # solid bar across the top edge of any row that starts a new group,
+        # matching the thick inter-group column separator (``border_solid``).
+        # Painted after the item content and column separators so it sits
+        # above them.  NOTE: cell *widgets* (set via setCellWidget) are
+        # overlays painted on top of the delegate, so this bar shows only
+        # where they're transparent at the row's top edge - which holds
+        # today because every cell widget is shorter than the row and
+        # vertically centred with a transparent background.  If a full-bleed
+        # opaque cell widget is ever added, the divider will be hidden under
+        # it and would need painting on the widget instead.
+        if table is not None:
+            boundaries = table.property('_group_boundary_rows')
+            if boundaries and index.row() in boundaries:
+                painter.save()
+                painter.fillRect(
+                    option.rect.left(), option.rect.top(),
+                    option.rect.width(), 2,
+                    QColor(current_theme().border_solid),
+                )
+                painter.restore()
 
 
 class SeparatorHeaderView(QHeaderView):

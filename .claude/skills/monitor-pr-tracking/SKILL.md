@@ -116,14 +116,27 @@ A fire icon (🔥) appears on the far right of the Status and PR columns when th
 - **Runtime mismatch**: Monitor shows `⚠ Server` in orange when live branch differs from expected PR branch
 - **Startup validation** (`_validate_pinned_session()` in `server.py`): Checks repo match, branch match, behind-remote status. Fails 1-3 block startup; ahead/dirty is a warning only. Skipped for non-PR-pinned rows
 
-### Row Ordering (Drag-and-Drop)
+### Row Ordering (Sort Modes + Drag-and-Drop)
 
-Rows are ordered by insertion time (not alphabetical). Users can drag any cell to reorder rows; the order is persisted as a `row_order` list in `monitor_prefs.json`. New sessions are appended at the end.
+A **Sort** control (toolbar `QToolButton` + checkable, exclusive `QActionGroup`, `objectName` `_leapSortBtn`, built next to the Filter box in `app.py`) picks one of six modes, persisted as `row_sort_mode` in `monitor_prefs.json` (default `'manual'`). `_set_sort_mode()` saves the pref, calls `_refresh_sort_button()` (button caption + checkmark + tooltip), and re-renders; `_SORT_MODE_ORDER` / `_SORT_MODE_LABELS` / `_SORT_MODE_SHORT` (class consts on `MonitorWindow`, order `manual, recent, project, app, cli, tag`) drive the menu order/captions, with a separator after `manual`.
 
+The single authoritative display sort lives in `TableBuilderMixin._sort_for_display(combined)` (called by `_update_table` on the combined sessions + Cursor-row list, replacing the old inline `row_order` sort). It always tops up `row_order` with any not-yet-seen tag (so manual order stays complete in every mode), then sorts:
+
+- **`manual`** (default) — by the drag-arranged `row_order` (insertion time seeded; not alphabetical). New sessions append at the end.
+- **`recent`** ("Recently active") — by the latest "fire" timestamp, descending. `_recent_activity_ts(tag)` = `max(_state_changed_at[tag][1], _pr_changed_at[tag][1])` (the same signals that drive the Status/PR fire indicators). One-tick lag is expected (the body pass sets the timestamps *after* the sort reads them); at startup every timestamp is 0 so it degrades to manual order.
+- **`project` / `app` / `cli`** — the **categorical / grouped** modes (`_GROUPED_SORT_MODES`, a module const in `table_builder_mixin.py`). Sort key is `_category_sort_key(s, mode)` = `(has_value, value.casefold())`, where `_category_value(s, mode)` returns exactly what the matching column shows: `project` → `s['project']` (`N/A`→blank); `app` → `s['ide']`; `cli` → `get_display_name(cli_provider)` (pinned-provider fallback for dead rows, fixed `'Cursor Editor'` for Cursor rows). Blank/unknown values (flag `1`) sink to the bottom. Each of these modes draws a **thick horizontal divider** (2px `border_solid`, matching the inter-group *column* separator) across the top of every row that starts a new group: `_group_boundaries(sessions)` returns those row indices (keyed by the same `_category_sort_key`, so a divider lands exactly on a sort-group edge; row 0 never qualifies), stashed on the table as the `_group_boundary_rows` property and rendered by `SeparatorDelegate.paint` via `fillRect`. The property is empty in every non-grouped mode (and reset in the empty-table branch), so dividers appear only in Project/App/CLI.
+- **`tag`** ("Tag (A-Z)") — `_tag_sort_key` = alias if set, else the Cursor chat `display_label` for `cursor_agent_gui` rows, else the tag (all casefolded). Matches the Tag-column text.
+
+Every automatic mode uses the manual `row_order` position as a **stable tiebreaker**, so equal-key rows keep their manual order (no thrash) and a round-trip through any auto mode and back to Manual preserves the user's arrangement.
+
+**Drag-and-drop** (Manual mode only):
 - **Drag detection**: App-level event filter (`eventFilter` in `app.py`) intercepts `MouseButtonPress`/`MouseMove` on cell widgets to initiate a `QDrag`
 - **Drop indicator**: A 2px theme-colored line shows the drop position during drag
 - **Auto-refresh paused** during drag (`timer.stop()` / `timer.start()`) to prevent table rebuilds from interrupting the gesture
+- **Disabled in auto-sort modes**: both `_perform_row_drag` and `_on_row_moved` bail when `_row_sort_mode != 'manual'` (mirroring the existing `_search_query` bail) — the visible order no longer maps to the writable `row_order`, so a drop would have nothing meaningful to persist
 - **Cleanup**: When rows are deleted, `_remove_from_row_order()` in `session_mixin.py` removes the tag from the persisted list
+
+Pure-logic coverage: `tests/unit/test_row_sort.py` exercises `_sort_for_display`, `_group_boundaries`, `_category_value`, and the key helpers (project/app/cli/tag/recent) on a `TableBuilderMixin` stub subclass (no QApplication).
 
 ### Row Colors
 
@@ -145,11 +158,13 @@ Display aliases for tags, set via right-click context menu on the Tag column. Pe
 
 ### Live Filter (Search Box)
 
-Substring filter next to the "+ Add Session" button. Same priority order and case-insensitivity as the Resume dialog's filter: Tag → Project → App → CLI → Path. Each row falls into the first bucket whose field substring-matches the query; rows that match nothing are dropped. Tag matches also check the user's alias (so a filter on an alias works the same as on the underlying tag).
+Substring filter next to the "+ Add Session" button. Per-row matching is `_row_match_rank(s, q)` - the first field (priority Tag → Project → App → CLI → Path) whose lowercased value substring-matches `q`, returned as a rank 0-4 (or `None`). Tag matches also check the user's alias and a Cursor row's `display_label` (so a filter on the visible chat name works). Rows that match nothing are dropped.
+
+**How matches are *ordered* is sort-mode-aware** (`_apply_search_filter`): in **Manual** mode the filter buckets by rank (tag matches first, path last) - a Resume-dialog-style relevance ranking, fine when there's no inherent order. In **any automatic mode** (Recently active / Project / Name) the list is already deliberately ordered, so re-bucketing would override the user's sort (and, in Project mode, split one project across buckets so the group dividers stop lining up) - there the filter preserves the sorted order and only drops non-matches. Regression guard: `test_filter_preserves_sort_order_in_auto_modes`, `test_filter_buckets_in_manual_mode`, `test_filter_project_dividers_stay_clean_under_filter` in `tests/unit/test_row_sort.py`.
 
 - **Wiring**: `QLineEdit` (`self._search_edit`) in the table toolbar; `textChanged` → `_on_search_changed` (in `table_builder_mixin.py`) → updates `self._search_query` → calls `_update_table()`.
 - **Filter execution**: `_apply_search_filter(sessions)` returns the filtered view. `_update_table` swaps `self.sessions` for the filtered list via try/finally so the rest of the table-build code path is unchanged; `_update_table_body` (split out from `_update_table`) renders against whatever the wrapper installed. Every other code path on the monitor — drag-drop, PR tracking, sleep guard — sees the full session list because the swap is undone before they read it.
-- **Manual row order survives**: each bucket appends rows in their original `self.sessions` order, so drag-drop reorder isn't reshuffled by filtering.
+- **Chosen order survives**: in Manual mode each bucket keeps rows in their original `self.sessions` order (drag-reorder isn't reshuffled within a bucket); in an automatic mode the whole sorted order is preserved verbatim.
 - **Drag-drop disabled while filter is active**: visible row indices no longer map 1:1 to `self.sessions` when rows are hidden, so reordering would silently move the wrong session. `_perform_row_drag` and `_on_row_moved` both bail out when `self._search_query` is non-empty; user has to clear the filter first.
 - **Empty-state copy**: when the filter yields zero rows, the placeholder shows "No matching sessions" (not "No active sessions") so it's clear the filter — not the absence of servers — is what hid everything.
 - **Column-width preservation across empty round-trip**: ResizeToContents on COL_DELETE and the `_on_section_resized` redistribute handler both shrink columns when the table empties. Empty branch snapshots widths + COL_DELETE's resize mode, switches COL_DELETE to Interactive, and applies saved widths — all *before* `setRowCount(1)` / `removeCellWidget`, with `_resizing_columns = True` to block the redistribute handler. On the empty→populated transition the saved mode is restored at the start of the populated branch; the existing `resizeColumnToContents(COL_DELETE)` at the end refits the X-button widget. Same mode-toggle pattern in the Resume dialog (`_populate`), where every column gets switched to Interactive on the populated→empty transition and restored on the way back. Not persisted across monitor restarts — filter clears every launch.
