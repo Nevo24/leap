@@ -23,7 +23,6 @@ unexport VIRTUAL_ENV
 GREEN  := \033[0;32m
 YELLOW := \033[1;33m
 RED    := \033[0;31m
-CYAN   := \033[0;36m
 NC     := \033[0m
 
 # Shell helper: ensure Poetry 2.x is available, upgrade if needed
@@ -73,8 +72,12 @@ endef
 # Shell helper: build and install monitor app.
 #
 # After py2app builds the bundle we re-sign it with our "Leap Self-Signed"
-# code-signing cert (generated once by .gen-codesign-cert).  This makes
-# the bundle's designated requirement stable across rebuilds:
+# code-signing cert, which .gen-codesign-cert keeps in a DEDICATED keychain
+# (not the login keychain) so codesign signs silently - no keychain prompt and
+# no "Always Allow".  We sign by the cert's SHA-1 (looked up from that keychain)
+# and pass --keychain, so signing stays unambiguous even when an older install
+# left a same-named cert in the login keychain.  This makes the bundle's
+# designated requirement stable across rebuilds:
 #
 #   designated => identifier "com.leap.monitor" and certificate leaf = H"<cert-sha1>"
 #
@@ -170,17 +173,24 @@ fi; \
 echo "$(PROMPT_PREFIX) Building Leap Monitor.app with py2app..."; \
 cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/null 2>&1; \
 echo "$(PROMPT_PREFIX) Signing Leap Monitor.app with Leap Self-Signed cert..."; \
-echo "$(CYAN)  ℹ If a 'codesign wants to access key' prompt appears, click 'Always Allow' (not 'Allow').$(NC)"; \
-SIGN_OUT=$$(codesign --force --deep --sign "Leap Self-Signed" \
-	--identifier com.leap.monitor \
-	"$(REPO_PATH)/.dist/Leap Monitor.app" 2>&1); \
-SIGN_RC=$$?; \
-echo "$$SIGN_OUT" | grep -v "replacing existing signature" || true; \
+LEAP_KC="$$HOME/Library/Keychains/leap-codesign.keychain-db"; \
+LEAP_KC_PASS="$$HOME/Library/Keychains/.leap-codesign.pass"; \
+[ -f "$$LEAP_KC_PASS" ] && security unlock-keychain -p "$$(cat "$$LEAP_KC_PASS")" "$$LEAP_KC" >/dev/null 2>&1 || true; \
+CERT_SHA1=$$(security find-certificate -c "Leap Self-Signed" -Z "$$LEAP_KC" 2>/dev/null | awk '/SHA-1 hash:/{print $$NF}'); \
+if [ -z "$$CERT_SHA1" ]; then \
+	echo "$(YELLOW)  ⚠ Leap Self-Signed cert not found in the dedicated keychain - skipping cert signing.$(NC)"; \
+	SIGN_RC=1; \
+else \
+	SIGN_OUT=$$(codesign --force --deep --keychain "$$LEAP_KC" --sign "$$CERT_SHA1" \
+		--identifier com.leap.monitor \
+		"$(REPO_PATH)/.dist/Leap Monitor.app" 2>&1); \
+	SIGN_RC=$$?; \
+	echo "$$SIGN_OUT" | grep -v "replacing existing signature" || true; \
+fi; \
 if [ "$$SIGN_RC" -ne 0 ] || ! codesign --verify "$(REPO_PATH)/.dist/Leap Monitor.app" >/dev/null 2>&1; then \
 	echo "$(YELLOW)  ⚠ Cert-based signing failed - bundle still has its py2app ad-hoc signature.$(NC)"; \
-	echo "  Accessibility will be lost on the next update.  Check the cert with:"; \
-	echo "    security find-certificate -c \"Leap Self-Signed\" \"$$HOME/Library/Keychains/login.keychain-db\""; \
-	echo "  If missing, remove the cert from Keychain Access and re-run 'make install-monitor'."; \
+	echo "  Accessibility will be lost on the next update.  Re-run the cert setup with:"; \
+	echo "    bash $(SCRIPTS_DIR)/leap-codesign-setup.sh"; \
 fi; \
 SRC="$(REPO_PATH)/.dist/Leap Monitor.app"; \
 DST="/Applications/Leap Monitor.app"; \
@@ -234,30 +244,17 @@ if [ "$$WAS_RUNNING" = "1" ] && [ -n "$$INSTALL_PATH" ]; then \
 fi
 endef
 
-# Generate the "Leap Self-Signed" code-signing cert (if missing) and
-# import it into the user's login keychain.  This runs as a prereq for
-# every monitor build so the cert is always in place before signing.
-#
-# Idempotent: when the cert is already present we skip the generation
-# script entirely.  On the very first run we ALSO clear any stale
-# Accessibility entries that may have been left by the previous
-# ad-hoc-signed scheme — those entries are cdhash-based and would never
-# match the new cert-signed bundle anyway; clearing them avoids ghost
-# entries showing up alongside the new one in System Settings.
+# Set up the "Leap Self-Signed" code-signing cert in a DEDICATED keychain (if
+# missing) and make sure that keychain is unlocked and on the search list.
+# Runs as a prereq of every monitor build.  leap-codesign-setup.sh is
+# idempotent and self-healing: it generates the cert only when absent (then
+# clears stale Accessibility entries and prints the one-time re-grant notice),
+# and otherwise just re-unlocks the keychain and re-asserts the search-list
+# entry.  Full rationale (dedicated keychain vs login keychain, signing by
+# SHA-1) is documented in that script and the monitor-code-signing skill.
 .PHONY: .gen-codesign-cert
 .gen-codesign-cert: check-macos
-	@if security find-certificate -c "Leap Self-Signed" "$$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then \
-		: ; \
-	else \
-		echo "$(PROMPT_PREFIX) Generating Leap Self-Signed code-signing certificate..."; \
-		bash $(SCRIPTS_DIR)/leap-codesign-setup.sh || exit $$?; \
-		tccutil reset Accessibility com.leap.monitor 2>/dev/null || true; \
-		echo ""; \
-		echo "$(YELLOW)ℹ One-time step on next Leap Monitor launch:$(NC) the in-app banner will ask"; \
-		echo "  you to grant Accessibility (and Notifications, if not already granted)."; \
-		echo "  Future updates will preserve the grant - you'll never see this again."; \
-		echo ""; \
-	fi
+	@bash $(SCRIPTS_DIR)/leap-codesign-setup.sh || exit $$?
 
 .PHONY: default
 default: install
@@ -1051,6 +1048,7 @@ uninstall-monitor:
 	if [ "$$REMOVED" = "no" ]; then \
 		echo "  Monitor app not found"; \
 	fi
+	@bash $(SCRIPTS_DIR)/leap-codesign-setup.sh --remove || true
 	@rm -rf build .dist
 	@echo "$(GREEN)✓ Monitor uninstalled successfully!$(NC)"
 

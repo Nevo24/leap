@@ -221,7 +221,7 @@ Optional, on by default (`show_cursor_gui_agents`): the monitor shows one read-o
 
 ## Monitor Code Signing
 
-Leap Monitor.app is signed with a per-user self-signed cert (CN `Leap Self-Signed`, in the login keychain) so macOS Accessibility/Notification grants survive every `make update` / `leap --update` - TCC keys on the bundle's designated requirement (identifier + cert leaf), which stays stable across rebuilds. Full mechanism, the `--deep` build re-sign, migration, and keychain-wipe notes: see the `monitor-code-signing` skill.
+Leap Monitor.app is signed with a per-user self-signed cert (CN `Leap Self-Signed`) kept in a **dedicated keychain** (`~/Library/Keychains/leap-codesign.keychain-db`), not the login keychain. codesign signs silently (no "codesign wants to access key" / "Always Allow" prompt) because the setup script runs `security set-key-partition-list` on that keychain authorized with a password **we** generate - on the login keychain that call would need the user's login password, which is the whole reason for a dedicated keychain. macOS Accessibility/Notification grants survive every `make update` / `leap --update` because TCC keys on the bundle's designated requirement (identifier + cert leaf), which stays stable across rebuilds. The build signs by the cert's SHA-1 (unambiguous vs any old same-named login-keychain cert) with `--keychain`. Full mechanism, the search-list handling, the `--deep` build re-sign, migration, and uninstall notes: see the `monitor-code-signing` skill.
 
 ## Troubleshooting
 
