@@ -153,18 +153,6 @@ class _RefreshableComboBox(QComboBox):
         self._refresh_fn()
         super().showPopup()
 
-    def minimumSizeHint(self) -> QSize:
-        # Drop this combo's height floor so it can be shrunk to match the
-        # SCM buttons (``_cap_combo_height_to_buttons``).  QComboBox's own
-        # minimumSizeHint height is a few px taller than those buttons
-        # (frame + padding); left intact it would floor that
-        # ``setFixedHeight`` and let revealing the combo grow the bottom
-        # row.  Width still floors normally, and the combo is only ever
-        # capped to the button height (well above its text), so nothing
-        # clips.
-        s = super().minimumSizeHint()
-        return QSize(s.width(), 0)
-
 
 class UpdateCheckWorker(QThread):
     """Background thread: git fetch + count commits behind origin/main.
@@ -1043,10 +1031,6 @@ class MonitorWindow(
         bottom_inner.addWidget(btn_group)
 
         layout.addWidget(bottom_card)
-        # Once the first layout pass has run, cap the preset combo to the
-        # SCM buttons' height so revealing it can never grow the row (the
-        # card stays free to size naturally, so buttons aren't truncated).
-        QTimer.singleShot(0, self._cap_combo_height_to_buttons)
 
         # ═══════════════════════════════════════════════════════════════
         #  STATUS BAR — logs + progress left, close right
@@ -3494,36 +3478,6 @@ class MonitorWindow(
         # for the just-applied font (their padding differs, so they'd
         # otherwise render at slightly different heights).
         self._equalize_toolbar_control_heights()
-
-        # Cap the optional preset combo to the SCM buttons' height so
-        # revealing it never grows the bottom row.  Deferred so the buttons
-        # are laid out at the just-applied font when measured.
-        QTimer.singleShot(0, self._cap_combo_height_to_buttons)
-
-    def _cap_combo_height_to_buttons(self) -> None:
-        """Pin the auto-fetch preset combo to the SCM buttons' height so
-        revealing it never makes the bottom row taller than its natural
-        (button) height - while leaving the card itself free to size
-        naturally, so the buttons are never vertically truncated.
-
-        The buttons are always visible and have a Fixed vertical policy, so
-        their laid-out height is the row's true natural height regardless of
-        the combo's state.  The combo's own height floor is dropped in
-        ``_RefreshableComboBox`` so this ``setFixedHeight`` can shrink it to
-        match (its text + chevron fit well within a button's height).  The
-        combo is capped even while hidden, so the height is already correct
-        the instant it's revealed.
-        """
-        combo = getattr(self, 'auto_leap_preset_combo', None)
-        if combo is None:
-            return
-        buttons = [getattr(self, n, None) for n in
-                   ('gitlab_btn', 'github_btn', 'slack_bot_btn')]
-        heights = [b.height() for b in buttons
-                   if b is not None and b.isVisible() and b.height() > 1]
-        if not heights:
-            return  # buttons not laid out yet - a later call will cap it
-        combo.setFixedHeight(max(heights))
 
     def _equalize_toolbar_control_heights(self) -> None:
         """Give the Add / Filter / Sort toolbar controls a single shared
