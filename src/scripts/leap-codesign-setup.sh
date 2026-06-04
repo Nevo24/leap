@@ -60,6 +60,10 @@ KEYCHAIN="$HOME/Library/Keychains/leap-codesign.keychain-db"
 PASS_FILE="$HOME/Library/Keychains/.leap-codesign.pass"
 LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
+# Hard timeout (seconds) for keychain operations that could otherwise hang on
+# the interactive "enter the keychain password" modal - see _bounded() below.
+KEYCHAIN_OP_TIMEOUT=8
+
 # ── helpers ─────────────────────────────────────────────────────────
 
 # Canonicalize a path: resolve symlinks in the directory part (e.g.
@@ -138,15 +142,36 @@ ensure_in_search_list() {
     return 1
 }
 
+# Run a command but never let it block on the interactive "security wants to
+# use the leap-codesign keychain - enter the keychain password" modal.  That
+# modal appears only when the stored password no longer matches the keychain (a
+# leftover/half-written keychain from an aborted or older install): on some
+# macOS versions a wrong -p escalates to that GUI instead of failing cleanly,
+# which hangs `leap --update` on a prompt the user CAN'T answer (the password is
+# a random string we generated, not their login/sudo password).  Bounding the
+# call lets us treat a bad keychain as "couldn't unlock" and fall through to the
+# regeneration path (which deletes it first) - a hands-off self-heal.  The
+# correct password unlocks in milliseconds, so the timeout never fires in the
+# normal case.  Uses /usr/bin/perl's alarm (always present on macOS); if perl is
+# somehow absent we degrade to a direct call (no worse than before this guard).
+_bounded() {
+    if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift @ARGV; exec @ARGV' "$KEYCHAIN_OP_TIMEOUT" "$@" </dev/null
+    else
+        "$@" </dev/null
+    fi
+}
+
 # Unlock the dedicated keychain with the stored password and disable its
 # auto-lock timeout (so it stays unlocked through a multi-minute py2app build).
-# Returns non-zero if the password file is missing or the unlock fails.
+# Returns non-zero if the password file is missing or the unlock fails - including
+# when the bounded unlock times out because the stored password no longer matches.
 unlock_keychain() {
     [ -f "$PASS_FILE" ] || return 1
     local pw
     pw=$(cat "$PASS_FILE") || return 1
     security set-keychain-settings "$KEYCHAIN" 2>/dev/null || true   # no-timeout
-    security unlock-keychain -p "$pw" "$KEYCHAIN"
+    _bounded security unlock-keychain -p "$pw" "$KEYCHAIN"
 }
 
 # Add codesign + Apple tools to the dedicated key's partition list, authorized
@@ -155,7 +180,7 @@ unlock_keychain() {
 # (verified: without it codesign prompts there even for a custom keychain).
 # Idempotent - safe to re-run.  Returns the security command's status.
 set_partition_list() {
-    security set-key-partition-list \
+    _bounded security set-key-partition-list \
         -S apple-tool:,apple:,codesign: -s \
         -k "$1" "$KEYCHAIN" >/dev/null 2>&1
 }
@@ -174,7 +199,7 @@ fi
 # Don't regenerate (that would change the SHA-1 and force a needless re-grant).
 # Just re-unlock and make sure the keychain is still on the search list.
 if [ -f "$KEYCHAIN" ] && [ -f "$PASS_FILE" ] \
-    && security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+    && _bounded security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
     if unlock_keychain >/dev/null 2>&1; then
         set_partition_list "$(cat "$PASS_FILE")" || true   # re-assert (idempotent)
         ensure_in_search_list "$KEYCHAIN" || exit 1

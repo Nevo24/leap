@@ -175,7 +175,13 @@ cd $(REPO_PATH) && poetry run python setup.py py2app --dist-dir .dist > /dev/nul
 echo "$(PROMPT_PREFIX) Signing Leap Monitor.app with Leap Self-Signed cert..."; \
 LEAP_KC="$$HOME/Library/Keychains/leap-codesign.keychain-db"; \
 LEAP_KC_PASS="$$HOME/Library/Keychains/.leap-codesign.pass"; \
-[ -f "$$LEAP_KC_PASS" ] && security unlock-keychain -p "$$(cat "$$LEAP_KC_PASS")" "$$LEAP_KC" >/dev/null 2>&1 || true; \
+if [ -f "$$LEAP_KC_PASS" ]; then \
+	if command -v perl >/dev/null 2>&1; then \
+		perl -e 'alarm shift @ARGV; exec @ARGV' 8 security unlock-keychain -p "$$(cat "$$LEAP_KC_PASS")" "$$LEAP_KC" >/dev/null 2>&1 || true; \
+	else \
+		security unlock-keychain -p "$$(cat "$$LEAP_KC_PASS")" "$$LEAP_KC" >/dev/null 2>&1 || true; \
+	fi; \
+fi; \
 CERT_SHA1=$$(security find-certificate -c "Leap Self-Signed" -Z "$$LEAP_KC" 2>/dev/null | awk '/SHA-1 hash:/{print $$NF}'); \
 if [ -z "$$CERT_SHA1" ]; then \
 	echo "$(YELLOW)  ⚠ Leap Self-Signed cert not found in the dedicated keychain - skipping cert signing.$(NC)"; \
