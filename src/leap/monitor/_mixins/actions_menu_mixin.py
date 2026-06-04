@@ -240,7 +240,9 @@ class ActionsMenuMixin(_Base):
         metadata = load_session_metadata(tag) or {}
         if (metadata.get('ide') == preferred_ide
                 and metadata.get('project_path') == project_path):
-            self._focus_existing_session_tab(tag, preferred_ide, project_path)
+            self._focus_existing_session_tab(
+                tag, preferred_ide, project_path, metadata.get('pid')
+            )
             return
 
         app_label = path.rsplit('/', 1)[-1].removesuffix('.app')
@@ -255,18 +257,20 @@ class ActionsMenuMixin(_Base):
 
     def _focus_existing_session_tab(
         self, tag: str, preferred_ide: str, project_path: str,
+        server_pid: Optional[int] = None,
     ) -> None:
         """Bring the leap terminal tab for *tag* to the front in *preferred_ide*.
 
         Used when the user clicks "Open in IDE" but the session is
         already running in that exact IDE at that exact path — same
-        navigation as the row's Terminal button.
+        navigation as the row's Terminal button. *server_pid* enables the
+        JetBrains rename-proof PID fallback (this is always a server tab).
         """
         title = f'lps {tag}'
-        _ide, _proj, _title = preferred_ide, project_path, title
+        _ide, _proj, _title, _pid = preferred_ide, project_path, title, server_pid
 
         def _focus() -> None:
-            find_terminal_with_title(_title, _ide, _proj, _title)
+            find_terminal_with_title(_title, _ide, _proj, _title, _pid)
 
         worker = BackgroundCallWorker(_focus, self)
         worker.finished.connect(worker.deleteLater)

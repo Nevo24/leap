@@ -467,7 +467,8 @@ def find_terminal_with_title(
     title_pattern: str,
     preferred_ide: Optional[str] = None,
     project_path: Optional[str] = None,
-    terminal_title: Optional[str] = None
+    terminal_title: Optional[str] = None,
+    server_pid: Optional[int] = None
 ) -> bool:
     """
     Find and focus terminal window/tab with matching title.
@@ -479,13 +480,17 @@ def find_terminal_with_title(
         preferred_ide: IDE or terminal app to try first (from session metadata).
         project_path: Project path for IDE navigation.
         terminal_title: Exact terminal title to match.
+        server_pid: PID of the session's Leap server process, used by the
+            JetBrains path as a rename-proof fallback identity for the tab
+            when its title no longer matches (see ``_navigate_jetbrains``).
 
     Returns:
         True if terminal was found and focused.
     """
     if preferred_ide:
         if any(ide in preferred_ide for ide in _JETBRAINS_IDE_NAMES):
-            if _navigate_jetbrains(preferred_ide, project_path, terminal_title):
+            if _navigate_jetbrains(preferred_ide, project_path, terminal_title,
+                                   server_pid):
                 return True
         elif preferred_ide in ('VS Code', 'Cursor'):
             if _navigate_vscode(project_path, terminal_title or title_pattern,
@@ -530,17 +535,51 @@ def find_terminal_with_title(
     return False
 
 
+def _parent_pid(pid: int) -> Optional[int]:
+    """Return the parent PID of *pid*, or None if it can't be determined.
+
+    Used to derive a JetBrains terminal tab's shell PID from a Leap
+    session's server PID: PyCharm spawns one login shell per terminal
+    tab, and the Leap server runs as that shell's child — so the shell
+    PID (the tab's rename-proof identity) is the server's parent.
+    """
+    try:
+        out = subprocess.run(
+            ['ps', '-o', 'ppid=', '-p', str(pid)],
+            capture_output=True, text=True, timeout=3,
+        )
+        ppid = out.stdout.strip()
+        return int(ppid) if ppid else None
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+
+
 def _navigate_jetbrains(
     ide: str,
     project_path: Optional[str],
-    terminal_title: Optional[str]
+    terminal_title: Optional[str],
+    server_pid: Optional[int] = None
 ) -> bool:
     """Navigate to a terminal tab in a JetBrains IDE.
 
-    Polls ``ideScript`` until the Groovy template (which is
-    instrumented to write a ``QUEUED``/``WAITING`` sentinel to a
-    temp file — see ``resources/activate_terminal.groovy``) reports
-    success or the budget runs out.
+    Polls ``ideScript`` until the Groovy template (see
+    ``resources/activate_terminal.groovy``) writes one of three
+    sentinels to a temp file:
+
+    * ``QUEUED`` - the tab was located (or no specific tab was
+      requested); its selection is queued on the EDT. -> returns True.
+    * ``NOTAB``  - the project is open but the requested tab couldn't
+      be found (e.g. the user renamed it, and matching it by the
+      session's shell PID didn't succeed either). Retrying can't
+      help, so we stop and return False rather than reporting a
+      false success the way this used to.
+    * ``WAITING`` - the project isn't loaded yet; keep polling.
+
+    *server_pid* is the session's Leap server PID. The Groovy uses its
+    parent (the login shell PyCharm spawned for the tab) as a
+    rename-proof identity: when the tab title no longer matches, it
+    selects the tab whose shell process is that PID. Pass None to
+    disable the fallback (title matching only).
 
     Budget is **60 s**, deliberately tighter than
     ``_open_jetbrains_terminal``'s 10 min: navigate is user-triggered
@@ -596,6 +635,16 @@ def _navigate_jetbrains(
                 'var terminalTabName = System.getenv("LEAP_TERMINAL_TITLE")',
                 f'var terminalTabName = "{_escape_groovy(terminal_title)}"'
             )
+        # Rename-proof fallback identity. A user who renames a terminal tab
+        # in the IDE strips its "lps <tag>" title, so title matching can no
+        # longer find it. The shell PID backing the tab (the server's parent)
+        # can't be edited, so the Groovy falls back to matching on it. Empty
+        # when unknown — the Groovy then simply skips the PID fallback.
+        shell_pid = _parent_pid(server_pid) if server_pid else None
+        custom_script = custom_script.replace(
+            'var shellPidStr = System.getenv("LEAP_SHELL_PID")',
+            f'var shellPidStr = "{shell_pid if shell_pid else ""}"'
+        )
         # Always wire up the result path — Python relies on this.
         custom_script = custom_script.replace(
             'var leapResultPath = System.getenv("LEAP_RESULT_PATH")',
@@ -654,6 +703,12 @@ def _navigate_jetbrains(
                     content = f.read().strip()
                 if content == 'QUEUED':
                     return True
+                if content == 'NOTAB':
+                    # Project is open but the requested tab couldn't be
+                    # located (e.g. renamed, and the PID fallback didn't
+                    # match either). Retrying won't change that — report
+                    # the miss truthfully instead of looping to the deadline.
+                    return False
             except (OSError, IOError):
                 pass
 

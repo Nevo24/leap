@@ -294,11 +294,23 @@ class SessionMixin(_Base):
         _project_path = project_path
         _client_cmd = client_cmd
         _title_pattern = title_pattern
+        # Server PID lets the JetBrains navigation fall back to matching the
+        # tab by its shell process when the tab title has been renamed away
+        # from "lps <tag>" (see find_terminal_with_title / _navigate_jetbrains).
+        # Only meaningful for the server tab: metadata['pid'] is the server
+        # process, whose parent shell backs the server's tab — a client runs
+        # in a different terminal the server PID can't identify.
+        _server_pid = (
+            metadata.get('pid')
+            if (metadata and session_type == 'server')
+            else None
+        )
         result_holder: list[Optional[bool]] = [None]
 
         def _do_find() -> None:
             result_holder[0] = find_terminal_with_title(
-                _title_pattern, _preferred_ide, _project_path, _title_pattern
+                _title_pattern, _preferred_ide, _project_path, _title_pattern,
+                _server_pid
             )
 
         def _on_done() -> None:
