@@ -204,7 +204,7 @@ class SettingsDialog(ZoomMixin, QDialog):
         grid.addWidget(theme_label, 0, 0)
         self._theme_combo = QComboBox()
         self._theme_combo.setToolTip(theme_label.toolTip())
-        self._theme_combo.addItems(list(THEMES.keys()))
+        self._theme_combo.addItems(sorted(THEMES.keys(), key=str.lower))
         if current_theme_name in THEMES:
             self._theme_combo.setCurrentText(current_theme_name)
         self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
@@ -379,14 +379,14 @@ class SettingsDialog(ZoomMixin, QDialog):
         grid.addWidget(clear_notes_global, 11, 2)
 
         # Accessibility permission hint (always visible)
-        shortcut_hint = QLabel(
+        self._shortcut_hint = QLabel(
             'Global shortcuts require Accessibility permission.\n'
             'Grant in: System Settings > Privacy & Security > Accessibility\n'
             '> enable "Leap Monitor" (or "Python" if running from source)')
-        shortcut_hint.setStyleSheet(
+        self._shortcut_hint.setStyleSheet(
             f'color: {current_theme().text_muted};')
-        shortcut_hint.setWordWrap(True)
-        grid.addWidget(shortcut_hint, 12, 0, 1, 4)
+        self._shortcut_hint.setWordWrap(True)
+        grid.addWidget(self._shortcut_hint, 12, 0, 1, 4)
 
         # Show Cursor editor Agent tabs
         self._cursor_gui_check = QCheckBox(
@@ -653,6 +653,27 @@ class SettingsDialog(ZoomMixin, QDialog):
         """Live-preview theme change."""
         if self._on_theme_change:
             self._on_theme_change(theme_name)
+        # The callback above re-applies the global palette + app QSS, which
+        # recolors everything driven by type/ID selectors.  A few widgets in
+        # this dialog carry their own explicit setStyleSheet color, so refresh
+        # those too or they'd keep the previous theme's colors (e.g. the muted
+        # hint labels reading as pink after switching away from Barbie) until
+        # the dialog is reopened.
+        self._restyle_theme_dependent()
+
+    def _restyle_theme_dependent(self) -> None:
+        """Re-apply the inline-styled widgets the global theme pass can't reach."""
+        # The theme combo's signal is connected before these widgets are built.
+        # No fire happens during construction today, but guard anyway so a
+        # future combo mutation in __init__ can't crash with an AttributeError.
+        if not hasattr(self, '_shortcut_hint'):
+            return
+        muted = current_theme().text_muted
+        self._warp_hint.setStyleSheet(f'color: {muted};')
+        self._shortcut_hint.setStyleSheet(f'color: {muted};')
+        for edit in (self._shortcut_edit, self._notes_focused_edit,
+                     self._notes_global_edit):
+            edit.restyle()
 
     def done(self, result: int) -> None:
         """Save dialog size on close. Revert theme and tooltips on cancel."""
@@ -731,6 +752,16 @@ class _ShortcutEdit(QLineEdit):
     def clear(self) -> None:
         self._seq = QKeySequence()
         self.setText('')
+
+    def restyle(self) -> None:
+        """Re-apply the theme-dependent stylesheet (for live theme switches).
+
+        The field's colors are baked via ``setStyleSheet``, which the global
+        app palette/QSS can't refresh on its own, so a live theme switch would
+        otherwise leave it in the previous theme's colors until reopened.
+        """
+        self.setStyleSheet(
+            self._style_focused() if self.hasFocus() else self._style_normal())
 
     # -- Qt overrides --------------------------------------------------
 
