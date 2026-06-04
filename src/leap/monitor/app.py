@@ -26,7 +26,7 @@ from PyQt5.QtWidgets import (
     QAction, QActionGroup, QApplication, QComboBox, QDialog, QFrame,
     QInputDialog, QLineEdit, QMainWindow, QMenu, QScrollBar, QShortcut,
     QToolButton, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStackedLayout,
-    QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
+    QStyle, QTableWidget, QPushButton, QCheckBox, QHeaderView, QMessageBox,
     QProgressBar,
 )
 from PyQt5.QtCore import (
@@ -34,8 +34,9 @@ from PyQt5.QtCore import (
     QTimer, Qt, pyqtSignal,
 )
 from PyQt5.QtGui import (
-    QColor, QCursor, QDrag, QIcon, QCloseEvent, QKeySequence,
-    QPainter, QPainterPath, QPalette, QPen, QPixmap, QResizeEvent,
+    QColor, QCursor, QDrag, QFont, QFontMetrics, QIcon, QCloseEvent,
+    QKeySequence, QPainter, QPainterPath, QPalette, QPen, QPixmap,
+    QResizeEvent,
 )
 from PyQt5.QtSvg import QSvgRenderer
 
@@ -87,7 +88,8 @@ from leap.monitor._mixins.table_builder_mixin import TableBuilderMixin
 logger = logging.getLogger(__name__)
 
 
-def _pin_checkbox_min_width(check: QCheckBox) -> None:
+def _pin_checkbox_min_width(check: QCheckBox,
+                            px_size: Optional[int] = None) -> None:
     """Pin a QCheckBox's minimum width so its label can never be clipped.
 
     Uses Qt's own ``sizeHint`` as the baseline (it accounts for the
@@ -96,15 +98,43 @@ def _pin_checkbox_min_width(check: QCheckBox) -> None:
     pixels of under-reporting that ``horizontalAdvance`` exhibits on
     macOS for descender-tipped glyphs (the ``y`` in ``busy``) and
     apostrophe-bearing labels (``"Auto '/leap' fetch"``).
+
+    Pass ``px_size`` once the main-window font zoom is active. Labels are
+    sized by the ``font-size: Npx`` QSS overlay that
+    ``_apply_main_font_size`` cascades onto every widget, and QSS
+    font-size neither updates the widget's ``QFont`` nor (until a forced
+    re-polish that may not happen before the first paint) its cached
+    ``sizeHint``. So a ``sizeHint``-based pin is computed for the *base*
+    font and clips the rendered (zoomed) label's tail (the
+    "Auto '/leap' fetch" -> "...fetc" bug). When ``px_size`` is given we
+    therefore bypass ``sizeHint`` entirely and measure the label geometry
+    directly from a ``QFontMetrics`` at the overlay's pixel size, which is
+    independent of polish/relayout timing.
     """
-    hint = check.sizeHint().width()
-    fm = check.fontMetrics()
-    # tightBoundingRect gives the actual ink extent — wider than
-    # horizontalAdvance for glyphs with right side-bearings.
-    ink_width = fm.tightBoundingRect(check.text()).width()
+    if px_size is None:
+        # Construction-time baseline, before any QSS overlay exists: the
+        # widget's own sizeHint/fontMetrics are accurate.
+        hint = check.sizeHint().width()
+        fm = check.fontMetrics()
+        ink_width = fm.tightBoundingRect(check.text()).width()
+        advance = fm.horizontalAdvance(check.text())
+        check.setMinimumWidth(hint + max(0, ink_width - advance) + 4)
+        return
+    f = QFont(check.font())
+    f.setPixelSize(px_size)
+    fm = QFontMetrics(f)
+    style = check.style()
+    indicator = style.pixelMetric(QStyle.PM_IndicatorWidth, None, check)
+    spacing = style.pixelMetric(QStyle.PM_CheckBoxLabelSpacing, None, check)
     advance = fm.horizontalAdvance(check.text())
-    bearing_safety = max(0, ink_width - advance) + 4
-    check.setMinimumWidth(hint + bearing_safety)
+    # tightBoundingRect gives the actual ink extent — wider than
+    # horizontalAdvance for glyphs with right side-bearings (the 'h').
+    ink_width = fm.tightBoundingRect(check.text()).width()
+    bearing = max(0, ink_width - advance)
+    # +10 covers the focus-ring / content margins the indicator+spacing
+    # metrics don't include, so the tail never sits flush against the edge.
+    check.setMinimumWidth(indicator + spacing + max(advance, ink_width)
+                          + bearing + 10)
 
 
 class _RefreshableComboBox(QComboBox):
@@ -122,6 +152,18 @@ class _RefreshableComboBox(QComboBox):
     def showPopup(self) -> None:
         self._refresh_fn()
         super().showPopup()
+
+    def minimumSizeHint(self) -> QSize:
+        # Drop this combo's height floor so it can be shrunk to match the
+        # SCM buttons (``_cap_combo_height_to_buttons``).  QComboBox's own
+        # minimumSizeHint height is a few px taller than those buttons
+        # (frame + padding); left intact it would floor that
+        # ``setFixedHeight`` and let revealing the combo grow the bottom
+        # row.  Width still floors normally, and the combo is only ever
+        # capped to the button height (well above its text), so nothing
+        # clips.
+        s = super().minimumSizeHint()
+        return QSize(s.width(), 0)
 
 
 class UpdateCheckWorker(QThread):
@@ -732,6 +774,9 @@ class MonitorWindow(
         # already includes the bearing safety the descender on 'y'
         # needs, so the text won't clip without explicit padding here.
         toolbar_layout.setContentsMargins(0, 6, 0, 4)
+        # Uniform gap between every toolbar control (Add | Filter | Sort),
+        # so the divider and the two view controls sit evenly spaced.
+        toolbar_layout.setSpacing(10)
 
         self._add_btn = QPushButton('  Add Session')
         self._add_btn.setObjectName('_leapAddBtn')
@@ -740,6 +785,16 @@ class MonitorWindow(
             current_theme().accent_blue.encode()))
         self._add_btn.clicked.connect(self._add_row_menu)
         toolbar_layout.addWidget(self._add_btn)
+
+        # Thin vertical divider separating the Add action from the view
+        # controls (filter + sort).  1px wide; its height is matched to
+        # the controls in ``_equalize_toolbar_control_heights`` (the
+        # initial value here just keeps it visible before that first runs).
+        self._toolbar_sep = QFrame()
+        self._toolbar_sep.setObjectName('_leapToolbarSep')
+        self._toolbar_sep.setFixedWidth(1)
+        self._toolbar_sep.setFixedHeight(18)
+        toolbar_layout.addWidget(self._toolbar_sep, 0, Qt.AlignVCenter)
 
         # Substring filter — same priority order as the Resume dialog so
         # the gestures feel consistent across surfaces.  Width capped so
@@ -785,7 +840,6 @@ class MonitorWindow(
         self._sort_action_group.triggered.connect(
             lambda act: self._set_sort_mode(act.data()))
         self._sort_btn.setMenu(self._sort_menu)
-        toolbar_layout.addSpacing(8)
         toolbar_layout.addWidget(self._sort_btn)
         # Sync the button caption + checked item to the persisted mode.
         self._refresh_sort_button()
@@ -989,6 +1043,10 @@ class MonitorWindow(
         bottom_inner.addWidget(btn_group)
 
         layout.addWidget(bottom_card)
+        # Once the first layout pass has run, cap the preset combo to the
+        # SCM buttons' height so revealing it can never grow the row (the
+        # card stays free to size naturally, so buttons aren't truncated).
+        QTimer.singleShot(0, self._cap_combo_height_to_buttons)
 
         # ═══════════════════════════════════════════════════════════════
         #  STATUS BAR — logs + progress left, close right
@@ -3181,6 +3239,12 @@ class MonitorWindow(
                 right: 9px;
             }}
 
+            /* --- Toolbar divider (Add | Filter) --- */
+            #_leapToolbarSep {{
+                background-color: {t.border_solid};
+                border: none;
+            }}
+
             /* --- Close button (danger outline) --- */
             #_leapCloseBtn {{
                 color: {t.accent_red};
@@ -3419,6 +3483,95 @@ class MonitorWindow(
         # override this via _zoom_apply_tooltip_font when they activate.
         if self.isActiveWindow() or not QApplication.activeWindow():
             self.set_tooltip_font_size(self._main_font_size)
+
+        # Re-pin the always-visible checkbox widths for the just-applied
+        # font size.  Their construction-time pins were measured against
+        # the base font; the QSS overlay above renders them larger, so
+        # without this the widest label ("Auto '/leap' fetch") clips.
+        self._repin_managed_checkbox_widths()
+
+        # Make the toolbar controls (Add / Filter / Sort) share one height
+        # for the just-applied font (their padding differs, so they'd
+        # otherwise render at slightly different heights).
+        self._equalize_toolbar_control_heights()
+
+        # Cap the optional preset combo to the SCM buttons' height so
+        # revealing it never grows the bottom row.  Deferred so the buttons
+        # are laid out at the just-applied font when measured.
+        QTimer.singleShot(0, self._cap_combo_height_to_buttons)
+
+    def _cap_combo_height_to_buttons(self) -> None:
+        """Pin the auto-fetch preset combo to the SCM buttons' height so
+        revealing it never makes the bottom row taller than its natural
+        (button) height - while leaving the card itself free to size
+        naturally, so the buttons are never vertically truncated.
+
+        The buttons are always visible and have a Fixed vertical policy, so
+        their laid-out height is the row's true natural height regardless of
+        the combo's state.  The combo's own height floor is dropped in
+        ``_RefreshableComboBox`` so this ``setFixedHeight`` can shrink it to
+        match (its text + chevron fit well within a button's height).  The
+        combo is capped even while hidden, so the height is already correct
+        the instant it's revealed.
+        """
+        combo = getattr(self, 'auto_leap_preset_combo', None)
+        if combo is None:
+            return
+        buttons = [getattr(self, n, None) for n in
+                   ('gitlab_btn', 'github_btn', 'slack_bot_btn')]
+        heights = [b.height() for b in buttons
+                   if b is not None and b.isVisible() and b.height() > 1]
+        if not heights:
+            return  # buttons not laid out yet - a later call will cap it
+        combo.setFixedHeight(max(heights))
+
+    def _equalize_toolbar_control_heights(self) -> None:
+        """Give the Add / Filter / Sort toolbar controls a single shared
+        height (the tallest of the three) and size the divider to match.
+
+        Their per-widget QSS padding differs, so at any given font size
+        they render a few pixels apart; pinning all three to the max
+        natural height lines them up.  Fixed heights are cleared first so
+        the natural ``sizeHint`` reflects the *current* (just-applied)
+        font rather than a stale pin, keeping this correct across zoom.
+        """
+        ctrls = [c for c in (getattr(self, '_add_btn', None),
+                             getattr(self, '_search_edit', None),
+                             getattr(self, '_sort_btn', None)) if c is not None]
+        if not ctrls:
+            return
+        for c in ctrls:
+            c.setMinimumHeight(0)
+            c.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+            c.ensurePolished()  # apply the QSS overlay before measuring
+        height = max(c.sizeHint().height() for c in ctrls)
+        for c in ctrls:
+            c.setFixedHeight(height)
+        sep = getattr(self, '_toolbar_sep', None)
+        if sep is not None:
+            # A shorter line reads as a divider, not a full-height bar.
+            sep.setFixedHeight(max(12, int(round(height * 0.62))))
+
+    def _repin_managed_checkbox_widths(self) -> None:
+        """Resize the always-visible checkbox minimum widths to the current
+        main font size so their labels never clip under the QSS font
+        overlay.  See ``_pin_checkbox_min_width`` for why the overlay's
+        pixel size has to be passed explicitly.  Guarded with ``getattr``
+        because the first ``_apply_main_font_size`` (via ``_apply_theme``)
+        could, in principle, run before every checkbox is built.
+        """
+        px = getattr(self, '_main_font_size', None)
+        if not px:
+            return
+        for name in ('prevent_sleep_check', 'lid_close_check',
+                     'bots_check', 'auto_leap_check'):
+            check = getattr(self, name, None)
+            if check is None:
+                continue
+            _pin_checkbox_min_width(check, px_size=px)
+            # Nudge the layout to adopt the new minimum on the next pass
+            # (the pin itself is measured directly, not via sizeHint).
+            check.updateGeometry()
 
     def _zoom_main_delta(self, delta: int) -> None:
         """Change main font size by *delta* and persist (debounced)."""
