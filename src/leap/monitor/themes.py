@@ -537,6 +537,48 @@ _BARBIE = Theme(
     pr_merged_color='#7c3aed',
 )
 
+# "Lover" era palette: a bright, dreamy pastel world — pale-lavender canvas with
+# the album's signature pastels (orchid, coral pink, sky blue, soft yellow) as
+# accents.  Backgrounds stay airy and light; accents are deepened only where a
+# status dot or label needs to clear contrast on the light canvas.
+_TAYLOR_SWIFT = Theme(
+    name='Taylor Swift',
+    is_dark=False,
+    window_bg='#f5ecfa',
+    cell_bg='#fdf9fe',
+    cell_bg_alt='#f6edfb',
+    hover_bg='rgba(191, 106, 206, 12)',
+    text_primary='#4d2552',
+    text_secondary='#875b91',
+    text_muted='#b394bf',
+    border_solid='#e2cbed',
+    border_subtle='rgba(191, 106, 206, 14)',
+    accent_green='#13a067',
+    accent_red='#e04870',
+    accent_orange='#df6a2c',
+    accent_blue='#b257c8',
+    accent_yellow='#b88a1c',
+    popup_bg='#fdf9fe',
+    popup_border='#e2cbed',
+    input_bg='#fdf9fe',
+    input_border='#e6d2ee',
+    input_focus_border='#c074d6',
+    icon_color='#b394bf',
+    header_bg='#ecd9f4',
+    button_bg='#f1e3f7',
+    button_hover_bg='#e9d6f1',
+    button_border='#e2cbed',
+    scrollbar_bg='#f5ecfa',
+    scrollbar_handle='#ddc4ea',
+    scrollbar_handle_hover='#cba9dc',
+    status_running='#13a067',
+    status_permission='#df6a2c',
+    status_input='#3a82c8',
+    status_interrupted='#b88a1c',
+    status_idle='#4d2552',
+    pr_merged_color='#7c3aed',
+)
+
 # Ordered dict preserving insertion order for combo box display
 THEMES: dict[str, Theme] = {
     'Leap': _LEAP,
@@ -549,6 +591,7 @@ THEMES: dict[str, Theme] = {
     'Nord': _NORD,
     'Solarized Dark': _SOLARIZED_DARK,
     'Synthwave': _SYNTHWAVE,
+    'Taylor Swift': _TAYLOR_SWIFT,
     'Dawn': _DAWN,
     'Barbie': _BARBIE,
 }

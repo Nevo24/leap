@@ -22,6 +22,17 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 PROMPT_PREFIX="→"
 
+# Maintainer identities, one email per line. When `leap --update` finds the
+# local history has diverged from origin (someone rewrote main with a
+# force-push), it realigns by hard-resetting to origin - which discards local
+# commits. To avoid silently dropping a user's OWN work, we look at the author
+# of the local tip commit (HEAD): if it's a maintainer the tip is just the
+# pre-rewrite upstream commit (a user with their own work would have their
+# commit as the tip instead), so the divergence is a stale copy of rewritten
+# history -> realign silently; otherwise the user committed on top -> prompt
+# first. Add new maintainers here, one per line.
+OWNER_EMAILS="nevo24@gmail.com"
+
 SKIP_IF_CURRENT=false
 if [ "$1" = "--skip-if-current" ]; then
     SKIP_IF_CURRENT=true
@@ -72,13 +83,12 @@ if [ -n "$UPSTREAM" ]; then
     REMOTE=$(git rev-parse "$UPSTREAM" 2>/dev/null || true)
     BASE=$(git merge-base HEAD "$UPSTREAM" 2>/dev/null || true)
     if [ "$LOCAL" != "$REMOTE" ] && [ "$REMOTE" = "$BASE" ]; then
-        echo -e "${YELLOW}⚠ You have local commits that haven't been pushed:${NC}"
+        echo -e "${YELLOW}⚠ You have unpushed local commits:${NC}"
         git log --oneline "$UPSTREAM"..HEAD
-        echo ""
-        read -p "  Continue updating anyway? Your commits may conflict. (y/N) " -n 1 -r REPLY
+        read -p "  Update anyway? (y/N) " -n 1 -r REPLY
         echo
         if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
-            echo "Update cancelled. Push your changes first, then retry."
+            echo "Update cancelled. Push first, then retry."
             exit 1
         fi
     fi
@@ -107,41 +117,102 @@ mkdir -p "$PROJECT_DIR/.storage"
 printf '{"pre_pull_sha":"%s","started_at":%s}\n' \
     "$PRE_PULL_HEAD" "$(date +%s)" > "$MARKER_FILE"
 
-# Retry `git pull` up to 3 times with 1s / 3s backoff. Catches concurrent
-# fetches from any source (IDE auto-fetch, manual `git fetch` in another
-# terminal, etc.) that we don't control. The race causes:
+# Fetch the latest refs, then reconcile based on how local and origin relate.
+# We fetch (not pull) so we can branch on the relationship:
+#   - behind   -> fast-forward (the normal update; cannot conflict)
+#   - ahead    -> your own unpushed commits, nothing to pull
+#   - diverged -> origin's history was rewritten (owner amended/rebased and
+#                 force-pushed). A plain `git pull` fails here with "Need to
+#                 specify how to reconcile divergent branches", which would
+#                 break the update. We hard-reset to origin instead so the
+#                 update keeps working - silently when the local tip commit is
+#                 the maintainer's, or after a prompt when the user has
+#                 committed on top (see the diverged branch below). The old
+#                 HEAD stays in `git reflog`.
+#
+# This only guards against a FUTURE rewrite: Phase 1 runs from the PRE-pull
+# copy of this script (see header), so a rewrite that lands before the user
+# has a leap-update.sh containing this block still needs a one-time manual
+# `git reset --hard origin/<branch>`.
+#
+# Retry the fetch up to 3x with 1s / 3s backoff to ride out concurrent fetches
+# from other sources (IDE auto-fetch, a manual `git fetch` in another terminal)
+# that race on 'refs/remotes/origin/...':
 #   error: cannot lock ref 'refs/remotes/origin/main': is at <X> but expected <Y>
-# Output is left LIVE (not captured) so:
-#   - interactive prompts work (e.g., HTTPS credential prompts);
-#   - the user sees real-time progress on long pulls;
-#   - on final failure they see git's actual error directly above the
-#     "failed after 3 attempts" line — no more misleading "resolve conflicts"
-#     wording. Side effect: a retried run shows the first attempt's error
-#     before the retry succeeds. The retry message names the likely cause
-#     (concurrent fetch) so users aren't alarmed.
+# Output is left LIVE (not captured) so HTTPS credential prompts work and the
+# user sees real-time progress; on final failure git's actual error shows
+# directly above the "failed after 3 attempts" line.
 for attempt in 1 2 3; do
-    pull_exit=0
-    git pull || pull_exit=$?
-    if [ "$pull_exit" -eq 0 ]; then
+    fetch_exit=0
+    git fetch origin || fetch_exit=$?
+    if [ "$fetch_exit" -eq 0 ]; then
         break
     fi
-    # User-initiated abort (Ctrl+C). Without this, bash would proceed to
-    # the retry message + sleep, forcing the user to Ctrl+C a second time
-    # during the sleep to actually exit. Respect the first signal.
-    if [ "$pull_exit" -eq 130 ]; then
+    # User-initiated abort (Ctrl+C). Respect the first signal instead of
+    # falling into the retry message + sleep (which would need a second Ctrl+C).
+    if [ "$fetch_exit" -eq 130 ]; then
         echo ""
         echo -e "${YELLOW}⚠ Update interrupted.${NC}"
         exit 130
     fi
     if [ "$attempt" -lt 3 ]; then
         sleep_for=$((attempt * 2 - 1))   # 1s, then 3s
-        echo -e "${YELLOW}⚠ git pull failed (attempt $attempt/3) - likely a concurrent fetch; retrying in ${sleep_for}s...${NC}"
+        echo -e "${YELLOW}⚠ git fetch failed (attempt $attempt/3) - likely a concurrent fetch; retrying in ${sleep_for}s...${NC}"
         sleep "$sleep_for"
     else
-        echo -e "${YELLOW}⚠ Git pull failed after 3 attempts. See errors above and try again.${NC}"
+        echo -e "${YELLOW}⚠ Git fetch failed after 3 attempts. See errors above and try again.${NC}"
         exit 1
     fi
 done
+
+# Remote-tracking ref to reconcile against (e.g. origin/main).
+REMOTE_REF=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || true)
+if [ -z "$REMOTE_REF" ]; then
+    REMOTE_REF="origin/$(git rev-parse --abbrev-ref HEAD)"
+fi
+
+LOCAL_SHA=$(git rev-parse HEAD)
+REMOTE_SHA=$(git rev-parse "$REMOTE_REF")
+BASE_SHA=$(git merge-base HEAD "$REMOTE_REF" 2>/dev/null || true)
+
+if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
+    # Already current. POST_PULL_HEAD == PRE_PULL_HEAD below drives the
+    # --skip-if-current "already up to date" exit.
+    :
+elif [ "$LOCAL_SHA" = "$BASE_SHA" ]; then
+    # Behind origin: fast-forward only (the working tree was verified clean
+    # above, so this cannot conflict or create a merge commit).
+    git merge --ff-only "$REMOTE_REF"
+elif [ "$REMOTE_SHA" = "$BASE_SHA" ]; then
+    # Ahead of origin (your own unpushed commits); nothing new to pull.
+    echo -e "${GREEN}✓ Local branch is ahead of $REMOTE_REF - nothing to pull${NC}"
+else
+    # Diverged: someone rewrote origin's history (amend/rebase/squash +
+    # force-push), so there's no fast-forward path. Decide silent-vs-prompt by
+    # the author of the local tip commit (HEAD):
+    #   - a maintainer -> the tip is just the pre-rewrite upstream commit (a
+    #     user with their own work would have their commit as the tip instead),
+    #     so this is a stale copy of rewritten history; realign silently (-q
+    #     hides "HEAD is now at", so a rewrite looks like a normal pull).
+    #   - anyone else  -> the user committed on top; list the commits and
+    #     prompt (default No) before discarding.
+    # Either way the reset is reflog-recoverable, and the dirty-tree gate above
+    # already blocked UNCOMMITTED work, so only committed divergence is at play.
+    head_author=$(git log -1 --format='%ae' HEAD)
+    if printf '%s\n' "$OWNER_EMAILS" | grep -qxF "$head_author"; then
+        git reset --hard -q "$REMOTE_REF"
+    else
+        echo -e "${YELLOW}⚠ Local history diverged from $REMOTE_REF, and you have local commits:${NC}"
+        git log --oneline "$REMOTE_REF"..HEAD
+        read -p "  Discard them and hard-reset to $REMOTE_REF? (y/N) " -n 1 -r REPLY
+        echo
+        if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
+            echo "Update cancelled. Push or stash your commits, then retry."
+            exit 1
+        fi
+        git reset --hard "$REMOTE_REF"
+    fi
+fi
 
 POST_PULL_HEAD=$(git rev-parse HEAD)
 
