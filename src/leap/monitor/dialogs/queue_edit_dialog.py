@@ -78,14 +78,14 @@ class QueueEditDialog(ZoomMixin, QDialog):
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter)
 
-        # Button row
+        # Button row: Close (dismiss) pinned bottom-left, primary actions
+        # (Delete, then Save) bottom-right, with a stretch between.
         btn_layout = QHBoxLayout()
-        self._save_btn = QPushButton('Save')
-        self._save_btn.setEnabled(False)
-        self._save_btn.setToolTip(
-            'Save edits to the selected queued message (Cmd+Enter)')
-        self._save_btn.clicked.connect(self._save_current)
-        btn_layout.addWidget(self._save_btn)
+        close_btn = QPushButton('Close')
+        close_btn.clicked.connect(self.close)
+        btn_layout.addWidget(close_btn)
+
+        btn_layout.addStretch()
 
         self._delete_btn = QPushButton('Delete')
         self._delete_btn.setEnabled(False)
@@ -93,11 +93,12 @@ class QueueEditDialog(ZoomMixin, QDialog):
         self._delete_btn.clicked.connect(self._delete_current)
         btn_layout.addWidget(self._delete_btn)
 
-        btn_layout.addStretch()
-
-        close_btn = QPushButton('Close')
-        close_btn.clicked.connect(self.close)
-        btn_layout.addWidget(close_btn)
+        self._save_btn = QPushButton('Save')
+        self._save_btn.setEnabled(False)
+        self._save_btn.setToolTip(
+            'Save edits to the selected queued message (Cmd+Enter)')
+        self._save_btn.clicked.connect(self._save_current)
+        btn_layout.addWidget(self._save_btn)
 
         layout.addLayout(btn_layout)
 
