@@ -142,6 +142,23 @@ class CLIStateTracker:
         # Used to skip Enter-detection on ``\r`` / ``\n`` bytes that
         # are paste content, not real submits.
         self._in_bracketed_paste: bool = False
+        # True from the moment the user answers a mid-turn dialog
+        # (Enter from NEEDS_PERMISSION / NEEDS_INPUT — e.g.
+        # AskUserQuestion, which is excluded from hook auto-approve so it
+        # is always answered by hand) until the turn next reaches IDLE.
+        # Answering moves the state WAITING→RUNNING, but Claude then
+        # resumes the SAME turn, and its first post-answer output (the
+        # model's first token) can lag several seconds — while the
+        # dialog-dismissal render emits a tiny burst of output almost
+        # immediately.  That dismissal burst defeats the
+        # ``max(_last_output_time, _running_since)`` rebase, so the 5 s
+        # cursor+silence running→idle fallback then misfires on the
+        # first-token gap and lets the auto-sender flush a queued message
+        # INTO the still-running turn (confirmed in the wild).  While
+        # this flag is set the 5 s fallback is suppressed; the turn is
+        # ended only by a real Stop-hook signal or the 60 s safety
+        # timeout.  Reset on every transition to IDLE and on ``on_send``.
+        self._awaiting_resume_after_prompt: bool = False
 
         # -- Trust dialog phase --
         self._trust_dialog_phase: bool = False
@@ -342,6 +359,41 @@ class CLIStateTracker:
             )
             return False
 
+    def _post_answer_grace_holds(self, silence_ref: Optional[float]) -> bool:
+        """True iff a mid-turn dialog was just answered (``on_input``
+        armed ``_awaiting_resume_after_prompt``) and we're still within
+        the resume grace — so the *heuristic* idle fallbacks must keep
+        the session RUNNING rather than concluding idle and letting the
+        auto-sender flush a queued message into the resuming turn.
+
+        Answering an `AskUserQuestion` / permission prompt moves the
+        state WAITING→RUNNING, but Claude resumes the SAME turn and its
+        first post-answer output can lag seconds; the cursor+silence
+        fallbacks (both the running→idle one and the waiting→idle one a
+        stale-footer re-promotion can reach) would otherwise misfire on
+        that gap.  The grace is capped at the provider's safety-silence
+        timeout (default ``SAFETY_SILENCE_TIMEOUT``), measured from
+        *silence_ref*, so a genuinely hung post-answer turn (missing Stop
+        hook) still recovers via the normal idle fallbacks once the cap
+        elapses.  The authoritative ``signal=idle`` (Stop hook) path does
+        NOT consult this — only the unreliable heuristics do, so a real
+        turn end still idles promptly.
+
+        ``silence_ref`` is ``Optional`` because the waiting→idle caller
+        passes ``self._waiting_since``, which a concurrent ``on_input``
+        answer can null out between this block's outer guard and here;
+        treat ``None`` as "grace does not hold" rather than risk a
+        ``clock - None`` crash.
+        """
+        if not self._awaiting_resume_after_prompt or silence_ref is None:
+            return False
+        grace_timeout = (
+            self._provider.silence_timeout
+            if self._provider.silence_timeout is not None
+            else SAFETY_SILENCE_TIMEOUT
+        )
+        return (self._clock() - silence_ref) <= grace_timeout
+
     # -- Public API -----------------------------------------------------------
 
     @property
@@ -519,6 +571,14 @@ class CLIStateTracker:
         # navigating history.
         if is_interrupt and self._state != CLIState.IDLE:
             self._interrupt_pending = True
+            # A user interrupt cancels the post-answer resume grace: it
+            # exists to let Claude resume an *answered* turn, which is the
+            # opposite of "stop".  Disarm it here so the subsequent
+            # INTERRUPTED handling (and its →idle dismissal) isn't held in
+            # RUNNING by the grace.  Self-interrupts that never reach
+            # on_input are additionally covered by the PROMPT_STATES guard
+            # on the waiting→idle routing.
+            self._awaiting_resume_after_prompt = False
             _log.debug('ON_INPUT _interrupt_pending=True')
 
         _log.debug(
@@ -591,6 +651,12 @@ class CLIStateTracker:
             self._user_responded = False
             self._user_input_since_idle = False
             self._query_in_flight = True
+            # Answering a mid-turn dialog: Claude resumes the SAME turn,
+            # so suppress the 5 s cursor+silence idle fallback until a
+            # real end signal arrives (see the flag's definition).  A
+            # fresh Enter from IDLE / a reply from INTERRUPTED is a new
+            # turn, not a dialog answer, so it does NOT arm the grace.
+            self._awaiting_resume_after_prompt = from_prompt
             with self._screen_lock:
                 if not from_prompt:
                     self._reset_screen()
@@ -620,6 +686,7 @@ class CLIStateTracker:
         self._interrupt_pending = False
         self._user_responded = False
         self._user_input_since_idle = False
+        self._awaiting_resume_after_prompt = False
         # Acquire _screen_lock first to maintain consistent lock
         # ordering with on_output (screen_lock → lock).
         with self._screen_lock:
@@ -1030,6 +1097,7 @@ class CLIStateTracker:
                 self._seen_user_input = False
                 self._trust_dialog_phase = False
                 self._suppress_stale_interrupt = False
+                self._awaiting_resume_after_prompt = False
                 with self._screen_lock:
                     self._reset_screen()
                     self._prompt_snapshot = []
@@ -1038,6 +1106,14 @@ class CLIStateTracker:
 
         with self._lock:
             current = self._state
+
+        # The post-answer resume grace (armed when the user answers a
+        # mid-turn dialog) only applies while we run through that one
+        # turn.  Once we're back at IDLE the turn is over — drop it here
+        # so it can't leak into a following auto-resumed turn and wrongly
+        # suppress that turn's cursor+silence idle fallback.
+        if current == CLIState.IDLE:
+            self._awaiting_resume_after_prompt = False
 
         # -- Read signal file --
         new_state = self._read_signal_state()
@@ -1540,6 +1616,52 @@ class CLIStateTracker:
                         not self._provider.has_dialog_indicator(compact)
                     )
                 if indicator_gone:
+                    # Post-answer guard (mirror of the running→idle
+                    # grace).  If the user just answered this dialog, the
+                    # indicator disappearing means Claude RESUMED the turn
+                    # (the answered footer cleared) — NOT that the session
+                    # went idle.  This branch is reachable post-answer
+                    # because the running→idle block above can re-promote
+                    # RUNNING→NEEDS_PERMISSION off the still-on-screen
+                    # answered footer (its own grace check sits after that
+                    # promotion), landing us here a few seconds later when
+                    # the footer finally clears.  Concluding idle here
+                    # would flush a queued message into the live turn —
+                    # the exact bug.  Route to RUNNING instead, so the
+                    # Stop hook (whose running→idle path needs no
+                    # _user_responded — which the answer cleared) and the
+                    # running→idle grace decide the real end.  Restricted
+                    # to PROMPT_STATES: the flag can still be set from an
+                    # earlier dialog answer when the state has since become
+                    # INTERRUPTED (answer → grace → user hits Esc), and an
+                    # interrupt dismissal must idle, not resume — so the
+                    # grace must NOT hijack the INTERRUPTED branch above.
+                    if (current in PROMPT_STATES
+                            and self._post_answer_grace_holds(
+                                self._waiting_since)):
+                        _log.debug(
+                            'GET_STATE %s→running (dialog answered + '
+                            'indicator gone - Claude resuming, not idle)',
+                            current,
+                        )
+                        self._running_since = self._clock()
+                        self._interrupt_pending = False
+                        # Mirror the on_input dialog-answer transition: do
+                        # NOT _reset_screen().  The indicator is already
+                        # gone from the live screen, so there's no stale
+                        # footer to clear (is_dialog_certain, stricter than
+                        # the has_dialog_indicator that just returned
+                        # False, can't re-promote off it); and resetting
+                        # would desync pyte from Ink's incremental repaint,
+                        # the very failure mode the answer/promotion paths
+                        # avoid.  Just clear the stale dialog snapshots.
+                        with self._screen_lock:
+                            self._prompt_snapshot = []
+                            self._last_running_snapshot = []
+                        with self._lock:
+                            self._state = CLIState.RUNNING
+                            self._waiting_since = None
+                        return CLIState.RUNNING
                     _log.debug(
                         'GET_STATE %s→idle '
                         '(indicator gone + cursor visible + silence)',
@@ -1730,6 +1852,31 @@ class CLIStateTracker:
                     with self._screen_lock:
                         self._reset_screen()
                     return CLIState.INTERRUPTED
+
+                # Just answered a mid-turn dialog and Claude hasn't truly
+                # resumed yet: this silence is the model's first-token
+                # latency, not end-of-turn.  The dialog-dismissal render
+                # already moved _last_output_time past _running_since (so
+                # the rebase gate opened), the transcript can't confirm
+                # running because its only assistant entry is the dialog's
+                # tool_use at ts <= _running_since, and the running
+                # indicator only matches "Compacting conversation" — so
+                # nothing else here is holding us in RUNNING.  Idling now
+                # would flush a queued message into the live turn.  Stay
+                # RUNNING and let the Stop hook end the turn at the right
+                # moment.  Cap the grace at the safety-silence timeout
+                # (NOT an unconditional ``return``) so a genuinely hung
+                # post-answer turn with no Stop hook still recovers via the
+                # safety fallback below — this block runs before it, so
+                # returning early past the cap would starve that net.
+                if self._post_answer_grace_holds(silence_baseline):
+                    _log.debug(
+                        'GET_STATE cursor+silence would idle but a '
+                        'dialog was just answered - keeping running '
+                        '(awaiting post-answer resume; %.1fs silent)',
+                        self._clock() - self._last_output_time,
+                    )
+                    return current
 
                 _log.debug(
                     'GET_STATE running→idle (cursor visible + '

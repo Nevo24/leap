@@ -937,13 +937,175 @@ class TestSafetyTimeouts:
         t[0] = 12.1
         assert tracker.get_state(pty_alive=True) == 'running'
 
-    def test_enter_from_waiting_still_idles_after_real_post_answer_silence(
+    def test_enter_from_waiting_stays_running_through_first_token_gap(
         self, tmp_path: Path,
     ) -> None:
-        """Guard against over-correction: once Claude produces real
-        output after the Enter, the cursor+silence heuristic must still
-        fire on the next 5 s of genuine silence.
+        """After answering a mid-turn dialog, the 5 s cursor+silence idle
+        fallback must NOT fire on the model's first-token latency.
+
+        Reproduces the confirmed production bug: answering an
+        AskUserQuestion / permission dialog moves the state
+        NEEDS_PERMISSION → RUNNING, and the dialog-dismissal render emits
+        a tiny burst of output a few ms after the Enter — moving
+        ``_last_output_time`` past ``_running_since`` and so opening the
+        ``max(...)`` rebase gate.  If Claude is then silent for >5 s
+        before its first real output, the cursor+silence heuristic used
+        to flip RUNNING → IDLE and the auto-sender flushed a queued
+        message into the still-running turn.  With the post-answer resume
+        grace the session stays RUNNING until a real end signal.
         """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Question?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # User answers after deliberating.
+        t[0] = 12.0
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+        # Dialog-dismissal render: a tiny output burst right after Enter,
+        # with the dialog footer GONE (Claude cleared it).  This moves
+        # _last_output_time to 12.05 (> _running_since=12.0), defeating
+        # the rebase that would otherwise hold us.
+        t[0] = 12.05
+        feed_with_visible_cursor(tracker, 'Working...')
+        # >5 s of first-token silence.  Pre-fix this idled (and dispatched
+        # the queue); post-fix it stays RUNNING.
+        t[0] = 18.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # The real end arrives via the Stop hook → idle (only NOW may the
+        # auto-sender dispatch the queued message).
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_post_answer_grace_still_idles_via_safety_timeout(
+        self, tmp_path: Path,
+    ) -> None:
+        """The post-answer grace suppresses only the 5 s cursor+silence
+        fallback — the 60 s safety timeout still force-idles a genuinely
+        hung turn, so a missing Stop hook can't strand the session.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Question?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        t[0] = 12.0
+        tracker.on_input(b'\r')
+        # Output burst after the answer, then total silence past the 60 s
+        # safety window with no Stop hook ever firing.
+        t[0] = 12.05
+        feed_with_visible_cursor(tracker, 'Working...')
+        t[0] = 12.05 + SAFETY_SILENCE_TIMEOUT + 1.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_on_send_clears_post_answer_grace(self, tmp_path: Path) -> None:
+        """A Leap-dispatched / direct message starts a fresh turn, so
+        ``on_send`` must clear the post-answer grace (otherwise the next
+        turn's cursor+silence idle would be wrongly suppressed)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Question?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        t[0] = 12.0
+        tracker.on_input(b'\r')
+        assert tracker._awaiting_resume_after_prompt is True
+        tracker.on_send()
+        assert tracker._awaiting_resume_after_prompt is False
+
+    def test_post_answer_grace_clears_on_idle(self, tmp_path: Path) -> None:
+        """The grace is scoped to the answered turn: once it ends at IDLE
+        the flag clears on the next poll, so it can't leak into a later
+        auto-resumed turn and suppress that turn's cursor+silence idle."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Question?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        t[0] = 12.0
+        tracker.on_input(b'\r')
+        assert tracker._awaiting_resume_after_prompt is True
+        # Real end via Stop hook.
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        # Next poll observes IDLE at the top and drops the grace.
+        tracker.get_state(pty_alive=True)
+        assert tracker._awaiting_resume_after_prompt is False
+
+    def test_post_answer_stale_footer_repromote_routes_to_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """Secondary path of the same bug, via the waiting→idle fallback.
+
+        If the answered dialog's footer lingers on screen (Claude slow to
+        repaint), the running→idle block re-promotes RUNNING→NEEDS_PERMISSION
+        off that stale footer *before* its own grace check.  When the
+        footer finally clears, the waiting→idle cursor+silence fallback
+        would conclude idle and dispatch the queue into the live turn.
+        With the post-answer grace, that fallback instead routes back to
+        RUNNING so the Stop hook / running→idle grace decide the real end.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Question?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # User answers.
+        t[0] = 12.0
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+        # Stale footer still on screen (Claude hasn't repainted yet).
+        t[0] = 12.1
+        feed_with_visible_cursor(
+            tracker, 'Question?  Enter to select  Esc to cancel',
+        )
+        # >5 s silent with footer present → running→idle re-promotes off
+        # the stale footer.
+        t[0] = 18.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Footer finally clears; >5 s more silence would trip waiting→idle.
+        t[0] = 19.0
+        feed_with_visible_cursor(tracker, 'Working...')
+        t[0] = 25.0
+        # Pre-fix: 'idle' (and the queue flushes).  Post-fix: 'running'.
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # Real end still idles via the hook.
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_waiting_self_dismiss_still_idles_without_an_answer(
+        self, tmp_path: Path,
+    ) -> None:
+        """No-regression guard for the waiting→idle change: a dialog the
+        user did NOT answer (flag unset) that the CLI self-dismisses must
+        still idle via cursor+silence — the grace only applies after a
+        real answer."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -953,16 +1115,105 @@ class TestSafetyTimeouts:
         )
         t[0] = 2.0
         write_signal(tracker, 'needs_permission')
-        tracker.get_state(pty_alive=True)
-        # User answers after a long wait.
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        assert tracker._awaiting_resume_after_prompt is False
+        # CLI self-dismisses the dialog (no user answer): footer gone.
+        t[0] = 3.0
+        feed_with_visible_cursor(tracker, 'tool auto-cancelled, moving on')
+        t[0] = 9.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_post_answer_pending_second_question_stays_permission(
+        self, tmp_path: Path,
+    ) -> None:
+        """Multi-question AskUserQuestion (the reported 2-question case):
+        after answering Q1, Q2's footer is on screen.  The grace must NOT
+        route that to RUNNING — the waiting→idle routing only fires when
+        the indicator is GONE, so a genuinely pending Q2 stays
+        NEEDS_PERMISSION for the user to answer (neither prematurely
+        resumed nor idled)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Q1?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Answer Q1.
         t[0] = 12.0
         tracker.on_input(b'\r')
-        # Claude resumes and produces output — now ``_last_output_time``
-        # is post-``_running_since`` and the gate opens.
-        t[0] = 13.0
-        feed_with_visible_cursor(tracker, 'Claude resumed work')
-        # Real 5 s+ of post-answer silence → idle.
+        assert tracker.current_state == 'running'
+        # Q2 renders (incremental repaint) — footer still present.
+        t[0] = 12.1
+        feed_with_visible_cursor(
+            tracker, 'Q2?  Enter to select  Esc to cancel',
+        )
+        # >5 s silent with Q2 footer present → re-promote to needs_permission.
+        t[0] = 18.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # Ink keeps Q2 rendered (output AFTER the re-promotion, so the
+        # waiting→idle outer guard opens) — this exercises the
+        # indicator-still-present branch: indicator_gone is False, so the
+        # post-answer routing must NOT fire and Q2 stays NEEDS_PERMISSION.
         t[0] = 19.0
+        feed_with_visible_cursor(
+            tracker, 'Q2?  Enter to select  Esc to cancel',
+        )
+        t[0] = 25.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # User answers Q2 → resumes normally.
+        t[0] = 26.0
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+
+    def test_interrupt_clears_post_answer_grace(self, tmp_path: Path) -> None:
+        """A user interrupt (Esc/Ctrl+C) cancels the post-answer resume
+        grace — 'stop' is the opposite of 'resume the answered turn'."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Q?  Enter to select  Esc to cancel',
+        )
+        t[0] = 2.0
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        t[0] = 12.0
+        tracker.on_input(b'\r')                      # answer → grace armed
+        assert tracker._awaiting_resume_after_prompt is True
+        tracker.on_input(b'\x1b')                    # interrupt → grace gone
+        assert tracker._awaiting_resume_after_prompt is False
+
+    def test_post_answer_grace_does_not_hijack_interrupt_dismissal(
+        self, tmp_path: Path,
+    ) -> None:
+        """Defense-in-depth for the PROMPT_STATES guard on the waiting→idle
+        routing: even if the grace flag is still set while the state is
+        INTERRUPTED (e.g. a self-interrupt path that bypasses on_input's
+        flag-clear), an interrupt dismissal must IDLE — never be hijacked
+        into RUNNING by the post-answer grace."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # Drive into INTERRUPTED via the real mechanism.
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')                    # interrupt pending
+        feed_with_visible_cursor(tracker, 'Interrupted')
+        assert tracker.current_state == 'interrupted'
+        # Double-escape so the INTERRUPTED dismissal check can fire
+        # (_user_responded), then simulate the grace flag surviving into
+        # INTERRUPTED (a self-interrupt wouldn't route through on_input).
+        tracker.on_input(b'\x1b')
+        tracker._awaiting_resume_after_prompt = True
+        # Dismissed: interrupt marker gone, cursor visible, then silence.
+        t[0] = 5.0
+        feed_with_visible_cursor(tracker, 'no marker here')
+        t[0] = 11.0
+        # PROMPT_STATES guard keeps this on the idle path, not resume.
         assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_safety_timeout_ignores_stale_pre_running_silence(
