@@ -2,7 +2,7 @@
 Abstract base class for CLI providers.
 
 Each provider defines the patterns, timings, and behaviors specific to
-a CLI tool (Claude Code, Codex, Cursor Agent, Gemini CLI, etc.) so that the PTY handler, state
+a CLI tool (Claude Code, Codex, GitHub Copilot, Cursor Agent, Gemini CLI, etc.) so that the PTY handler, state
 tracker, and server can work with any registered CLI.
 """
 
@@ -45,17 +45,17 @@ class CLIProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier used in config/metadata (e.g. 'claude', 'codex', 'cursor-agent', 'gemini')."""
+        """Short identifier used in config/metadata (e.g. 'claude', 'codex', 'copilot', 'cursor-agent', 'gemini')."""
 
     @property
     @abstractmethod
     def command(self) -> str:
-        """Binary name to search for in PATH (e.g. 'claude', 'codex', 'cursor-agent', 'gemini')."""
+        """Binary name to search for in PATH (e.g. 'claude', 'codex', 'copilot', 'cursor-agent', 'gemini')."""
 
     @property
     @abstractmethod
     def display_name(self) -> str:
-        """Human-readable name (e.g. 'Claude Code', 'OpenAI Codex', 'Cursor Agent', 'Gemini CLI')."""
+        """Human-readable name (e.g. 'Claude Code', 'OpenAI Codex', 'GitHub Copilot', 'Cursor Agent', 'Gemini CLI')."""
 
     def is_installed(self) -> bool:
         """Check whether the CLI binary is available on PATH."""
@@ -65,9 +65,10 @@ class CLIProvider(ABC):
     def base_type(self) -> str:
         """Built-in CLI this provider is a variant of.
 
-        Returns one of ``'claude'`` / ``'codex'`` / ``'cursor-agent'`` /
-        ``'gemini'``.  All custom CLIs are variants of one of the four
-        built-in providers — they share the same hook-config dir and
+        Returns one of ``'claude'`` / ``'codex'`` / ``'copilot'`` /
+        ``'cursor-agent'`` / ``'gemini'``.  All custom CLIs are variants
+        of one of the five built-in providers — they share the same
+        hook-config dir and
         settings-file layout, so the gate at session start can use the
         base provider's ``hooks_installed()`` rather than requiring every
         custom author to re-implement that check.
@@ -225,6 +226,27 @@ class CLIProvider(ABC):
         cursor visibility check is disabled (cursor hidden doesn't
         indicate processing).  Defaults to False (Ink TUIs show cursor
         when idle).
+        """
+        return False
+
+    @property
+    def dialogs_hide_cursor(self) -> bool:
+        """Whether the CLI hides the terminal cursor while a
+        permission/menu dialog is on screen.
+
+        Drives whether the running→needs_permission proactive detection
+        in the cursor+silence fallback trusts a *certain* dialog footer
+        even when the cursor is hidden.  For most Ink CLIs the cursor is
+        VISIBLE at a dialog and a *hidden* cursor instead means the CLI
+        is still processing — so dialog-ish text on screen is transient
+        render, not a real prompt (see
+        ``tests/integration/test_dialog_false_positives.py``).  The
+        default False keeps that detection cursor-gated.
+
+        Full-screen TUIs like GitHub Copilot HIDE the cursor while their
+        menu dialogs are up; for them the cursor is not a reliable
+        "still working" signal, so they override this to True and a
+        certain dialog footer promotes regardless of cursor visibility.
         """
         return False
 

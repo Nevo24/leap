@@ -14,6 +14,7 @@ from typing import Any, Optional
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
+from leap.cli_providers.copilot import CopilotProvider
 from leap.cli_providers.cursor_agent import CursorAgentProvider
 from leap.cli_providers.gemini import GeminiProvider
 from leap.utils.atomic_write import atomic_write_json
@@ -122,6 +123,7 @@ class CustomCLIProvider(CLIProvider):
 _BUILTIN_PROVIDERS: dict[str, CLIProvider] = {
     'claude': ClaudeProvider(),
     'codex': CodexProvider(),
+    'copilot': CopilotProvider(),
     'cursor-agent': CursorAgentProvider(),
     'gemini': GeminiProvider(),
 }
@@ -313,7 +315,7 @@ def get_provider(name: Optional[str] = None) -> CLIProvider:
     """Get a CLI provider by name.
 
     Args:
-        name: Provider name ('claude', 'codex', 'cursor-agent', 'gemini'). Defaults to 'claude'.
+        name: Provider name ('claude', 'codex', 'copilot', 'cursor-agent', 'gemini'). Defaults to 'claude'.
 
     Returns:
         The requested CLIProvider instance.

@@ -650,6 +650,7 @@ configure-shell:
 	@chmod +x $(SCRIPTS_DIR)/leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/claude-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/codex-leap-main.sh
+	@chmod +x $(SCRIPTS_DIR)/copilot-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/cursor-agent-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/gemini-leap-main.sh
 	@chmod +x $(SCRIPTS_DIR)/leap-update.sh
@@ -1143,6 +1144,7 @@ uninstall:
 	@rm -f "$$HOME/.codex/leap-hook.sh" "$$HOME/.codex/leap-hook-process.py" "$$HOME/.codex/claudeq-hook.sh" 2>/dev/null || true
 	@rm -f "$$HOME/.cursor/leap-hook.sh" "$$HOME/.cursor/leap-hook-process.py" 2>/dev/null || true
 	@rm -f "$$HOME/.gemini/leap-hook.sh" "$$HOME/.gemini/leap-hook-process.py" 2>/dev/null || true
+	@rm -f "$$HOME/.copilot/leap-hook.sh" "$$HOME/.copilot/leap-hook-process.py" 2>/dev/null || true
 	@python3 -c "\
 import json, os, sys; \
 p = os.path.expanduser('~/.claude/settings.json'); \

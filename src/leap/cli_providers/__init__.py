@@ -1,13 +1,14 @@
 """
 CLI provider abstraction for Leap.
 
-Supports multiple CLI backends (Claude Code, OpenAI Codex, Cursor Agent, Gemini CLI)
+Supports multiple CLI backends (Claude Code, OpenAI Codex, GitHub Copilot, Cursor Agent, Gemini CLI)
 through a unified provider interface.
 """
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.claude import ClaudeProvider
 from leap.cli_providers.codex import CodexProvider
+from leap.cli_providers.copilot import CopilotProvider
 from leap.cli_providers.cursor_agent import CursorAgentProvider
 from leap.cli_providers.gemini import GeminiProvider
 from leap.cli_providers.registry import get_provider, list_installed_providers, list_providers
@@ -26,6 +27,7 @@ __all__ = [
     'CLIState',
     'ClaudeProvider',
     'CodexProvider',
+    'CopilotProvider',
     'CursorAgentProvider',
     'GeminiProvider',
     'PROMPT_STATES',

@@ -1,6 +1,6 @@
 ---
 name: add-cli-provider
-description: Step-by-step guide for adding a new AI CLI backend (provider) to Leap, such as a new coding assistant. Covers the CLIProvider Strategy pattern, state detection, input protocol, menu handling, configure_hooks and hooks_installed, and registry wiring, including custom CLI variants of the four base CLIs. Use when adding, implementing, or registering a new CLI provider.
+description: Step-by-step guide for adding a new AI CLI backend (provider) to Leap, such as a new coding assistant. Covers the CLIProvider Strategy pattern, state detection, input protocol, menu handling, configure_hooks and hooks_installed, and registry wiring, including custom CLI variants of the five base CLIs. Use when adding, implementing, or registering a new CLI provider.
 ---
 
 # Add a New CLI Provider
@@ -181,7 +181,7 @@ Override these only if the CLI differs from the defaults:
 | `image_prefix` | `'@'` | Change if CLI uses different image attachment syntax |
 | `supports_image_attachments` | `False` | Set `True` if CLI supports inline image files |
 | `requires_binary_for_hooks` | `False` | Set `True` if hooks should only configure when CLI is installed |
-| `base_type` | `self.name` | For **built-in** providers, leave the default — it returns the provider's own `name`. **Custom** providers (`CustomCLIProvider`) inherit the value from their wrapped base automatically via `__getattribute__` delegation; you don't write `base_type` yourself. The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup. **All custom CLIs must wrap one of the four base CLIs** — there is no path for a custom CLI that's not a variant of a built-in. |
+| `base_type` | `self.name` | For **built-in** providers, leave the default — it returns the provider's own `name`. **Custom** providers (`CustomCLIProvider`) inherit the value from their wrapped base automatically via `__getattribute__` delegation; you don't write `base_type` yourself. The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup. **All custom CLIs must wrap one of the five base CLIs** — there is no path for a custom CLI that's not a variant of a built-in. |
 | `valid_signal_states` | `SIGNAL_STATES` | Override if the CLI writes different states to signal files |
 | `supports_resume` | `False` | Set `True` when you wire up the **Leap Resume** feature (see below) |
 | `requires_cwd_bound_resume` | `False` | Set `True` if resuming this CLI requires running from the recorded cwd (see **Cross-cwd resume — the "move" mechanism** below). Drives the picker's *Original / Current* prompt. |
@@ -332,7 +332,7 @@ new resume-capable provider to implement the *move mechanism*:
      surfaces the message to the user and exits non-zero.  Source must
      be intact when this raises.
 
-3. **Reference behavior the four built-in providers exhibit** —
+3. **Reference behavior the four resume-capable built-in providers exhibit** —
    pick the one your CLI most resembles and copy the shape:
 
    | Provider | Storage layout | What `relocate_session` does |
@@ -500,7 +500,7 @@ def hooks_installed(self) -> bool:
 - Lenient hook-entry check: any single entry referencing `leap-hook.sh` counts. Do NOT require specific events (Stop / Notification / etc.) — that would break older installs whenever new events are added to `configure_hooks()`.
 - **`isinstance()` at every nesting level.** Don't trust the JSON shape — `data.get("hooks")` could be a list, `entry.get("command")` could be `None` or an int. Always check before iterating or doing `in` checks.
 
-**Custom (user-defined) CLIs** inherit `hooks_installed()` from their base provider via `CustomCLIProvider.__getattribute__`'s delegation — there's also an explicit `def hooks_installed(self): return self._base.hooks_installed()` on `CustomCLIProvider` to satisfy `ABCMeta` (the abstract-method check happens at class-creation time, before delegation can kick in). Custom-CLI authors don't write either method themselves; they pass `base_provider=ClaudeProvider()` (or one of the other three) to `CustomCLIProvider.__init__` and `base_type` follows automatically. **All custom CLIs are variants of one of the four base CLIs** — this is a hard constraint of the project.
+**Custom (user-defined) CLIs** inherit `hooks_installed()` from their base provider via `CustomCLIProvider.__getattribute__`'s delegation — there's also an explicit `def hooks_installed(self): return self._base.hooks_installed()` on `CustomCLIProvider` to satisfy `ABCMeta` (the abstract-method check happens at class-creation time, before delegation can kick in). Custom-CLI authors don't write either method themselves; they pass `base_provider=ClaudeProvider()` (or one of the other four) to `CustomCLIProvider.__init__` and `base_type` follows automatically. **All custom CLIs are variants of one of the five base CLIs** — this is a hard constraint of the project.
 
 ### 5. Optional: Shell Launcher Script
 

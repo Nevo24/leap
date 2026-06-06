@@ -84,7 +84,7 @@ class LeapServer:
         Args:
             tag: Session tag name.
             flags: Optional flags to pass to the CLI.
-            cli: CLI provider name ('claude', 'codex', 'cursor-agent', 'gemini'). Defaults to 'claude'.
+            cli: CLI provider name ('claude', 'codex', 'copilot', 'cursor-agent', 'gemini'). Defaults to 'claude'.
         """
         self.tag = tag
         self.running = True
@@ -4061,14 +4061,14 @@ class LeapServer:
 def main() -> None:
     """Entry point for leap-server command."""
     if len(sys.argv) < 2:
-        print("Usage: leap-server <tag> [--cli claude|codex|cursor-agent|gemini] [--flags...]")
+        print("Usage: leap-server <tag> [--cli claude|codex|copilot|cursor-agent|gemini] [--flags...]")
         sys.exit(1)
 
     tag = sys.argv[1]
 
     if tag.startswith('-'):
         print("Error: Tag cannot start with '-'")
-        print("Usage: leap-server <tag> [--cli claude|codex|cursor-agent|gemini] [--flags...]")
+        print("Usage: leap-server <tag> [--cli claude|codex|copilot|cursor-agent|gemini] [--flags...]")
         sys.exit(1)
 
     # Extract --cli option (consumed by Leap, not passed to the CLI)
@@ -4146,8 +4146,8 @@ def main() -> None:
     # Gate: refuse to start if Leap's hooks aren't wired up for this CLI.
     # Hooks drive session tracking, /resume, Slack output capture, and
     # permission detection — without them the session would silently
-    # misbehave.  Custom CLIs are variants of one of the four base CLIs
-    # (claude / codex / cursor-agent / gemini); we check the *base*
+    # misbehave.  Custom CLIs are variants of one of the five base CLIs
+    # (claude / codex / copilot / cursor-agent / gemini); we check the *base*
     # provider's hooks_installed() since they share its hook-config dir.
     _enforce_hooks_installed_or_exit(cli_name, tag=tag)
 

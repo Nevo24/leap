@@ -1760,61 +1760,60 @@ class CLIStateTracker:
             # conversation…") — skip the idle fallback.
             if running_indicator:
                 return current
-            if cursor_visible:
-                # Before transitioning to idle, check if the screen
-                # has a permission/input dialog.  This detects prompts
-                # seconds earlier than the Notification hook and avoids
-                # a false "idle" flash in the monitor.
-                # Check only the last 5 non-blank rows (where the
-                # dialog footer/menu lives).  Uses the strict
-                # is_dialog_certain() (all patterns or numbered menu)
-                # to avoid false positives from response text that
-                # mentions e.g. "Esc to cancel" in an explanation.
+            # Proactive permission/input dialog detection.  A *certain*
+            # dialog footer in the bottom rows promotes RUNNING →
+            # NEEDS_PERMISSION seconds before any Notification hook and
+            # avoids a false "idle" flash.  Whether it may fire with the
+            # cursor HIDDEN is provider-specific: for most Ink CLIs a
+            # hidden cursor means "still processing", so dialog-ish text
+            # on screen is transient render rather than a real prompt and
+            # the check must stay cursor-gated (see
+            # TestCursorSilenceNeedsCursor).  Full-screen TUIs like GitHub
+            # Copilot instead HIDE the cursor while their menu dialogs are
+            # up, so for them (dialogs_hide_cursor) the cursor isn't a
+            # reliable "working" signal and a certain footer is trusted
+            # regardless — without this a hookless Copilot session stayed
+            # stuck in RUNNING for the whole dialog (confirmed live).
+            # Strict is_dialog_certain() on the last 5 non-blank rows
+            # keeps response text that merely mentions "Esc to cancel"
+            # from false-promoting.
+            with self._screen_lock:
+                all_lines = self._get_display_lines()
+            filled = [ln for ln in all_lines if ln.strip()]
+            compact_tail = ''.join(filled[-5:]).replace(' ', '')
+            if (cursor_visible or self._provider.dialogs_hide_cursor) \
+                    and self._provider.is_dialog_certain(compact_tail):
+                _log.debug(
+                    'GET_STATE running→needs_permission '
+                    '(dialog on screen + output silent %.1fs)',
+                    self._clock() - self._last_output_time,
+                )
+                self._interrupt_pending = False
+                self._user_responded = False
+                if self._trust_dialog_phase:
+                    self._trust_dialog_phase = False
+                with self._lock:
+                    self._state = CLIState.NEEDS_PERMISSION
+                    self._waiting_since = self._clock()
                 with self._screen_lock:
-                    all_lines = self._get_display_lines()
-                filled = [ln for ln in all_lines if ln.strip()]
-                tail = filled[-5:] if filled else []
-                compact_tail = ''.join(tail).replace(
-                    ' ', '',
-                )
-                has_dialog = self._provider.is_dialog_certain(
-                    compact_tail,
-                )
-                if has_dialog:
-                    _log.debug(
-                        'GET_STATE running→needs_permission '
-                        '(dialog on screen + output silent %.1fs)',
-                        self._clock() - self._last_output_time,
-                    )
-                    self._interrupt_pending = False
-                    self._user_responded = False
-                    if self._trust_dialog_phase:
-                        self._trust_dialog_phase = False
-                    with self._lock:
-                        self._state = CLIState.NEEDS_PERMISSION
-                        self._waiting_since = self._clock()
-                    with self._screen_lock:
-                        # Reuse the lines already captured above
-                        # instead of re-reading the screen.
-                        self._prompt_snapshot = all_lines
-                        self._last_running_snapshot = list(
-                            all_lines)
-                        # Deliberately do NOT _reset_screen() here.  The
-                        # dialog (e.g. AskUserQuestion, which fires no
-                        # permission hook) is on the live screen right
-                        # now, and the waiting→idle dismissal checks
-                        # below read the LIVE screen to decide whether it
-                        # has been answered.  Resetting wipes pyte, and
-                        # Ink — believing the dialog is already drawn —
-                        # then only partially repaints, so the footer
-                        # never returns to the buffer.  The dismissal
-                        # checks would see "no dialog" and flip the
-                        # session idle while the user still has to answer
-                        # (the Permission↔Idle oscillation).  The
-                        # _handle_idle_output proactive promotion avoids
-                        # the same reset for the same reason.
-                    return CLIState.NEEDS_PERMISSION
+                    # Reuse the lines already captured above instead of
+                    # re-reading the screen.
+                    self._prompt_snapshot = all_lines
+                    self._last_running_snapshot = list(all_lines)
+                    # Deliberately do NOT _reset_screen() here.  The
+                    # dialog (e.g. AskUserQuestion, which fires no
+                    # permission hook) is on the live screen right now,
+                    # and the waiting→idle dismissal checks below read the
+                    # LIVE screen to decide whether it has been answered.
+                    # Resetting wipes pyte, and Ink — believing the dialog
+                    # is already drawn — then only partially repaints, so
+                    # the footer never returns to the buffer.  The
+                    # dismissal checks would see "no dialog" and flip the
+                    # session idle while the user still has to answer (the
+                    # Permission↔Idle oscillation).
+                return CLIState.NEEDS_PERMISSION
 
+            if cursor_visible:
                 # Transcript guard before falling to idle: a long
                 # silent tool call (Bash, WebFetch with no progress
                 # output) leaves the cursor visible and the screen

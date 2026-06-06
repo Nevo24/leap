@@ -1,6 +1,6 @@
 # Leap
 
-PTY-based client-server system for managing AI CLI sessions (Claude Code, OpenAI Codex, Cursor Agent, Gemini CLI) with message queueing, image support, and native IDE scrolling.
+PTY-based client-server system for managing AI CLI sessions (Claude Code, OpenAI Codex, GitHub Copilot, Cursor Agent, Gemini CLI) with message queueing, image support, and native IDE scrolling.
 
 ## Quick Start
 
@@ -44,8 +44,8 @@ src/
 ├── scripts/              # Entry points: leap-main.sh, leap-server.py, leap-client.py,
 │                         #   leap-monitor.py, leap-slack.py, hooks, resume picker, installers
 └── leap/
-    ├── cli_providers/    # CLI backends (Strategy pattern): claude / codex / cursor_agent /
-    │                     #   gemini + base.py, registry.py, states.py
+    ├── cli_providers/    # CLI backends (Strategy pattern): claude / codex / copilot /
+    │                     #   cursor_agent / gemini + base.py, registry.py, states.py
     ├── utils/            # constants, terminal, menu, socket_utils, resume_store,
     │                     #   relocation + per-CLI session-move helpers
     ├── server/           # PTY server: server.py, pty_handler.py, socket_handler.py,
@@ -103,7 +103,7 @@ Type `^^` in the server terminal to queue a message. Double-caret (`^^`) activat
 
 **Saved messages**: Type `^^` inside capture mode to save the current message to history and clear the buffer. Browse saved messages with arrow up/down. History persists across sessions in `.storage/saved_messages.json` (max 100 entries, shared across all CLIs/sessions). Editing a recalled message does not modify the saved history — only explicit `^^` save does.
 
-**CLI input-history recall (↑/↓ outside capture)**: Leap intercepts ↑/↓ at the CLI's input prompt and drives recall itself by reading the CLI's own on-disk history (Claude: `~/.claude/history.jsonl` filtered by `project == cwd`; Codex: `~/.codex/history.jsonl`; Cursor: `~/.cursor/prompt_history.json`; Gemini: `~/.gemini/tmp/<slug>/logs.json`). Without the intercept the recalled text lives only in the CLI's TUI render and never enters Leap's input mirror — so a subsequent `^^` would snapshot an empty buffer. With it, `^^` after ↑ captures the recalled message (including paste content for Claude entries: `[Pasted text #N]` placeholders are resolved inline from `pastedContents` so the actual content reaches the LLM on submit, not the placeholder string). The cache invalidates on Enter / Ctrl+C / queue dispatch / capture exit so just-submitted messages show up immediately on the next ↑. Providers opt in via `CLIProvider.input_history(cwd)`; returning `None` falls back to passthrough (CLI handles ↑/↓ natively).
+**CLI input-history recall (↑/↓ outside capture)**: Leap intercepts ↑/↓ at the CLI's input prompt and drives recall itself by reading the CLI's own on-disk history (Claude: `~/.claude/history.jsonl` filtered by `project == cwd`; Codex: `~/.codex/history.jsonl`; Cursor: `~/.cursor/prompt_history.json`; Gemini: `~/.gemini/tmp/<slug>/logs.json`; Copilot: `~/.copilot/command-history-state.json`, stored newest-first so Leap reverses it). Without the intercept the recalled text lives only in the CLI's TUI render and never enters Leap's input mirror — so a subsequent `^^` would snapshot an empty buffer. With it, `^^` after ↑ captures the recalled message (including paste content for Claude entries: `[Pasted text #N]` placeholders are resolved inline from `pastedContents` so the actual content reaches the LLM on submit, not the placeholder string). The cache invalidates on Enter / Ctrl+C / queue dispatch / capture exit so just-submitted messages show up immediately on the next ↑. Providers opt in via `CLIProvider.input_history(cwd)`; returning `None` falls back to passthrough (CLI handles ↑/↓ natively).
 
 ## Auto-Approve Architecture (Claude)
 
@@ -128,7 +128,7 @@ ALWAYS-mode auto-approve is hook-based: Claude's `PermissionRequest` hook return
 
 - **New CLI provider** → See the `add-cli-provider` skill for a comprehensive step-by-step guide. Key files: create `cli_providers/<name>.py`, register in `registry.py`, implement `configure_hooks()` and `hooks_installed()` (the latter must be the symmetric inverse of the former — both halves checked, never raises). The CLI selector, monitor table, ASCII banner, and shell flags are all dynamic and require no changes.
 
-  **All custom CLIs are variants of one of the four base CLIs** (Claude / Codex / Cursor Agent / Gemini). `CustomCLIProvider` (in `registry.py`) wraps a base provider and delegates everything via `__getattribute__` — including `hooks_installed()` and `base_type`. Custom-CLI authors don't set `base_type` themselves; they pass `base_provider=ClaudeProvider()` (or one of the other three) to `CustomCLIProvider.__init__`, and `base_type` follows automatically (it resolves to the base's `name` via the `__getattribute__` delegation). The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup automatically. There is no path for a custom CLI that's not built atop one of the four — design accordingly.
+  **All custom CLIs are variants of one of the five base CLIs** (Claude / Codex / GitHub Copilot / Cursor Agent / Gemini). `CustomCLIProvider` (in `registry.py`) wraps a base provider and delegates everything via `__getattribute__` — including `hooks_installed()` and `base_type`. Custom-CLI authors don't set `base_type` themselves; they pass `base_provider=ClaudeProvider()` (or one of the other four) to `CustomCLIProvider.__init__`, and `base_type` follows automatically (it resolves to the base's `name` via the `__getattribute__` delegation). The session-start gate uses `get_provider(provider.base_type).hooks_installed()` so custom CLIs share their base's hook setup automatically. There is no path for a custom CLI that's not built atop one of the five — design accordingly.
 - **New monitor dialog / window** → See the `add-dialog` skill. Covers `ZoomMixin` setup, dialog geometry persistence, theme integration, the font-size cascade quirk, and — critically — the **prefs persistence model** (`MonitorWindow._DIALOG_OWNED_KEYS` and why `save_monitor_prefs(self._prefs)` must NOT be called outside `_save_prefs`). Skipping that last part is the most common way dialog state silently gets clobbered.
 - **Adding / removing / reordering a session-table column** → The `COL_*` constants in `monitor/app.py` are referenced by *four* positional-index sites that DON'T import them — change any column and you MUST update all four in the same diff, or they silently drift off-by-one (wrong separators, wrong monospace columns, wrong alignment):
   1. `_HEADER_LABELS` in `monitor/app.py` (header strings, parallel to `COL_*` order)

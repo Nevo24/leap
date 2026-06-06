@@ -2,7 +2,7 @@
 
 **A queueing system and dashboard for managing multiple AI CLI sessions + Cursor Editor Agent Sessions**
 
-Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, Cursor, iTerm2, cmux, WezTerm, Arduino IDE, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
+Run AI coding agents (Claude Code, Codex CLI, GitHub Copilot, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, Cursor, iTerm2, cmux, WezTerm, Arduino IDE, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
 
 **NEW!** Manage your Cursor Editor Agent sessions right in the monitor too - live status, PR tracking, and one-click jump to the exact tab.
 
@@ -18,7 +18,7 @@ Run AI coding agents (Claude Code, Codex CLI, Cursor Agent, Gemini CLI) in any t
 
 **Platform:** macOS (full support). Linux works for core queueing and Slack, but the Monitor GUI is macOS only.
 
-**Prerequisites:** Python 3.11+, and one or more AI CLIs: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [Cursor Agent](https://cursor.com/docs/cli/overview), [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+**Prerequisites:** Python 3.11+, and one or more AI CLIs: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex), [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli), [Cursor Agent](https://cursor.com/docs/cli/overview), [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 
 ```bash
 git clone https://github.com/nevo24/leap.git
@@ -71,4 +71,4 @@ MIT License - see [LICENSE](LICENSE)
 
 ---
 
-**Links:** [GitHub](https://github.com/nevo24/leap) • [Claude Code](https://docs.anthropic.com/en/docs/claude-code) • [Codex CLI](https://github.com/openai/codex) • [Cursor Agent](https://cursor.com/docs/cli/overview) • [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+**Links:** [GitHub](https://github.com/nevo24/leap) • [Claude Code](https://docs.anthropic.com/en/docs/claude-code) • [Codex CLI](https://github.com/openai/codex) • [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli) • [Cursor Agent](https://cursor.com/docs/cli/overview) • [Gemini CLI](https://github.com/google-gemini/gemini-cli)
