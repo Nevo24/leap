@@ -22,6 +22,7 @@ from leap.server.state_tracker import CLIStateTracker
 RUNNING_FOOTER = "◎ Working    esc cancel"
 DIALOG_FOOTER = "↑/↓ to navigate · enter to select · esc to cancel"
 QUESTION_FOOTER = "↑/↓ to select · enter to confirm · esc to cancel"
+QUESTION_FREETEXT_FOOTER = "❯ type your answer...                    enter to submit · esc to cancel"
 IDLE_FOOTER = "❯                                   / commands · ? help"
 INTERRUPT_BANNER = "● Operation cancelled by user"
 
@@ -87,7 +88,7 @@ class TestCopilotIdentity:
         p = CopilotProvider()
         assert p.running_indicator_patterns == [b'esccancel']
         assert p.dialog_patterns == [b'entertoselect', b'esctocancel']
-        assert p.input_dialog_patterns == [b'entertoconfirm', b'esctocancel']
+        assert p.input_dialog_patterns == [b'entertoconfirm', b'entertosubmit']
         assert p.idle_indicator_patterns == [b'/commands']
         assert p.interrupted_pattern == b'Operationcancelledbyuser'
         # confirmed pattern disabled (the banner lingers in scrollback).
@@ -230,6 +231,20 @@ class TestCopilotStateDetection:
         tr = _make_tracker(tmp_path, t, CopilotProvider())
         tr.on_send()
         _feed_visible(tr, QUESTION_FOOTER)
+        t[0] = _BASE + 1.0
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
+
+    def test_freetext_question_footer_promotes_to_needs_input(
+        self, tmp_path: Path,
+    ) -> None:
+        """Copilot's *free-text* ask_user question ("enter to submit"
+        footer, with a visible text-input cursor) must read as
+        NEEDS_INPUT - not the false IDLE the cursor+silence path would
+        otherwise conclude from the visible cursor."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_visible(tr, QUESTION_FREETEXT_FOOTER)   # visible cursor (text field)
         t[0] = _BASE + 1.0
         assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
 

@@ -109,13 +109,15 @@ class CopilotProvider(CLIProvider):
 
     @property
     def input_dialog_patterns(self) -> list[bytes]:
-        # Copilot's ask_user QUESTION dialog footer is
-        #   "↑/↓ to select · enter to confirm · esc to cancel"
-        # - note "enter to CONFIRM" vs a permission prompt's "enter to
-        # SELECT".  Detecting it as needs_input (not needs_permission)
-        # keeps ALWAYS-mode auto-approve from auto-answering a question
-        # meant for the user, and gets it off "Running" in the monitor.
-        return [b'entertoconfirm', b'esctocancel']
+        # Copilot ask_user QUESTION dialogs have two footer shapes:
+        #   menu:      "↑/↓ to select · enter to confirm · esc to cancel"
+        #   free-text: "enter to submit · esc to cancel"  (visible cursor)
+        # The verb ("confirm"/"submit") marks a question, vs a permission
+        # prompt's "enter to select".  ANY present -> needs_input (not
+        # needs_permission) - keeps ALWAYS-mode auto-approve from
+        # auto-answering a question, and gets it off "Running" / out of
+        # the false "Idle" the visible-cursor free-text field would cause.
+        return [b'entertoconfirm', b'entertosubmit']
 
     @property
     def running_indicator_patterns(self) -> list[bytes]:

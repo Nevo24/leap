@@ -1583,8 +1583,11 @@ class CLIStateTracker:
                 # needs_permission and auto-answered.
                 promote_to: Optional[str] = None
                 if current == CLIState.RUNNING:
+                    # ANY input-dialog pattern (Copilot has one per
+                    # question footer shape: "enter to confirm" /
+                    # "enter to submit") marks a question -> needs_input.
                     input_pats = self._provider.input_dialog_patterns
-                    if input_pats and all(
+                    if input_pats and any(
                         p.decode('utf-8', errors='replace') in compact_tail
                         for p in input_pats
                     ):

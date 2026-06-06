@@ -240,17 +240,18 @@ class CLIProvider(ABC):
 
     @property
     def input_dialog_patterns(self) -> list[bytes]:
-        """Compact patterns (ALL must be present, matched on the bottom
-        rows) that mark a dialog as the CLI asking the USER a question /
+        """Compact patterns matched on the bottom rows; if ANY is
+        present the dialog is the CLI asking the USER a question /
         awaiting free input — i.e. ``needs_input`` rather than a
         tool-permission prompt (``needs_permission``, via
         :attr:`dialog_patterns`).
 
         The distinction matters: ``needs_permission`` is auto-approved in
         ALWAYS mode, but a question must reach the user (mirrors the
-        AskUserQuestion exclusion).  GitHub Copilot's ``ask_user`` dialog
-        footer reads "enter to confirm" where a permission prompt reads
-        "enter to select", so the two are separable.
+        AskUserQuestion exclusion).  GitHub Copilot's ``ask_user`` dialogs
+        say "enter to confirm" (menu) or "enter to submit" (free-text),
+        either of which marks a question, vs a permission prompt's "enter
+        to select", so the two are separable.
 
         Default empty — providers that don't separate the two report
         ``needs_permission`` for every detected dialog.
