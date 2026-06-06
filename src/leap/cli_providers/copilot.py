@@ -108,6 +108,16 @@ class CopilotProvider(CLIProvider):
         return [b'entertoselect', b'esctocancel']
 
     @property
+    def input_dialog_patterns(self) -> list[bytes]:
+        # Copilot's ask_user QUESTION dialog footer is
+        #   "↑/↓ to select · enter to confirm · esc to cancel"
+        # - note "enter to CONFIRM" vs a permission prompt's "enter to
+        # SELECT".  Detecting it as needs_input (not needs_permission)
+        # keeps ALWAYS-mode auto-approve from auto-answering a question
+        # meant for the user, and gets it off "Running" in the monitor.
+        return [b'entertoconfirm', b'esctocancel']
+
+    @property
     def running_indicator_patterns(self) -> list[bytes]:
         # While a turn is in flight Copilot shows a footer
         #   "◎ Working    esc cancel"
@@ -121,6 +131,20 @@ class CopilotProvider(CLIProvider):
         # mid-turn; it vanishes the instant the turn ends, letting the
         # cursor+silence fallback idle the session.
         return [b'esccancel']
+
+    @property
+    def idle_indicator_patterns(self) -> list[bytes]:
+        # Copilot's idle prompt is NOT quiescent: it animates its input
+        # box and emits PTY output continuously even when idle (a focused
+        # real terminal drives this; it stays quiet under a bare PTY), so
+        # the silence-based running->idle fallbacks never fire and the
+        # session sticks in RUNNING.  The idle footer "/ commands · ? help"
+        # (compact contains "/commands") is the reliable end-of-turn
+        # signal: absent while a turn runs (footer is "esc cancel") and
+        # during dialogs ("enter to select · esc to cancel").  Setting
+        # this switches Copilot to footer-driven idle detection and
+        # disables the cursor auto-resume heuristic.
+        return [b'/commands']
 
     @property
     def dialogs_hide_cursor(self) -> bool:
@@ -144,6 +168,15 @@ class CopilotProvider(CLIProvider):
         return False
 
     # -- Input protocol --------------------------------------------------
+
+    @property
+    def interrupt_key(self) -> bytes:
+        # Copilot IGNORES Escape mid-turn (verified live: the response
+        # kept streaming and the "Working" footer stayed) - it cancels on
+        # Ctrl+C, which prints "Operation cancelled by user".  A second
+        # Ctrl+C would exit, so exactly one is sent.  (The default Escape
+        # is what the monitor's Interrupt action sends to the others.)
+        return b'\x03'
 
     @property
     def supports_image_attachments(self) -> bool:

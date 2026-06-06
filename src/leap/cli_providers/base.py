@@ -218,6 +218,46 @@ class CLIProvider(ABC):
         return []
 
     @property
+    def idle_indicator_patterns(self) -> list[bytes]:
+        """Compact patterns (ANSI-stripped, spaces+newlines removed) that,
+        in the bottom rows, mean the CLI has returned to its idle prompt.
+
+        Set this for CLIs whose idle prompt is NOT quiescent — e.g.
+        GitHub Copilot animates its input box and emits PTY output
+        continuously even when idle, so the tracker's silence-based
+        running→idle fallbacks never fire and the session sticks in
+        RUNNING.  When non-empty, the state tracker drives RUNNING
+        transitions off the footer instead of output silence: the idle
+        indicator appearing (with the running indicator gone, and no
+        dialog footer) ends the turn, and the cursor-based auto-resume
+        heuristic is disabled (the cursor toggles during the idle
+        animation and would otherwise false-resume idle→running).
+
+        Return empty to opt out (default) — the silence/cursor
+        heuristics are used as before.
+        """
+        return []
+
+    @property
+    def input_dialog_patterns(self) -> list[bytes]:
+        """Compact patterns (ALL must be present, matched on the bottom
+        rows) that mark a dialog as the CLI asking the USER a question /
+        awaiting free input — i.e. ``needs_input`` rather than a
+        tool-permission prompt (``needs_permission``, via
+        :attr:`dialog_patterns`).
+
+        The distinction matters: ``needs_permission`` is auto-approved in
+        ALWAYS mode, but a question must reach the user (mirrors the
+        AskUserQuestion exclusion).  GitHub Copilot's ``ask_user`` dialog
+        footer reads "enter to confirm" where a permission prompt reads
+        "enter to select", so the two are separable.
+
+        Default empty — providers that don't separate the two report
+        ``needs_permission`` for every detected dialog.
+        """
+        return []
+
+    @property
     def cursor_hidden_while_idle(self) -> bool:
         """Whether the CLI keeps the terminal cursor hidden during idle.
 
@@ -468,6 +508,23 @@ class CLIProvider(ABC):
         return self.free_text_option_prefix is None
 
     # -- Input protocol --------------------------------------------------
+
+    @property
+    def interrupt_key(self) -> bytes:
+        """Key sequence that interrupts/cancels a running turn.
+
+        Sent to the PTY (and fed to the state tracker's ``on_input``)
+        when a Leap client/monitor requests an interrupt.  Defaults to
+        Escape (``\\x1b``), which cancels in Claude / Codex / Cursor
+        Agent / Gemini.  Override for CLIs that cancel on a different
+        key — e.g. GitHub Copilot ignores Escape mid-turn and cancels on
+        Ctrl+C (``\\x03``).
+
+        Must be a sequence that ``on_input`` recognises as an interrupt
+        (Escape ``\\x1b`` or Ctrl+C ``\\x03``) so the tracker arms
+        ``_interrupt_pending`` alongside the keystroke reaching the CLI.
+        """
+        return b'\x1b'
 
     @property
     def paste_settle_time(self) -> float:

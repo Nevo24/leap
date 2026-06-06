@@ -2915,7 +2915,7 @@ class TableBuilderMixin(_Base):
             menu.setToolTipsVisible(True)
 
         interrupt_action = menu.addAction('Interrupt')
-        interrupt_action.setToolTip('Send Ctrl+C to stop the CLI')
+        interrupt_action.setToolTip('Interrupt/cancel the running CLI')
         interrupt_action.triggered.connect(
             lambda _checked, t=tag: self._send_interrupt(t)
         )

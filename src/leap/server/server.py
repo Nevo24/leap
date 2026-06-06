@@ -633,8 +633,13 @@ class LeapServer:
             return {'status': 'ok', 'auto_send_mode': mode}
 
         elif msg_type == 'interrupt':
-            self.state.on_input(b'\x1b')
-            self.pty.send('\x1b')
+            # Interrupt key is provider-specific: Escape cancels in
+            # Claude/Codex/Cursor/Gemini, but GitHub Copilot ignores
+            # Escape mid-turn and cancels on Ctrl+C.  on_input arms
+            # _interrupt_pending; pty.send delivers the keystroke.
+            interrupt_key = self._provider.interrupt_key
+            self.state.on_input(interrupt_key)
+            self.pty.send(interrupt_key.decode('latin-1'))
             return {'status': 'sent'}
 
         elif msg_type == 'get_prompt':

@@ -21,6 +21,7 @@ from leap.server.state_tracker import CLIStateTracker
 # -- Verified on-screen footers (copilot v1.0.60) ------------------------
 RUNNING_FOOTER = "◎ Working    esc cancel"
 DIALOG_FOOTER = "↑/↓ to navigate · enter to select · esc to cancel"
+QUESTION_FOOTER = "↑/↓ to select · enter to confirm · esc to cancel"
 IDLE_FOOTER = "❯                                   / commands · ? help"
 INTERRUPT_BANNER = "● Operation cancelled by user"
 
@@ -86,9 +87,14 @@ class TestCopilotIdentity:
         p = CopilotProvider()
         assert p.running_indicator_patterns == [b'esccancel']
         assert p.dialog_patterns == [b'entertoselect', b'esctocancel']
+        assert p.input_dialog_patterns == [b'entertoconfirm', b'esctocancel']
+        assert p.idle_indicator_patterns == [b'/commands']
         assert p.interrupted_pattern == b'Operationcancelledbyuser'
         # confirmed pattern disabled (the banner lingers in scrollback).
         assert p.confirmed_interrupt_pattern is None
+        # Copilot cancels on Ctrl+C, not Escape (verified live: Escape is
+        # ignored mid-turn).  The monitor's Interrupt sends this key.
+        assert p.interrupt_key == b'\x03'
 
 
 # -- Footer disambiguation (the load-bearing design property) ------------
@@ -213,6 +219,20 @@ class TestCopilotStateDetection:
         t[0] = _BASE + 10.0  # >5s silence, cursor visible
         assert tr.get_state(pty_alive=True) == CLIState.NEEDS_PERMISSION
 
+    def test_question_footer_promotes_to_needs_input(
+        self, tmp_path: Path,
+    ) -> None:
+        """Copilot's ask_user QUESTION dialog ("enter to confirm" footer)
+        must read as NEEDS_INPUT - not Running (the reported bug), and not
+        NEEDS_PERMISSION (which ALWAYS-mode auto-approve would auto-answer
+        for the user)."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_visible(tr, QUESTION_FOOTER)
+        t[0] = _BASE + 1.0
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
+
     def test_permission_dialog_detected_even_with_cursor_hidden(
         self, tmp_path: Path,
     ) -> None:
@@ -248,12 +268,115 @@ class TestCopilotStateDetection:
         # Dialog still up + cursor still hidden: stay NEEDS_PERMISSION.
         assert tr.get_state(pty_alive=True) == CLIState.NEEDS_PERMISSION
 
-    def test_interrupt_banner_goes_interrupted(self, tmp_path: Path) -> None:
-        """Esc (routed through on_input, arming _interrupt_pending) plus
-        the "Operation cancelled by user" banner → INTERRUPTED."""
+    def test_idles_via_footer_despite_continuous_output(
+        self, tmp_path: Path,
+    ) -> None:
+        """The shipped bug: Copilot emits PTY output continuously even while
+        idle, so _last_output_time never goes stale and every silence-based
+        fallback is defeated (the session sticks in RUNNING forever).
+        Footer-driven detection must still idle the session once the idle
+        footer is on screen, with no period of silence at all."""
         t = [_BASE]
         tr = _make_tracker(tmp_path, t, CopilotProvider())
         tr.on_send()
-        tr.on_input(b'\x1b')  # standalone Escape
+        final = None
+        # Re-feed the idle footer every 0.5s (output never stops) and poll;
+        # a purely silence-based detector would stay RUNNING here forever.
+        for i in range(1, 12):
+            t[0] = _BASE + i * 0.5
+            _feed_visible(tr, IDLE_FOOTER)
+            final = tr.get_state(pty_alive=True)
+        assert final == CLIState.IDLE
+
+    def test_idle_stays_idle_despite_cursor_toggle(
+        self, tmp_path: Path,
+    ) -> None:
+        """Copilot's idle animation toggles the cursor; the cursor-hidden
+        auto-resume heuristic must be disabled for footer-idle providers,
+        or the session spontaneously flips IDLE->RUNNING (the oscillation
+        the user observed)."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        t[0] = _BASE + 3.0
+        _feed_visible(tr, IDLE_FOOTER)
+        assert tr.get_state(pty_alive=True) == CLIState.IDLE
+        t[0] = _BASE + 4.0
+        _feed_hidden(tr, IDLE_FOOTER)     # idle repaint with cursor hidden
+        assert tr.get_state(pty_alive=True) == CLIState.IDLE   # NOT running
+
+    def test_idle_to_running_via_running_footer(
+        self, tmp_path: Path,
+    ) -> None:
+        """idle->running for Copilot is footer-driven: the "esc cancel"
+        running footer reappearing resumes RUNNING (cursor auto-resume is
+        off for footer-idle providers)."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        t[0] = _BASE + 3.0
+        _feed_visible(tr, IDLE_FOOTER)
+        assert tr.get_state(pty_alive=True) == CLIState.IDLE
+        t[0] = _BASE + 4.0
+        _feed_visible(tr, RUNNING_FOOTER)   # copilot starts working again
+        assert tr.current_state == CLIState.RUNNING
+
+    def test_lingering_esc_cancel_status_idles_and_stays_idle(
+        self, tmp_path: Path,
+    ) -> None:
+        """After a question is answered, Copilot leaves a stale
+        '● Asking question  esc cancel' status line on screen *next to* the
+        idle footer.  The idle footer must win: the session idles (not
+        stuck on RUNNING - the 'answering a question sticks in Running'
+        bug), and a re-render of that lingering status must not flip it
+        back to RUNNING."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        # Idle prompt is back, but a stale "esc cancel" status lingers
+        # below it (matches running_indicator_patterns).
+        stale = IDLE_FOOTER + "\r\n● Asking question   esc cancel        GPT-5 mini"
+        _feed_visible(tr, stale)
+        t[0] = _BASE + 5.0
+        assert tr.get_state(pty_alive=True) == CLIState.IDLE   # not stuck RUNNING
+        _feed_visible(tr, stale)                                # Copilot re-renders
+        assert tr.get_state(pty_alive=True) == CLIState.IDLE    # no oscillation back
+
+    def test_monitor_interrupt_key_drives_interrupted(
+        self, tmp_path: Path,
+    ) -> None:
+        """End-to-end of the monitor's Interrupt for Copilot: the server
+        sends provider.interrupt_key (Ctrl+C for Copilot) through
+        on_input (arming _interrupt_pending) and the PTY; the resulting
+        "Operation cancelled by user" banner then drives
+        RUNNING → INTERRUPTED.  (Escape, the old hardcoded key, does
+        nothing mid-turn in Copilot - verified live.)"""
+        p = CopilotProvider()
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, p)
+        tr.on_send()
+        tr.on_input(p.interrupt_key)          # what server.py feeds on interrupt
+        _feed_visible(tr, INTERRUPT_BANNER)   # Copilot's response to Ctrl+C
+        assert tr.current_state == CLIState.INTERRUPTED
+
+    def test_interrupted_idles_via_footer_after_cancel(
+        self, tmp_path: Path,
+    ) -> None:
+        """After Ctrl+C, Copilot returns to its (continuously-animated)
+        idle prompt.  INTERRUPTED must recover to IDLE via the footer too
+        (same continuous-output problem as RUNNING) so queued messages can
+        flow - otherwise the session would stick on 'Interrupted'."""
+        p = CopilotProvider()
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, p)
+        tr.on_send()
+        tr.on_input(p.interrupt_key)
         _feed_visible(tr, INTERRUPT_BANNER)
         assert tr.current_state == CLIState.INTERRUPTED
+        # Copilot is back at the idle prompt; footer-detector idles it
+        # (continuous output -> re-feed to show silence is irrelevant).
+        for i in range(1, 5):
+            t[0] = _BASE + i * 0.5
+            _feed_visible(tr, IDLE_FOOTER)
+            state = tr.get_state(pty_alive=True)
+        assert state == CLIState.IDLE

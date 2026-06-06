@@ -628,6 +628,30 @@ If no output for `silence_timeout` seconds while in `running` state → transiti
     └──────────────┘                   └───────────────────┘
 ```
 
+### Real-CLI gotchas (learned adding GitHub Copilot, a hookless animated TUI)
+
+- **The idle prompt may not be quiet.** Some TUIs animate their input box
+  and emit PTY output *continuously even while idle* - but only in a
+  focused real terminal; a bare pexpect PTY stays quiet, so a headless
+  capture lies. Continuous output defeats every silence-based idle
+  fallback (the session sticks on RUNNING) and makes cursor visibility a
+  useless busy/idle signal. The fix is to drive idle off a stable footer
+  string (`idle_indicator_patterns`), not silence. So: verify idle /
+  interrupt behavior against a *real focused terminal* (or a live
+  `.storage/state_logs/<tag>.log`), never just a headless pexpect run.
+- **Don't assume Escape interrupts.** Copilot ignores Escape mid-turn and
+  cancels on Ctrl+C; set `interrupt_key` (it defaults to Escape).
+- **A "question" is not a "permission".** If the CLI asks the user
+  questions *and* asks tool-permission, map the question to `needs_input`
+  (via `input_dialog_patterns`), not `needs_permission` - else ALWAYS-mode
+  auto-approve auto-answers it for the user. Their footers can differ
+  ("enter to confirm" vs "enter to select").
+- **Gate every shared state-tracker change on a provider property that
+  defaults to current behavior.** A new CLI's quirks must never alter the
+  shared tracker unconditionally - a blanket change regressed Claude this
+  session. Defaults must keep the other CLIs byte-identical; prove it with
+  the full unit + integration suites before committing.
+
 ## Testing Your Provider
 
 ### 1. Verify Registration

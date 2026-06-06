@@ -33,6 +33,13 @@ from leap.utils.constants import (
 
 _log = logging.getLogger('leap.state')
 
+# Minimum time a turn must have been RUNNING before the footer-based idle
+# detection (idle_indicator_patterns) may conclude idle.  Skips the idle
+# footer that can render for a frame at turn start before the working
+# indicator appears.  Only affects providers that set
+# idle_indicator_patterns (GitHub Copilot).
+_IDLE_INDICATOR_GRACE: float = 2.0
+
 
 def _setup_debug_log(signal_file: Path) -> None:
     """Set up per-session debug log.
@@ -289,11 +296,27 @@ class CLIStateTracker:
         """Return True if the screen shows a provider 'busy' indicator
         (e.g. Claude's "Compacting conversation…").
 
+        The idle-prompt footer WINS over the running indicator: some TUIs
+        (GitHub Copilot) leave a stale "<verb>  esc cancel" status line on
+        screen after a tool/question finishes, which keeps matching the
+        running indicator even though the input prompt is already back.
+        When the provider's ``idle_indicator_patterns`` is on the bottom
+        rows, the session is idle, not running - so a lingering "esc
+        cancel" can't trap it in RUNNING (the "answering a question
+        sticks in Running" bug).
+
         Must be called with ``_screen_lock`` held.
         """
         patterns = self._provider.running_indicator_patterns
         if not patterns:
             return False
+        idle_pats = self._provider.idle_indicator_patterns
+        if idle_pats:
+            filled = [ln for ln in self._get_display_lines() if ln.strip()]
+            tail = ''.join(filled[-5:]).replace(' ', '')
+            if any(p.decode('utf-8', errors='replace') in tail
+                   for p in idle_pats):
+                return False
         compact = self._get_screen_text().replace(' ', '').replace('\n', '')
         return any(
             p.decode('utf-8', errors='replace') in compact
@@ -857,11 +880,7 @@ class CLIStateTracker:
         # label and move idle → running immediately so the monitor
         # reflects reality and queued messages don't auto-send into
         # a compacting CLI.
-        running_patterns = self._provider.running_indicator_patterns
-        if running_patterns and any(
-            p.decode('utf-8', errors='replace') in compact
-            for p in running_patterns
-        ):
+        if self._screen_has_running_indicator():
             _log.debug(
                 'ON_OUTPUT idle→running (running indicator on screen)',
             )
@@ -1526,6 +1545,100 @@ class CLIStateTracker:
                     self._reset_screen()
                 return CLIState.IDLE
 
+        # -- Footer-driven transitions for non-quiescent CLIs (Copilot) --
+        # Some CLIs animate their idle prompt and emit PTY output
+        # continuously even when idle (GitHub Copilot repaints its input
+        # box in a focused terminal), so every silence-based heuristic
+        # below never fires - the session sticks in whatever non-idle
+        # state it was in (RUNNING after a turn, INTERRUPTED after a
+        # Ctrl+C, NEEDS_PERMISSION after a self-dismissed dialog).  When
+        # the provider sets idle_indicator_patterns, drive transitions
+        # OUT of a non-idle state purely off the bottom-row footer,
+        # independent of output activity:
+        #   * running indicator present ("esc cancel")  -> still working
+        #   * RUNNING + a certain dialog footer          -> needs_permission
+        #   * idle indicator present ("/ commands...")   -> idle (turn
+        #     ended / dialog dismissed / interrupt acknowledged)
+        # RUNNING waits out a short grace first (the idle footer can flash
+        # for one frame at turn start before the working footer renders);
+        # the waiting/interrupted states already happened, so they idle as
+        # soon as the prompt is back.  Gated on idle_indicator_patterns,
+        # so every built-in provider except Copilot is unaffected.
+        if (
+            self._provider.idle_indicator_patterns
+            and current != CLIState.IDLE
+        ):
+            with self._screen_lock:
+                running_indicator = self._screen_has_running_indicator()
+                footer_lines = self._get_display_lines()
+            if not running_indicator:
+                filled = [ln for ln in footer_lines if ln.strip()]
+                compact_tail = ''.join(filled[-5:]).replace(' ', '')
+                # A RUNNING turn paused on a footer menu is awaiting the
+                # user.  A question (ask_user, "enter to confirm") is
+                # needs_input - so ALWAYS-mode auto-approve leaves it for
+                # the user; a tool-permission prompt ("enter to select")
+                # is needs_permission (auto-approvable).  Checked
+                # input-first so a question is never mis-promoted to
+                # needs_permission and auto-answered.
+                promote_to: Optional[str] = None
+                if current == CLIState.RUNNING:
+                    input_pats = self._provider.input_dialog_patterns
+                    if input_pats and all(
+                        p.decode('utf-8', errors='replace') in compact_tail
+                        for p in input_pats
+                    ):
+                        promote_to = CLIState.NEEDS_INPUT
+                    elif self._provider.is_dialog_certain(compact_tail):
+                        promote_to = CLIState.NEEDS_PERMISSION
+                if promote_to is not None:
+                    _log.debug(
+                        'GET_STATE running→%s '
+                        '(footer dialog; idle-indicator provider)',
+                        promote_to,
+                    )
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = promote_to
+                        self._waiting_since = self._clock()
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._prompt_snapshot = footer_lines
+                        self._last_running_snapshot = list(footer_lines)
+                    return promote_to
+                idle_on_screen = any(
+                    p.decode('utf-8', errors='replace') in compact_tail
+                    for p in self._provider.idle_indicator_patterns
+                )
+                past_grace = (
+                    current != CLIState.RUNNING
+                    or (self._running_since > 0
+                        and (self._clock() - self._running_since)
+                        > _IDLE_INDICATOR_GRACE)
+                )
+                if idle_on_screen and past_grace:
+                    _log.debug(
+                        'GET_STATE %s→idle '
+                        '(idle footer on screen; idle-indicator provider)',
+                        current,
+                    )
+                    # Mirror the other INTERRUPTED→idle exits: suppress the
+                    # lingering "cancelled" banner so it can't re-trigger.
+                    if current == CLIState.INTERRUPTED:
+                        self._suppress_stale_interrupt = True
+                    self._interrupt_pending = False
+                    self._user_responded = False
+                    with self._lock:
+                        self._state = CLIState.IDLE
+                        self._waiting_since = None
+                    self._user_input_since_idle = False
+                    with self._screen_lock:
+                        self._last_running_snapshot = list(footer_lines)
+                        self._reset_screen()
+                        self._prompt_snapshot = []
+                    return CLIState.IDLE
+
         # -- Waiting → running via cursor visibility (poll-based) --
         # When the user answers a permission/input prompt directly in the
         # terminal, on_input() sets _user_responded but no signal fires
@@ -1706,6 +1819,11 @@ class CLIStateTracker:
             current == CLIState.IDLE
             and self._seen_user_input
             and not self._provider.cursor_hidden_while_idle
+            # Footer-idle providers (Copilot) drive idle→running off the
+            # running indicator appearing on screen (_handle_idle_output),
+            # not the cursor — their idle-prompt animation toggles the
+            # cursor and would false-resume idle→running here.
+            and not self._provider.idle_indicator_patterns
         ):
             with self._screen_lock:
                 cursor_hidden = self._screen.cursor.hidden
