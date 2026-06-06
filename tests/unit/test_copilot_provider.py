@@ -228,6 +228,26 @@ class TestCopilotStateDetection:
         t[0] = _BASE + 10.0               # >5s of silence
         assert tr.get_state(pty_alive=True) == CLIState.NEEDS_PERMISSION
 
+    def test_typing_in_dialog_does_not_flip_to_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """Copilot keeps the cursor hidden *during* its permission menu, so
+        a printable keystroke in the dialog (which sets _user_responded)
+        must NOT be read as 'moved past the dialog' by the cursor-hidden
+        waiting->running heuristic - the prompt is still pending until
+        Enter.  (Regression guard: without the dialogs_hide_cursor gate the
+        session flips to RUNNING the instant the user types.)"""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_hidden(tr, DIALOG_FOOTER)
+        t[0] = _BASE + 10.0
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_PERMISSION
+        tr.on_input(b'x')                 # printable char -> _user_responded
+        t[0] = _BASE + 11.0
+        # Dialog still up + cursor still hidden: stay NEEDS_PERMISSION.
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_PERMISSION
+
     def test_interrupt_banner_goes_interrupted(self, tmp_path: Path) -> None:
         """Esc (routed through on_input, arming _interrupt_pending) plus
         the "Operation cancelled by user" banner → INTERRUPTED."""

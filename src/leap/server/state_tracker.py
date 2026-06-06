@@ -1542,6 +1542,14 @@ class CLIStateTracker:
             current in WAITING_STATES
             and self._user_responded
             and not self._provider.cursor_hidden_while_idle
+            # `dialogs_hide_cursor` providers (GitHub Copilot) keep the
+            # cursor HIDDEN while the dialog itself is on screen, so a
+            # hidden cursor here does NOT mean "moved past the dialog" —
+            # it would falsely flip a still-pending prompt to RUNNING the
+            # moment the user types a printable char into it.  Their
+            # answer reaches RUNNING via the on_input Enter path (and
+            # auto-approve via on_send) instead, so skip this heuristic.
+            and not self._provider.dialogs_hide_cursor
         ):
             with self._screen_lock:
                 cursor_hidden = self._screen.cursor.hidden
