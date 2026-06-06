@@ -8,6 +8,7 @@ constructor's auth path — the methods under test never touch ``self._gl``.
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -27,6 +28,7 @@ def _make_gitlab_provider(username: str = 'me', filter_bots: bool = True) -> Any
     p._approval_cache = {}
     p._status_cache = {}
     p._emoji_cache = {}
+    p._scan_state = threading.local()
     return p
 
 
@@ -602,3 +604,348 @@ class TestFindLatestClosedMR:
         info = p.find_latest_closed_pr('grp/x', 'b')
         assert info is not None
         assert info.pr_iid == 3 and info.pr_title == '' and info.pr_url == ''
+
+
+# --- Phantom-notification fixes -------------------------------------------
+#
+# Two transient-failure flaps used to fire bogus alerts:
+#   1. A failed approvals fetch reported "nobody approved"; the next successful
+#      poll then read an old approval as brand-new -> "approved by X".
+#   2. A failed per-thread emoji/bot lookup bumped the unresponded count up;
+#      the increase fired "N unresponded comments" for a stale thread.
+
+class _ApprovalsObj:
+    """Stand-in for pr_full.approvals — .get() returns a value or raises."""
+
+    def __init__(self, approved_by: list[dict] | None, raises: bool = False) -> None:
+        self._approved_by = approved_by or []
+        self._raises = raises
+
+    def get(self) -> Any:
+        if self._raises:
+            raise RuntimeError('approvals fetch failed')
+        return SimpleNamespace(approved_by=self._approved_by)
+
+
+class _DiscussionsObj:
+    """Stand-in for pr_full.discussions — .list() returns prepared threads."""
+
+    def __init__(self, discussions: list) -> None:
+        self._discussions = discussions
+
+    def list(self, get_all: bool = True) -> list:
+        del get_all
+        return self._discussions
+
+
+def _make_status_provider(gl: Any, *, approvals: _ApprovalsObj,
+                          discussions: _DiscussionsObj,
+                          filter_bots: bool = False) -> Any:
+    """Provider wired to drive get_pr_status end-to-end against fakes."""
+    p = _make_gitlab_provider(filter_bots=filter_bots)
+    p._gl = gl
+    pr_full = SimpleNamespace(approvals=approvals, discussions=discussions)
+    mr = SimpleNamespace(
+        iid=154, title='T',
+        web_url='https://gitlab.com/g/p/-/merge_requests/154',
+    )
+    project = SimpleNamespace(
+        id=1,
+        mergerequests=SimpleNamespace(
+            list=lambda **kw: [mr],
+            get=lambda iid: pr_full,
+        ),
+    )
+    p._project_cache['g/p'] = project
+    return p
+
+
+class _FakeGL:
+    """Minimal gitlab client: award-emoji listing + user (bot) lookup."""
+
+    def __init__(self, emoji: dict[int, list[str]],
+                 fail_emoji: set[int] | None = None,
+                 bots: dict[int, bool] | None = None,
+                 fail_users: bool = False) -> None:
+        self._emoji = emoji
+        self._fail_emoji = fail_emoji or set()
+        self._bots = bots or {}
+        self._fail_users = fail_users
+        self.users = SimpleNamespace(get=self._get_user)
+
+    def http_list(self, path: str, as_list: bool = True) -> list:
+        del as_list
+        note_id = int(path.split('/notes/')[1].split('/')[0])
+        if note_id in self._fail_emoji:
+            raise RuntimeError('award_emoji fetch failed')
+        return [{'user': {'username': u}} for u in self._emoji.get(note_id, [])]
+
+    def _get_user(self, user_id: int) -> Any:
+        if self._fail_users:
+            raise RuntimeError('user fetch failed')
+        return SimpleNamespace(bot=self._bots.get(user_id, False))
+
+
+def _reviewer_thread(note_id: int) -> Any:
+    """A thread with a single reviewer note and no reply from the user —
+    counts as unresponded unless the user reacted with an emoji."""
+    return _discussion([_note(body='please fix', author='reviewer', note_id=note_id)])
+
+
+class TestApprovalKnownGuard:
+    """dock_badge._detect_pr_events must not fire on a recovered-from-unknown
+    approval, but must still fire on a genuine new approval."""
+
+    def _detect(self, seen: Any, current: Any) -> list:
+        from leap.monitor.ui.dock_badge import DockBadge
+        b = DockBadge.__new__(DockBadge)
+        return b._detect_pr_events('lalala', seen, current)
+
+    def test_recovery_from_failed_approval_fetch_does_not_fire(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState, PRStatus
+        from leap.monitor.ui.dock_badge import NotificationType
+        seen = PRStatus(state=PRState.ALL_RESPONDED, approval_known=False)
+        current = PRStatus(state=PRState.ALL_RESPONDED, approved=True,
+                           approved_by=['Yarden Goor'], approval_known=True)
+        events = self._detect(seen, current)
+        assert not any(e.type == NotificationType.PR_APPROVED for e in events)
+
+    def test_current_poll_unknown_does_not_fire(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState, PRStatus
+        from leap.monitor.ui.dock_badge import NotificationType
+        seen = PRStatus(state=PRState.ALL_RESPONDED, approved=True,
+                        approved_by=['Yarden Goor'], approval_known=True)
+        current = PRStatus(state=PRState.ALL_RESPONDED, approval_known=False)
+        events = self._detect(seen, current)
+        assert not any(e.type == NotificationType.PR_APPROVED for e in events)
+
+    def test_genuine_new_approval_still_fires(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState, PRStatus
+        from leap.monitor.ui.dock_badge import NotificationType
+        seen = PRStatus(state=PRState.ALL_RESPONDED, approved=False,
+                        approved_by=None, approval_known=True)
+        current = PRStatus(state=PRState.ALL_RESPONDED, approved=True,
+                           approved_by=['Yarden Goor'], approval_known=True)
+        events = self._detect(seen, current)
+        approved = [e for e in events if e.type == NotificationType.PR_APPROVED]
+        assert len(approved) == 1 and approved[0].approved_by == ['Yarden Goor']
+
+
+class TestApprovalFetchFailureStatus:
+    """get_pr_status marks approval_known=False only when there is no prior
+    value to carry forward — never reporting a definite 'no approvers'."""
+
+    def test_first_fetch_failure_marks_unknown(self) -> None:
+        gl = _FakeGL(emoji={})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj(None, raises=True),
+            discussions=_DiscussionsObj([]),  # ALL_RESPONDED
+        )
+        st = p.get_pr_status('g/p', 'feat')
+        assert st.approval_known is False
+        assert not st.approved and not st.approved_by
+
+    def test_failure_carries_forward_prior_approval(self) -> None:
+        # Poll 1 succeeds with an approver; poll 2's approvals fetch fails.
+        gl = _FakeGL(emoji={})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([{'user': {'name': 'Yarden Goor',
+                                               'username': 'yarden'}}]),
+            discussions=_DiscussionsObj([]),
+        )
+        st1 = p.get_pr_status('g/p', 'feat')
+        assert st1.approved and st1.approved_by == ['Yarden Goor']
+        assert st1.approval_known is True
+        # Now make the approvals fetch fail and re-poll.
+        p._approval_cache.clear()  # force the status-cache carry-forward path
+        gl_fail = _FakeGL(emoji={})
+        p._gl = gl_fail
+        pr_full = SimpleNamespace(approvals=_ApprovalsObj(None, raises=True),
+                                  discussions=_DiscussionsObj([]))
+        p._project_cache['g/p'].mergerequests.get = lambda iid: pr_full
+        st2 = p.get_pr_status('g/p', 'feat')
+        # Carried forward from the cached status — still "known", still Yarden.
+        assert st2.approval_known is True
+        assert st2.approved_by == ['Yarden Goor']
+
+
+class TestUnrespondedCountFlap:
+    """A transient per-thread lookup failure must reuse the cached count
+    instead of flapping it upward."""
+
+    def test_transient_emoji_failure_carries_forward_count(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        # Poll 1: one genuinely-unresponded thread (note 10). Count = 1.
+        gl = _FakeGL(emoji={10: []})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([_reviewer_thread(10)]),
+        )
+        st1 = p.get_pr_status('g/p', 'feat')
+        assert st1.state == PRState.UNRESPONDED and st1.unresponded_count == 1
+
+        # Poll 2: a second thread (note 20) appears; its emoji lookup FAILS
+        # while uncached. A naive recount would call it unresponded -> 2.
+        gl2 = _FakeGL(emoji={10: [], 20: ['me']}, fail_emoji={20})
+        p._gl = gl2
+        pr_full = SimpleNamespace(
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([_reviewer_thread(10),
+                                         _reviewer_thread(20)]),
+        )
+        p._project_cache['g/p'].mergerequests.get = lambda iid: pr_full
+        st2 = p.get_pr_status('g/p', 'feat')
+        # Carried forward — NOT flapped to 2.
+        assert st2.unresponded_count == 1
+
+    def test_real_new_unresponded_thread_still_counts(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        # Poll 1: count = 1. Poll 2: a real new thread, all lookups succeed.
+        gl = _FakeGL(emoji={10: []})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([_reviewer_thread(10)]),
+        )
+        assert p.get_pr_status('g/p', 'feat').unresponded_count == 1
+        gl2 = _FakeGL(emoji={10: [], 30: []})  # no failures
+        p._gl = gl2
+        pr_full = SimpleNamespace(
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([_reviewer_thread(10),
+                                         _reviewer_thread(30)]),
+        )
+        p._project_cache['g/p'].mergerequests.get = lambda iid: pr_full
+        st2 = p.get_pr_status('g/p', 'feat')
+        assert st2.state == PRState.UNRESPONDED and st2.unresponded_count == 2
+
+    def test_malformed_discussion_carries_forward_not_escapes(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+
+        class _BadDiscussion:
+            @property
+            def attributes(self) -> Any:
+                raise RuntimeError('malformed discussion payload')
+
+        # Poll 1: count = 1, cached.
+        gl = _FakeGL(emoji={10: []})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([_reviewer_thread(10)]),
+        )
+        assert p.get_pr_status('g/p', 'feat').unresponded_count == 1
+        # Poll 2: a malformed discussion raises inside the scan loop.  It must
+        # NOT escape get_pr_status (which would bubble to the worker -> NO_PR
+        # -> phantom approval on recovery) — the cached count is carried forward.
+        pr_full = SimpleNamespace(
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([_BadDiscussion()]),
+        )
+        p._project_cache['g/p'].mergerequests.get = lambda iid: pr_full
+        st2 = p.get_pr_status('g/p', 'feat')  # must not raise
+        assert st2.state == PRState.UNRESPONDED and st2.unresponded_count == 1
+
+
+class TestScanReliabilityFlag:
+    """The per-thread helpers flip the (thread-local) scan-reliable flag on
+    transient failure."""
+
+    @staticmethod
+    def _reliable(p: Any) -> bool:
+        return getattr(p._scan_state, 'reliable', True)
+
+    def test_emoji_failure_uncached_marks_unreliable(self) -> None:
+        p = _make_gitlab_provider()
+        p._gl = _FakeGL(emoji={}, fail_emoji={7})
+        p._scan_state.reliable = True
+        project = SimpleNamespace(id=1)
+        assert p._user_reacted_to_note(project, 1, {'id': 7}) is False
+        assert self._reliable(p) is False
+
+    def test_emoji_failure_cached_stays_reliable(self) -> None:
+        p = _make_gitlab_provider()
+        p._gl = _FakeGL(emoji={}, fail_emoji={7})
+        p._emoji_cache[7] = True  # a prior successful read
+        p._scan_state.reliable = True
+        assert p._user_reacted_to_note(project=SimpleNamespace(id=1),
+                                       pr_iid=1, note={'id': 7}) is True
+        assert self._reliable(p) is True
+
+    def test_bot_lookup_failure_marks_unreliable(self) -> None:
+        p = _make_gitlab_provider()
+        p._gl = _FakeGL(emoji={}, fail_users=True)
+        p._scan_state.reliable = True
+        assert p._is_bot_author({'author': {'id': 5, 'username': 'x'}}) is False
+        assert self._reliable(p) is False
+
+
+class TestGitLabTransientListFailure:
+    """A transient MR-list failure must keep the last known status rather than
+    flapping to NO_PR (which re-fires a phantom approval on recovery)."""
+
+    def test_list_failure_keeps_cached_status(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        gl = _FakeGL(emoji={})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([{'user': {'name': 'Yarden Goor',
+                                               'username': 'yarden'}}]),
+            discussions=_DiscussionsObj([]),
+        )
+        st1 = p.get_pr_status('g/p', 'feat')
+        assert st1.state != PRState.NO_PR and st1.approved
+
+        def _boom(**_kw: Any) -> list:
+            raise RuntimeError('list failed')
+
+        p._project_cache['g/p'].mergerequests.list = _boom
+        st2 = p.get_pr_status('g/p', 'feat')
+        assert st2.state != PRState.NO_PR
+        assert st2.approved_by == ['Yarden Goor']
+
+    def test_list_failure_with_no_cache_is_no_pr(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        gl = _FakeGL(emoji={})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([]),
+            discussions=_DiscussionsObj([]),
+        )
+
+        def _boom(**_kw: Any) -> list:
+            raise RuntimeError('list failed')
+
+        p._project_cache['g/p'].mergerequests.list = _boom
+        assert p.get_pr_status('g/p', 'feat').state == PRState.NO_PR
+
+    def test_genuine_empty_evicts_cache_so_later_failure_stays_no_pr(self) -> None:
+        # A merged/closed PR must not be "resurrected" as open by a transient
+        # failure after it genuinely went away — otherwise a merged pinned row
+        # spuriously reopens.
+        from leap.monitor.pr_tracking.base import PRState
+        gl = _FakeGL(emoji={})
+        p = _make_status_provider(
+            gl,
+            approvals=_ApprovalsObj([{'user': {'name': 'Yarden Goor',
+                                               'username': 'yarden'}}]),
+            discussions=_DiscussionsObj([]),
+        )
+        # Poll 1: open + approved -> cached open status.
+        assert p.get_pr_status('g/p', 'feat').state != PRState.NO_PR
+        # Poll 2: branch now has no open MR (merged) -> NO_PR, evicts cache.
+        p._project_cache['g/p'].mergerequests.list = lambda **kw: []
+        assert p.get_pr_status('g/p', 'feat').state == PRState.NO_PR
+
+        # Poll 3: transient list failure -> must stay NO_PR (cache evicted),
+        # NOT resurrect the stale open/approved status.
+        def _boom(**_kw: Any) -> list:
+            raise RuntimeError('list failed')
+
+        p._project_cache['g/p'].mergerequests.list = _boom
+        st3 = p.get_pr_status('g/p', 'feat')
+        assert st3.state == PRState.NO_PR
+        assert not st3.approved

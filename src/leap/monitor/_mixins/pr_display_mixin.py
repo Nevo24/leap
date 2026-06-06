@@ -435,7 +435,17 @@ class PRDisplayMixin(_Base):
             type_prefs = notif_prefs.get(ev.type.value, {})
             banner_enabled = type_prefs.get('banner', False)
             sound_name = type_prefs.get('sound', 'None')
-            key = (ev.tag, ev.type.value)
+            # PR/session events re-fire every poll while inactive, so coalesce
+            # repeats of the same (tag, type).  User notifications aren't tied
+            # to a session tag (tag=''), so that key would collapse distinct
+            # notifications of the same reason (e.g. review requests on two
+            # different PRs) into a single banner — key them on their unique
+            # target instead.
+            if ev.type in _USER_NOTIF_TYPES:
+                key = ('usernotif', ev.url or ev.notification_title or '',
+                       ev.type.value)
+            else:
+                key = (ev.tag, ev.type.value)
             if key in self._banner_notified:
                 continue
             # At least one of banner or sound must be enabled

@@ -707,6 +707,26 @@ class PRTrackingMixin(_Base):
             self._scm_polling = False
             self._scm_worker = None
 
+    @staticmethod
+    def _pr_fire_snapshot_changed(old: tuple, new: tuple) -> bool:
+        """Whether a PR snapshot changed enough to re-arm the 🔥 nudge.
+
+        Snapshot layout: (state, unresponded_count, approved, approved_by,
+        approval_known, changes_requested, checks_failed).  The approval fields
+        are compared only when *both* snapshots had a known approval state, so a
+        transiently-failed-then-recovered approvals fetch doesn't masquerade as
+        a real approval change (the same reason the dock/banner diff guards on
+        ``approval_known``).
+        """
+        # Non-approval fields: state, count, changes_requested, checks_failed.
+        if (old[0] != new[0] or old[1] != new[1]
+                or old[5] != new[5] or old[6] != new[6]):
+            return True
+        # Approval fields (approved, approved_by) — only when both are known.
+        if old[4] and new[4] and (old[2] != new[2] or old[3] != new[3]):
+            return True
+        return False
+
     def _on_scm_results(self, results: dict[str, PRStatus]) -> None:
         """Handle SCM poll results (runs in main thread via signal)."""
         if self._shutting_down:
@@ -725,6 +745,11 @@ class PRTrackingMixin(_Base):
                     status.unresponded_count,
                     status.approved,
                     tuple(sorted(status.approved_by or [])),
+                    # Carried so the 🔥 comparison can ignore approval when the
+                    # fetch failed - a failed-then-recovered approval read must
+                    # not be mistaken for a real approval change (mirrors the
+                    # dock/banner approval_known guard).
+                    status.approval_known,
                     # Flip the 🔥 "recently changed" nudge when a reviewer
                     # requests changes or CI starts failing (these are
                     # action-needed events worth surfacing); deliberately NOT
@@ -736,7 +761,7 @@ class PRTrackingMixin(_Base):
                 if prev is None:
                     # First time — seed with epoch 0 (no fire on startup)
                     self._pr_changed_at[tag] = (new_snap, 0)
-                elif prev[0] != new_snap:
+                elif self._pr_fire_snapshot_changed(prev[0], new_snap):
                     self._pr_changed_at[tag] = (new_snap, now)
                     self._dismissed_pr_new_status.discard(tag)
 

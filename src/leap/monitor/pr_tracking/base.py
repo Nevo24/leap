@@ -40,6 +40,12 @@ class PRStatus:
     approved: bool = False
     approved_by: Optional[list[str]] = None
     self_approved: bool = False  # True if the current user is among the approvers
+    # False when the approvals fetch failed and no prior value was available,
+    # i.e. the approval state for this poll is *unknown* rather than a definite
+    # "nobody approved".  The notification diff skips approval comparison when
+    # either side is unknown, so a failed-then-recovered fetch is not mistaken
+    # for a brand-new approval.
+    approval_known: bool = True
     draft: bool = False  # True if the PR is a draft / work-in-progress
     has_conflicts: bool = False  # True if the PR cannot be merged (conflicts)
     changes_requested: bool = False  # True if a reviewer requested changes

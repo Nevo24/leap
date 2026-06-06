@@ -8,6 +8,7 @@ provider only reads attributes (no method calls) on them in these paths.
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -28,6 +29,7 @@ def _make_provider(username: str = 'me', filter_bots: bool = True) -> GitHubProv
     p._approval_cache = {}
     p._status_cache = {}
     p._reaction_cache = {}
+    p._scan_state = threading.local()
     p._graphql_url = 'https://api.github.com/graphql'
     return p
 
@@ -458,3 +460,193 @@ class TestFindLatestClosedPR:
         p = self._provider_with_pulls([_closed_pr(number=2, title=None)])
         info = p.find_latest_closed_pr('o/r', 'b')
         assert info is not None and info.pr_title == ''
+
+
+# --- Phantom-notification fixes (GitHub parity with GitLab) ----------------
+#
+# Mirrors the GitLab flap fixes: a transiently-failed review/approval fetch
+# must not flap the approval state, a transient thread-scan sub-fetch must not
+# flap the unresponded count, and a transient PR-listing failure must not
+# collapse a tracked PR to NO_PR (which re-fires a phantom approval on
+# recovery).
+
+def _review(login: str, state: str) -> Any:
+    return SimpleNamespace(user=SimpleNamespace(login=login), state=state)
+
+
+def _make_pr(*, number: int = 42, reviews: list | None = None,
+             reviews_raise: bool = False,
+             review_comments: list | None = None,
+             review_comments_raise: bool = False,
+             issue_comments: list | None = None,
+             mergeable_state: str = 'clean', draft: bool = False) -> Any:
+    def _get_reviews() -> list:
+        if reviews_raise:
+            raise RuntimeError('reviews fetch failed')
+        return reviews or []
+
+    def _get_review_comments() -> list:
+        if review_comments_raise:
+            raise RuntimeError('review comments fetch failed')
+        return review_comments or []
+
+    return SimpleNamespace(
+        number=number, html_url=f'https://github.com/o/r/pull/{number}',
+        title='T', state='open', draft=draft, mergeable_state=mergeable_state,
+        get_reviews=_get_reviews,
+        get_review_comments=_get_review_comments,
+        get_issue_comments=lambda: issue_comments or [],
+    )
+
+
+def _wire_repo(p: Any, pr: Any, *, get_pull_raises: bool = False) -> Any:
+    def _get_pull(iid: int) -> Any:
+        if get_pull_raises:
+            raise RuntimeError('get_pull failed')
+        return pr
+
+    repo = SimpleNamespace(full_name='o/r', get_pull=_get_pull)
+    p._repo_cache['o/r'] = repo
+    return repo
+
+
+class TestGitHubApprovalFetchFailure:
+    """get_pr_status marks approval_known=False only when there's nothing to
+    carry forward — never a definite 'no approvers' on a transient failure."""
+
+    def test_first_review_fetch_failure_marks_unknown(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider(username='me')
+        pr = _make_pr(reviews_raise=True)
+        _wire_repo(p, pr)
+        st = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st.state == PRState.ALL_RESPONDED
+        assert st.approval_known is False
+        assert not st.approved and not st.approved_by
+
+    def test_review_failure_carries_forward_prior_approval(self) -> None:
+        p = _make_provider(username='me')
+        pr_ok = _make_pr(reviews=[_review('reviewer', 'APPROVED')])
+        _wire_repo(p, pr_ok)
+        st1 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st1.approved and st1.approved_by == ['reviewer']
+        assert st1.approval_known is True
+        # Force the status-cache carry-forward path: clear the approval cache
+        # and fail the next reviews fetch.
+        p._approval_cache.clear()
+        pr_fail = _make_pr(reviews_raise=True)
+        _wire_repo(p, pr_fail)
+        st2 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st2.approval_known is True
+        assert st2.approved_by == ['reviewer']
+
+
+class TestGitHubUnrespondedCountFlap:
+    """A transient thread-scan sub-fetch must reuse the cached count rather
+    than flap it (GitHub's resolved-thread GraphQL blip is the worst case:
+    every resolved thread re-appears as unresponded)."""
+
+    def test_graphql_resolved_failure_carries_forward_count(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider(username='me')
+        # One review thread, RESOLVED on GitHub.
+        rc = [_comment(id=100, login='reviewer', body='please fix')]
+        pr = _make_pr(review_comments=rc)
+        _wire_repo(p, pr)
+        # Poll 1: GraphQL reports the thread resolved -> excluded -> count 0.
+        p._fetch_resolved_thread_root_ids = lambda pp, num: {100}  # type: ignore[method-assign]
+        st1 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st1.state == PRState.ALL_RESPONDED and st1.unresponded_count == 0
+        # Poll 2: GraphQL fails (None) -> naive recount would count the resolved
+        # thread (1). The fix carries forward the cached 0.
+        p._fetch_resolved_thread_root_ids = lambda pp, num: None  # type: ignore[method-assign]
+        st2 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st2.unresponded_count == 0
+        assert st2.state == PRState.ALL_RESPONDED
+
+    def test_review_comment_fetch_failure_carries_forward_count(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider(username='me')
+        rc = [_comment(id=100, login='reviewer', body='please fix')]
+        pr_ok = _make_pr(review_comments=rc)
+        _wire_repo(p, pr_ok)
+        p._fetch_resolved_thread_root_ids = lambda pp, num: set()  # type: ignore[method-assign]
+        st1 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st1.state == PRState.UNRESPONDED and st1.unresponded_count == 1
+        # Poll 2: review-comment fetch fails -> naive count 0 (down-flap).
+        pr_fail = _make_pr(review_comments_raise=True)
+        _wire_repo(p, pr_fail)
+        st2 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st2.unresponded_count == 1  # carried forward, not dropped
+
+    def test_real_new_unresponded_thread_still_counts(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider(username='me')
+        p._fetch_resolved_thread_root_ids = lambda pp, num: set()  # type: ignore[method-assign]
+        rc1 = [_comment(id=100, login='reviewer', body='fix a')]
+        _wire_repo(p, _make_pr(review_comments=rc1))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).unresponded_count == 1
+        # A genuine second thread, all lookups succeed -> count rises to 2.
+        rc2 = [_comment(id=100, login='reviewer', body='fix a'),
+               _comment(id=200, login='reviewer', body='fix b')]
+        _wire_repo(p, _make_pr(review_comments=rc2))
+        st2 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st2.state == PRState.UNRESPONDED and st2.unresponded_count == 2
+
+
+class TestGitHubFindOpenPrsFailureSentinel:
+    """_find_open_prs returns None on transient failure (vs [] for genuinely
+    no open PR) so a blip doesn't collapse a tracked PR to NO_PR."""
+
+    def test_get_pull_failure_returns_none(self) -> None:
+        p = _make_provider()
+        _wire_repo(p, _make_pr(), get_pull_raises=True)
+        repo = p._repo_cache['o/r']
+        assert p._find_open_prs(repo, 'o/r', 'feat', 42) is None
+
+    def test_closed_pr_returns_empty_list(self) -> None:
+        p = _make_provider()
+        pr = _make_pr()
+        pr.state = 'closed'
+        _wire_repo(p, pr)
+        repo = p._repo_cache['o/r']
+        assert p._find_open_prs(repo, 'o/r', 'feat', 42) == []
+
+    def test_transient_listing_failure_keeps_cached_status(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider(username='me')
+        p._fetch_resolved_thread_root_ids = lambda pp, num: set()  # type: ignore[method-assign]
+        _wire_repo(p, _make_pr(reviews=[_review('reviewer', 'APPROVED')]))
+        st1 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st1.state != PRState.NO_PR and st1.approved
+        # Now the PR fetch fails transiently — must NOT become NO_PR.
+        _wire_repo(p, _make_pr(), get_pull_raises=True)
+        st2 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st2.state != PRState.NO_PR
+        assert st2.approved and st2.approved_by == ['reviewer']
+
+    def test_transient_failure_with_no_cache_is_no_pr(self) -> None:
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider()
+        _wire_repo(p, _make_pr(), get_pull_raises=True)
+        st = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st.state == PRState.NO_PR
+
+    def test_genuine_close_evicts_cache_so_later_failure_stays_no_pr(self) -> None:
+        # A merged/closed PR must not be resurrected as open by a later
+        # transient failure (which would spuriously reopen a merged pinned row).
+        from leap.monitor.pr_tracking.base import PRState
+        p = _make_provider(username='me')
+        p._fetch_resolved_thread_root_ids = lambda pp, num: set()  # type: ignore[method-assign]
+        _wire_repo(p, _make_pr(reviews=[_review('reviewer', 'APPROVED')]))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).state != PRState.NO_PR
+        # PR no longer open (merged) -> [] -> NO_PR + evict cache.
+        closed = _make_pr()
+        closed.state = 'closed'
+        _wire_repo(p, closed)
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).state == PRState.NO_PR
+        # Transient get_pull failure -> must stay NO_PR (cache evicted).
+        _wire_repo(p, _make_pr(), get_pull_raises=True)
+        st3 = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st3.state == PRState.NO_PR
+        assert not st3.approved

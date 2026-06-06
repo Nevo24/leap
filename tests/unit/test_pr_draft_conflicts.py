@@ -9,6 +9,7 @@ All pure-logic: providers are built via ``__new__`` with the network surface
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -32,6 +33,7 @@ def _github_provider() -> GitHubProvider:
     p._approval_cache = {}
     p._status_cache = {}
     p._reaction_cache = {}
+    p._scan_state = threading.local()
     p._graphql_url = 'https://api.github.com/graphql'
     return p
 
@@ -223,6 +225,7 @@ def _gitlab_provider() -> GitLabProvider:
     p._approval_cache = {}
     p._status_cache = {}
     p._emoji_cache = {}
+    p._scan_state = threading.local()
     return p
 
 

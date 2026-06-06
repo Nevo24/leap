@@ -67,6 +67,10 @@ class _FakeMon:
     def _revisit_tags(self) -> set[str]:
         return PRTrackingMixin._revisit_tags(self)
 
+    # real fire-snapshot comparison (used by _on_scm_results)
+    def _pr_fire_snapshot_changed(self, old: tuple, new: tuple) -> bool:
+        return PRTrackingMixin._pr_fire_snapshot_changed(old, new)
+
     # recorders (replace the real background-launch methods)
     def _check_pr_closed_after_no_pr(self, tag: str) -> None:
         self.closed_checks.append(tag)

@@ -147,11 +147,16 @@ class DockBadge:
             ))
 
         # Approval: notify when new approvers appear, but not for self-only changes.
-        # Detect new approvers by comparing the approved_by lists.
+        # Detect new approvers by comparing the approved_by lists.  Skip the
+        # comparison entirely if the approval state was unknown on either side
+        # (a transiently-failed approvals fetch): otherwise a failed-then-
+        # recovered fetch reads as a brand-new approval and fires a phantom
+        # "approved by X" alert for an approval that may be weeks old.
         seen_approvers = set(seen.approved_by or [])
         current_approvers = set(current.approved_by or [])
         new_approvers = current_approvers - seen_approvers
-        if new_approvers and current.approved:
+        if (new_approvers and current.approved
+                and seen.approval_known and current.approval_known):
             # The only self-detectable change is self_approved flipping False->True.
             # If that happened AND exactly one new approver appeared, it's us.
             self_just_approved = current.self_approved and not seen.self_approved
@@ -214,18 +219,27 @@ class DockBadge:
                 self._busy_since[tag] = now
             elif prev == CLIState.RUNNING and state != CLIState.RUNNING:
                 started = self._busy_since.pop(tag, None)
-                if started is not None and (now - started) >= self.MIN_BUSY_SECONDS:
-                    notif_type = _TRANSITION_MAP.get(state)
-                    if notif_type:
-                        ev = NotificationEvent(type=notif_type, tag=tag)
-                        events.append(ev)
-                        # Only count toward dock badge if not already counted
-                        # for this tag+type while window is inactive
-                        key = (tag, notif_type)
-                        if key not in self._session_notified:
-                            if dock_enabled is None or dock_enabled.get(ev.type.value, True):
-                                dock_count += 1
-                                self._session_notified.add(key)
+                notif_type = _TRANSITION_MAP.get(state)
+                long_enough = (started is not None
+                               and (now - started) >= self.MIN_BUSY_SECONDS)
+                # The min-busy gate suppresses "completed" noise from trivially
+                # short runs.  Attention-needed transitions (needs permission /
+                # input, interrupted) must notify even on a fast transition -
+                # the user is now blocked on the session regardless of how long
+                # it ran.  Repeat flicker is already coalesced by
+                # _session_notified / _banner_notified, so this can't spam.
+                fire = notif_type is not None and (
+                    notif_type != NotificationType.SESSION_COMPLETED or long_enough)
+                if fire:
+                    ev = NotificationEvent(type=notif_type, tag=tag)
+                    events.append(ev)
+                    # Only count toward dock badge if not already counted
+                    # for this tag+type while window is inactive
+                    key = (tag, notif_type)
+                    if key not in self._session_notified:
+                        if dock_enabled is None or dock_enabled.get(ev.type.value, True):
+                            dock_count += 1
+                            self._session_notified.add(key)
             elif state != CLIState.RUNNING:
                 self._busy_since.pop(tag, None)
 

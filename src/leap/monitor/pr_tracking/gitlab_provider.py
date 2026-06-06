@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import threading
 from typing import Any, Optional
 
 import gitlab
@@ -39,6 +40,14 @@ class GitLabProvider(SCMProvider):
         self._approval_cache: dict[tuple[str, str], tuple[bool, list[str], bool]] = {}
         self._status_cache: dict[tuple[str, str], PRStatus] = {}
         self._emoji_cache: dict[int, bool] = {}  # note_id -> user_reacted
+        # Per-thread reliability flag for the unresponded-thread scan: set
+        # False when a per-thread sub-lookup (emoji reaction / bot author)
+        # transiently fails, so the count is carried forward instead of being
+        # flapped upward into a phantom "N unresponded comments" alert.
+        # Thread-local because the SCM poll worker and the collect-threads
+        # worker call this same provider instance concurrently — a shared bool
+        # could let one thread's failure flip the other's mid-scan.
+        self._scan_state = threading.local()
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -157,9 +166,20 @@ class GitLabProvider(SCMProvider):
             )
         except Exception:
             logger.debug("Failed to list PRs for %s branch %s", project_path, branch)
-            return PRStatus(state=PRState.NO_PR)
+            # Transient list failure — keep the last known status rather than
+            # flapping to NO_PR (which on recovery reads as a brand-new
+            # approval and fires a phantom alert).
+            cached = self._status_cache.get(cache_key)
+            return cached if cached is not None else PRStatus(state=PRState.NO_PR)
 
         if not mrs:
+            # No open MR for this branch (merged / closed / never existed).
+            # Drop any cached open status + approval so a later *transient*
+            # list failure can't resurrect it — for a merged/closed pinned row
+            # a resurrected open status would trigger a spurious "PR is open
+            # again" reopen.
+            self._status_cache.pop(cache_key, None)
+            self._approval_cache.pop(cache_key, None)
             return PRStatus(state=PRState.NO_PR)
 
         mr = mrs[0]
@@ -189,10 +209,13 @@ class GitLabProvider(SCMProvider):
             cached = self._status_cache.get(cache_key)
             if cached is not None:
                 return cached
+            # Approvals were never fetched on this path — mark them unknown so a
+            # later successful poll isn't read as a brand-new approval.
             return PRStatus(
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 draft=draft, has_conflicts=has_conflicts,
+                approval_known=False,
             )
 
         # Prefer the full-fetch values when present (the list response can be
@@ -209,6 +232,7 @@ class GitLabProvider(SCMProvider):
 
         # Check approval status
         approval_failed = False
+        approval_known = True
         approved = False
         approved_by: list[str] = []
         self_approved = False
@@ -259,6 +283,18 @@ class GitLabProvider(SCMProvider):
             if cached_approval is not None:
                 approved, approved_by = cached_approval[0], list(cached_approval[1])
                 self_approved = cached_approval[2]
+            else:
+                # No approval-specific cache yet.  Carry the approval fields
+                # from the last full status if we have a known one; otherwise
+                # mark approval state as unknown so the notification diff won't
+                # read the next successful fetch as a brand-new approval.
+                prior = self._status_cache.get(cache_key)
+                if prior is not None and prior.approval_known:
+                    approved = prior.approved
+                    approved_by = list(prior.approved_by or [])
+                    self_approved = prior.self_approved
+                else:
+                    approval_known = False
 
         # Fetch discussions to count unresponded threads
         try:
@@ -276,6 +312,7 @@ class GitLabProvider(SCMProvider):
                         first_unresponded_note_id=cached.first_unresponded_note_id,
                         first_unresponded_url=cached.first_unresponded_url,
                         approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                        approval_known=approval_known,
                         draft=draft, has_conflicts=has_conflicts,
                         changes_requested=changes_requested, checks_failed=checks_failed,
                     )
@@ -284,19 +321,41 @@ class GitLabProvider(SCMProvider):
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                approval_known=approval_known,
                 draft=draft, has_conflicts=has_conflicts,
                 changes_requested=changes_requested, checks_failed=checks_failed,
             )
 
+        # Recompute unresponded threads from scratch.  Reset the scan-reliable
+        # flag first; the per-thread helpers flip it False on a transient
+        # sub-lookup failure (see _user_reacted_to_note / _is_bot_author).
+        self._scan_state.reliable = True
         unresponded = 0
         first_note_id: Optional[int] = None
-        for discussion in discussions:
-            if self._is_unresponded_thread(discussion, project, pr_iid):
-                unresponded += 1
-                if first_note_id is None:
-                    notes = discussion.attributes.get('notes', [])
-                    if notes:
-                        first_note_id = notes[0].get('id')
+        try:
+            for discussion in discussions:
+                if self._is_unresponded_thread(discussion, project, pr_iid):
+                    unresponded += 1
+                    if first_note_id is None:
+                        notes = discussion.attributes.get('notes', [])
+                        if notes:
+                            first_note_id = notes[0].get('id')
+        except Exception:
+            # Malformed discussion data must not escape get_pr_status — that
+            # would bubble to the poll worker, which falls back to NO_PR and
+            # re-fires a phantom approval on recovery.  Treat it as an
+            # unreliable scan so the cached count is carried forward instead.
+            logger.debug("Error scanning discussions for PR !%s", pr_iid, exc_info=True)
+            self._scan_state.reliable = False
+
+        # An unreliable scan (a thread lookup failed transiently) could have
+        # mis-counted in either direction.  Reuse the last known-good count so a
+        # blip can't fire a phantom "N unresponded comments" alert.
+        if not getattr(self._scan_state, 'reliable', True):
+            prior = self._status_cache.get(cache_key)
+            if prior is not None:
+                unresponded = prior.unresponded_count
+                first_note_id = prior.first_unresponded_note_id
 
         if unresponded > 0:
             first_url = (self.build_first_unresponded_url(pr_url, first_note_id)
@@ -308,6 +367,7 @@ class GitLabProvider(SCMProvider):
                 first_unresponded_note_id=first_note_id,
                 first_unresponded_url=first_url,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                approval_known=approval_known,
                 draft=draft, has_conflicts=has_conflicts,
                 changes_requested=changes_requested, checks_failed=checks_failed,
             )
@@ -316,6 +376,7 @@ class GitLabProvider(SCMProvider):
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_iid,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                approval_known=approval_known,
                 draft=draft, has_conflicts=has_conflicts,
                 changes_requested=changes_requested, checks_failed=checks_failed,
             )
@@ -432,6 +493,11 @@ class GitLabProvider(SCMProvider):
             self._emoji_cache[note_id] = result
             return result
         except Exception:
+            # Unknown reaction state for an uncached note: flag the scan as
+            # unreliable so the count is carried forward rather than letting a
+            # missed emoji-ack flap a thread into the unresponded tally.
+            if note_id not in self._emoji_cache:
+                self._scan_state.reliable = False
             return self._emoji_cache.get(note_id, False)
 
     def _is_bot_author(self, note: dict) -> bool:
@@ -454,7 +520,10 @@ class GitLabProvider(SCMProvider):
             user = self._gl.users.get(user_id)
             is_bot = getattr(user, 'bot', False)
         except Exception:
-            # Don't cache on failure — retry on next call.
+            # Don't cache on failure — retry on next call.  Flag the scan as
+            # unreliable so an unknown author can't push the unresponded count
+            # up (a real bot momentarily counted as a human commenter).
+            self._scan_state.reliable = False
             return False
 
         self._bot_cache[user_id] = is_bot

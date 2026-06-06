@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Any, Optional
 
 import requests
@@ -59,6 +60,15 @@ class GitHubProvider(SCMProvider):
         # GitLab provider's emoji_cache semantics).  Bounded growth ignored
         # for the moment — same trade-off as GitLab.
         self._reaction_cache: dict[int, bool] = {}
+        # Per-thread reliability flag for the unresponded-thread scan: set False
+        # when a sub-fetch (review comments, issue comments, resolved-thread
+        # GraphQL, or a reaction lookup) transiently fails, so the count is
+        # carried forward instead of being flapped into a phantom "N
+        # unresponded comments" alert.  Thread-local because the SCM poll worker
+        # and the collect-threads worker call this same provider instance
+        # concurrently — a shared bool could let one thread's failure flip the
+        # other's mid-scan.
+        self._scan_state = threading.local()
         # GraphQL endpoint for resolved-thread queries.  github.com uses
         # /graphql at the API root; GHE uses /api/graphql at the web host
         # (NOT /api/v3/graphql despite the v3 REST namespace).
@@ -94,7 +104,7 @@ class GitHubProvider(SCMProvider):
             return None
 
     def _find_open_prs(self, repo, project_path: str, branch: str,
-                       pr_iid: Optional[int]) -> list:
+                       pr_iid: Optional[int]) -> Optional[list]:
         """Find open PR(s) for the given branch — IID-first, head filter as fallback.
 
         - When *pr_iid* is provided (PR-pinned rows), fetch the PR directly
@@ -106,6 +116,11 @@ class GitHubProvider(SCMProvider):
           (without going through the +button URL flow) won't match — but
           that's an explicit limitation we accept rather than scan every
           open PR each poll cycle.
+
+        Returns ``None`` on a **transient lookup failure** so callers can
+        distinguish it from a genuine empty result (``[]``) and avoid
+        collapsing a tracked PR to NO_PR — which would itself re-fire a
+        phantom approval on the next successful poll.
         """
         if pr_iid is not None:
             try:
@@ -117,7 +132,7 @@ class GitHubProvider(SCMProvider):
             except Exception:
                 logger.debug("Failed to fetch PR #%s in %s by IID",
                              pr_iid, project_path)
-                return []
+                return None
 
         owner = project_path.split('/')[0]
         try:
@@ -128,7 +143,7 @@ class GitHubProvider(SCMProvider):
         except Exception:
             logger.debug("Failed to list PRs for %s branch %s",
                          project_path, branch)
-            return []
+            return None
 
     def find_latest_closed_pr(self, project_path: str,
                               branch: str) -> Optional[ClosedPRInfo]:
@@ -237,7 +252,19 @@ class GitHubProvider(SCMProvider):
             return PRStatus(state=PRState.NO_PR)
 
         pulls = self._find_open_prs(repo, project_path, branch, pr_iid)
+        if pulls is None:
+            # Transient lookup failure — keep the last known status rather than
+            # flapping to NO_PR (which on recovery reads as a brand-new
+            # approval and fires a phantom alert).
+            cached = self._status_cache.get(cache_key)
+            return cached if cached is not None else PRStatus(state=PRState.NO_PR)
         if not pulls:
+            # No open PR (merged / closed / never existed).  Drop any cached
+            # open status + approval so a later *transient* failure can't
+            # resurrect it and trigger a spurious "PR is open again" reopen
+            # for a merged/closed pinned row.
+            self._status_cache.pop(cache_key, None)
+            self._approval_cache.pop(cache_key, None)
             return PRStatus(state=PRState.NO_PR)
         pr = pulls[0]
         pr_number = pr.number
@@ -272,6 +299,7 @@ class GitHubProvider(SCMProvider):
 
         # Check approval status
         approval_failed = False
+        approval_known = True
         approved = False
         approved_by: list[str] = []
         self_approved = False
@@ -305,6 +333,19 @@ class GitHubProvider(SCMProvider):
                 self_approved = cached_approval[2]
                 if len(cached_approval) > 3:
                     changes_requested = cached_approval[3]
+            else:
+                # No approval-specific cache yet.  Carry the approval fields
+                # from the last full status if we have a known one; otherwise
+                # mark approval state as unknown so the notification diff won't
+                # read the next successful fetch as a brand-new approval.
+                prior = self._status_cache.get(cache_key)
+                if prior is not None and prior.approval_known:
+                    approved = prior.approved
+                    approved_by = list(prior.approved_by or [])
+                    self_approved = prior.self_approved
+                    changes_requested = prior.changes_requested
+                else:
+                    approval_known = False
 
         # Count unresponded review comment threads (+ PR conversation)
         try:
@@ -323,6 +364,7 @@ class GitHubProvider(SCMProvider):
                         first_unresponded_note_id=cached.first_unresponded_note_id,
                         first_unresponded_url=cached.first_unresponded_url,
                         approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                        approval_known=approval_known,
                         draft=draft, has_conflicts=has_conflicts,
                         changes_requested=changes_requested, checks_failed=checks_failed,
                     )
@@ -331,9 +373,31 @@ class GitHubProvider(SCMProvider):
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                approval_known=approval_known,
                 draft=draft, has_conflicts=has_conflicts,
                 changes_requested=changes_requested, checks_failed=checks_failed,
             )
+
+        # An unreliable scan (a per-thread sub-fetch failed transiently) could
+        # have mis-counted in either direction — reuse the cached count/state
+        # so a blip can't fire a phantom "N unresponded comments" alert.  The
+        # approval/draft/conflict fields may still be fresh, so prefer them.
+        if not getattr(self._scan_state, 'reliable', True):
+            cached = self._status_cache.get(cache_key)
+            if cached is not None:
+                result = PRStatus(
+                    state=cached.state,
+                    unresponded_count=cached.unresponded_count,
+                    pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
+                    first_unresponded_note_id=cached.first_unresponded_note_id,
+                    first_unresponded_url=cached.first_unresponded_url,
+                    approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                    approval_known=approval_known,
+                    draft=draft, has_conflicts=has_conflicts,
+                    changes_requested=changes_requested, checks_failed=checks_failed,
+                )
+                self._status_cache[cache_key] = result
+                return result
 
         if unresponded > 0:
             first_url = (
@@ -348,6 +412,7 @@ class GitHubProvider(SCMProvider):
                 first_unresponded_note_id=first_comment_id,
                 first_unresponded_url=first_url,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                approval_known=approval_known,
                 draft=draft, has_conflicts=has_conflicts,
                 changes_requested=changes_requested, checks_failed=checks_failed,
             )
@@ -356,6 +421,7 @@ class GitHubProvider(SCMProvider):
                 state=PRState.ALL_RESPONDED,
                 pr_url=pr_url, pr_title=pr_title, pr_iid=pr_number,
                 approved=approved, approved_by=approved_by or None, self_approved=self_approved,
+                approval_known=approval_known,
                 draft=draft, has_conflicts=has_conflicts,
                 changes_requested=changes_requested, checks_failed=checks_failed,
             )
@@ -382,6 +448,9 @@ class GitHubProvider(SCMProvider):
         ``first_origin`` is ``'r'`` (review) or ``'i'`` (issue) — used to
         select the right URL anchor and ack endpoint downstream.
         """
+        # Reset reliability for this scan; the sub-fetches below flip it False
+        # on a transient failure so get_pr_status can carry the count forward.
+        self._scan_state.reliable = True
         unresponded = 0
         first_comment_id: Optional[int] = None
         first_origin: Optional[str] = None
@@ -394,12 +463,18 @@ class GitHubProvider(SCMProvider):
         except Exception:
             logger.debug("Failed to fetch review comments for PR #%s", pr.number)
             review_comments = []
+            self._scan_state.reliable = False
         resolved_root_ids: set[int] = set()
         if review_comments:
             project_path = repo.full_name
             fetched = self._fetch_resolved_thread_root_ids(project_path, pr.number)
             if fetched is not None:
                 resolved_root_ids = fetched
+            else:
+                # Couldn't determine which threads are resolved — already-
+                # resolved threads would wrongly count as unresponded.  Mark
+                # the scan unreliable so the count is carried forward.
+                self._scan_state.reliable = False
             threads = self._group_into_threads(review_comments)
             for root_id, thread_comments in threads.items():
                 if not thread_comments or root_id in resolved_root_ids:
@@ -416,6 +491,7 @@ class GitHubProvider(SCMProvider):
         except Exception:
             logger.debug("Failed to fetch issue comments for PR #%s", pr.number)
             issue_comments = []
+            self._scan_state.reliable = False
         if issue_comments and self._is_unresponded_thread(issue_comments):
             unresponded += 1
             if first_comment_id is None:
@@ -612,6 +688,10 @@ class GitHubProvider(SCMProvider):
             self._reaction_cache[comment_id] = False
             return False
         except Exception:
+            # Unknown reaction state for an uncached comment: flag the scan as
+            # unreliable so a missed ack can't flap a thread into the count.
+            if comment_id not in self._reaction_cache:
+                self._scan_state.reliable = False
             return self._reaction_cache.get(comment_id, False)
 
     def scan_leap_commands(self, project_path: str, branch: str,
@@ -621,7 +701,7 @@ class GitHubProvider(SCMProvider):
         if not repo:
             return []
 
-        pulls = self._find_open_prs(repo, project_path, branch, pr_iid)
+        pulls = self._find_open_prs(repo, project_path, branch, pr_iid) or []
 
         commands: list[CqCommand] = []
         for pr in pulls:
