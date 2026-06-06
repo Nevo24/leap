@@ -2187,13 +2187,6 @@ class MonitorWindow(
         save_auto_fetch_preset_name(
             '' if text == self._AUTO_LEAP_PRESET_NONE else text)
 
-    # Grace period (seconds) every session must stay out of RUNNING
-    # before the SleepGuard releases its caffeinate assertion.  Picked
-    # deliberately so a brief drop out of RUNNING between two bursts
-    # (e.g. Claude finishes one tool, starts the next) doesn't bounce
-    # the assertion off and on.
-    _SLEEP_GUARD_RUNNING_GRACE_SECONDS: float = 30.0
-
     def _toggle_prevent_sleep(self, state: int) -> None:
         """Persist the parent checkbox and (de)activate the SleepGuard.
 
