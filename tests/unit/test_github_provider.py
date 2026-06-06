@@ -650,3 +650,116 @@ class TestGitHubFindOpenPrsFailureSentinel:
         st3 = p.get_pr_status('o/r', 'feat', pr_iid=42)
         assert st3.state == PRState.NO_PR
         assert not st3.approved
+
+
+def _commit(*, runs: list | None = None, runs_raise: bool = False,
+            combined_state: str | None = None, combined_raise: bool = False) -> Any:
+    def _get_check_runs() -> list:
+        if runs_raise:
+            raise RuntimeError('check-runs read failed')
+        return runs or []
+
+    def _get_combined_status() -> Any:
+        if combined_raise:
+            raise RuntimeError('combined status read failed')
+        return SimpleNamespace(state=combined_state)
+
+    return SimpleNamespace(get_check_runs=_get_check_runs,
+                           get_combined_status=_get_combined_status)
+
+
+def _checks_repo(commit: Any, *, get_commit_raises: bool = False) -> Any:
+    def _get_commit(sha: str) -> Any:
+        if get_commit_raises:
+            raise RuntimeError('get_commit failed')
+        return commit
+
+    return SimpleNamespace(get_commit=_get_commit)
+
+
+def _pr_with_sha(sha: str = 'abc123') -> Any:
+    return SimpleNamespace(head=SimpleNamespace(sha=sha))
+
+
+class TestGithubChecksFailedReturn:
+    """_github_checks_failed returns True/False/None (None = couldn't read)."""
+
+    def test_failing_run_is_true(self) -> None:
+        p = _make_provider()
+        commit = _commit(runs=[SimpleNamespace(conclusion='failure')])
+        assert p._github_checks_failed(_checks_repo(commit), _pr_with_sha()) is True
+
+    def test_combined_failure_is_true(self) -> None:
+        p = _make_provider()
+        commit = _commit(runs=[], combined_state='failure')
+        assert p._github_checks_failed(_checks_repo(commit), _pr_with_sha()) is True
+
+    def test_clean_reads_are_false(self) -> None:
+        p = _make_provider()
+        commit = _commit(runs=[SimpleNamespace(conclusion='success')],
+                         combined_state='success')
+        assert p._github_checks_failed(_checks_repo(commit), _pr_with_sha()) is False
+
+    def test_empty_but_successful_reads_are_false(self) -> None:
+        p = _make_provider()
+        commit = _commit(runs=[], combined_state=None)
+        assert p._github_checks_failed(_checks_repo(commit), _pr_with_sha()) is False
+
+    def test_get_commit_failure_is_none(self) -> None:
+        p = _make_provider()
+        repo = _checks_repo(_commit(), get_commit_raises=True)
+        assert p._github_checks_failed(repo, _pr_with_sha()) is None
+
+    def test_both_sources_unreadable_is_none(self) -> None:
+        p = _make_provider()
+        commit = _commit(runs_raise=True, combined_raise=True)
+        assert p._github_checks_failed(_checks_repo(commit), _pr_with_sha()) is None
+
+
+class TestGithubMergeableCarryForward:
+    """An indeterminate mergeable_state read must carry conflict/checks state
+    forward, not flap it to False (which would bump the 🔥 'recently changed'
+    timestamp and reorder the 'recently active' row sort)."""
+
+    def _provider(self) -> Any:
+        p = _make_provider(username='me')
+        p._fetch_resolved_thread_root_ids = lambda pp, num: set()  # type: ignore[method-assign]
+        return p
+
+    def test_unknown_mergeable_carries_forward_checks_failed(self) -> None:
+        p = self._provider()
+        p._github_checks_failed = lambda repo, pr: True  # type: ignore[method-assign]
+        _wire_repo(p, _make_pr(mergeable_state='unstable'))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).checks_failed is True
+        # Poll 2: mergeable_state indeterminate -> carry forward, not False.
+        _wire_repo(p, _make_pr(mergeable_state='unknown'))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).checks_failed is True
+
+    def test_none_mergeable_carries_forward_conflicts(self) -> None:
+        p = self._provider()
+        _wire_repo(p, _make_pr(mergeable_state='dirty'))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).has_conflicts is True
+        # mergeable_state absent (None) -> indeterminate -> carry forward.
+        _wire_repo(p, _make_pr(mergeable_state=None))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).has_conflicts is True
+
+    def test_checks_lookup_none_keeps_prior_checks_failed(self) -> None:
+        # mergeable_state IS determinate ('blocked') but the check-runs lookup
+        # can't read -> keep the prior value rather than flapping to False.
+        p = self._provider()
+        p._github_checks_failed = lambda repo, pr: True  # type: ignore[method-assign]
+        _wire_repo(p, _make_pr(mergeable_state='blocked'))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).checks_failed is True
+        p._github_checks_failed = lambda repo, pr: None  # couldn't read
+        _wire_repo(p, _make_pr(mergeable_state='blocked'))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).checks_failed is True
+
+    def test_clean_mergeable_clears_checks_failed(self) -> None:
+        # A determinate clean state must still clear a stale failure.
+        p = self._provider()
+        p._github_checks_failed = lambda repo, pr: True  # type: ignore[method-assign]
+        _wire_repo(p, _make_pr(mergeable_state='unstable'))
+        assert p.get_pr_status('o/r', 'feat', pr_iid=42).checks_failed is True
+        _wire_repo(p, _make_pr(mergeable_state='clean'))
+        st = p.get_pr_status('o/r', 'feat', pr_iid=42)
+        assert st.checks_failed is False and st.has_conflicts is False

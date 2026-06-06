@@ -203,7 +203,7 @@ class GitHubProvider(SCMProvider):
             logger.debug("Failed to get PR #%s in %s", pr_iid, project_path)
             return None
 
-    def _github_checks_failed(self, repo: Any, pr: Any) -> bool:
+    def _github_checks_failed(self, repo: Any, pr: Any) -> Optional[bool]:
         """Whether the PR's head commit has a *failed* check (not just pending).
 
         Called only when ``mergeable_state`` is 'unstable'/'blocked' (so clean
@@ -211,34 +211,43 @@ class GitHubProvider(SCMProvider):
         (GitHub Actions) and, as a fallback, the legacy combined commit status.
         Pending/running checks are NOT treated as failures — distinguishing
         those from real failures is the whole reason ``mergeable_state`` alone
-        isn't enough.  Best-effort: any read failure returns False.
+        isn't enough.
+
+        Returns ``True`` (a failing check exists), ``False`` (read at least one
+        source and found none failing), or ``None`` when *neither* source could
+        be read — so the caller can carry the prior value forward instead of
+        flapping ``checks_failed`` to False on a transient API blip (which would
+        bump the 🔥 "recently changed" timestamp and reorder the row sort).
         """
         try:
             sha = pr.head.sha
         except Exception:
-            return False
+            return None
         try:
             commit = repo.get_commit(sha)
         except Exception:
             logger.debug("Failed to fetch head commit %s for checks", sha, exc_info=True)
-            return False
+            return None
         # 'failure'/'timed_out'/'action_required' are conclusive failures;
         # 'success'/'neutral'/'skipped'/'stale'/'cancelled' and a None
         # conclusion (still running) are not.
         failing = {'failure', 'timed_out', 'action_required'}
+        read_any = False
         try:
             for run in commit.get_check_runs():
                 if getattr(run, 'conclusion', None) in failing:
                     return True
+            read_any = True  # iterated to completion (incl. empty) without error
         except Exception:
             logger.debug("Failed to read check-runs for %s", sha, exc_info=True)
         try:
             combined = commit.get_combined_status()
             if getattr(combined, 'state', None) in ('failure', 'error'):
                 return True
+            read_any = True
         except Exception:
             logger.debug("Failed to read combined status for %s", sha, exc_info=True)
-        return False
+        return False if read_any else None
 
     def get_pr_status(self, project_path: str, branch: str,
                       pr_iid: Optional[int] = None) -> PRStatus:
@@ -282,20 +291,39 @@ class GitHubProvider(SCMProvider):
         # lookup is GATED on 'unstable'/'blocked' so clean PRs (the majority)
         # cost no extra calls.
         draft = False
-        has_conflicts = False
-        checks_failed = False
         try:
             draft = bool(getattr(pr, 'draft', False))
         except Exception:
             logger.debug("Failed to read draft for PR #%s", pr_number, exc_info=True)
+
+        # Conflict + failing-checks state.  Both derive from ``mergeable_state``
+        # (and, for checks, a head-commit lookup).  When a read is unavailable
+        # (raised) or indeterminate ('unknown'/None - GitHub still computing),
+        # carry the PRIOR value forward instead of defaulting to False: a
+        # spurious flip would bump the 🔥 "recently changed" timestamp, which
+        # reorders the "recently active" row sort for a change that never
+        # happened (``checks_failed`` is part of that change snapshot).
+        _prior = self._status_cache.get(cache_key)
+        has_conflicts = _prior.has_conflicts if _prior is not None else False
+        checks_failed = _prior.checks_failed if _prior is not None else False
+        mergeable_state: Optional[str] = None
         try:
             mergeable_state = getattr(pr, 'mergeable_state', None)
-            has_conflicts = (mergeable_state == 'dirty')
-            if mergeable_state in ('unstable', 'blocked'):
-                checks_failed = self._github_checks_failed(repo, pr)
         except Exception:
             logger.debug("Failed to read mergeable_state for PR #%s",
                          pr_number, exc_info=True)
+            mergeable_state = None
+        if mergeable_state not in (None, '', 'unknown'):
+            # Determinate: conflicts are conclusively known from the state.
+            has_conflicts = (mergeable_state == 'dirty')
+            if mergeable_state in ('unstable', 'blocked'):
+                cf = self._github_checks_failed(repo, pr)
+                if cf is not None:
+                    checks_failed = cf
+                # cf is None (couldn't read) -> keep the carried-forward value
+            else:
+                # clean / behind / has_hooks etc. -> no failing checks
+                checks_failed = False
 
         # Check approval status
         approval_failed = False
