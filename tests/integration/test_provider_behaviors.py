@@ -316,6 +316,53 @@ class TestClaudeProvider:
         ]
         assert provider.is_idle_prompt_visible(idle_multiline)
 
+    def test_claude_idle_prompt_visible_single_hr_no_bottom_border(
+        self,
+    ) -> None:
+        # Some Claude builds render the idle input box with only a TOP
+        # rule — the footer sits directly under the ❯ row, with no
+        # closing bottom HR.  Captured live from a session wedged in
+        # RUNNING after ``/cost`` (a slash command fires no Stop hook, so
+        # the state fell to the cursor+silence path, where the missing
+        # bottom HR made the box "invisible" and the guard held forever):
+        #     ────…                                  (top HR only)
+        #     ❯ Try "write a test file"
+        #                                       (blank)
+        #     ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+        # A single top-HR → ❯ pairing must read as idle.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        hr = '─' * 100
+        idle_single_hr = [
+            'Some prior response text',
+            '/cost output line',
+            'another response line',
+            hr,
+            '❯\xa0Try "write a test file"',
+            '',
+            '⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+        ]
+        assert provider.is_idle_prompt_visible(idle_single_hr)
+
+    def test_claude_single_hr_in_prose_is_not_idle(self) -> None:
+        # The relaxed single-HR detection must NOT fire on a lone markdown
+        # ``---`` rule in response prose (rendered as a full-width ─ run):
+        # the row after a content rule is prose, never a ❯ input row, so
+        # the top-HR → ❯ pairing is absent.  Guards the relaxation
+        # against false positives.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        hr = '─' * 100
+        prose = [
+            'Here is a summary of the changes:',
+            'First point about the work',
+            hr,
+            'In conclusion, everything is done.',
+            'Let me know if you need anything else.',
+            '> ',
+        ]
+        assert not provider.is_idle_prompt_visible(prose)
+
     def test_claude_idle_prompt_check_ignores_picker_focused_rows(
         self,
     ) -> None:

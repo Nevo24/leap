@@ -205,19 +205,36 @@ class ClaudeProvider(CLIProvider):
             ❯ <input or placeholder text>     ← input row
             [<continuation row 1>]            ← present iff multi-line
             [<continuation row 2>]              input has wrapped
-            ─────────────────────  ← bottom HR border
+            [─────────────────────]  ← bottom HR border (NOT on every build)
             <optional hint footer>             ← e.g. ``? for shortcuts``
 
-        Detection: scan the last ``_IDLE_TAIL_WINDOW`` non-blank rows
-        for two HR rows bracketing a ``❯`` row that *immediately*
-        follows the top HR.  The bottom HR can sit 1+ rows after the
-        ``❯`` row, so multi-line input (Shift+Enter) is captured.
+        Detection: scan the last ``_IDLE_TAIL_WINDOW`` rows for an HR row
+        *immediately* followed by a ``❯`` input row.  That top-HR→``❯``
+        pairing is the box's defining signature.
 
-        Requiring ``❯`` to be the row directly after the top HR (rather
-        than anywhere between the HRs) is what prevents false positives
-        from Claude's response text containing markdown ``---``
-        separators — response content between them never starts with
-        ``❯``.
+        The closing **bottom** HR is present on some Claude builds but
+        ABSENT on others — there the footer (e.g. ``⏵⏵ bypass permissions
+        on (shift+tab to cycle) · ← for agents``) sits directly under the
+        input row with no second rule.  An earlier version required a
+        two-HR sandwich, so it classified those single-rule builds as "no
+        idle box"; combined with the cursor+silence guard in the state
+        tracker (which keeps RUNNING when the idle box is absent yet a
+        ``❯``/selection cursor is on screen), that wedged the session in
+        RUNNING forever after any no-Stop-hook idle — most visibly after a
+        slash command like ``/cost`` that fires no Stop hook.  The ``❯``
+        the guard then saw was this very input row's own prompt char.  So
+        the bottom HR is now optional; only the top-HR→``❯`` pairing is
+        required.
+
+        Requiring ``❯`` to be the row directly after an HR (rather than
+        anywhere on screen) is what prevents false positives from Claude's
+        response text containing markdown ``---`` separators — the row
+        after such a rule is prose, which never starts with ``❯``.  Real
+        pickers/dialogs (``/model``, ``/resume``, ``/mcp``, permission
+        prompts) never place a full-width pure-``─`` rule immediately above
+        their focused ``❯`` option — their borders are rounded box-drawing
+        glyphs (``╭``/``│``/``╰``) that ``_is_prompt_box_hr`` rejects — so
+        they stay correctly classified as "idle box absent".
 
         Returns True (assume idle) when the screen has too little
         content to confidently call it a picker (``< _IDLE_DETECT_MIN_ROWS``
@@ -225,14 +242,10 @@ class ClaudeProvider(CLIProvider):
         like the legacy strict-dialog-only check.
         """
         tail = display_lines[-self._IDLE_TAIL_WINDOW:]
-        hr_idx = [i for i, ln in enumerate(tail)
-                  if self._is_prompt_box_hr(ln)]
-        if len(hr_idx) >= 2:
-            for j in range(len(hr_idx) - 1):
-                top = hr_idx[j]
-                if (top + 1 < len(tail)
-                        and self._is_prompt_box_input_row(tail[top + 1])):
-                    return True
+        for i, ln in enumerate(tail):
+            if (self._is_prompt_box_hr(ln) and i + 1 < len(tail)
+                    and self._is_prompt_box_input_row(tail[i + 1])):
+                return True
         return len(display_lines) < self._IDLE_DETECT_MIN_ROWS
 
     def has_selection_cursor(self, display_lines: list[str]) -> bool:
