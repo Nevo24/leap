@@ -160,19 +160,41 @@ def _project_model_ids() -> dict[str, set]:
 
 
 def _is_one_m_model(model: str, cwd: str) -> bool:
-    """True if Claude's config shows ``<model>[1m]`` was used in ``cwd``."""
+    """True if Claude is running ``<model>`` on the 1M context window.
+
+    The 1M choice is account-wide (you run a given model on ``[1m]`` across
+    projects), but Claude only records it in the volatile per-project
+    ``lastModelUsage`` (which it rewrites constantly and sometimes blanks).
+    So:
+
+    - If THIS project has an explicit usage record, trust it precisely -
+      ``<model>[1m]`` present -> 1M; a record without it -> a genuine 200k
+      project.
+    - If this project has no record yet (new session, or Claude just blanked
+      it), fall back to the account-wide signal: is ``<model>[1m]`` recorded
+      in ANY project?  This survives the per-project record being wiped.
+
+    Version-specific (``opus-4-8`` only matches ``opus-4-8[1m]``, not 4-7).
+    """
     if not model or not cwd:
         return False
-    return f'{model}[1m]' in _project_model_ids().get(cwd, set())
+    target = f'{model}[1m]'
+    by_cwd = _project_model_ids()
+    cwd_ids = by_cwd.get(cwd)
+    if cwd_ids:  # this project has an explicit, non-empty usage record
+        return target in cwd_ids
+    # No record for this cwd (absent / blanked / empty) -> account-wide signal.
+    return any(target in ids for ids in by_cwd.values())
 
 
 def _resolve_claude_window(model: str, cwd: str, used: int) -> int:
     """Best-effort Claude context window: 1M when detected, else the base.
 
-    1M is detected either from Claude's persisted per-project model id (the
-    ``[1m]`` suffix) or, as a safety net, from usage that has already exceeded
-    the base window -- which a 200k session could never reach (Claude
-    auto-compacts well before then).
+    1M is detected either from Claude's persisted model usage (the ``[1m]``
+    suffix -- the session's own project if it has a record, else account-wide;
+    see :func:`_is_one_m_model`) or, as a safety net, from usage that has
+    already exceeded the base window -- which a 200k session could never reach
+    (Claude auto-compacts well before then).
     """
     if _is_one_m_model(model, cwd):
         return _ONE_M_CONTEXT_WINDOW

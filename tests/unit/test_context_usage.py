@@ -270,11 +270,52 @@ class TestOneMillionWindow:
         assert usage.window == 1_000_000
         assert usage.percent == 25
 
-    def test_config_match_is_per_cwd(self, tmp_path, fake_claude_config):
-        # The [1m] usage is recorded for a DIFFERENT project; this session's
-        # cwd has no 1m signal, so it stays on 200k.
+    def test_global_fallback_when_project_has_no_record(
+        self, tmp_path, fake_claude_config,
+    ):
+        # 1M is account-wide: when THIS project has no usage record, but the
+        # model is run on [1m] in ANY project, treat it as 1M.  (This is what
+        # was over-reporting before - a fresh session, or one whose project
+        # record Claude momentarily blanked, falling back to 200k.)
         fake_claude_config({
             '/other': {'lastModelUsage': {'claude-opus-4-8[1m]': {}}},
+            # '/proj' deliberately absent -> no record for this session's cwd.
+        })
+        t = tmp_path / 's.jsonl'
+        _write_jsonl(t, [
+            _assistant('claude-opus-4-8', inp=100_000, cache_create=0,
+                       cache_read=0, cwd='/proj'),
+        ])
+        usage = claude_context_usage(str(t))
+        assert usage is not None
+        assert usage.window == 1_000_000
+        assert usage.percent == 10
+
+    def test_explicit_non_1m_project_overrides_global(
+        self, tmp_path, fake_claude_config,
+    ):
+        # A project with its OWN explicit, non-[1m] record is a genuine 200k
+        # project - its precise record wins over the account-wide [1m] signal.
+        fake_claude_config({
+            '/proj': {'lastModelUsage': {'claude-opus-4-8': {}}},
+            '/other': {'lastModelUsage': {'claude-opus-4-8[1m]': {}}},
+        })
+        t = tmp_path / 's.jsonl'
+        _write_jsonl(t, [
+            _assistant('claude-opus-4-8', inp=100_000, cache_create=0,
+                       cache_read=0, cwd='/proj'),
+        ])
+        usage = claude_context_usage(str(t))
+        assert usage is not None
+        assert usage.window == 200_000
+
+    def test_global_fallback_is_version_specific(
+        self, tmp_path, fake_claude_config,
+    ):
+        # Only the matching base model counts: an opus-4-8 session is NOT 1M
+        # just because opus-4-7[1m] is used elsewhere.
+        fake_claude_config({
+            '/other': {'lastModelUsage': {'claude-opus-4-7[1m]': {}}},
         })
         t = tmp_path / 's.jsonl'
         _write_jsonl(t, [
