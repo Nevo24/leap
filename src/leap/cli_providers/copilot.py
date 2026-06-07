@@ -299,6 +299,56 @@ class CopilotProvider(CLIProvider):
         """
         return True
 
+    def deconfigure_hooks(self) -> None:
+        """Remove Leap's status line from ~/.copilot/settings.json.
+
+        Restores the user's prior status-line command from ``leap-statusline-chain``
+        if one was saved at install time, or removes the statusLine key entirely
+        if Leap added it from scratch.  Then removes the chain file and the
+        status-line script.  Best-effort: never raises.
+        """
+        try:
+            chain_file = self.hook_config_dir / "leap-statusline-chain"
+            prior_cmd: Optional[str] = None
+            if chain_file.is_file():
+                try:
+                    prior_cmd = chain_file.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    pass
+
+            if COPILOT_SETTINGS_FILE.is_file():
+                try:
+                    with open(COPILOT_SETTINGS_FILE, encoding="utf-8") as f:
+                        settings = json.load(f)
+                    if isinstance(settings, dict):
+                        existing = settings.get("statusLine")
+                        existing_cmd = (
+                            existing.get("command") if isinstance(existing, dict) else None
+                        )
+                        if (
+                            isinstance(existing_cmd, str)
+                            and "leap-copilot-statusline" in existing_cmd
+                        ):
+                            if prior_cmd:
+                                settings["statusLine"] = {
+                                    "type": "command",
+                                    "command": prior_cmd,
+                                }
+                            else:
+                                settings.pop("statusLine", None)
+                            atomic_write_json(COPILOT_SETTINGS_FILE, settings)
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            for name in ("leap-statusline-chain", "leap-copilot-statusline.py"):
+                try:
+                    (self.hook_config_dir / name).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        super().deconfigure_hooks()
+
     @property
     def supports_context_usage(self) -> bool:
         return True

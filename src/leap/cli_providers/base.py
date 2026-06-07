@@ -659,6 +659,22 @@ class CLIProvider(ABC):
         installs as broken.
         """
 
+    def deconfigure_hooks(self) -> None:
+        """Remove Leap's hook scripts from the CLI's config directory.
+
+        Removes ``leap-hook.sh`` and ``leap-hook-process.py`` from
+        :attr:`hook_config_dir`.  Best-effort: never raises.
+
+        Providers that also write Leap entries into the CLI's settings or
+        config files must override this method to undo those changes, then
+        call ``super().deconfigure_hooks()`` to clean up the script files.
+        """
+        for name in ("leap-hook.sh", "leap-hook-process.py"):
+            try:
+                (self.hook_config_dir / name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
     # -- CLI binary lookup -----------------------------------------------
 
     def find_cli(self) -> Optional[str]:

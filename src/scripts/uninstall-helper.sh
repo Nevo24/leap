@@ -65,6 +65,41 @@ remove_shell_config() {
     echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
 }
 
+# Warn if any Leap server lock directories exist (active or crashed sessions)
+check_running_sessions() {
+    local SOCKET_DIR="$REPO_PATH/.storage/sockets"
+    if [ ! -d "$SOCKET_DIR" ]; then
+        return
+    fi
+
+    local tags=()
+    while IFS= read -r lock_dir; do
+        tags+=("$(basename "$lock_dir" .server.lock)")
+    done < <(find "$SOCKET_DIR" -maxdepth 1 -name "*.server.lock" -type d 2>/dev/null)
+
+    if [ "${#tags[@]}" -eq 0 ]; then
+        return
+    fi
+
+    echo ""
+    echo -e "${YELLOW}  WARNING: Leap appears to have active sessions:${NC}"
+    for tag in "${tags[@]}"; do
+        echo "    - $tag"
+    done
+    echo "  Uninstalling with active sessions can break them mid-use:"
+    echo "  hook scripts will be deleted, the venv removed, and (if you"
+    echo "  choose to delete .storage) socket files wiped under running servers."
+    echo "  Quit all Leap servers and the Monitor app before continuing."
+    echo ""
+    printf "  Continue anyway? (y/N) "
+    read -n 1 -r REPLY
+    echo
+    if [ "$REPLY" != "y" ] && [ "$REPLY" != "Y" ]; then
+        echo "  Uninstall cancelled."
+        exit 0
+    fi
+}
+
 # Ask whether to remove .storage
 remove_storage() {
     local REPO_PATH="$1"
@@ -75,19 +110,27 @@ remove_storage() {
     fi
 
     echo ""
-    printf "  Remove .storage directory (queues, settings, notes, session data)? (y/N) "
-    read -n 1 -r REPLY
+    echo -e "${YELLOW}  WARNING: .storage holds all your persistent Leap data:${NC}"
+    echo "    - Notes, saved messages, and presets"
+    echo "    - Monitor preferences and PR/SCM token configuration"
+    echo "    - Session history, queue data, and pinned sessions"
+    echo "    - Slack configuration"
+    echo "  Deleting it is permanent and cannot be undone."
+    echo ""
+    printf "  Type \"yes\" to permanently delete .storage, or press Enter to keep it: "
+    read -r REPLY
     echo
 
-    if [ "$REPLY" = "y" ] || [ "$REPLY" = "Y" ]; then
+    if [ "$REPLY" = "yes" ]; then
         rm -rf "$STORAGE_DIR"
         echo -e "${GREEN}✓ Removed .storage${NC}"
     else
-        echo "  Keeping .storage (your settings and session data are preserved)."
+        echo "  Keeping .storage (your data is preserved)."
     fi
 }
 
 # Main
+check_running_sessions
 RC_FILE=$(get_rc_file)
 remove_shell_config "$RC_FILE"
 remove_storage "$REPO_PATH"

@@ -418,6 +418,78 @@ class CodexProvider(CLIProvider):
         except Exception:
             return False
 
+    def deconfigure_hooks(self) -> None:
+        """Remove Leap's hook entries from ~/.codex/hooks.json and ~/.codex/config.toml."""
+        try:
+            if CODEX_HOOKS_FILE.is_file():
+                with open(CODEX_HOOKS_FILE) as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    events = raw.get("hooks") if isinstance(raw.get("hooks"), dict) else {}
+                    _MARKERS = (HOOK_MARKER, "claudeq-hook.sh")
+                    changed = False
+                    for event in list(events.keys()):
+                        entries = events.get(event)
+                        if not isinstance(entries, list):
+                            continue
+                        cleaned = [
+                            e for e in entries
+                            if not (
+                                isinstance(e, dict)
+                                and any(
+                                    isinstance(h, dict)
+                                    and any(m in h.get("command", "") for m in _MARKERS)
+                                    for h in e.get("hooks", [])
+                                )
+                            )
+                        ]
+                        if len(cleaned) != len(entries):
+                            if cleaned:
+                                events[event] = cleaned
+                            else:
+                                del events[event]
+                            changed = True
+                    if changed:
+                        if events:
+                            raw["hooks"] = events
+                        else:
+                            raw.pop("hooks", None)
+                        atomic_write_json(CODEX_HOOKS_FILE, raw)
+        except Exception:
+            pass
+        try:
+            config_file = CODEX_CONFIG_DIR / "config.toml"
+            if config_file.is_file():
+                text = config_file.read_text()
+                if "codex_hooks" in text:
+                    lines = text.splitlines(keepends=True)
+                    # Remove the two lines Leap added.
+                    filtered = [
+                        ln for ln in lines
+                        if "codex_hooks" not in ln
+                        and "suppress_unstable_features_warning" not in ln
+                    ]
+                    # If the [features] section is now empty (header followed
+                    # by another section or EOF), drop the header too so the
+                    # config doesn't accumulate orphaned section markers.
+                    result: list[str] = []
+                    i = 0
+                    while i < len(filtered):
+                        ln = filtered[i]
+                        if ln.strip() == "[features]":
+                            j = i + 1
+                            while j < len(filtered) and not filtered[j].strip():
+                                j += 1
+                            if j >= len(filtered) or filtered[j].strip().startswith("["):
+                                i = j
+                                continue
+                        result.append(ln)
+                        i += 1
+                    atomic_write_text(config_file, "".join(result))
+        except Exception:
+            pass
+        super().deconfigure_hooks()
+
     @staticmethod
     def _ensure_hooks_feature_flag() -> None:
         """Ensure features.codex_hooks = true in ~/.codex/config.toml.

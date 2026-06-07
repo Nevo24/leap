@@ -366,6 +366,46 @@ class GeminiProvider(CLIProvider):
         except Exception:
             return False
 
+    def deconfigure_hooks(self) -> None:
+        """Remove Leap's hook entries from ~/.gemini/settings.json."""
+        try:
+            if GEMINI_SETTINGS_FILE.is_file():
+                with open(GEMINI_SETTINGS_FILE) as f:
+                    settings = json.load(f)
+                if isinstance(settings, dict):
+                    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else None
+                    if isinstance(hooks, dict):
+                        _MARKERS = (HOOK_MARKER, "claudeq-hook.sh")
+                        changed = False
+                        for event in list(hooks.keys()):
+                            entries = hooks.get(event)
+                            if not isinstance(entries, list):
+                                continue
+                            cleaned = [
+                                e for e in entries
+                                if not (
+                                    isinstance(e, dict)
+                                    and any(
+                                        isinstance(h, dict)
+                                        and any(m in h.get("command", "") for m in _MARKERS)
+                                        for h in e.get("hooks", [])
+                                    )
+                                )
+                            ]
+                            if len(cleaned) != len(entries):
+                                if cleaned:
+                                    hooks[event] = cleaned
+                                else:
+                                    del hooks[event]
+                                changed = True
+                        if changed:
+                            if not hooks:
+                                settings.pop("hooks", None)
+                            atomic_write_json(GEMINI_SETTINGS_FILE, settings)
+        except Exception:
+            pass
+        super().deconfigure_hooks()
+
     # -- CLI-specific input behaviors ------------------------------------
 
     def select_option(

@@ -1181,6 +1181,46 @@ class ClaudeProvider(CLIProvider):
         except Exception:
             return False
 
+    def deconfigure_hooks(self) -> None:
+        """Remove Leap's hook entries from ~/.claude/settings.json."""
+        try:
+            settings_path = Path.home() / ".claude" / "settings.json"
+            if settings_path.is_file():
+                with open(settings_path) as f:
+                    settings = json.load(f)
+                hooks = settings.get("hooks") if isinstance(settings, dict) else None
+                if isinstance(hooks, dict):
+                    _MARKERS = ("leap-hook.sh", "claudeq-hook.sh")
+                    changed = False
+                    for event in list(hooks.keys()):
+                        entries = hooks.get(event)
+                        if not isinstance(entries, list):
+                            continue
+                        cleaned = [
+                            e for e in entries
+                            if not (
+                                isinstance(e, dict)
+                                and any(
+                                    isinstance(h, dict)
+                                    and any(m in h.get("command", "") for m in _MARKERS)
+                                    for h in e.get("hooks", [])
+                                )
+                            )
+                        ]
+                        if len(cleaned) != len(entries):
+                            if cleaned:
+                                hooks[event] = cleaned
+                            else:
+                                del hooks[event]
+                            changed = True
+                    if changed:
+                        if not hooks:
+                            settings.pop("hooks", None)
+                        atomic_write_json(settings_path, settings)
+        except Exception:
+            pass
+        super().deconfigure_hooks()
+
     # -- CLI-specific input behaviors ------------------------------------
 
     # send_image_message: uses base class fixed-sleep protocol

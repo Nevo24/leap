@@ -204,6 +204,7 @@ Override these only if the CLI differs from the defaults:
 | `relocate_session()` | Returns `None` (no cross-cwd) | Implement for the **move mechanism** — physically (or logically) bring the session's on-disk state under the user's chosen cwd. Required when `requires_cwd_bound_resume = True`. |
 | `session_exists()` | Returns `True` | Override if your CLI records sessions with empty `transcript_path` so the picker's path-based stale-check can't filter them — return `False` when the session's on-disk state has been deleted out-of-band. |
 | `context_usage(cli_name, tag, storage_dir)` | Returns `None` | Implement (with `supports_context_usage = True`) to show the monitor's **Context** column — locate your own source (a transcript via `latest_transcript_for`, or Copilot's status-line state file) and return prompt-tokens vs the context window. See **Context-usage column** below. |
+| `deconfigure_hooks()` | Removes `leap-hook.sh` + `leap-hook-process.py` from `hook_config_dir` | Override if `configure_hooks()` also writes into a CLI settings/config file — undo those changes surgically, write back atomically, then call `super().deconfigure_hooks()`. See **`deconfigure_hooks()`** section in step 4. |
 
 ### Leap Resume feature (`leap --resume`)
 
@@ -575,6 +576,53 @@ def hooks_installed(self) -> bool:
 
 **Custom (user-defined) CLIs** inherit `hooks_installed()` from their base provider via `CustomCLIProvider.__getattribute__`'s delegation — there's also an explicit `def hooks_installed(self): return self._base.hooks_installed()` on `CustomCLIProvider` to satisfy `ABCMeta` (the abstract-method check happens at class-creation time, before delegation can kick in). Custom-CLI authors don't write either method themselves; they pass `base_provider=ClaudeProvider()` (or one of the other four) to `CustomCLIProvider.__init__` and `base_type` follows automatically. **All custom CLIs are variants of one of the five base CLIs** — this is a hard constraint of the project.
 
+**`deconfigure_hooks()` — symmetric counterpart of `configure_hooks()`:**
+
+The `CLIProvider` base class provides a default `deconfigure_hooks()` that removes `leap-hook.sh` and `leap-hook-process.py` from `hook_config_dir`. The unified `src/scripts/unconfigure_hooks.py --all` script calls this during `make uninstall`.
+
+If your provider writes anything into a CLI settings or config file during `configure_hooks()`, you **must** override `deconfigure_hooks()` to undo those writes. The override must:
+
+1. Surgically remove only Leap's entries from each config file (preserve all other user settings)
+2. Write back **atomically** — same `atomic_write_json()` / `atomic_write_text()` pattern as `configure_hooks()`
+3. Call `super().deconfigure_hooks()` at the end to clean up the script files
+4. **Never raise** — wrap each config-file operation in its own `try: ... except Exception: pass`. Uninstall must complete even if one file is missing or corrupt.
+
+**Implementation pattern:**
+
+```python
+def deconfigure_hooks(self) -> None:
+    """Remove Leap's hook entries from ~/.<cli>/settings.json."""
+    try:
+        if SETTINGS_FILE.is_file():
+            with open(SETTINGS_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else None
+                if isinstance(hooks, dict):
+                    changed = False
+                    for event in list(hooks.keys()):
+                        entries = hooks.get(event)
+                        if not isinstance(entries, list):
+                            continue
+                        cleaned = [
+                            e for e in entries
+                            if not (
+                                isinstance(e, dict)
+                                and "leap-hook.sh" in e.get("command", "")
+                            )
+                        ]
+                        if len(cleaned) != len(entries):
+                            hooks[event] = cleaned
+                            changed = True
+                    if changed:
+                        atomic_write_json(SETTINGS_FILE, data)
+    except Exception:
+        pass
+    super().deconfigure_hooks()
+```
+
+**Copilot-style state restoration:** If your `configure_hooks()` displaces an existing user value (e.g. a pre-existing status-line command), save the original to a sidecar file at install time and restore it in `deconfigure_hooks()`. See `CopilotProvider.configure_hooks()` / `CopilotProvider.deconfigure_hooks()` and the `leap-statusline-chain` file pattern.
+
 ### 5. Optional: Shell Launcher Script
 
 Create `src/scripts/<name>-leap-main.sh` for a direct shortcut:
@@ -594,13 +642,15 @@ Make it executable in the Makefile `configure-shell` target:
 
 ### 6. Makefile: Hook Cleanup on Uninstall
 
-Add hook file cleanup to the `uninstall` target in `Makefile`:
+**Primary path (automatic):** `make uninstall` calls `src/scripts/unconfigure_hooks.py --all`, which calls `provider.deconfigure_hooks()` for every registered provider. If your `deconfigure_hooks()` override is correct, **no Makefile edit is needed** for the primary cleanup.
+
+**Safety-net `rm -f` lines:** The `uninstall` target also has explicit `rm -f` lines for every provider's hook scripts — these run after the venv is removed and act as a fallback if the Python cleanup fails. Add your provider's script files to that block:
 
 ```makefile
-@rm -f "$$HOME/.<cli_config_dir>/leap-hook.sh" 2>/dev/null || true
+@rm -f "$$HOME/.<cli_config_dir>/leap-hook.sh" "$$HOME/.<cli_config_dir>/leap-hook-process.py" 2>/dev/null || true
 ```
 
-This is the ONE place that can't be fully dynamic (uninstall must know exact paths even if the provider code is gone).
+If your `configure_hooks()` copies additional scripts (e.g. a status-line script like Copilot's `leap-copilot-statusline.py`), add those to the safety-net line too.
 
 ### 7-10. Automatic — No Changes Needed
 
@@ -805,6 +855,7 @@ class TestMyCliProvider:
 - [ ] `configure_hooks()` installs hooks correctly **and writes atomically** (use `leap.utils.atomic_write`)
 - [ ] `hooks_installed()` is the symmetric inverse of `configure_hooks()` — both halves checked, never raises, lenient on which hook events are present
 - [ ] After running `configure_hooks()`, `hooks_installed()` flips to `True`
+- [ ] `deconfigure_hooks()` undoes everything `configure_hooks()` wrote (if you write to settings files); calls `super().deconfigure_hooks()`; never raises; tested manually or via unit test that settings are cleanly restored
 - [ ] `hook_config_dir` points to correct location
 - [ ] `requires_binary_for_hooks` set correctly
 - [ ] **Leap Resume** feature wired (if the CLI supports resume): `supports_resume`, `extract_session_id`, `resume_args` — or explicitly decide to skip
@@ -818,7 +869,7 @@ class TestMyCliProvider:
 ### Shell & Makefile
 - [ ] Shell launcher script created (`src/scripts/<name>-leap-main.sh`)
 - [ ] Makefile: `chmod +x` for launcher script in `configure-shell` target
-- [ ] Makefile: hook cleanup added to `uninstall` target
+- [ ] Makefile safety-net `rm -f` block updated with any extra scripts your `configure_hooks()` copies (the primary cleanup runs via `unconfigure_hooks.py --all` → `deconfigure_hooks()` automatically)
 - [ ] If provider name contains hyphens: verify `LEAP_<NAME>_FLAGS` uses underscores in both `configure-shell-helper.sh` and `leap-select.sh`
 
 ### String references (grep for existing provider names!)

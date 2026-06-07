@@ -356,6 +356,42 @@ class CursorAgentProvider(CLIProvider):
         except Exception:
             return False
 
+    def deconfigure_hooks(self) -> None:
+        """Remove Leap's hook entries from ~/.cursor/hooks.json."""
+        try:
+            if CURSOR_HOOKS_FILE.is_file():
+                with open(CURSOR_HOOKS_FILE) as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else None
+                    if isinstance(hooks, dict):
+                        _MARKERS = (HOOK_MARKER, "claudeq-hook.sh")
+                        changed = False
+                        for event in list(hooks.keys()):
+                            entries = hooks.get(event)
+                            if not isinstance(entries, list):
+                                continue
+                            cleaned = [
+                                e for e in entries
+                                if not (
+                                    isinstance(e, dict)
+                                    and any(m in e.get("command", "") for m in _MARKERS)
+                                )
+                            ]
+                            if len(cleaned) != len(entries):
+                                if cleaned:
+                                    hooks[event] = cleaned
+                                else:
+                                    del hooks[event]
+                                changed = True
+                        if changed:
+                            if not hooks:
+                                data.pop("hooks", None)
+                            atomic_write_json(CURSOR_HOOKS_FILE, data)
+        except Exception:
+            pass
+        super().deconfigure_hooks()
+
     # -- CLI binary lookup -----------------------------------------------
 
     def find_cli(self) -> Optional[str]:

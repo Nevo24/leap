@@ -1076,6 +1076,16 @@ uninstall-slack-app:
 .PHONY: uninstall
 uninstall:
 	@echo "$(PROMPT_PREFIX) Uninstalling Leap..."
+	@echo "$(PROMPT_PREFIX) Removing CLI hook configurations..."
+	@VENV_PY=""; \
+	if [ -f "$(REPO_PATH)/.storage/venv-path" ]; then \
+		VENV_PY="$$(cat "$(REPO_PATH)/.storage/venv-path")/bin/python3"; \
+	fi; \
+	if [ -n "$$VENV_PY" ] && [ ! -x "$$VENV_PY" ]; then \
+		VENV_PY=""; \
+	fi; \
+	PY=$${VENV_PY:-python3}; \
+	PYTHONPATH="$(SRC_DIR):$$PYTHONPATH" "$$PY" "$(SCRIPTS_DIR)/unconfigure_hooks.py" --all 2>/dev/null || true
 	@chmod +x $(SCRIPTS_DIR)/uninstall-helper.sh
 	@$(SCRIPTS_DIR)/uninstall-helper.sh $(REPO_PATH)
 	@echo "$(PROMPT_PREFIX) Removing Poetry virtual environment..."
@@ -1139,31 +1149,12 @@ uninstall:
 			echo "$(YELLOW)⚠ Could not update Cursor settings$(NC)"; \
 		fi; \
 	fi
-	@echo "$(PROMPT_PREFIX) Removing hook files and settings..."
+	@echo "$(PROMPT_PREFIX) Removing hook script files (safety net)..."
 	@rm -f "$$HOME/.claude/hooks/leap-hook.sh" "$$HOME/.claude/hooks/leap-hook-process.py" "$$HOME/.claude/hooks/claudeq-hook.sh" 2>/dev/null || true
 	@rm -f "$$HOME/.codex/leap-hook.sh" "$$HOME/.codex/leap-hook-process.py" "$$HOME/.codex/claudeq-hook.sh" 2>/dev/null || true
 	@rm -f "$$HOME/.cursor/leap-hook.sh" "$$HOME/.cursor/leap-hook-process.py" 2>/dev/null || true
 	@rm -f "$$HOME/.gemini/leap-hook.sh" "$$HOME/.gemini/leap-hook-process.py" 2>/dev/null || true
-	@rm -f "$$HOME/.copilot/leap-hook.sh" "$$HOME/.copilot/leap-hook-process.py" 2>/dev/null || true
-	@python3 -c "\
-import json, os, sys; \
-p = os.path.expanduser('~/.claude/settings.json'); \
-data = json.load(open(p)) if os.path.exists(p) else {}; \
-hooks = data.get('hooks', {}); \
-changed = False; \
-for key in list(hooks.keys()): \
-    filtered = [e for e in hooks[key] if not any('leap-hook' in h.get('command','') or 'claudeq-hook' in h.get('command','') for h in e.get('hooks',[]))]; \
-    if len(filtered) != len(hooks[key]): \
-        changed = True; \
-    if filtered: \
-        hooks[key] = filtered; \
-    else: \
-        del hooks[key]; \
-if changed: \
-    data['hooks'] = hooks; \
-    json.dump(data, open(p,'w'), indent=4); \
-    print('  Removed Leap hooks from ~/.claude/settings.json'); \
-" 2>/dev/null || true
+	@rm -f "$$HOME/.copilot/leap-hook.sh" "$$HOME/.copilot/leap-hook-process.py" "$$HOME/.copilot/leap-copilot-statusline.py" "$$HOME/.copilot/leap-statusline-chain" 2>/dev/null || true
 	@echo "$(GREEN)✓ Removed hook files$(NC)"
 	@echo ""
 	@echo "$(GREEN)✓ Leap fully uninstalled!$(NC)"
