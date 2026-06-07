@@ -22,6 +22,7 @@ from leap.utils.resume_store import (
     MAX_ENTRIES_PER_TAG,
     SessionRecord,
     TagRow,
+    latest_transcript_for,
     load_raw_tag_rows,
     load_tag_rows,
     prune_stale,
@@ -1042,3 +1043,43 @@ class TestRelocateRecords:
             tmp_path, "claude",
             session_id="abc", new_cwd="/c", new_transcript_path="b",
         ) == 0
+
+
+# --------------------------------------------------------------------------
+# latest_transcript_for — newest recorded transcript path for (cli, tag)
+# --------------------------------------------------------------------------
+
+class TestLatestTranscriptFor:
+    def test_missing_tag_file_returns_none(self, tmp_path):
+        assert latest_transcript_for(tmp_path, "claude", "neverseen") is None
+
+    def test_returns_newest_by_last_seen(self, tmp_path):
+        # record_session appends oldest-first; the newest (greatest last_seen)
+        # entry must win, not entries[0].
+        record_session(tmp_path, "claude", "t",
+                       session_id="old", transcript_path="/p/old.jsonl")
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "t",
+                       session_id="new", transcript_path="/p/new.jsonl")
+        assert latest_transcript_for(tmp_path, "claude", "t") == "/p/new.jsonl"
+
+    def test_skips_empty_transcript_path(self, tmp_path):
+        # A newer record with no transcript (e.g. a Cursor-style entry) must
+        # not shadow the freshest entry that actually has a path.
+        record_session(tmp_path, "claude", "t",
+                       session_id="real", transcript_path="/p/real.jsonl")
+        time.sleep(0.01)
+        record_session(tmp_path, "claude", "t",
+                       session_id="empty", transcript_path="")
+        assert latest_transcript_for(tmp_path, "claude", "t") == "/p/real.jsonl"
+
+    def test_handles_non_numeric_last_seen(self, tmp_path):
+        # A corrupt ``last_seen`` must not raise (this is read on the monitor's
+        # render thread) -- the entry is still usable, just sorted as oldest.
+        d = tmp_path / "cli_sessions" / "claude"
+        d.mkdir(parents=True)
+        (d / "t.json").write_text(json.dumps([
+            {"session_id": "a", "transcript_path": "/p/a.jsonl",
+             "last_seen": "not-a-number"},
+        ]))
+        assert latest_transcript_for(tmp_path, "claude", "t") == "/p/a.jsonl"

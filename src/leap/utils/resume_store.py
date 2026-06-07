@@ -44,6 +44,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from leap.utils.atomic_write import atomic_write_json
 
@@ -107,6 +108,30 @@ def _load_raw_entries(tag_file: Path) -> list[dict]:
     if not isinstance(parsed, list):
         return []
     return [e for e in parsed if isinstance(e, dict)]
+
+
+def latest_transcript_for(storage_dir: Path, cli: str, tag: str) -> Optional[str]:
+    """Newest recorded ``transcript_path`` for ``(cli, tag)``, or ``None``.
+
+    ``record_session`` appends entries oldest-first, so the newest one is the
+    entry with the greatest ``last_seen`` -- not ``entries[0]``.  Skips entries
+    with an empty ``transcript_path`` (e.g. Cursor records) so the freshest
+    entry that actually has a transcript wins.
+    """
+    best_path: Optional[str] = None
+    best_seen = float('-inf')
+    for e in _load_raw_entries(_tag_file(storage_dir, cli, tag)):
+        tp = e.get("transcript_path") or ""
+        if not tp:
+            continue
+        try:
+            seen = float(e.get("last_seen") or 0.0)
+        except (TypeError, ValueError):
+            seen = 0.0
+        if seen >= best_seen:
+            best_seen = seen
+            best_path = tp
+    return best_path
 
 
 def record_session(

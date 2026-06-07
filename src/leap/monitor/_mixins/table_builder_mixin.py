@@ -34,7 +34,9 @@ from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
 )
 from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
+from leap.utils.context_usage import context_usage_for_transcript
 from leap.utils.menu import extract_menu_options
+from leap.utils.resume_store import latest_transcript_for
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.cursor_gui_scan import CURSOR_GUI_ROW_TYPE, CURSOR_GUI_TAG_PREFIX
@@ -73,9 +75,9 @@ def _hex_to_rgb_str(hex_color: str) -> str:
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and preset editor."""
 
-    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14})  # All data columns
+    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})  # All data columns
     # Columns that display technical/code data — rendered in monospace font
-    _MONO_COLS = frozenset({4, 7, 8, 14})  # Project, Path, Server Branch, PR Branch
+    _MONO_COLS = frozenset({4, 8, 9, 15})  # Project, Path, Server Branch, PR Branch
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
         """Set a cell widget wrapped in a hover-aware container.
@@ -175,6 +177,42 @@ class TableBuilderMixin(_Base):
             item.setForeground(QColor(fg))
         else:
             item.setForeground(QColor(current_theme().text_primary))
+
+    def _build_context_cell(self, row: int, tag: str, cli_provider: str,
+                            row_color: Optional[str]) -> None:
+        """Render the Context-window-usage cell (Claude only; else blank).
+
+        Shows ``<pct>%`` of the model's context window used, colored
+        green -> amber -> red as it fills (an at-a-glance warning of how
+        close the session is to auto-compaction).  Non-Claude rows, and
+        Claude rows with no readable transcript/usage yet, render blank.
+
+        Not ``_cell_cache``-d: the value changes as the transcript grows.
+        ``context_usage_for_transcript`` already caches on the file's
+        (mtime, size), so an unchanged poll is a single ``stat`` and
+        ``_set_cell_text`` no-ops when the text is unchanged.
+        """
+        if cli_provider != 'claude':
+            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
+            return
+        transcript = latest_transcript_for(SOCKET_DIR.parent, 'claude', tag)
+        usage = context_usage_for_transcript(transcript) if transcript else None
+        if usage is None:
+            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
+            return
+        self._set_cell_text(row, self.COL_CONTEXT, f'{usage.percent}%', row_color)
+        item = self.table.item(row, self.COL_CONTEXT)
+        if item is None:
+            return
+        t = current_theme()
+        color = (t.accent_green if usage.percent < 70
+                 else t.accent_orange if usage.percent < 90
+                 else t.accent_red)
+        if row_color:
+            color = ensure_contrast(color, row_color)
+        item.setForeground(QColor(color))
+        item.setToolTip(
+            f'{usage.used_tokens:,} / {usage.window:,} tokens ({usage.model})')
 
     def _cell_cached(self, tag: str, col: str, state: tuple,
                      row: int, table_col: int) -> bool:
@@ -907,6 +945,9 @@ class TableBuilderMixin(_Base):
         # from Cursor's message bubbles on disk; blank if none readable).
         self._set_cell_text(row, self.COL_TASK,
                             session.get('last_msg') or '', row_color)
+        # Context: blank - these are non-Claude editor rows (and the
+        # widget-removal loop above does not clear text-item cells).
+        self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
         # Path: same label + actions button as normal rows (Open in
         # Terminal / Open in IDE - both operate on this row's folder).
         self._build_path_cell(row, tag, session.get('project_path') or 'N/A',
@@ -1773,6 +1814,8 @@ class TableBuilderMixin(_Base):
 
                     self._set_cell_text(row, self.COL_TASK, 'N/A',
                                         row_color)
+                    # Context: blank for dead rows (no live transcript turn)
+                    self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
 
                     # Queue N/A with menu button
                     dead_q_state = ('dead', session.get('auto_send_mode', AutoSendMode.PAUSE),
@@ -2026,6 +2069,12 @@ class TableBuilderMixin(_Base):
                         task_item.setToolTip(
                             f'<div style="max-width:600px">{escaped}</div>'
                         )
+
+                    # Context column — Claude context-window usage %
+                    self._build_context_cell(
+                        row, tag,
+                        session.get('cli_provider', DEFAULT_PROVIDER),
+                        row_color)
 
                     # Queue column with menu button on the left
                     auto_send_mode = session.get('auto_send_mode', AutoSendMode.PAUSE)

@@ -51,7 +51,8 @@ src/
     │   ├── line_buffer.py       # Cursor-aware line editing buffer (raw-terminal prompts)
     │   ├── menu.py              # Numbered-menu parser (extract_menu_options, shared by server + monitor)
     │   ├── socket_utils.py      # Shared Unix socket send/recv helper
-    │   ├── resume_store.py      # Read/write/prune of cli_sessions/<cli>/<tag>.json (used by hook + picker)
+    │   ├── context_usage.py     # Claude context-window % from transcript usage (monitor Context column)
+    │   ├── resume_store.py      # Read/write/prune of cli_sessions/<cli>/<tag>.json (used by hook + picker; + latest_transcript_for)
     │   ├── relocation.py        # Shared primitives for cross-cwd session moves (signals_blocked, stage/commit, verify, snapshots)
     │   ├── claude_session_move.py  # Claude cross-cwd move (jsonl + optional sidecar dir)
     │   ├── gemini_session_move.py  # Gemini cross-cwd move (jsonl + projects.json registry)

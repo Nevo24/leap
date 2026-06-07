@@ -244,18 +244,20 @@ class MonitorWindow(
     COL_PROJECT = 4
     COL_SERVER = 5
     COL_TASK = 6
-    COL_PATH = 7
-    COL_SERVER_BRANCH = 8
-    COL_STATUS = 9
-    COL_QUEUE = 10
-    COL_CLIENT = 11
-    COL_SLACK = 12
-    COL_PR = 13
-    COL_PR_BRANCH = 14
+    COL_CONTEXT = 7
+    COL_PATH = 8
+    COL_SERVER_BRANCH = 9
+    COL_STATUS = 10
+    COL_QUEUE = 11
+    COL_CLIENT = 12
+    COL_SLACK = 13
+    COL_PR = 14
+    COL_PR_BRANCH = 15
 
     _HEADER_LABELS = [
-        '', 'Tag', 'CLI', 'App', 'Project', 'Server', 'Last Msg', 'Path',
-        'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR', 'PR Branch',
+        '', 'Tag', 'CLI', 'App', 'Project', 'Server', 'Last Msg', 'Context',
+        'Path', 'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR',
+        'PR Branch',
     ]
     _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
 
@@ -586,6 +588,11 @@ class MonitorWindow(
         # column and broke saved-widths mapping when this was a literal).
         self.table.setColumnCount(len(self._HEADER_LABELS))
         self.table.setHorizontalHeaderLabels(self._HEADER_LABELS)
+        # Columns whose item tooltip is shown on hover regardless of the
+        # "show tooltips" setting (read by TooltipApp._handle_tooltip).  The
+        # Context cell's raw token counts are essential data, not a verbose
+        # explanation, so the setting shouldn't hide them.
+        self.table.setProperty('_always_tooltip_cols', [self.COL_CONTEXT])
 
         # Column header tooltip descriptions (applied via _apply_header_tooltips)
         self._col_tooltip_descriptions = {
@@ -606,6 +613,10 @@ class MonitorWindow(
                 '\u25c7 Interrupted - stopped, needs manual resume'
             ),
             self.COL_TASK: 'The last message sent to the CLI',
+            self.COL_CONTEXT: (
+                'Context window used (Claude only)\n'
+                'Higher = closer to auto-compaction'
+            ),
             self.COL_QUEUE: 'Number of messages waiting in the queue',
             self.COL_CLIENT: 'Leap client process (green = connected)',
             self.COL_SLACK: 'Slack integration (output to DM thread)',

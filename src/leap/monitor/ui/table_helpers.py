@@ -354,16 +354,16 @@ def menu_btn_style(fg_override: Optional[str] = None,
 
 
 # Column groups for vertical separators.
-# Groups: [X, Tag, CLI, App, Project] | [Server, Last Msg, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
+# Groups: [X, Tag, CLI, App, Project] | [Server, Last Msg, Context, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
 # Indices here are positional and MUST track the COL_* constants in monitor/app.py — if you
 # add/remove/reorder a column there, update this list (and _CENTER_COLS / _MONO_COLS in
 # _mixins/table_builder_mixin.py) in the same change.
 COLUMN_GROUPS: list[list[int]] = [
-    [0, 1, 2, 3, 4],         # Info
-    [5, 6, 7, 8, 9, 10],     # Server
-    [11],                     # Client
-    [12],                     # Slack
-    [13, 14],                 # PR
+    [0, 1, 2, 3, 4],            # Info
+    [5, 6, 7, 8, 9, 10, 11],    # Server (incl. Context at 7)
+    [12],                        # Client
+    [13],                        # Slack
+    [14, 15],                    # PR
 ]
 
 # Precomputed: column index → group index (for fast lookup)
@@ -447,6 +447,31 @@ class PersistentTooltipStyle(QProxyStyle):
         if hint == QStyle.SH_ToolTip_FallAsleepDelay:
             return 0  # No delay between consecutive tooltips
         return super().styleHint(hint, option, widget, returnData)
+
+
+def should_show_item_tooltip(tip: str, display: object, truncated: bool,
+                             tooltips_enabled: bool, always: bool) -> bool:
+    """Decide whether a table item's tooltip should be shown on hover.
+
+    Pure (no Qt) so it's unit-testable.  Rules:
+      - No tip -> never.
+      - Tip differs from the displayed text -> show when tooltips are enabled,
+        the display is truncated, or the column is flagged ``always``-on.
+      - Tip echoes the display -> only when truncated (or ``always``-on), since
+        there's nothing extra to reveal otherwise.
+      - No display text -> nothing to anchor on (widget-backed cells are
+        handled elsewhere), so don't show here.
+
+    ``always`` carries the per-column "show regardless of the global
+    'show tooltips' setting" flag (``_always_tooltip_cols``).
+    """
+    if not tip:
+        return False
+    if display and str(tip) != str(display):
+        return tooltips_enabled or truncated or always
+    if display:
+        return truncated or always
+    return False
 
 
 class TooltipApp(QApplication):
@@ -564,19 +589,15 @@ class TooltipApp(QApplication):
                 tip = index.data(Qt.ToolTipRole)
                 display = index.data(Qt.DisplayRole)
                 if tip and str(tip) != '':
-                    show = False
                     col_w = parent.columnWidth(index.column())
                     text_w = parent.fontMetrics().horizontalAdvance(
                         str(display)) if display else 0
                     truncated = text_w > col_w - 16
-                    if display and str(tip) != str(display):
-                        # Tooltip differs from display — show if
-                        # tooltips enabled OR display is truncated
-                        show = self.tooltips_enabled or truncated
-                    elif display:
-                        # Same text — only show when truncated
-                        show = truncated
-                    if show:
+                    always = index.column() in (
+                        parent.property('_always_tooltip_cols') or [])
+                    if should_show_item_tooltip(
+                            str(tip), display, truncated,
+                            self.tooltips_enabled, always):
                         self._show_tip(
                             event.globalPos(), str(tip), widget,
                             parent.visualRect(index),
@@ -593,16 +614,15 @@ class TooltipApp(QApplication):
                     tip = index.data(Qt.ToolTipRole)
                     display = index.data(Qt.DisplayRole)
                     if tip and str(tip) != '':
-                        show = False
                         col_w = widget.columnWidth(index.column())
                         text_w = widget.fontMetrics().horizontalAdvance(
                             str(display)) if display else 0
                         truncated = text_w > col_w - 16
-                        if display and str(tip) != str(display):
-                            show = self.tooltips_enabled or truncated
-                        elif display:
-                            show = truncated
-                        if show:
+                        always = index.column() in (
+                            widget.property('_always_tooltip_cols') or [])
+                        if should_show_item_tooltip(
+                                str(tip), display, truncated,
+                                self.tooltips_enabled, always):
                             self._show_tip(
                                 event.globalPos(), str(tip), vp,
                                 widget.visualRect(index),

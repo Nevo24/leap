@@ -10,6 +10,7 @@ Run AI coding agents (Claude Code, Codex CLI, GitHub Copilot, Cursor Agent, Gemi
 
 - **Smart message queueing** - Auto-sends when the CLI is ready
 - **Real-time GUI monitoring** - See all sessions, jump across IDEs and projects
+- **Context usage tracking** - See how full each Claude session's context window is, so you know how close it is to auto-compaction
 - **PR tracking** - GitLab & GitHub comment detection with `/leap` tag support
 - **Slack integration** - Bidirectional messaging between Slack and Leap sessions
 - **Prevent sleep while busy** - Mac stays awake until every session is idle (optional lid-close override)
