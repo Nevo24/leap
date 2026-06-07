@@ -277,6 +277,11 @@ def codex_session_cost(rollout_path: str) -> Optional[CostInfo]:
     total = info.get("total_token_usage")
     last = last if isinstance(last, dict) else {}
     total = total if isinstance(total, dict) else {}
+    # The cumulative is always >= the last turn.  If a token_count carries only
+    # last_token_usage (no/empty total - possible on the very first turn), fall
+    # back to last so the session line never reads smaller than the last turn.
+    if _codex_total_tokens(total) <= 0:
+        total = last
     last_tokens = _codex_total_tokens(last)
     session_tokens = _codex_total_tokens(total)
     if last_tokens <= 0 and session_tokens <= 0:
@@ -298,12 +303,14 @@ def gemini_session_cost(transcript_path: str) -> Optional[CostInfo]:
     """Token + USD estimate for a Gemini chat session, or ``None``.
 
     Each ``type == 'gemini'`` entry carries ``tokens.{input,output,cached,
-    thoughts,tool}`` (``input`` is the full prompt, ``cached`` a subset) and the
-    model id.  Input bills at the input rate (cached subset cheaper), output and
-    thinking (``thoughts``) at the output / reasoning rate; tool-prompt tokens
-    are folded into input.  Summed across turns - Gemini sessions are small, so
-    a full walk per change is fine (the cached wrapper only recomputes on a file
-    change).
+    thoughts}`` and the model id.  Verified against real turns,
+    ``total == input + output + thoughts`` and ``cached`` is a *subset* of
+    ``input`` - so input bills at the input rate (the cached subset cheaper),
+    output at the output rate, and thinking (``thoughts``, which is additive)
+    at the reasoning rate.  ``tool`` is not added separately: it's already part
+    of ``input`` (the full prompt), so folding it in would double-count.  Summed
+    across turns - Gemini sessions are small, so a full walk per change is fine
+    (the cached wrapper only recomputes on a file change).
     """
     if not transcript_path:
         return None
@@ -331,9 +338,8 @@ def gemini_session_cost(transcript_path: str) -> Optional[CostInfo]:
                 out = _as_int(tokens.get("output"))
                 cached = _as_int(tokens.get("cached"))
                 thoughts = _as_int(tokens.get("thoughts"))
-                tool = _as_int(tokens.get("tool"))
                 turn_tokens = (_as_int(tokens.get("total"))
-                               or inp + out + thoughts + tool)
+                               or inp + out + thoughts)
                 if turn_tokens <= 0:
                     continue
                 model = entry.get("model")
@@ -341,9 +347,9 @@ def gemini_session_cost(transcript_path: str) -> Optional[CostInfo]:
                 turn_cost: Optional[float] = None
                 if pricing is not None:
                     turn_cost = cost_usd(
-                        pricing, new_input=max(0, inp - cached) + tool,
+                        pricing, new_input=max(0, inp - cached),
                         cache_read=cached, output=out, reasoning=thoughts,
-                        prompt_tokens=inp + tool)
+                        prompt_tokens=inp)
                     session_cost += turn_cost
                     any_priced = True
                 session_tokens += turn_tokens

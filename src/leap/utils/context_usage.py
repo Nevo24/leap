@@ -273,7 +273,12 @@ def _codex_usage_from_tail(tail: bytes) -> Optional[ContextUsage]:
         if (info is None and entry.get('type') == 'event_msg'
                 and payload.get('type') == 'token_count'):
             cand = payload.get('info')
-            if isinstance(cand, dict):
+            # Skip an empty token_count (no last_token_usage) - an early one can
+            # appear before any tokens, and using it would blank the cell while
+            # the cost path (which skips it) still computes.  Keep looking back
+            # for the latest event that actually carries usage.
+            if isinstance(cand, dict) and isinstance(
+                    cand.get('last_token_usage'), dict):
                 info = cand
         elif not model and entry.get('type') == 'turn_context':
             model = _as_str(payload.get('model'))

@@ -402,9 +402,52 @@ class TestCodex:
         assert info is not None
         assert info.session_tokens == 26030
 
+    def test_session_falls_back_to_last_when_total_missing(self, tmp_path):
+        # A token_count carrying only last_token_usage (no total): session must
+        # fall back to last, never read smaller than the last turn.
+        t = tmp_path / "r.jsonl"
+        only_last = json.dumps({"type": "event_msg", "payload": {
+            "type": "token_count", "info": {
+                "last_token_usage": _codex_usage(5000, 0, 20),
+                "model_context_window": 258400}}})
+        _write(t, _codex_turn_context("gpt-5.5"), only_last)
+        info = codex_session_cost(str(t))
+        assert info is not None
+        assert info.session_tokens == 5020
+        assert info.last_turn_tokens == 5020
+        assert info.session_cost_usd is not None
+
     def test_empty_and_missing(self, tmp_path):
         assert codex_session_cost("") is None
         assert codex_session_cost(str(tmp_path / "nope.jsonl")) is None
+
+
+# ===========================================================================
+# First message: a single-turn session's "Session total" must equal "Last
+# message" (tokens AND cost) - the case the user is most likely to eyeball.
+# ===========================================================================
+class TestFirstMessage:
+    def test_claude_single_turn(self, tmp_path):
+        t = tmp_path / "c.jsonl"
+        _write(t, _assistant_id(_usage(inp=2955, out=134, cw=94263), "m1", "r1"))
+        info = claude_session_cost(str(t))
+        assert info.session_tokens == info.last_turn_tokens == 2955 + 134 + 94263
+        assert info.session_cost_usd == pytest.approx(info.last_turn_cost_usd)
+
+    def test_codex_single_turn(self, tmp_path):
+        t = tmp_path / "r.jsonl"
+        u = _codex_usage(12628, 10112, 14)  # cumulative == last on turn 1
+        _write(t, _codex_turn_context("gpt-5.5"), _codex_token_count(u, u))
+        info = codex_session_cost(str(t))
+        assert info.session_tokens == info.last_turn_tokens == 12642
+        assert info.session_cost_usd == pytest.approx(info.last_turn_cost_usd)
+
+    def test_gemini_single_turn(self, tmp_path):
+        t = tmp_path / "s.jsonl"
+        _write(t, _gem("gemini-3-flash-preview", 1000, 50, cached=400, thoughts=10))
+        info = gemini_session_cost(str(t))
+        assert info.session_tokens == info.last_turn_tokens
+        assert info.session_cost_usd == pytest.approx(info.last_turn_cost_usd)
 
 
 # ===========================================================================
@@ -441,6 +484,16 @@ class TestGemini:
         info = gemini_session_cost(str(t))
         p = price_for("gemini-3-flash-preview")
         exp = cost_usd(p, new_input=600, cache_read=400, output=0, prompt_tokens=1000)
+        assert info.session_cost_usd == pytest.approx(exp)
+
+    def test_tool_tokens_not_double_counted(self, tmp_path):
+        # tool tokens are part of the full input prompt; folding them in again
+        # would overcharge. Cost must match input-only pricing.
+        t = tmp_path / "s.jsonl"
+        _write(t, _gem("gemini-3-flash-preview", 1000, 0, tool=300))
+        info = gemini_session_cost(str(t))
+        p = price_for("gemini-3-flash-preview")
+        exp = cost_usd(p, new_input=1000, output=0, prompt_tokens=1000)
         assert info.session_cost_usd == pytest.approx(exp)
 
     def test_unknown_model_tokens_no_cost(self, tmp_path):

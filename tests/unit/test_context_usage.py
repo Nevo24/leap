@@ -425,6 +425,21 @@ class TestCodexContextUsage:
         u = codex_context_usage(str(t))
         assert u is not None and u.used_tokens == 50_000 and u.percent == 25
 
+    def test_skips_empty_trailing_token_count(self, tmp_path):
+        # A real turn followed by an empty token_count (no last_token_usage):
+        # context must skip the empty one and use the real turn's usage, not
+        # blank the cell.
+        t = tmp_path / 'rollout.jsonl'
+        _write_jsonl(t, [
+            *_codex_token_count(12_920, window=258_400),
+            {'type': 'event_msg', 'payload': {
+                'type': 'token_count',
+                'info': {'model_context_window': 258_400}}},  # empty
+        ])
+        u = codex_context_usage(str(t))
+        assert u is not None
+        assert u.used_tokens == 12_920 and u.percent == 5
+
     def test_missing_context_window_falls_back_to_default(self, tmp_path):
         t = tmp_path / 'rollout.jsonl'
         _write_jsonl(t, _codex_token_count(2_560, window=None))
