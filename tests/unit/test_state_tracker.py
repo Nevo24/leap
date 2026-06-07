@@ -2900,6 +2900,155 @@ class TestScreenHasActiveDialog:
         assert tracker.screen_has_active_dialog() is True
 
 
+class TestInteractiveUiKeepsRunningOnSilence:
+    """An ``is_dialog_certain`` miss must NOT be read as "idle" when an
+    interactive UI owns the bottom of the screen (idle input box gone).
+
+    Slash-command pickers (``/model``, ``/resume``, ``/mcp``, …) fire no
+    hook and sit in RUNNING.  Their footers are NOT the strict
+    ``Enter to select`` + ``Esc to cancel`` form, and the cursor on a
+    later option means the ``❯1.`` numbered-menu fallback misses too — so
+    ``is_dialog_certain`` is False.  Older / alternate dialog footers
+    (``Esc to close``, ``Enter to approve``, multi-select) miss the same
+    way.  Before the fix, after >5 s of user deliberation the
+    cursor+silence running→idle fallback fired, flipped RUNNING→IDLE and
+    ``_reset_screen()``-ed the live UI; then ``screen_has_active_dialog()``
+    read the blanked screen as "no dialog" and ↑/↓ got stolen for history
+    recall — the reported "arrows get stuck in a picker after a few
+    seconds" bug (and the false-idle let the auto-sender inject a queued
+    message into the open UI).
+
+    The guard: while the idle prompt is absent (the same structural
+    signal ``screen_has_active_dialog`` already trusts), stay RUNNING
+    without resetting.  Reproduced live against ``/model`` and ``/resume``.
+    """
+
+    # Realistic /model-style picker: 7 non-blank rows, no idle input-box
+    # sandwich, footer lacks "Enter to select", cursor on option 5 (so the
+    # "❯1." numbered-menu fallback also misses) → is_dialog_certain False.
+    _PICKER = (
+        'Select model\r\n'
+        '  1. Default\r\n'
+        '  2. Sonnet\r\n'
+        '  3. Opus\r\n'
+        '  4. Haiku\r\n'
+        '❯ 5. Sonnet 4.6\r\n'
+        'Enter to set as default · s to use this session only · '
+        'Esc to cancel'
+    )
+
+    def test_picker_open_with_silence_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # → running (e.g. user typed /model + Enter)
+        t[0] = 1.0
+        feed_with_visible_cursor(tracker, self._PICKER)
+        # Sanity: the footer really does miss the strict dialog check.
+        filled = [ln for ln in tracker._get_display_lines() if ln.strip()]
+        compact = ''.join(filled[-5:]).replace(' ', '')
+        assert tracker._provider.is_dialog_certain(compact) is False
+        # >5 s of user deliberation with no keypress.
+        t[0] = 8.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+    def test_picker_silence_keeps_arrows_navigable(
+        self, tmp_path: Path,
+    ) -> None:
+        # The user-facing symptom: after the silence poll, the ↑/↓ input
+        # filter must still route arrows to the picker (not history
+        # recall) — i.e. the screen was NOT blanked.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tracker, self._PICKER)
+        t[0] = 8.0
+        tracker.get_state(pty_alive=True)
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_genuine_idle_box_still_idles(self, tmp_path: Path) -> None:
+        # No-regression: when the real idle input box IS on screen (>=5
+        # rows so the small-screen shortcut doesn't apply), silence still
+        # flips to idle — the guard only holds RUNNING for an interactive
+        # UI, not for the genuinely idle prompt.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        hr = '─' * 80
+        feed_with_visible_cursor(
+            tracker,
+            'I have finished the task.\r\n'
+            'Here is a short summary of what changed.\r\n'
+            'Let me know if you need anything else.\r\n'
+            f'{hr}\r\n'
+            '❯ \r\n'
+            f'{hr}\r\n'
+            '? for shortcuts',
+        )
+        # Confirm the idle box is detected (otherwise the test proves
+        # nothing about the guard).
+        filled = [ln for ln in tracker._get_display_lines() if ln.strip()]
+        assert tracker._provider.is_idle_prompt_visible(filled) is True
+        t[0] = 8.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_plain_text_without_cursor_idles(self, tmp_path: Path) -> None:
+        # The narrowing: an absent idle box is NOT enough on its own to hold
+        # RUNNING.  Plain response text - a numbered list with no ❯ selection
+        # cursor - has no idle box yet is not an interactive UI, so it must
+        # idle rather than get stuck RUNNING (the false positive the broad
+        # "box absent -> running" guard caused).
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker,
+            'Here are your options:\r\n'
+            '1. Option A\r\n'
+            '2. Option B\r\n'
+            '3. Option C\r\n'
+            '> ',
+        )
+        filled = [ln for ln in tracker._get_display_lines() if ln.strip()]
+        # Box absent (the old broad guard would have held RUNNING) but no
+        # selection cursor -> not a picker.
+        assert tracker._provider.is_idle_prompt_visible(filled) is False
+        assert tracker._provider.has_selection_cursor(filled) is False
+        t[0] = 8.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_footer_only_dialog_without_cursor_stays_running(
+        self, tmp_path: Path,
+    ) -> None:
+        # Footer fallback: a tabbed view (e.g. /agents) shows no ❯/› cursor
+        # but DOES render a nav/dismiss footer.  With the idle box absent it
+        # must stay RUNNING so ↑/↓ keep reaching it - the case
+        # has_selection_cursor alone would miss.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker,
+            'Using Sonnet 4.6 · /model to change\r\n'
+            'Agents   Running   Library\r\n'
+            'No subagents are currently running.\r\n'
+            'Create one with the Task tool.\r\n'
+            'Switch tabs to see your library.\r\n'
+            '←/→ to switch · ↑/↓ to navigate · Esc to close',
+        )
+        filled = [ln for ln in tracker._get_display_lines() if ln.strip()]
+        assert tracker._provider.is_idle_prompt_visible(filled) is False
+        assert tracker._provider.has_selection_cursor(filled) is False
+        assert tracker._provider.has_interactive_footer(filled) is True
+        t[0] = 8.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+
 # ---------------------------------------------------------------------------
 # Answering a dialog must NOT reset the pyte screen.  A multi-question
 # AskUserQuestion advances to the next question via an Ink INCREMENTAL

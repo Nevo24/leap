@@ -194,6 +194,29 @@ class CLIProvider(ABC):
         """
         return True
 
+    def has_selection_cursor(self, display_lines: list[str]) -> bool:
+        """True iff a menu/picker selection cursor is on the recent screen.
+
+        Used (only when ``is_idle_prompt_visible`` is False) to tell a genuine
+        interactive UI — a picker/dialog with a selection cursor on a focused
+        option — apart from plain response text (e.g. a numbered list) that
+        merely lacks the idle input box.  Default False; overridden by
+        providers whose TUI draws a selection cursor (Claude).
+        """
+        del display_lines
+        return False
+
+    def has_interactive_footer(self, display_lines: list[str]) -> bool:
+        """True iff the bottom row is a picker/dialog nav/dismiss footer.
+
+        Companion to :meth:`has_selection_cursor` for interactive UIs that
+        render no selection cursor on a focused row (e.g. a tabbed view) but
+        DO show a nav/dismiss footer at the bottom.  Default False; overridden
+        by providers with such footers (Claude).
+        """
+        del display_lines
+        return False
+
     @property
     def valid_signal_states(self) -> frozenset[str]:
         """States that can appear in the hook signal file."""

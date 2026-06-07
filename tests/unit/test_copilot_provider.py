@@ -231,7 +231,7 @@ class TestCopilotStateDetection:
         tr = _make_tracker(tmp_path, t, CopilotProvider())
         tr.on_send()
         _feed_visible(tr, QUESTION_FOOTER)
-        t[0] = _BASE + 1.0
+        t[0] = _BASE + 2.5   # past the post-send footer grace
         assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
 
     def test_freetext_question_footer_promotes_to_needs_input(
@@ -245,8 +245,78 @@ class TestCopilotStateDetection:
         tr = _make_tracker(tmp_path, t, CopilotProvider())
         tr.on_send()
         _feed_visible(tr, QUESTION_FREETEXT_FOOTER)   # visible cursor (text field)
-        t[0] = _BASE + 1.0
+        t[0] = _BASE + 2.5   # past the post-send footer grace
         assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
+
+    def test_on_send_keeps_screen_so_followup_dialog_stays_visible(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression (confirmed live): answering a dialog calls on_send,
+        and for footer-driven providers on_send must NOT blank the screen.
+        Copilot repaints the next dialog only incrementally, so a blanked
+        screen never refills and a follow-up question (e.g. a free-text
+        'which file?' right after a menu question) is invisible to the
+        footer-detector - the session sticks reading RUNNING/IDLE.  Here a
+        question footer is on screen; a second on_send (the answer) fires;
+        WITHOUT re-feeding the footer it must still be detectable, proving
+        on_send left the screen intact."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_visible(tr, QUESTION_FREETEXT_FOOTER)
+        t[0] = _BASE + 2.5
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT   # Q1 seen
+        tr.on_send()                       # answering -> RUNNING, screen KEPT
+        t[0] = _BASE + 5.0                 # past the post-send grace again
+        # No re-feed: the retained footer must still drive needs_input.
+        # (Old on_send blanked the screen here -> stuck RUNNING.)
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
+
+    def test_dialog_promotion_held_during_post_send_grace(
+        self, tmp_path: Path,
+    ) -> None:
+        """The post-send grace must HOLD dialog promotion: right after a
+        send the screen is kept (footer-driven providers), so a
+        just-answered dialog's footer still lingers.  Promoting on it would
+        re-detect the answered dialog - a needs_permission would then get
+        auto-approved a second time.  So within the grace it stays RUNNING;
+        only after the grace (CLI has repainted the real next state) does it
+        promote.  Guards the phantom-auto-approve prevention."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_visible(tr, QUESTION_FOOTER)
+        t[0] = _BASE + 1.0                 # within the 2s grace
+        assert tr.get_state(pty_alive=True) == CLIState.RUNNING
+        t[0] = _BASE + 2.5                 # past the grace
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_INPUT
+
+    def test_permission_codisplayed_with_working_footer_promotes(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression (caught in a live auto-approve run): Copilot renders a
+        per-step permission prompt ("Do you want to edit a.txt? ... enter to
+        select") with a "● Creating files  esc cancel" WORKING line
+        co-displayed below the box.  The working "esc cancel" must NOT win -
+        the dialog footer does - or the prompt is never detected and an
+        Always-mode auto-approve sequence sticks RUNNING after the first
+        file.  This is the exact screen captured from the stuck session."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_visible(
+            tr,
+            "Do you want to edit a.txt?\n"
+            "❯ 1. Yes\n"
+            "  3. No, and tell Copilot what to do differently (Esc to stop)\n"
+            + DIALOG_FOOTER + "\n"
+            "● Creating files    esc cancel",
+        )
+        # The dialog footer must win over the co-displayed running footer.
+        with tr._screen_lock:
+            assert tr._screen_has_running_indicator() is False
+        t[0] = _BASE + 2.5                 # past the post-send grace
+        assert tr.get_state(pty_alive=True) == CLIState.NEEDS_PERMISSION
 
     def test_permission_dialog_detected_even_with_cursor_hidden(
         self, tmp_path: Path,

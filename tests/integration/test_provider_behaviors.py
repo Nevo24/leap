@@ -155,6 +155,52 @@ class TestClaudeProvider:
         ]
         assert not provider.is_idle_prompt_visible(agents_shape)
 
+    def test_claude_has_selection_cursor(self) -> None:
+        # Distinguishes a real picker/dialog (a ❯/› selection cursor on
+        # a focused option) from plain response text (a numbered list, which
+        # has no cursor).  Used by the cursor+silence guard so plain text
+        # idles while an open picker is held RUNNING.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+
+        # Picker: ❯ on a (non-first) focused option.
+        assert provider.has_selection_cursor([
+            'Select model',
+            '  1. Default',
+            '❯ 5. Sonnet 4.6',
+            'Enter to set as default · Esc to cancel',
+        ])
+        # The › variant also counts.
+        assert provider.has_selection_cursor(['› 2. Opus', '  3. Haiku'])
+        # Plain numbered list in response text: no selection cursor.
+        assert not provider.has_selection_cursor([
+            'Here are your options:',
+            '1. Option A',
+            '2. Option B',
+            '3. Option C',
+            '> ',
+        ])
+
+    def test_claude_has_interactive_footer(self) -> None:
+        # A nav/dismiss footer on the bottom row marks an interactive UI even
+        # with no ❯/› cursor (e.g. the /agents tabbed view).  Only the last
+        # row is checked, so response prose mentioning these phrases mid-text
+        # (with a normal "> " prompt last) does not match.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+
+        assert provider.has_interactive_footer([
+            'Agents  Running  Library',
+            'No subagents are currently running.',
+            '←/→ to switch · ↑/↓ to navigate · Esc to close',
+        ])
+        # Footer phrases mid-text, normal prompt on the last row -> no match.
+        assert not provider.has_interactive_footer([
+            'You can press Enter to select an option, or Esc to cancel.',
+            '> ',
+        ])
+        assert not provider.has_interactive_footer([])
+
     def test_claude_idle_prompt_check_ignores_short_inline_rules(
         self,
     ) -> None:

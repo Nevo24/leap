@@ -130,6 +130,9 @@ class ClaudeProvider(CLIProvider):
     # any code change.
     _HR_CHAR: str = '─'   # ─
     _PROMPT_CHAR: str = '❯'  # ❯
+    # Selection-cursor glyphs the Ink TUI draws on the focused row of a
+    # menu / picker / dialog (❯ = U+276F, › = U+203A).
+    _SELECTION_CURSORS: tuple = ('❯', '›')
     # Minimum length of a horizontal-rule line.  Real Claude renders
     # the input-box HR at terminal width minus padding (≈ COLS chars
     # of ``─``).  40 is the lowest reasonable terminal width Claude
@@ -230,6 +233,42 @@ class ClaudeProvider(CLIProvider):
                         and self._is_prompt_box_input_row(tail[top + 1])):
                     return True
         return len(display_lines) < self._IDLE_DETECT_MIN_ROWS
+
+    def has_selection_cursor(self, display_lines: list[str]) -> bool:
+        """True iff a ❯/› menu-selection cursor is in the recent tail rows.
+
+        Distinguishes a real interactive UI (a picker/dialog with the cursor
+        on a focused option) from plain response text such as a numbered list,
+        which carries no selection glyph.  Consulted only when the idle box is
+        absent, to decide whether the cursor+silence fallback holds RUNNING
+        rather than idle+reset an on-screen UI.
+        """
+        return any(c in ln
+                   for ln in display_lines[-self._IDLE_TAIL_WINDOW:]
+                   for c in self._SELECTION_CURSORS)
+
+    # Distinctive nav/dismiss markers from picker/dialog footers.  Chosen to
+    # not appear in ordinary response prose (unlike a bare "Enter to select"),
+    # and only ever matched against the bottom row (see has_interactive_footer).
+    _INTERACTIVE_FOOTER_MARKERS: tuple = (
+        'to navigate', 'esc to cancel', 'esc to close',
+        'space to toggle', 'enter to confirm',
+    )
+
+    def has_interactive_footer(self, display_lines: list[str]) -> bool:
+        """True iff the bottom row is a picker/dialog nav/dismiss footer.
+
+        Covers interactive UIs that draw no ❯/› on a focused row but render a
+        footer at the bottom (e.g. the /agents tabbed view: ``↑/↓ to navigate
+        · Esc to close``).  Only the last non-blank row is checked, with
+        markers distinctive enough that response text merely mentioning
+        ``Enter to select`` mid-sentence (with a normal ``> `` prompt on the
+        last row) does not match.
+        """
+        if not display_lines:
+            return False
+        last = display_lines[-1].lower()
+        return any(m in last for m in self._INTERACTIVE_FOOTER_MARKERS)
 
     # -- Menu / option parsing -------------------------------------------
 

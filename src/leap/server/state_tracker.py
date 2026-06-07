@@ -305,6 +305,14 @@ class CLIStateTracker:
         cancel" can't trap it in RUNNING (the "answering a question
         sticks in Running" bug).
 
+        A dialog/question footer ALSO wins, for the same reason: Copilot
+        renders a per-step permission prompt ("Do you want to edit…? …
+        enter to select · esc to cancel") with a "● Creating files  esc
+        cancel" working line co-displayed BELOW the box.  The working
+        "esc cancel" must not win there, or the dialog is never detected
+        and an Always-mode auto-approve sequence sticks RUNNING after the
+        first prompt.  Awaiting-the-user beats busy.
+
         Must be called with ``_screen_lock`` held.
         """
         patterns = self._provider.running_indicator_patterns
@@ -316,6 +324,14 @@ class CLIStateTracker:
             tail = ''.join(filled[-5:]).replace(' ', '')
             if any(p.decode('utf-8', errors='replace') in tail
                    for p in idle_pats):
+                return False
+            # Dialog/question footer in the tail -> awaiting user, not
+            # busy (see docstring).  Same patterns the footer-detector
+            # promotes on, so detection and this guard stay consistent.
+            if self._provider.is_dialog_certain(tail) or any(
+                p.decode('utf-8', errors='replace') in tail
+                for p in self._provider.input_dialog_patterns
+            ):
                 return False
         compact = self._get_screen_text().replace(' ', '').replace('\n', '')
         return any(
@@ -713,7 +729,17 @@ class CLIStateTracker:
         # Acquire _screen_lock first to maintain consistent lock
         # ordering with on_output (screen_lock → lock).
         with self._screen_lock:
-            self._reset_screen()
+            # Footer-driven providers (Copilot) must KEEP the screen synced
+            # with the terminal here: resetting blanks pyte, but the CLI
+            # repaints only incrementally - so when one dialog replaces
+            # another (e.g. a free-text question right after the user
+            # answers a menu question), the blanked screen never refills
+            # and the footer-detector goes blind to the follow-up dialog,
+            # leaving it stuck reading RUNNING/IDLE.  The post-send grace on
+            # the footer-detector's dialog promotion handles the stale
+            # just-answered footer instead.  Other providers reset as before.
+            if not self._provider.idle_indicator_patterns:
+                self._reset_screen()
             self._prompt_snapshot = []
             self._last_running_snapshot = []
             with self._lock:
@@ -1585,6 +1611,22 @@ class CLIStateTracker:
             if not running_indicator:
                 filled = [ln for ln in footer_lines if ln.strip()]
                 compact_tail = ''.join(filled[-5:]).replace(' ', '')
+                # RUNNING must clear a short grace before the footer is
+                # trusted for ANY transition.  Two reasons: the idle/dialog
+                # footer can flash for one frame at turn start, and - because
+                # footer-driven providers keep the screen across on_send
+                # (see on_send) - a just-answered dialog's footer lingers in
+                # pyte until the CLI repaints the next state.  Gating both
+                # the dialog promotion and the idle drop on the grace skips
+                # that stale frame, so answering one dialog can't re-detect
+                # itself (a phantom needs_permission would auto-approve).
+                # Non-RUNNING states (interrupted) transition immediately.
+                past_grace = (
+                    current != CLIState.RUNNING
+                    or (self._running_since > 0
+                        and (self._clock() - self._running_since)
+                        > _IDLE_INDICATOR_GRACE)
+                )
                 # A RUNNING turn paused on a footer menu is awaiting the
                 # user.  A question (ask_user, "enter to confirm") is
                 # needs_input - so ALWAYS-mode auto-approve leaves it for
@@ -1593,7 +1635,7 @@ class CLIStateTracker:
                 # input-first so a question is never mis-promoted to
                 # needs_permission and auto-answered.
                 promote_to: Optional[str] = None
-                if current == CLIState.RUNNING:
+                if current == CLIState.RUNNING and past_grace:
                     # ANY input-dialog pattern (Copilot has one per
                     # question footer shape: "enter to confirm" /
                     # "enter to submit") marks a question -> needs_input.
@@ -1624,12 +1666,6 @@ class CLIStateTracker:
                 idle_on_screen = any(
                     p.decode('utf-8', errors='replace') in compact_tail
                     for p in self._provider.idle_indicator_patterns
-                )
-                past_grace = (
-                    current != CLIState.RUNNING
-                    or (self._running_since > 0
-                        and (self._clock() - self._running_since)
-                        > _IDLE_INDICATOR_GRACE)
                 )
                 if idle_on_screen and past_grace:
                     _log.debug(
@@ -2014,6 +2050,42 @@ class CLIStateTracker:
                         'dialog was just answered - keeping running '
                         '(awaiting post-answer resume; %.1fs silent)',
                         self._clock() - self._last_output_time,
+                    )
+                    return current
+
+                # Interactive UI guard.  An is_dialog_certain miss above
+                # does NOT mean "idle" — it can also be a slash-command
+                # picker (/model, /resume, /mcp, …) or a dialog whose
+                # footer isn't the strict "Enter to select / Esc to
+                # cancel" form (e.g. Claude's "Esc to close" / "Enter to
+                # approve" / multi-select footers).  All of those leave
+                # the idle input box GONE from the bottom of the screen.
+                # But "idle box absent" alone is too broad — plain response
+                # text (a numbered list, a long body ending in "> ") also
+                # lacks the box yet must still idle.  A real picker/dialog
+                # additionally shows EITHER a ❯/› selection cursor on a focused
+                # option (has_selection_cursor) OR a nav/dismiss footer at the
+                # bottom (has_interactive_footer — e.g. the /agents tabbed view,
+                # which has no cursor); plain response text has neither.  So
+                # require: idle box absent AND (selection cursor OR nav footer).
+                # Idling a real UI here would (a) _reset_screen(), blanking it
+                # so screen_has_active_dialog() then reads "no dialog" and ↑/↓
+                # get stolen for history recall (the "arrows stuck in a picker
+                # after a few seconds" bug), and (b) let the auto-sender flush
+                # a queued message straight into the open UI.  When the user
+                # dismisses the UI the idle box returns and the normal idle
+                # path fires; a genuinely silent in-flight tool is already
+                # held above by transcript_says_running().  No-op for providers
+                # without these detectors (base defaults: is_idle_prompt_visible
+                # True / has_selection_cursor / has_interactive_footer False) —
+                # Claude-only.
+                if (not self._provider.is_idle_prompt_visible(filled)
+                        and (self._provider.has_selection_cursor(filled)
+                             or self._provider.has_interactive_footer(filled))):
+                    _log.debug(
+                        'GET_STATE cursor+silence would idle but the idle '
+                        'prompt is absent and a selection cursor / nav footer '
+                        'is on screen (picker/dialog) - keeping running',
                     )
                     return current
 
