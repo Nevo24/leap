@@ -185,6 +185,7 @@ Override these only if the CLI differs from the defaults:
 | `valid_signal_states` | `SIGNAL_STATES` | Override if the CLI writes different states to signal files |
 | `supports_resume` | `False` | Set `True` when you wire up the **Leap Resume** feature (see below) |
 | `requires_cwd_bound_resume` | `False` | Set `True` if resuming this CLI requires running from the recorded cwd (see **Cross-cwd resume — the "move" mechanism** below). Drives the picker's *Original / Current* prompt. |
+| `supports_context_usage` | `False` | Set `True` when you implement `context_usage()`. `False` renders the monitor's Context cell as `N/A` (CLI can't report usage, e.g. Cursor); `True` shows the % or blank. See **Context-usage column** below. |
 
 #### Optional Methods (Have Defaults)
 
@@ -202,6 +203,7 @@ Override these only if the CLI differs from the defaults:
 | `resume_args()` | Returns `[]` | Implement for **Leap Resume** — return the argv tokens that resume the given session id |
 | `relocate_session()` | Returns `None` (no cross-cwd) | Implement for the **move mechanism** — physically (or logically) bring the session's on-disk state under the user's chosen cwd. Required when `requires_cwd_bound_resume = True`. |
 | `session_exists()` | Returns `True` | Override if your CLI records sessions with empty `transcript_path` so the picker's path-based stale-check can't filter them — return `False` when the session's on-disk state has been deleted out-of-band. |
+| `context_usage(cli_name, tag, storage_dir)` | Returns `None` | Implement (with `supports_context_usage = True`) to show the monitor's **Context** column — locate your own source (a transcript via `latest_transcript_for`, or Copilot's status-line state file) and return prompt-tokens vs the context window. See **Context-usage column** below. |
 
 ### Leap Resume feature (`leap --resume`)
 
@@ -419,6 +421,77 @@ class MyCLIProvider(CLIProvider):
         # can't see them).  Default returns True.
         ...
 ```
+
+### Context-usage column (the monitor's "Context" %)
+
+The monitor's **Context** column shows, per session, how full the model's
+context window is (e.g. `43%`) so the user sees how close it is to
+auto-compaction. It's **opt-in per provider** via two members:
+
+- **`supports_context_usage`** (property, default `False`) — whether this CLI
+  can report usage *at all*. `False` → the cell renders **`N/A`** (the CLI
+  fundamentally can't, e.g. Cursor). `True` → the cell shows the % when
+  available, or **blank** when `context_usage()` returns `None` (supported, but
+  no data yet).
+- **`context_usage(self, cli_name, tag, storage_dir)`** (default `None`) — the
+  measurement. The provider locates its *own* source; `cli_name` is the row's
+  recorded CLI name (pass it to `latest_transcript_for` so **custom CLIs** read
+  their own `cli_sessions/<name>/` subdir).
+
+The monitor just calls `get_provider(cli_provider).context_usage(cli_provider,
+tag, STORAGE_DIR)` and renders `ContextUsage.percent` color-coded
+green→amber→red. You don't touch the monitor.
+
+**Two source shapes** (add a public entry point in `utils/context_usage.py`):
+
+1. **Transcript CLIs (Claude / Codex / Gemini).** Add a per-CLI
+   `_<cli>_usage_from_tail(tail: bytes) -> Optional[ContextUsage]` and a thin
+   `<cli>_context_usage(path)` = `_context_usage(path, _<cli>_usage_from_tail)`
+   (shared stat/mtime cache + 32 KiB tail read + a final exception net — this
+   runs on the render thread, so the parser must **never throw**; guard every
+   field with `isinstance`). The provider resolves the path itself:
+   ```python
+   @property
+   def supports_context_usage(self) -> bool: return True
+   def context_usage(self, cli_name, tag, storage_dir):
+       tp = latest_transcript_for(storage_dir, cli_name, tag)
+       return mycli_context_usage(tp) if tp else None
+   ```
+
+2. **CLIs with no transcript usage but a status line (Copilot).** Copilot's
+   transcript exposes no live usage, but its **status line** receives the live
+   numbers (`current_context_tokens`, `context_window_size`, `model`) on stdin
+   each render. Leap installs `leap-copilot-statusline.py` (registered in
+   `~/.copilot/settings.json` by `CopilotProvider.configure_hooks`, chaining any
+   existing status line via a `leap-statusline-chain` sidecar); the script
+   writes `<storage>/sockets/<tag>.context` (the status-line subprocess inherits
+   `LEAP_TAG`/`LEAP_SIGNAL_DIR`). The provider reads that file via
+   `copilot_context_usage(state_path)`. To add a status-line CLI: install its
+   script in `configure_hooks` (and have `_install_and_configure` in
+   `configure_hooks.py` copy it), keep `hooks_installed()` independent of it
+   (the status line is optional — don't gate session startup on it), and read
+   the state file in `context_usage`.
+
+**What to measure:** the **prompt** size of the latest turn (the conversation
+loaded into the window), *not* the model's reply. Token semantics differ:
+- **Claude** reports new (uncached) input separately from the cached prefix, so
+  prompt = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
+- **Codex / Gemini / Copilot** report `input` (or `current_context_tokens`) as
+  the *full* prompt (cached is a subset), so just use it.
+
+**Window (the denominator):** prefer a value the CLI records, and prefer the
+*effective* limit the CLI bases its own "% used" / compaction on so Leap's %
+matches what the user sees (Codex carries `info.model_context_window`; Copilot's
+status line carries `displayed_context_limit` - the limit it shows the user and
+auto-compacts against ~80% - preferred over the raw `context_window_size`).
+Otherwise map the model id to a window with a sane default (Gemini ~1M; Claude
+200k, or 1M via the `~/.claude.json` `[1m]` detection). Add a usage-overflow
+fallback if the window is ambiguous (usage above a window size proves a larger one).
+
+**When a CLI genuinely can't (leave `supports_context_usage = False` → N/A):**
+**Cursor** — its CLI exposes no token usage at all, records no `transcript_path`,
+and stores chats in an opaque content-addressed SQLite blob store. There's no
+on-disk number to read, so its Context cell shows `N/A`.
 
 ### 2. Register the Provider
 

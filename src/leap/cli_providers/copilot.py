@@ -6,14 +6,16 @@ Implements the CLIProvider interface for GitHub's Copilot CLI
 (alternate-screen) TUI.
 
 Key differences from the other providers:
-- **No hook system.**  Copilot exposes no lifecycle / Stop /
-  Notification hooks (verified against v1.0.60 - no ``hooks`` config
-  setting and no ``hooks`` help topic), so state detection is driven
+- **No lifecycle hook system.**  Copilot exposes no Stop / Notification
+  hooks (verified against v1.0.60), so state detection is driven
   entirely by PTY output: an on-screen "running" footer indicator,
   dialog-footer patterns, the interrupt banner, plus the state
-  tracker's cursor/silence fallbacks.  ``configure_hooks`` is a no-op
-  and ``hooks_installed`` always returns True so the session-start
-  gate never blocks.
+  tracker's cursor/silence fallbacks.  ``hooks_installed`` always
+  returns True so the session-start gate never blocks.  ``configure_hooks``
+  doesn't install lifecycle hooks - instead it installs a **status line**
+  (the only place Copilot exposes live context-window usage), so the
+  monitor's Context column can show it (see ``configure_hooks`` /
+  ``context_usage`` below).
 - **No ``leap --resume`` integration.**  Leap records resumable
   sessions from the hook payload (``extract_session_id``); with no
   hooks firing, nothing is recorded, so ``supports_resume`` stays
@@ -44,9 +46,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
+from leap.utils.atomic_write import atomic_write_json
+from leap.utils.context_usage import ContextUsage, copilot_context_usage
 
 
 COPILOT_CONFIG_DIR: Path = Path.home() / ".copilot"
+COPILOT_SETTINGS_FILE: Path = COPILOT_CONFIG_DIR / "settings.json"
 
 
 class CopilotProvider(CLIProvider):
@@ -231,26 +236,84 @@ class CopilotProvider(CLIProvider):
         return True
 
     def configure_hooks(self, hook_script_path: str) -> None:
-        """No-op: Copilot CLI exposes no lifecycle hook mechanism.
+        """Install a status line so the monitor can read live context usage.
 
-        State detection relies entirely on PTY output patterns (the
-        running-indicator footer, dialog footers, the interrupt
-        banner) plus the state tracker's cursor/silence fallbacks.
-        There is nothing to install, so this does nothing - but it
-        must exist (abstract method) and must never raise.
+        Copilot has no lifecycle hooks and exposes no token usage in its
+        transcript - the live context-window numbers are only available to a
+        **status line** command (Copilot pipes a JSON payload to it on stdin
+        every render).  So we register Leap's status-line script
+        (``leap-copilot-statusline.py``, installed next to the hook script) in
+        ``~/.copilot/settings.json``.
+
+        Copilot allows only one ``statusLine``, so we **preserve** any the user
+        already had by saving its command to ``leap-statusline-chain`` (the
+        Leap script runs it and echoes its output).  Best-effort and never
+        raises: the status line is optional (``hooks_installed`` stays True),
+        so a failure here must not break ``make install`` or session startup.
         """
-        del hook_script_path
+        try:
+            statusline = Path(hook_script_path).with_name(
+                'leap-copilot-statusline.py')
+            if not statusline.is_file():
+                return  # installer didn't place the script - nothing to wire
+            settings: dict[str, Any] = {}
+            if COPILOT_SETTINGS_FILE.is_file():
+                try:
+                    with open(COPILOT_SETTINGS_FILE) as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        settings = loaded
+                except (json.JSONDecodeError, OSError):
+                    settings = {}
+            existing = settings.get('statusLine')
+            existing_cmd = (existing.get('command')
+                            if isinstance(existing, dict) else None)
+            # Preserve the user's prior status line by chaining to it - but
+            # never chain to our own script (a self-reference would loop on
+            # reconfigure).
+            if (isinstance(existing_cmd, str) and existing_cmd.strip()
+                    and 'leap-copilot-statusline' not in existing_cmd):
+                try:
+                    statusline.with_name('leap-statusline-chain').write_text(
+                        existing_cmd)
+                except OSError:
+                    pass
+            settings['statusLine'] = {
+                'type': 'command',
+                'command': str(statusline),
+                'padding': 1,
+            }
+            atomic_write_json(COPILOT_SETTINGS_FILE, settings)
+        except Exception:
+            return  # best-effort: the status line is an optional enhancement
 
     def hooks_installed(self) -> bool:
-        """Always True - Copilot has no hooks to install or verify.
+        """Always True - Copilot has no lifecycle hooks to verify.
 
-        The session-start gate (``leap-server.py``) calls this before
-        spawning the server; returning True unconditionally lets
-        Copilot sessions start, since there is no hook integration
-        that could be "missing" and no ``leap --reconfigure`` step
-        that would change anything.
+        The session-start gate (``leap-server.py``) calls this before spawning
+        the server; returning True unconditionally lets Copilot sessions start.
+        The status line installed by ``configure_hooks`` is an *optional*
+        enhancement (the monitor's Context column), so it is intentionally NOT
+        gated here - a missing status line just means a blank Context cell, not
+        a refused session.
         """
         return True
+
+    @property
+    def supports_context_usage(self) -> bool:
+        return True
+
+    def context_usage(self, cli_name: str, tag: str,
+                      storage_dir: Path) -> Optional[ContextUsage]:
+        """Context-window usage from the status-line state file.
+
+        Leap's status-line script writes ``<storage>/sockets/<tag>.context``
+        (JSON ``{used_tokens, window, model}``) every render; the file is
+        absent until the status line first fires (-> blank cell) or if the
+        status line isn't installed (run ``leap --reconfigure``).
+        """
+        state = storage_dir / 'sockets' / f'{tag}.context'
+        return copilot_context_usage(str(state))
 
     # -- CLI-specific input behaviors ------------------------------------
 

@@ -27,6 +27,19 @@ class TestShouldShowItemTooltip:
         # The Context column case: setting off, not truncated, but always-on.
         assert should_show_item_tooltip('123 tokens', '28%', False, False, True)
 
+    def test_always_does_not_apply_to_na_value(self):
+        # N/A is a no-value sentinel: even an always-on column falls back to
+        # the normal truncated-only rule (Context shows the token tooltip for a
+        # real % but not for N/A when the setting is off).
+        assert not should_show_item_tooltip('N/A', 'N/A', False, False, True)
+
+    def test_always_does_not_apply_to_blank_value(self):
+        assert not should_show_item_tooltip('anything', '', False, False, True)
+
+    def test_na_still_shows_when_truncated(self):
+        # Like every other cell, N/A still shows on hover if it's clipped.
+        assert should_show_item_tooltip('N/A', 'N/A', True, False, True)
+
     def test_truncation_forces_show_even_when_disabled(self):
         assert should_show_item_tooltip('long value', 'long v…', True, False, False)
 

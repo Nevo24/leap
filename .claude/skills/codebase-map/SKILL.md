@@ -28,7 +28,8 @@ src/
 │   ├── configure_hooks.py           # Unified hook config (delegates to provider.configure_hooks())
 │   ├── configure_claude_hooks.py    # Legacy Claude hook config
 │   ├── configure_codex_hooks.py     # Legacy Codex hook config
-│   └── leap-hook.sh             # CLI hook script (writes state to signal file)
+│   ├── leap-hook.sh             # CLI hook script (writes state to signal file)
+│   └── leap-copilot-statusline.py  # Copilot status line: writes <tag>.context for the monitor Context column (chains any existing status line)
 │
 └── leap/                     # Main Python package
     ├── __init__.py              # Version, exports
@@ -51,7 +52,7 @@ src/
     │   ├── line_buffer.py       # Cursor-aware line editing buffer (raw-terminal prompts)
     │   ├── menu.py              # Numbered-menu parser (extract_menu_options, shared by server + monitor)
     │   ├── socket_utils.py      # Shared Unix socket send/recv helper
-    │   ├── context_usage.py     # Claude context-window % from transcript usage (monitor Context column)
+    │   ├── context_usage.py     # Per-CLI context-window % from transcript usage (monitor Context column; Claude/Codex/Gemini parsers)
     │   ├── resume_store.py      # Read/write/prune of cli_sessions/<cli>/<tag>.json (used by hook + picker; + latest_transcript_for)
     │   ├── relocation.py        # Shared primitives for cross-cwd session moves (signals_blocked, stage/commit, verify, snapshots)
     │   ├── claude_session_move.py  # Claude cross-cwd move (jsonl + optional sidecar dir)

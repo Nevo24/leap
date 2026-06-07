@@ -27,16 +27,14 @@ from leap.monitor.pr_tracking.config import (
     get_dock_enabled, get_notification_prefs,
     load_saved_presets, update_pinned_session_field,
 )
-from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name
+from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name, get_provider
 from leap.cli_providers.states import AutoSendMode, CLIState
 from leap.monitor.ui.image_text_edit import SendMessageDialog, SendPresetDialog
 from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
 )
 from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
-from leap.utils.context_usage import context_usage_for_transcript
 from leap.utils.menu import extract_menu_options
-from leap.utils.resume_store import latest_transcript_for
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.cursor_gui_scan import CURSOR_GUI_ROW_TYPE, CURSOR_GUI_TAG_PREFIX
@@ -180,23 +178,38 @@ class TableBuilderMixin(_Base):
 
     def _build_context_cell(self, row: int, tag: str, cli_provider: str,
                             row_color: Optional[str]) -> None:
-        """Render the Context-window-usage cell (Claude only; else blank).
+        """Render the Context-window-usage cell, or blank.
 
         Shows ``<pct>%`` of the model's context window used, colored
         green -> amber -> red as it fills (an at-a-glance warning of how
-        close the session is to auto-compaction).  Non-Claude rows, and
-        Claude rows with no readable transcript/usage yet, render blank.
+        close the session is to auto-compaction).  The value comes per-CLI from
+        ``provider.context_usage()`` (Claude / Codex / Gemini read transcripts;
+        Copilot reads its status-line state file).  Three cell states:
 
-        Not ``_cell_cache``-d: the value changes as the transcript grows.
-        ``context_usage_for_transcript`` already caches on the file's
-        (mtime, size), so an unchanged poll is a single ``stat`` and
-        ``_set_cell_text`` no-ops when the text is unchanged.
+        - **N/A** - the CLI can't report usage at all (``supports_context_usage``
+          is False, e.g. Cursor).
+        - **blank** - supported, but no data yet (transcript/state file not
+          written this session).
+        - **<pct>%** - the live measurement.
+
+        The provider locates its own source from ``(cli_provider, tag,
+        STORAGE_DIR)`` -- passing the row's recorded ``cli_provider`` name keeps
+        custom CLIs pointed at their own subdir.
+
+        Not ``_cell_cache``-d: the value changes as the session grows.
+        ``context_usage`` already caches on the source file's (mtime, size), so
+        an unchanged poll is a single ``stat`` and ``_set_cell_text`` no-ops
+        when the text is unchanged.
         """
-        if cli_provider != 'claude':
+        try:
+            provider = get_provider(cli_provider)
+        except ValueError:
             self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
             return
-        transcript = latest_transcript_for(SOCKET_DIR.parent, 'claude', tag)
-        usage = context_usage_for_transcript(transcript) if transcript else None
+        if not provider.supports_context_usage:
+            self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
+            return
+        usage = provider.context_usage(cli_provider, tag, SOCKET_DIR.parent)
         if usage is None:
             self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
             return
@@ -945,9 +958,9 @@ class TableBuilderMixin(_Base):
         # from Cursor's message bubbles on disk; blank if none readable).
         self._set_cell_text(row, self.COL_TASK,
                             session.get('last_msg') or '', row_color)
-        # Context: blank - these are non-Claude editor rows (and the
+        # Context: N/A - Cursor exposes no context-window usage (and the
         # widget-removal loop above does not clear text-item cells).
-        self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
+        self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
         # Path: same label + actions button as normal rows (Open in
         # Terminal / Open in IDE - both operate on this row's folder).
         self._build_path_cell(row, tag, session.get('project_path') or 'N/A',
@@ -1814,8 +1827,9 @@ class TableBuilderMixin(_Base):
 
                     self._set_cell_text(row, self.COL_TASK, 'N/A',
                                         row_color)
-                    # Context: blank for dead rows (no live transcript turn)
-                    self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
+                    # Context: N/A for dead rows (no live session), matching
+                    # the Status / Task / Queue cells above.
+                    self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
 
                     # Queue N/A with menu button
                     dead_q_state = ('dead', session.get('auto_send_mode', AutoSendMode.PAUSE),

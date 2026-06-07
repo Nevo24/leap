@@ -88,6 +88,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Note images | `.storage/note_images/<hash>.png` (MD5-deduped, persistent) |
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
+| Copilot context state | `.storage/sockets/<tag>.context` (JSON `{used_tokens, window, model}`; written by `leap-copilot-statusline.py` on each Copilot status-line render, read by the monitor's Context column. Copilot-only - Claude/Codex/Gemini read context usage from their transcripts instead; Cursor shows N/A) |
 | Slack config | `.storage/slack/config.json` |
 | Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |

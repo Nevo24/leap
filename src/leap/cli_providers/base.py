@@ -34,6 +34,8 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     import pexpect
 
+    from leap.utils.context_usage import ContextUsage
+
 from leap.cli_providers.states import SIGNAL_ALIASES, SIGNAL_STATES
 
 
@@ -827,6 +829,38 @@ class CLIProvider(ABC):
         to walk the JSONL transcript.
         """
         return ''
+
+    @property
+    def supports_context_usage(self) -> bool:
+        """Whether this CLI can report context-window usage at all.
+
+        Drives the monitor's "Context" column for the *unsupported* case:
+        when ``False`` the cell renders ``N/A`` (the CLI fundamentally can't
+        expose usage - e.g. Cursor), distinct from a ``None`` result from
+        :meth:`context_usage` on a *supported* CLI, which renders blank
+        ("supported, but no data yet").  Providers that implement
+        :meth:`context_usage` override this to ``True``.
+        """
+        return False
+
+    def context_usage(self, cli_name: str, tag: str,
+                      storage_dir: Path) -> Optional['ContextUsage']:
+        """Context-window usage for this session, or None if not available yet.
+
+        Powers the monitor's "Context" column: how full the model's context
+        window currently is (so the user sees how close a session is to
+        auto-compaction).  Each provider locates its own source from
+        ``(cli_name, tag, storage_dir)`` -- transcript CLIs resolve their
+        transcript with ``latest_transcript_for(storage_dir, cli_name, tag)``
+        (``cli_name`` is the session's *recorded* name, so custom CLIs hit the
+        right ``cli_sessions/<name>/`` subdir) and parse it; Copilot reads the
+        per-tag state file its status line writes under ``storage_dir/sockets``.
+
+        Default returns ``None``.  Override together with
+        :attr:`supports_context_usage` -> ``True``.  See
+        :mod:`leap.utils.context_usage` for the per-CLI parsers.
+        """
+        return None
 
     # -- CLI-specific input behaviors ------------------------------------
 

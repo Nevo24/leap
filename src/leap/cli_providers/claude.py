@@ -15,7 +15,9 @@ from typing import Any, Iterator, Optional
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
 from leap.utils.claude_session_move import relocate_claude_session, slugify
+from leap.utils.context_usage import ContextUsage, claude_context_usage
 from leap.utils.menu import MENU_OPTION_RE
+from leap.utils.resume_store import latest_transcript_for
 
 
 _TRANSCRIPT_TAIL_BYTES = 32768
@@ -406,6 +408,16 @@ class ClaudeProvider(CLIProvider):
             if joined:
                 return joined
         return ''
+
+    @property
+    def supports_context_usage(self) -> bool:
+        return True
+
+    def context_usage(self, cli_name: str, tag: str,
+                      storage_dir: Path) -> Optional[ContextUsage]:
+        """Context-window usage from the latest assistant turn's usage block."""
+        transcript = latest_transcript_for(storage_dir, cli_name, tag)
+        return claude_context_usage(transcript) if transcript else None
 
     def extract_last_user_prompt(
         self,

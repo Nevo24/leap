@@ -56,6 +56,17 @@ def _install_and_configure(provider_name: str, source_hook: str) -> bool:
         shutil.copy2(processor_source, processor_dest)
         os.chmod(str(processor_dest), 0o755)
 
+    # Copilot has no lifecycle hooks; its context-window usage is only
+    # reachable via a status line.  Install that script alongside so
+    # ``CopilotProvider.configure_hooks`` can register it in settings.json.
+    if provider_name == "copilot":
+        statusline_source = Path(source_hook).with_name(
+            "leap-copilot-statusline.py")
+        if statusline_source.is_file():
+            statusline_dest = hook_dir / "leap-copilot-statusline.py"
+            shutil.copy2(statusline_source, statusline_dest)
+            os.chmod(str(statusline_dest), 0o755)
+
     provider.configure_hooks(str(dest))
     return True
 

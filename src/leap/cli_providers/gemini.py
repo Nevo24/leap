@@ -20,7 +20,9 @@ from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
+from leap.utils.context_usage import ContextUsage, gemini_context_usage
 from leap.utils.gemini_session_move import relocate_gemini_session
+from leap.utils.resume_store import latest_transcript_for
 
 
 GEMINI_CONFIG_DIR: Path = Path.home() / ".gemini"
@@ -211,6 +213,16 @@ class GeminiProvider(CLIProvider):
         # Gemini's flag takes a value as a second token; Leap's server
         # argv forwarder keeps that value (no ``--``-only filter).
         return ['--resume', session_id]
+
+    @property
+    def supports_context_usage(self) -> bool:
+        return True
+
+    def context_usage(self, cli_name: str, tag: str,
+                      storage_dir: Path) -> Optional[ContextUsage]:
+        """Context-window usage from the latest ``gemini`` chat-session turn."""
+        transcript = latest_transcript_for(storage_dir, cli_name, tag)
+        return gemini_context_usage(transcript) if transcript else None
 
     def relocate_session(
         self,

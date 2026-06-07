@@ -463,10 +463,15 @@ def should_show_item_tooltip(tip: str, display: object, truncated: bool,
         handled elsewhere), so don't show here.
 
     ``always`` carries the per-column "show regardless of the global
-    'show tooltips' setting" flag (``_always_tooltip_cols``).
+    'show tooltips' setting" flag (``_always_tooltip_cols``) - but it only
+    applies to cells with a real value: ``N/A`` / blank are no-value sentinels
+    that fall back to the normal truncated-only rule (so e.g. the Context
+    column force-shows its token tooltip for a ``42%`` cell but not for ``N/A``).
     """
     if not tip:
         return False
+    if str(display) in ('', 'N/A'):
+        always = False
     if display and str(tip) != str(display):
         return tooltips_enabled or truncated or always
     if display:
