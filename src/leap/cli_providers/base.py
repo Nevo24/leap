@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     import pexpect
 
     from leap.utils.context_usage import ContextUsage
+    from leap.utils.cost_usage import CostInfo
 
 from leap.cli_providers.states import SIGNAL_ALIASES, SIGNAL_STATES
 
@@ -898,6 +899,32 @@ class CLIProvider(ABC):
         Default returns ``None``.  Override together with
         :attr:`supports_context_usage` -> ``True``.  See
         :mod:`leap.utils.context_usage` for the per-CLI parsers.
+        """
+        return None
+
+    @property
+    def supports_cost(self) -> bool:
+        """Whether this CLI can estimate a session's token spend / USD cost.
+
+        Drives the extra "Last message" / "Session total" lines on the
+        monitor's Context-cell tooltip.  ``False`` (the default) means the
+        tooltip shows only the context-window line; providers that implement
+        :meth:`session_cost` override this to ``True``.  Independent of
+        :attr:`supports_context_usage`: a CLI can report window occupancy
+        without enough per-turn / cumulative data to price a session.
+        """
+        return False
+
+    def session_cost(self, cli_name: str, tag: str,
+                     storage_dir: Path) -> Optional['CostInfo']:
+        """Cumulative token + USD estimate for this session, or ``None``.
+
+        Powers the cost lines on the Context-cell tooltip (last-message tokens
+        and cost, whole-session tokens and cost).  Resolves the same source as
+        :meth:`context_usage` -- transcript CLIs use
+        ``latest_transcript_for(storage_dir, cli_name, tag)``.  Default returns
+        ``None``; override together with :attr:`supports_cost` -> ``True``.
+        See :mod:`leap.utils.cost_usage` and :mod:`leap.utils.pricing`.
         """
         return None
 

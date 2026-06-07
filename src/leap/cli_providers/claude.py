@@ -16,6 +16,7 @@ from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
 from leap.utils.claude_session_move import relocate_claude_session, slugify
 from leap.utils.context_usage import ContextUsage, claude_context_usage
+from leap.utils.cost_usage import CostInfo, claude_session_cost_cached
 from leap.utils.menu import MENU_OPTION_RE
 from leap.utils.resume_store import latest_transcript_for
 
@@ -457,6 +458,21 @@ class ClaudeProvider(CLIProvider):
         """Context-window usage from the latest assistant turn's usage block."""
         transcript = latest_transcript_for(storage_dir, cli_name, tag)
         return claude_context_usage(transcript) if transcript else None
+
+    @property
+    def supports_cost(self) -> bool:
+        return True
+
+    def session_cost(self, cli_name: str, tag: str,
+                     storage_dir: Path) -> Optional[CostInfo]:
+        """Cumulative token + USD estimate from the whole transcript.
+
+        Uses the non-blocking cached wrapper: the monitor calls this on the Qt
+        GUI thread, and the transcript walk runs in a background pool so a large
+        first parse never stalls the table build.
+        """
+        transcript = latest_transcript_for(storage_dir, cli_name, tag)
+        return claude_session_cost_cached(transcript) if transcript else None
 
     def extract_last_user_prompt(
         self,

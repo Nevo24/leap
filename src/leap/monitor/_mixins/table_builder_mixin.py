@@ -35,6 +35,7 @@ from leap.slack.config import (
 )
 from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
 from leap.utils.menu import extract_menu_options
+from leap.utils.pricing import format_usd
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
 from leap.monitor.cursor_gui_scan import CURSOR_GUI_ROW_TYPE, CURSOR_GUI_TAG_PREFIX
@@ -224,8 +225,23 @@ class TableBuilderMixin(_Base):
         if row_color:
             color = ensure_contrast(color, row_color)
         item.setForeground(QColor(color))
-        item.setToolTip(
+        tooltip = (
             f'{usage.used_tokens:,} / {usage.window:,} tokens ({usage.model})')
+        # Cost-supporting CLIs (Claude today) add last-message and whole-session
+        # token + USD lines.  Cost is an estimate ("est.") because subscription
+        # users aren't billed per token; the $ is dropped when the model price
+        # is unknown so we never show a fabricated $0.
+        if provider.supports_cost:
+            cost = provider.session_cost(cli_provider, tag, SOCKET_DIR.parent)
+            if cost is not None:
+                last_line = f'Last message: {cost.last_turn_tokens:,} tokens'
+                if cost.last_turn_cost_usd is not None:
+                    last_line += f' · ~{format_usd(cost.last_turn_cost_usd)} (est.)'
+                sess_line = f'Session total: {cost.session_tokens:,} tokens'
+                if cost.session_cost_usd is not None:
+                    sess_line += f' · ~{format_usd(cost.session_cost_usd)} (est.)'
+                tooltip = f'{tooltip}\n{last_line}\n{sess_line}'
+        item.setToolTip(tooltip)
 
     def _cell_cached(self, tag: str, col: str, state: tuple,
                      row: int, table_col: int) -> bool:
