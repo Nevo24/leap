@@ -9,11 +9,13 @@ import time
 import pytest
 
 import leap.utils.cost_usage as cu
+import leap.utils.pricing as pr
 from leap.utils.cost_usage import (
     CostInfo,
     claude_session_cost,
     claude_session_cost_cached,
 )
+from leap.utils.pricing import price_for, turn_cost_usd
 
 
 def _wait_idle(timeout: float = 2.0) -> None:
@@ -32,8 +34,16 @@ def _wait_idle(timeout: float = 2.0) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_caches():
-    """Each test starts with empty accumulator + async-wrapper caches."""
+def _clear_caches(monkeypatch, tmp_path):
+    """Each test starts with empty accumulator + async-wrapper caches, and
+    pricing isolated to the vendored snapshot (no background network fetch)."""
+    # Block pricing's background refresh and pin it to the vendored snapshot so
+    # cost math is deterministic and no network thread is spawned.
+    monkeypatch.setattr(pr, "ensure_fresh_prices", lambda: None)
+    monkeypatch.setattr(pr, "MODEL_PRICES_CACHE", tmp_path / "prices.json")
+    monkeypatch.setattr(pr, "_prices", None)
+    monkeypatch.setattr(pr, "_prices_sig", None)
+
     def _reset():
         cu._ACCUM.clear()
         cu._RESULT.clear()
@@ -92,9 +102,11 @@ class TestSessionCost:
         assert info.session_tokens == (1000 + 500 + 2000 + 10000) + (2 + 100 + 13500)
         # last turn reflects the most recent turn only
         assert info.last_turn_tokens == 2 + 100 + 13500
-        # opus base: turn1 cost = 0.105 (checked in test_pricing)
-        turn1 = (1000 * 15 + 500 * 75 + 2000 * 18.75 + 10000 * 1.50) / 1e6
-        turn2 = (2 * 15 + 100 * 75 + 0 * 18.75 + 13500 * 1.50) / 1e6
+        # Cost is derived from the live price table (not a hardcoded number),
+        # so the test verifies accumulation/dedup, not the rates themselves.
+        rates = price_for("claude-opus-4-8")
+        turn1 = turn_cost_usd(rates, 1000, 500, 2000, 10000)
+        turn2 = turn_cost_usd(rates, 2, 100, 0, 13500)
         assert info.session_cost_usd == pytest.approx(turn1 + turn2)
         assert info.last_turn_cost_usd == pytest.approx(turn2)
 
@@ -127,7 +139,8 @@ class TestSessionCost:
         )
         info = claude_session_cost(str(t))
         # session cost reflects only the priced (opus) turn; last turn unpriced
-        assert info.session_cost_usd == pytest.approx(1000 * 15 / 1e6)
+        opus = price_for("claude-opus-4-8")
+        assert info.session_cost_usd == pytest.approx(turn_cost_usd(opus, 1000, 0, 0, 0))
         assert info.last_turn_cost_usd is None
         assert info.session_tokens == 1500
 

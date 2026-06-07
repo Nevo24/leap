@@ -89,6 +89,7 @@ All runtime data is stored in the centralized `.storage` directory at the projec
 | Signal file | `.storage/sockets/<tag>.signal` |
 | Last response (Slack) | `.storage/sockets/<tag>.last_response` |
 | Copilot context state | `.storage/sockets/<tag>.context` (JSON `{used_tokens, window, model}`; written by `leap-copilot-statusline.py` on each Copilot status-line render, read by the monitor's Context column. Copilot-only - Claude/Codex/Gemini read context usage from their transcripts instead; Cursor shows N/A) |
+| Model price cache | `.storage/model_prices.json` (Claude-only trim of LiteLLM's `model_prices_and_context_window.json`; refreshed in a background daemon thread by `utils/pricing.py` when older than 1 day, re-checked periodically so a long-running monitor refreshes without a restart, and overlays the vendored `assets/model_prices.json` snapshot. Drives the monitor Context-cell cost estimate. Prices are NOT hardcoded - a failed/offline fetch falls back to the vendored snapshot) |
 | Slack config | `.storage/slack/config.json` |
 | Saved messages | `.storage/saved_messages.json` |
 | Slack sessions | `.storage/slack/sessions.json` |

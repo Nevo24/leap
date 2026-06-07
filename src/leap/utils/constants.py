@@ -64,6 +64,11 @@ SLACK_BOT_LOCK: Final[Path] = SLACK_DIR / "slack-bot.lock"
 # Settings file
 SETTINGS_FILE: Final[Path] = STORAGE_DIR / "settings.json"
 
+# Model-price cache (refreshed in the background from the LiteLLM price JSON;
+# overlays the vendored assets/model_prices.json snapshot). Drives the monitor
+# Context-cell cost estimate. A file, not a dir — no ensure_storage_dirs entry.
+MODEL_PRICES_CACHE: Final[Path] = STORAGE_DIR / "model_prices.json"
+
 # Notes directory (free-form user notes, one .txt per note)
 NOTES_DIR: Final[Path] = STORAGE_DIR / "notes"
 

@@ -54,7 +54,7 @@ src/
     │   ├── socket_utils.py      # Shared Unix socket send/recv helper
     │   ├── context_usage.py     # Per-CLI context-window % from transcript usage (monitor Context column; Claude/Codex/Gemini parsers)
     │   ├── cost_usage.py        # Cumulative token + USD estimate from the whole transcript (Claude only; dedups split-line entries; incremental accumulator; non-blocking cached wrapper for the GUI thread). Feeds the Context-cell tooltip's "Last message"/"Session total" lines
-    │   ├── pricing.py           # Claude USD price table ($/Mtok per token class, >200K premium tier) + price_for() / turn_cost_usd() / format_usd()
+    │   ├── pricing.py           # Data-driven model pricing (NOT hardcoded): loads vendored assets/model_prices.json (Claude-only trim of LiteLLM's model_prices_and_context_window.json), background-refreshes it into .storage/model_prices.json, overlays cache>vendored. price_for() / turn_cost_usd() (per-token; data-driven >200K premium for Sonnet) / format_usd() / trim_claude() / ensure_fresh_prices()
     │   ├── resume_store.py      # Read/write/prune of cli_sessions/<cli>/<tag>.json (used by hook + picker; + latest_transcript_for)
     │   ├── relocation.py        # Shared primitives for cross-cwd session moves (signals_blocked, stage/commit, verify, snapshots)
     │   ├── claude_session_move.py  # Claude cross-cwd move (jsonl + optional sidecar dir)
