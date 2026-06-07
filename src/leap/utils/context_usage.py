@@ -167,12 +167,14 @@ def _is_one_m_model(model: str, cwd: str) -> bool:
     ``lastModelUsage`` (which it rewrites constantly and sometimes blanks).
     So:
 
-    - If THIS project has an explicit usage record, trust it precisely -
-      ``<model>[1m]`` present -> 1M; a record without it -> a genuine 200k
-      project.
-    - If this project has no record yet (new session, or Claude just blanked
-      it), fall back to the account-wide signal: is ``<model>[1m]`` recorded
-      in ANY project?  This survives the per-project record being wiped.
+    - If THIS project's record mentions THIS model, trust it precisely -
+      ``<model>[1m]`` present -> 1M; the plain ``<model>`` without it -> a
+      genuine 200k project.
+    - Otherwise (no record yet, Claude blanked it, or the record names only
+      *other* models - e.g. a prior sonnet session in the same cwd), fall
+      back to the account-wide signal: is ``<model>[1m]`` recorded in ANY
+      project?  This survives the per-project record being wiped or being
+      about a different model.
 
     Version-specific (``opus-4-8`` only matches ``opus-4-8[1m]``, not 4-7).
     """
@@ -181,9 +183,11 @@ def _is_one_m_model(model: str, cwd: str) -> bool:
     target = f'{model}[1m]'
     by_cwd = _project_model_ids()
     cwd_ids = by_cwd.get(cwd)
-    if cwd_ids:  # this project has an explicit, non-empty usage record
+    if cwd_ids and (target in cwd_ids or model in cwd_ids):
+        # This project explicitly ran THIS model (1M or plain) -> trust it.
         return target in cwd_ids
-    # No record for this cwd (absent / blanked / empty) -> account-wide signal.
+    # This cwd has no record for THIS model (absent / blanked / records only
+    # other models) -> fall back to the account-wide signal.
     return any(target in ids for ids in by_cwd.values())
 
 

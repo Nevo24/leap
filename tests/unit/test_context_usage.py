@@ -309,6 +309,25 @@ class TestOneMillionWindow:
         assert usage is not None
         assert usage.window == 200_000
 
+    def test_cwd_record_for_other_model_falls_back_to_global(
+        self, tmp_path, fake_claude_config,
+    ):
+        # This cwd has a record, but only for a DIFFERENT model (a prior sonnet
+        # session). That says nothing about opus-4-8's window, so we must fall
+        # back to the account-wide [1m] signal rather than concluding 200k.
+        fake_claude_config({
+            '/proj': {'lastModelUsage': {'claude-sonnet-4-6': {}}},
+            '/other': {'lastModelUsage': {'claude-opus-4-8[1m]': {}}},
+        })
+        t = tmp_path / 's.jsonl'
+        _write_jsonl(t, [
+            _assistant('claude-opus-4-8', inp=97_218, cache_create=0,
+                       cache_read=0, cwd='/proj'),
+        ])
+        usage = claude_context_usage(str(t))
+        assert usage is not None
+        assert usage.window == 1_000_000  # not 200_000
+
     def test_global_fallback_is_version_specific(
         self, tmp_path, fake_claude_config,
     ):
