@@ -639,6 +639,14 @@ If no output for `silence_timeout` seconds while in `running` state → transiti
   string (`idle_indicator_patterns`), not silence. So: verify idle /
   interrupt behavior against a *real focused terminal* (or a live
   `.storage/state_logs/<tag>.log`), never just a headless pexpect run.
+- **Once footer-driven, `_reset_screen()` on a transition is a trap.** If
+  the footer-detector must later *exit* the state you're entering (e.g.
+  INTERRUPTED -> idle), do NOT wipe the screen on the way in: an
+  incremental-repaint TUI thinks the footer is already drawn and never
+  re-emits it, so the idle footer never returns and the session sticks.
+  Keep the screen (gate the reset off for `idle_indicator_patterns`
+  providers). Resetting is only safe on a transition *into* idle - the
+  resting state the detector no longer needs to leave.
 - **Don't assume Escape interrupts.** Copilot ignores Escape mid-turn and
   cancels on Ctrl+C; set `interrupt_key` (it defaults to Escape).
 - **A "question" is not a "permission".** If the CLI asks the user

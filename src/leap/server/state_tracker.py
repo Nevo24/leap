@@ -975,7 +975,14 @@ class CLIStateTracker:
             _log.debug('ON_OUTPUT running→interrupted (interrupt_pending)')
             self._interrupt_pending = False
             self._prompt_snapshot = []
-            self._reset_screen()
+            # Footer-driven providers (Copilot) must KEEP the screen here:
+            # resetting wipes pyte, and the CLI repaints only incrementally
+            # (it thinks the footer is already drawn), so the idle footer
+            # never re-renders into pyte and the footer-detector can never
+            # see "/ commands" to leave INTERRUPTED -> the session sticks
+            # in INTERRUPTED forever.  Other providers reset as before.
+            if not self._provider.idle_indicator_patterns:
+                self._reset_screen()
             with self._lock:
                 self._state = CLIState.INTERRUPTED
                 self._waiting_since = self._clock()
@@ -1048,7 +1055,11 @@ class CLIStateTracker:
             )
             self._interrupt_pending = False
             self._prompt_snapshot = []
-            self._reset_screen()
+            # Keep the screen for footer-driven providers (see
+            # running→interrupted above) so the idle footer survives for
+            # the INTERRUPTED→idle transition.
+            if not self._provider.idle_indicator_patterns:
+                self._reset_screen()
             with self._lock:
                 self._state = CLIState.INTERRUPTED
                 self._waiting_since = now

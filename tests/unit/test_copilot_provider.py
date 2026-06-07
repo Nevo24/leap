@@ -395,3 +395,24 @@ class TestCopilotStateDetection:
             _feed_visible(tr, IDLE_FOOTER)
             state = tr.get_state(pty_alive=True)
         assert state == CLIState.IDLE
+
+    def test_interrupt_keeps_screen_so_idle_footer_survives(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: the interrupt path must NOT _reset_screen() for
+        footer-driven providers.  In a real terminal the cancel banner and
+        the returned idle footer arrive together, and Copilot then repaints
+        only incrementally - so a reset would wipe the just-arrived idle
+        footer for good and the footer-detector could never leave
+        INTERRUPTED (the session stuck in INTERRUPTED, confirmed live)."""
+        t = [_BASE]
+        tr = _make_tracker(tmp_path, t, CopilotProvider())
+        tr.on_send()
+        _feed_visible(tr, RUNNING_FOOTER)
+        tr.on_input(b'\x03')                  # Ctrl+C -> _interrupt_pending
+        # Cancel banner + idle prompt in ONE render; the old code reset the
+        # screen AFTER this, wiping the idle footer that just arrived.
+        _feed_visible(tr, INTERRUPT_BANNER + "\r\n" + IDLE_FOOTER)
+        assert tr.current_state == CLIState.INTERRUPTED
+        t[0] = _BASE + 1.0
+        assert tr.get_state(pty_alive=True) == CLIState.IDLE   # leaves INTERRUPTED
