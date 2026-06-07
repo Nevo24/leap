@@ -23,6 +23,7 @@ from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.states import SIGNAL_STATES
 from leap.utils.atomic_write import atomic_write_json, atomic_write_text
 from leap.utils.context_usage import ContextUsage, codex_context_usage
+from leap.utils.cost_usage import CostInfo, codex_session_cost_cached
 from leap.utils.resume_store import latest_transcript_for
 
 
@@ -249,6 +250,20 @@ class CodexProvider(CLIProvider):
         """Context-window usage from the latest ``token_count`` rollout event."""
         transcript = latest_transcript_for(storage_dir, cli_name, tag)
         return codex_context_usage(transcript) if transcript else None
+
+    @property
+    def supports_cost(self) -> bool:
+        return True
+
+    def session_cost(self, cli_name: str, tag: str,
+                     storage_dir: Path) -> Optional[CostInfo]:
+        """Token + USD estimate from the rollout's cumulative token_count.
+
+        Non-blocking (background pool), so it never stalls the monitor's table
+        build.
+        """
+        transcript = latest_transcript_for(storage_dir, cli_name, tag)
+        return codex_session_cost_cached(transcript) if transcript else None
 
     def relocate_session(
         self,

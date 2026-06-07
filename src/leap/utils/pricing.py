@@ -2,13 +2,14 @@
 
 Prices are NOT hardcoded.  They come from LiteLLM's community-maintained
 ``model_prices_and_context_window.json`` (the same source ``ccusage`` uses),
-which keys every Claude model exactly (``claude-opus-4-8`` etc.) with per-token
-costs for each token class.
+which keys every model exactly (``claude-opus-4-8``, ``gpt-5.5``,
+``gemini-3-flash-preview`` ...) with per-token costs for each token class.
 
 Two layers, so it's correct offline *and* self-updating:
-  1. **Vendored snapshot** - ``assets/model_prices.json`` (a Claude-only trim
-     of the LiteLLM file) ships in the repo, so prices are right on first run
-     and with no network.
+  1. **Vendored snapshot** - ``assets/model_prices.json`` (a trim of the
+     LiteLLM file to the model families the supported CLIs report -
+     ``claude-*`` / ``gpt-*`` / ``o*`` / ``gemini-*``) ships in the repo, so
+     prices are right on first run and with no network.
   2. **Background refresh** - :func:`ensure_fresh_prices` (called lazily the
      first time a price is looked up) fetches the latest LiteLLM file in a
      daemon thread when the cache is stale, trims it, and writes
@@ -17,17 +18,23 @@ Two layers, so it's correct offline *and* self-updating:
      failed/blocked fetch is silently ignored - the vendored snapshot stands.
 
 The dollar figure is still an *estimate* labeled "(est.)" in the UI:
-subscription users (Pro / Max / Team) pay a flat fee, not per token.
+subscription users (Pro / Max / Team / ChatGPT plan) pay a flat fee, not per
+token.
+
+Pricing is data-driven per model: :class:`ModelPricing` wraps the raw LiteLLM
+cost fields, ``rate()`` applies the right long-context tier
+(``*_above_<N>k_tokens`` - Anthropic uses 200k, OpenAI 272k, Gemini 200k), and
+:func:`cost_usd` sums the token classes.  Costs are per-token (LiteLLM's native
+unit), so it's a plain dot product with no scaling.
 
 Defensive throughout - any IO/parse failure falls back to the vendored data or
-to "no price" (the tooltip then shows token counts without dollars).  Costs are
-per-token (LiteLLM's native unit), so :func:`turn_cost_usd` is a plain dot
-product with no scaling.
+to "no price" (the tooltip then shows token counts without dollars).
 """
 
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.request
@@ -50,65 +57,88 @@ _FETCH_TIMEOUT_SECONDS = 20
 # and we keep the vendored snapshot.
 _MAX_FETCH_BYTES = 25 * 1024 * 1024
 
-# Anthropic's long-context surcharge applies when a single request's input
-# exceeds this many tokens.  LiteLLM encodes the surcharged rates in the
-# ``*_above_200k_tokens`` fields (present for Sonnet; absent for Opus, which has
-# no such tier), so the premium is data-driven, not assumed.
-_LONG_CONTEXT_THRESHOLD = 200_000
+# Bare model-id prefixes the supported CLIs write into their transcripts
+# (Claude / OpenAI-Codex / Gemini).  Provider-prefixed Bedrock/Vertex/Azure
+# duplicates (``anthropic.``, ``vertex_ai/`` ...) are excluded - the CLIs use
+# the bare ids, and price_for() strips a leading ``provider/`` as a fallback.
+_MODEL_PREFIXES = ("claude-", "gpt-", "o1", "o3", "o4", "chatgpt-", "gemini-")
 
-# The four LiteLLM per-token cost fields we consume, base (suffix "") and the
-# >200k surcharge variant ("_above_200k_tokens").
-_COST_FIELDS = (
+# LiteLLM per-token cost fields we price on.  Each may also appear with a
+# ``_above_<N>k_tokens`` long-context-tier suffix, kept by the trim and applied
+# by ModelPricing.rate().  Everything else (flex/priority/batch/audio/search)
+# is dropped to keep the snapshot small.
+_KEEP_BASES = frozenset({
     "input_cost_per_token",
     "output_cost_per_token",
     "cache_creation_input_token_cost",
     "cache_read_input_token_cost",
-)
+    "output_cost_per_reasoning_token",
+})
 
-
-@dataclass(frozen=True)
-class PriceRates:
-    """USD per single token for each billable token class."""
-
-    input: float        # new (uncached) input tokens
-    output: float       # output tokens (includes reasoning/thinking output)
-    cache_write: float  # cache_creation_input_tokens
-    cache_read: float   # cache_read_input_tokens
+# Matches a long-context tier field, e.g. ``input_cost_per_token_above_272k_tokens``.
+_ABOVE_RE = re.compile(r"^(?P<base>.+)_above_(?P<n>\d+)k_tokens$")
 
 
 @dataclass(frozen=True)
 class ModelPricing:
-    """Base rates plus optional >200K long-context premium rates."""
+    """Per-token USD cost fields for one model (LiteLLM's native shape)."""
 
-    base: PriceRates
-    premium: Optional[PriceRates] = None  # used for a turn over the threshold
+    fields: Dict[str, float]
+
+    def rate(self, base_field: str, prompt_tokens: int) -> float:
+        """Per-token USD for ``base_field``, applying the highest published
+        long-context tier the prompt qualifies for.
+
+        Absent field -> 0.0 (correct for classes a provider doesn't bill, e.g.
+        OpenAI/Gemini have no cache-creation charge).
+        """
+        rate = _as_float(self.fields.get(base_field))
+        best_thr = 0
+        for name, val in self.fields.items():
+            m = _ABOVE_RE.match(name)
+            if m and m.group("base") == base_field:
+                thr = int(m.group("n")) * 1000
+                if prompt_tokens > thr and thr > best_thr:
+                    fval = _as_float(val)
+                    if fval is not None:
+                        rate, best_thr = fval, thr
+        return rate or 0.0
+
+
+def _as_float(value: object) -> Optional[float]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Trim (shared by the vendored-snapshot generator and the runtime refresh)
 # ---------------------------------------------------------------------------
 
-def trim_claude(raw: Dict[str, dict]) -> Dict[str, dict]:
-    """Reduce a full LiteLLM price map to the Claude-only subset we need.
+def trim_models(raw: Dict[str, dict]) -> Dict[str, dict]:
+    """Reduce a full LiteLLM price map to the model families the CLIs report.
 
-    Keeps bare ``claude-*`` model ids (the form Claude Code writes into its
-    transcripts) and, per model, only the per-token cost fields plus their
-    ``*_above_200k_tokens`` variants.  Used both to generate the vendored
+    Keeps bare ``claude-*`` / ``gpt-*`` / ``o*`` / ``chatgpt-*`` / ``gemini-*``
+    ids (the form the CLIs write into transcripts) and, per model, only the
+    per-token cost fields in :data:`_KEEP_BASES` plus their
+    ``*_above_<N>k_tokens`` tier variants.  Used both to generate the vendored
     ``assets/model_prices.json`` and to shrink the runtime-fetched file before
     caching it, so the two always share a shape.
     """
     out: Dict[str, dict] = {}
     for model, entry in raw.items():
-        if not (isinstance(model, str) and model.startswith("claude-")):
+        if not (isinstance(model, str) and model.startswith(_MODEL_PREFIXES)):
             continue
         if not isinstance(entry, dict):
             continue
         kept = {}
-        for base in _COST_FIELDS:
-            for field in (base, f"{base}_above_200k_tokens"):
-                val = entry.get(field)
-                if isinstance(val, (int, float)) and not isinstance(val, bool):
-                    kept[field] = val
+        for field, val in entry.items():
+            if _as_float(val) is None:
+                continue
+            m = _ABOVE_RE.match(field)
+            base = m.group("base") if m else field
+            if base in _KEEP_BASES:
+                kept[field] = val
         if kept:
             out[model] = kept
     return out
@@ -203,7 +233,7 @@ def _refresh_now() -> None:
         return  # offline / blocked / malformed -> keep the vendored snapshot
     if not isinstance(raw, dict):
         return
-    trimmed = trim_claude(raw)
+    trimmed = trim_models(raw)
     if not trimmed:
         return
     trimmed["_about"] = {
@@ -263,34 +293,13 @@ def ensure_fresh_prices() -> None:
 # Public lookup + cost helpers
 # ---------------------------------------------------------------------------
 
-def _rates(entry: dict, suffix: str) -> Optional[PriceRates]:
-    """Build PriceRates from an entry's fields for the given tier suffix."""
-    def get(field: str) -> Optional[float]:
-        val = entry.get(field + suffix)
-        return float(val) if isinstance(val, (int, float)) and not isinstance(val, bool) else None
-
-    inp = get("input_cost_per_token")
-    out = get("output_cost_per_token")
-    if inp is None or out is None:
-        return None
-    cw = get("cache_creation_input_token_cost")
-    cr = get("cache_read_input_token_cost")
-    # Anthropic's published ratios when a cache field is absent: write = 1.25x
-    # input, read = 0.1x input.
-    return PriceRates(
-        input=inp, output=out,
-        cache_write=cw if cw is not None else inp * 1.25,
-        cache_read=cr if cr is not None else inp * 0.10,
-    )
-
-
 def price_for(model: str) -> Optional[ModelPricing]:
     """Pricing for a model id, or ``None`` if unknown.
 
-    Exact match on the transcript's model id (e.g. ``claude-opus-4-8``), with a
-    provider-prefix-stripped fallback (``anthropic/claude-...``).  Unknown ids
-    return ``None`` so the caller shows tokens without a dollar figure rather
-    than a fabricated $0.
+    Exact match on the transcript's model id (e.g. ``claude-opus-4-8``,
+    ``gpt-5.5``, ``gemini-3-flash-preview``), with a provider-prefix-stripped
+    fallback (``anthropic/claude-...``).  Unknown ids return ``None`` so the
+    caller shows tokens without a dollar figure rather than a fabricated $0.
     """
     if not model:
         return None
@@ -298,34 +307,44 @@ def price_for(model: str) -> Optional[ModelPricing]:
     entry = prices.get(model)
     if entry is None and "/" in model:
         entry = prices.get(model.split("/")[-1])
-    if not isinstance(entry, dict):
+    if not isinstance(entry, dict) or not entry:
         return None
-    base = _rates(entry, "")
-    if base is None:
-        return None
-    return ModelPricing(base=base, premium=_rates(entry, "_above_200k_tokens"))
+    return ModelPricing(fields=entry)
 
 
-def turn_cost_usd(
+def cost_usd(
     pricing: ModelPricing,
-    input_t: int,
-    output_t: int,
-    cache_write_t: int,
-    cache_read_t: int,
+    *,
+    new_input: int = 0,
+    cache_read: int = 0,
+    cache_write: int = 0,
+    output: int = 0,
+    reasoning: int = 0,
+    prompt_tokens: Optional[int] = None,
 ) -> float:
-    """USD for a single turn given its token breakdown (rates are per-token).
+    """USD for one turn given its token classes (rates are per-token).
 
-    The full prompt size (input + cache_write + cache_read) decides whether the
-    long-context premium applies to this turn; output is priced at the same
-    tier.
+    ``new_input`` is uncached input; ``cache_read``/``cache_write`` are the
+    cached-prefix read/creation tokens; ``output`` is generated tokens;
+    ``reasoning`` is thinking/reasoning tokens priced at the dedicated reasoning
+    rate when the model has one (Gemini), else the output rate.  ``prompt_tokens``
+    (the full request prompt) decides the long-context tier; it defaults to
+    ``new_input + cache_read + cache_write``.
     """
-    prompt = input_t + cache_write_t + cache_read_t
-    rates = (pricing.premium if pricing.premium is not None
-             and prompt > _LONG_CONTEXT_THRESHOLD else pricing.base)
-    return (input_t * rates.input
-            + output_t * rates.output
-            + cache_write_t * rates.cache_write
-            + cache_read_t * rates.cache_read)
+    if prompt_tokens is None:
+        prompt_tokens = new_input + cache_read + cache_write
+    total = (
+        new_input * pricing.rate("input_cost_per_token", prompt_tokens)
+        + cache_read * pricing.rate("cache_read_input_token_cost", prompt_tokens)
+        + cache_write * pricing.rate("cache_creation_input_token_cost", prompt_tokens)
+        + output * pricing.rate("output_cost_per_token", prompt_tokens)
+    )
+    if reasoning:
+        field = ("output_cost_per_reasoning_token"
+                 if "output_cost_per_reasoning_token" in pricing.fields
+                 else "output_cost_per_token")
+        total += reasoning * pricing.rate(field, prompt_tokens)
+    return total
 
 
 def format_usd(amount: float) -> str:

@@ -21,6 +21,7 @@ from typing import Any, Optional
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
 from leap.utils.context_usage import ContextUsage, gemini_context_usage
+from leap.utils.cost_usage import CostInfo, gemini_session_cost_cached
 from leap.utils.gemini_session_move import relocate_gemini_session
 from leap.utils.resume_store import latest_transcript_for
 
@@ -223,6 +224,20 @@ class GeminiProvider(CLIProvider):
         """Context-window usage from the latest ``gemini`` chat-session turn."""
         transcript = latest_transcript_for(storage_dir, cli_name, tag)
         return gemini_context_usage(transcript) if transcript else None
+
+    @property
+    def supports_cost(self) -> bool:
+        return True
+
+    def session_cost(self, cli_name: str, tag: str,
+                     storage_dir: Path) -> Optional[CostInfo]:
+        """Token + USD estimate summed over the chat session's turns.
+
+        Non-blocking (background pool), so it never stalls the monitor's table
+        build.
+        """
+        transcript = latest_transcript_for(storage_dir, cli_name, tag)
+        return gemini_session_cost_cached(transcript) if transcript else None
 
     def relocate_session(
         self,

@@ -1,4 +1,4 @@
-"""Tests for the Claude session cost/token accumulator.
+"""Tests for the per-CLI session cost/token computers.
 
 See ``src/leap/utils/cost_usage.py``.
 """
@@ -14,8 +14,10 @@ from leap.utils.cost_usage import (
     CostInfo,
     claude_session_cost,
     claude_session_cost_cached,
+    codex_session_cost,
+    gemini_session_cost,
 )
-from leap.utils.pricing import price_for, turn_cost_usd
+from leap.utils.pricing import cost_usd, price_for
 
 
 def _wait_idle(timeout: float = 2.0) -> None:
@@ -105,8 +107,8 @@ class TestSessionCost:
         # Cost is derived from the live price table (not a hardcoded number),
         # so the test verifies accumulation/dedup, not the rates themselves.
         rates = price_for("claude-opus-4-8")
-        turn1 = turn_cost_usd(rates, 1000, 500, 2000, 10000)
-        turn2 = turn_cost_usd(rates, 2, 100, 0, 13500)
+        turn1 = cost_usd(rates, new_input=1000, output=500, cache_write=2000, cache_read=10000)
+        turn2 = cost_usd(rates, new_input=2, output=100, cache_write=0, cache_read=13500)
         assert info.session_cost_usd == pytest.approx(turn1 + turn2)
         assert info.last_turn_cost_usd == pytest.approx(turn2)
 
@@ -123,7 +125,7 @@ class TestSessionCost:
 
     def test_unknown_model_keeps_tokens_drops_cost(self, tmp_path):
         t = tmp_path / "c.jsonl"
-        _write(t, _assistant(_usage(inp=1000, out=500), model="gpt-5-codex"))
+        _write(t, _assistant(_usage(inp=1000, out=500), model="totally-made-up-model"))
         info = claude_session_cost(str(t))
         assert info.session_tokens == 1500
         assert info.last_turn_tokens == 1500
@@ -140,7 +142,7 @@ class TestSessionCost:
         info = claude_session_cost(str(t))
         # session cost reflects only the priced (opus) turn; last turn unpriced
         opus = price_for("claude-opus-4-8")
-        assert info.session_cost_usd == pytest.approx(turn_cost_usd(opus, 1000, 0, 0, 0))
+        assert info.session_cost_usd == pytest.approx(cost_usd(opus, new_input=1000))
         assert info.last_turn_cost_usd is None
         assert info.session_tokens == 1500
 
@@ -324,3 +326,137 @@ class TestCachedWrapper:
         assert claude_session_cost_cached(str(t)) is None
         with cu._LOCK:
             assert not cu._INFLIGHT
+
+
+# ===========================================================================
+# Codex - cumulative total_token_usage given directly (no walk)
+# ===========================================================================
+def _codex_usage(inp: int, cached: int, out: int) -> dict:
+    return {"input_tokens": inp, "cached_input_tokens": cached,
+            "output_tokens": out, "reasoning_output_tokens": 0,
+            "total_tokens": inp + out}
+
+
+def _codex_token_count(total: dict, last: dict, window: int = 258400) -> str:
+    return json.dumps({"type": "event_msg", "payload": {
+        "type": "token_count",
+        "info": {"total_token_usage": total, "last_token_usage": last,
+                 "model_context_window": window}}})
+
+
+def _codex_turn_context(model: str = "gpt-5.5") -> str:
+    return json.dumps({"type": "turn_context", "payload": {"model": model}})
+
+
+class TestCodex:
+    def test_reads_cumulative_total_and_last(self, tmp_path):
+        t = tmp_path / "r.jsonl"
+        _write(
+            t,
+            _codex_turn_context("gpt-5.5"),
+            _codex_token_count(_codex_usage(13000, 11000, 20),
+                               _codex_usage(13000, 11000, 20)),
+            _codex_token_count(_codex_usage(26000, 23000, 30),   # latest wins
+                               _codex_usage(13000, 12000, 10)),
+        )
+        info = codex_session_cost(str(t))
+        assert info.session_tokens == 26030    # 26000 + 30
+        assert info.last_turn_tokens == 13010   # 13000 + 10
+        p = price_for("gpt-5.5")
+        exp_sess = cost_usd(p, new_input=26000 - 23000, cache_read=23000,
+                            output=30, prompt_tokens=0)
+        exp_last = cost_usd(p, new_input=13000 - 12000, cache_read=12000,
+                            output=10, prompt_tokens=13000)
+        assert info.session_cost_usd == pytest.approx(exp_sess)
+        assert info.last_turn_cost_usd == pytest.approx(exp_last)
+
+    def test_unknown_model_tokens_no_cost(self, tmp_path):
+        t = tmp_path / "r.jsonl"
+        _write(t, _codex_turn_context("totally-made-up"),
+               _codex_token_count(_codex_usage(100, 0, 50),
+                                  _codex_usage(100, 0, 50)))
+        info = codex_session_cost(str(t))
+        assert info.session_tokens == 150
+        assert info.session_cost_usd is None
+        assert info.last_turn_cost_usd is None
+
+    def test_no_token_count_returns_none(self, tmp_path):
+        t = tmp_path / "r.jsonl"
+        _write(t, _codex_turn_context("gpt-5.5"))
+        assert codex_session_cost(str(t)) is None
+
+    def test_empty_token_count_does_not_clobber_usage(self, tmp_path):
+        # An early real event followed by an empty one (no tokens yet): the
+        # last *meaningful* event must win, not the trailing empty one.
+        t = tmp_path / "r.jsonl"
+        empty = json.dumps({"type": "event_msg", "payload": {
+            "type": "token_count", "info": {"model_context_window": 258400}}})
+        _write(
+            t,
+            _codex_turn_context("gpt-5.5"),
+            _codex_token_count(_codex_usage(26000, 23000, 30),
+                               _codex_usage(13000, 12000, 10)),
+            empty,
+        )
+        info = codex_session_cost(str(t))
+        assert info is not None
+        assert info.session_tokens == 26030
+
+    def test_empty_and_missing(self, tmp_path):
+        assert codex_session_cost("") is None
+        assert codex_session_cost(str(tmp_path / "nope.jsonl")) is None
+
+
+# ===========================================================================
+# Gemini - per-turn tokens, walk + sum
+# ===========================================================================
+def _gem(model: str, inp: int, out: int, cached: int = 0,
+         thoughts: int = 0, tool: int = 0) -> str:
+    return json.dumps({"type": "gemini", "model": model, "tokens": {
+        "input": inp, "output": out, "cached": cached,
+        "thoughts": thoughts, "tool": tool,
+        "total": inp + out + thoughts}})
+
+
+class TestGemini:
+    def test_sums_turns(self, tmp_path):
+        t = tmp_path / "s.jsonl"
+        _write(
+            t,
+            _gem("gemini-3-flash-preview", 1000, 50, thoughts=10),
+            _gem("gemini-3-flash-preview", 2000, 80, thoughts=20),
+        )
+        info = gemini_session_cost(str(t))
+        assert info.session_tokens == (1000 + 50 + 10) + (2000 + 80 + 20)
+        assert info.last_turn_tokens == 2000 + 80 + 20
+        p = price_for("gemini-3-flash-preview")
+        t1 = cost_usd(p, new_input=1000, output=50, reasoning=10, prompt_tokens=1000)
+        t2 = cost_usd(p, new_input=2000, output=80, reasoning=20, prompt_tokens=2000)
+        assert info.session_cost_usd == pytest.approx(t1 + t2)
+        assert info.last_turn_cost_usd == pytest.approx(t2)
+
+    def test_cached_subset_priced_at_cache_rate(self, tmp_path):
+        t = tmp_path / "s.jsonl"
+        _write(t, _gem("gemini-3-flash-preview", 1000, 0, cached=400))
+        info = gemini_session_cost(str(t))
+        p = price_for("gemini-3-flash-preview")
+        exp = cost_usd(p, new_input=600, cache_read=400, output=0, prompt_tokens=1000)
+        assert info.session_cost_usd == pytest.approx(exp)
+
+    def test_unknown_model_tokens_no_cost(self, tmp_path):
+        t = tmp_path / "s.jsonl"
+        _write(t, _gem("made-up-gemini", 100, 10))
+        info = gemini_session_cost(str(t))
+        assert info.session_tokens == 110
+        assert info.session_cost_usd is None
+
+    def test_skips_non_gemini_entries(self, tmp_path):
+        t = tmp_path / "s.jsonl"
+        _write(t, json.dumps({"type": "user", "tokens": {"input": 999}}),
+               _gem("gemini-3-flash-preview", 100, 10))
+        info = gemini_session_cost(str(t))
+        assert info.session_tokens == 110
+
+    def test_empty_and_missing(self, tmp_path):
+        assert gemini_session_cost("") is None
+        assert gemini_session_cost(str(tmp_path / "nope.jsonl")) is None
