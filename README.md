@@ -60,6 +60,7 @@ leap my-feature         # Second run connects a client (queue messages here)
 ^^!!                    # Inside ^^: force-send next queued msg (Enter to confirm)
 leap --resume           # Pick a past Leap tag; for Claude, resumes in your current cwd
                         # (transcript is relocated automatically - no `cd` needed)
+leap --headroom         # (optional) route chosen CLIs through Headroom to compress context + cut tokens
 ```
 
 The **Monitor** is a native macOS app installed alongside Leap. Just open it from your Applications folder or Spotlight to see all your sessions at a glance:

@@ -65,6 +65,47 @@ remove_shell_config() {
     echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
 }
 
+# Remove the Headroom integration (`leap --headroom`): the autostart block from
+# the RC file, the running proxy, and any Headroom routing left in per-CLI env.
+# The headroom tool itself (pipx) and ~/.headroom are left for the user.
+remove_headroom() {
+    local RC_FILE="$1"
+    if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ] && grep -q "# >>> leap-headroom >>>" "$RC_FILE" 2>/dev/null; then
+        sed_inplace '/# >>> leap-headroom >>>/,/# <<< leap-headroom <<</d' "$RC_FILE"
+        echo -e "${GREEN}✓ Removed Headroom autostart from $RC_FILE${NC}"
+    fi
+    # Stop the background proxy we started (matched narrowly, won't touch other procs)
+    pkill -f "headroom proxy --port 8787" 2>/dev/null && echo "  Stopped Headroom proxy" || true
+    # Strip Headroom routing from per-CLI env so leftover entries can't break CLIs later
+    local ENVF="$REPO_PATH/.storage/cli_env.json"
+    if [ -f "$ENVF" ] && command -v python3 >/dev/null 2>&1; then
+        python3 - "$ENVF" <<'PY' 2>/dev/null || true
+import json, sys
+f = sys.argv[1]
+try:
+    d = json.load(open(f))
+except Exception:
+    sys.exit(0)
+changed = False
+for cli, env in list(d.items()):
+    if not isinstance(env, dict):
+        continue
+    routed = any(":8787" in str(env.get(k, "")) for k in
+                 ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "COPILOT_PROVIDER_BASE_URL"))
+    if not routed:
+        continue
+    for k in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_TYPE"):
+        if k in env:
+            del env[k]; changed = True
+    if not env:
+        del d[cli]
+if changed:
+    json.dump(d, open(f, "w"), indent=2)
+    print("  Cleaned Headroom routing from cli_env.json")
+PY
+    fi
+}
+
 # Warn if any Leap server lock directories exist (active or crashed sessions)
 check_running_sessions() {
     local SOCKET_DIR="$REPO_PATH/.storage/sockets"
@@ -133,4 +174,5 @@ remove_storage() {
 check_running_sessions
 RC_FILE=$(get_rc_file)
 remove_shell_config "$RC_FILE"
+remove_headroom "$RC_FILE"
 remove_storage "$REPO_PATH"

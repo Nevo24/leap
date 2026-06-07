@@ -195,6 +195,13 @@ leap --slack                 # Start the bot daemon
 
 Bot can also be started/stopped from the monitor's **Slack Bot** button. Dependencies: `slack-bolt`, `slack-sdk` (optional poetry group).
 
+## Headroom (optional context compression)
+
+`leap --headroom` (script `src/scripts/leap-headroom.sh`) routes selected CLIs through a local [Headroom](https://github.com/chopratejas/headroom) proxy that compresses context to cut tokens. Opt-in per CLI, nothing global:
+- Installs headroom via `pipx` (pinned to Python 3.13 - its native deps don't build on 3.14 yet) and runs the proxy as a background process, auto-started by a `# >>> leap-headroom >>>` block appended to the shell rc **outside** the Leap-managed config block (so `leap --reconfigure`, which fully regenerates that block, won't wipe it).
+- The picker (curses, numbered-input fallback) writes the per-base-type base-URL env var into `.storage/cli_env.json` (claude → `ANTHROPIC_BASE_URL`, codex → `OPENAI_BASE_URL`, copilot → `COPILOT_PROVIDER_*`; gemini/cursor-agent have no env route). It **merges** into existing per-CLI env (never overwrites other keys or other CLIs); re-running toggles routing on/off.
+- Teardown is `uninstall-helper.sh` `remove_headroom()` (called by `make uninstall`): strips the rc block, stops the proxy, and clears Headroom keys from `cli_env.json`. Wiring lives in `leap-select.sh` + `leap-main.sh` (dispatch + `--help`) and `_leap` (completion).
+
 ## IDE Setup
 
 ### JetBrains (PyCharm, IntelliJ, etc.)

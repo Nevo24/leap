@@ -26,6 +26,7 @@ _leap() {
         '--reconfigure[re-wire Leap after installing a new CLI/IDE/terminal]'
         '--manage-clis[manage CLI providers (order, flags, visibility, custom CLIs)]'
         '--resume[resume a previous session in its original CLI]'
+        '--headroom[route selected CLIs through Headroom context compression]'
     )
 
     if [[ -n "$LEAP_PROJECT_DIR" && -f "$LEAP_PROJECT_DIR/.storage/slack/config.json" ]]; then

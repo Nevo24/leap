@@ -92,6 +92,13 @@ if [ "$1" = "--reconfigure" ]; then
     exec make -C "$PROJECT_DIR" reconfigure
 fi
 
+# Set up / toggle Headroom context-compression for selected CLIs.
+# The helper installs headroom (if needed), arranges the background proxy,
+# and runs an interactive picker that writes per-CLI env into cli_env.json.
+if [ "$1" = "--headroom" ]; then
+    LEAP_PROJECT_DIR="$PROJECT_DIR" exec "$SCRIPT_DIR/leap-headroom.sh"
+fi
+
 # Manage CLI order if requested
 if [ "$1" = "--manage-clis" ]; then
     PYTHONPATH="$PROJECT_DIR/src${PYTHONPATH:+:$PYTHONPATH}" \
@@ -157,6 +164,7 @@ USAGE:
     leap --reconfigure                Re-wire Leap after installing a new CLI/IDE/terminal
     leap --manage-clis                Manage CLI providers (order, flags, visibility, custom CLIs)
     leap --resume                     Pick a previous Leap session and resume it in its original CLI
+    leap --headroom                   Route selected CLIs through Headroom context compression (optional)
 EOF
     if [ -f "$STORAGE_DIR/slack/config.json" ]; then
         echo "    leap --slack                      Start the Slack bot daemon"

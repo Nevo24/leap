@@ -34,6 +34,9 @@ fi
 if [ "$1" = "--resume" ]; then
     exec "$SCRIPT_DIR/leap-main.sh" "$@"
 fi
+if [ "$1" = "--headroom" ]; then
+    exec "$SCRIPT_DIR/leap-main.sh" "$@"
+fi
 
 # Honour LEAP_CLI env var: when set (e.g. from a GUI-spawned resume
 # terminal that prefixes ``LEAP_RESUME_SESSION_ID=… LEAP_CLI=… leap
