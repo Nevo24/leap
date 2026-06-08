@@ -48,10 +48,10 @@ from leap.monitor.dialogs.notes.ordering import (
     _rename_order_keys, _save_order,
 )
 from leap.monitor.dialogs.notes.persistence import (
-    _NOTES_META_FILE, _folder_mtime, _format_mtime, _get_note_created_at,
-    _get_note_mode, _list_notes, _load_notes_meta, _migrate_old_notes_file,
-    _note_path, _remove_note_meta, _rename_note_meta, _save_notes_meta,
-    _set_note_mode,
+    _NOTES_META_FILE, _folder_mtime, _format_mtime, _get_note_add_draft,
+    _get_note_created_at, _get_note_mode, _list_notes, _load_notes_meta,
+    _migrate_old_notes_file, _note_path, _remove_note_meta, _rename_note_meta,
+    _save_notes_meta, _set_note_add_draft, _set_note_mode,
 )
 from leap.monitor.dialogs.notes.rtl import _apply_rtl_direction, _text_is_rtl
 from leap.monitor.dialogs.notes.session_picker import _SessionPickerDialog
@@ -123,6 +123,10 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
 
         self._current_name: Optional[str] = None
         self._saved_text: str = ''
+        # Last-persisted "Add item" draft (marker form) for the current
+        # checklist note; lets _save_current skip a redundant meta write
+        # when the draft is unchanged.
+        self._saved_add_draft: str = ''
         self._switching_mode: bool = False
         self._clipboard_path: Optional[str] = None
         self._clipboard_type: Optional[str] = None
@@ -618,6 +622,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         if current is None:
             self._current_name = None
             self._saved_text = ''
+            self._saved_add_draft = ''
             self._editor.clear()
             self._editor.setEnabled(False)
             self._editor.setPlaceholderText(
@@ -638,6 +643,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             # spacer in its place so the title/dates stay pinned to the top.
             self._current_name = None
             self._saved_text = ''
+            self._saved_add_draft = ''
             self._editor.clear()
             self._editor.setEnabled(False)
             self._mode_combo.setVisible(False)
@@ -664,6 +670,11 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         if mode == 'checklist':
             self._mode_combo.setCurrentIndex(self._MODE_CHECKLIST)
             self._checklist.set_items(_parse_checklist(text))
+            # Restore any half-typed Add-item draft (after set_items, so its
+            # image placeholders register after the items' own).
+            draft = _get_note_add_draft(name)
+            self._checklist.set_add_draft(draft)
+            self._saved_add_draft = draft
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
             self._find_bar.setVisible(False)
         else:
@@ -671,6 +682,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             self._editor.set_note_content(text)
             self._editor.setEnabled(True)
             self._stack.setCurrentIndex(self._MODE_TEXT)
+            self._saved_add_draft = ''
         self._switching_mode = False
 
         self._mode_combo.setVisible(True)
@@ -711,6 +723,13 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             new_content = _serialize_checklist(items)
         else:
             items = self._checklist.get_items()
+            # Snapshot the unsubmitted Add-item draft before leaving
+            # checklist mode: text-mode _save_current() won't persist it,
+            # so without this a half-typed item would be lost when the
+            # note is switched back to checklist.
+            leaving_draft = self._checklist.get_add_draft()
+            _set_note_add_draft(self._current_name, leaving_draft)
+            self._saved_add_draft = leaving_draft
             self._editor._pasted_images |= self._checklist.take_pasted_images()
             old_content = _serialize_checklist(self._checklist.get_items())
             # Preserve each item's bold flag (item['text'] already
@@ -734,6 +753,11 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         # Apply the mode switch
         if index == self._MODE_CHECKLIST:
             self._checklist.set_items(items)
+            # Carry over any Add-item draft this note had as a checklist
+            # before, so toggling text<->checklist doesn't drop it.
+            draft = _get_note_add_draft(self._current_name)
+            self._checklist.set_add_draft(draft)
+            self._saved_add_draft = draft
             self._stack.setCurrentIndex(self._MODE_CHECKLIST)
             _set_note_mode(self._current_name, 'checklist')
             self._save_current()
@@ -1515,10 +1539,19 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         try:
             if self._current_mode() == self._MODE_CHECKLIST:
                 text = _serialize_checklist(self._checklist.get_items())
+                add_draft = self._checklist.get_add_draft()
             else:
                 text = self._editor.get_note_content()
+                add_draft = None
         except RuntimeError:
             return
+        # Persist the half-typed "Add item" text separately from the body
+        # (it isn't a real item yet, so it must not land in the .txt) and
+        # outside the body-changed gate below — typing in the add field
+        # leaves the serialized body untouched.
+        if add_draft is not None and add_draft != self._saved_add_draft:
+            _set_note_add_draft(self._current_name, add_draft)
+            self._saved_add_draft = add_draft
         if text != self._saved_text:
             try:
                 path = _note_path(self._current_name)

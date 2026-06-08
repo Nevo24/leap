@@ -130,6 +130,35 @@ def _set_note_mode(name: str, mode: str) -> None:
     _save_notes_meta(meta)
 
 
+def _get_note_add_draft(name: str) -> str:
+    """Return the unsubmitted "Add item" text saved for a checklist note.
+
+    Stored in on-disk (``![image](hash.png)`` marker) form, same as item
+    bodies; '' when the note has no pending draft.
+    """
+    return _load_notes_meta().get(name, {}).get('add_draft', '') or ''
+
+
+def _set_note_add_draft(name: str, text: str) -> None:
+    """Persist (or clear) a checklist note's unsubmitted "Add item" text.
+
+    Kept out of the ``.txt`` body so it never turns into a real item;
+    an empty draft drops the key rather than storing ''.
+    """
+    meta = _load_notes_meta()
+    entry = meta.get(name)
+    if text:
+        if entry is None:
+            entry = {}
+            meta[name] = entry
+        entry['add_draft'] = text
+    else:
+        if entry is None or 'add_draft' not in entry:
+            return  # nothing stored — avoid a needless rewrite
+        entry.pop('add_draft', None)
+    _save_notes_meta(meta)
+
+
 def _remove_note_meta(name: str) -> None:
     meta = _load_notes_meta()
     if meta.pop(name, None) is not None:

@@ -1135,6 +1135,11 @@ class _ChecklistWidget(QWidget):
         self._completed_visible: bool = True
         self._focus_after_rebuild: Optional[tuple[int, bool]] = None
         self._focus_add_after_rebuild: bool = False
+        # Unsubmitted "Add item" text (display form, with "[Image #N]"
+        # placeholders).  Survives _rebuild() — which recreates the add
+        # field from scratch — and is persisted across note switches /
+        # dialog close so a half-typed item isn't lost on Enter-less exit.
+        self._add_draft: str = ''
         self._dragging_index: int = -1
         self._pasted_images: set[str] = set()  # track images pasted in checklist
         self._flatten_on_paste: bool = True
@@ -1375,6 +1380,12 @@ class _ChecklistWidget(QWidget):
         self._add_field.expand_requested.connect(self._expand_add_field)
         self._add_field.arrow_up.connect(self._on_add_field_arrow_up)
         self._add_field.arrow_down.connect(self._on_add_field_arrow_down)
+        # Re-seed any half-typed item across the rebuild, then track edits
+        # so the draft stays current.  Seed before connecting so the
+        # restore itself doesn't fire a redundant change notification.
+        if self._add_draft:
+            self._add_field.setText(self._add_draft)
+        self._add_field.textChanged.connect(self._on_add_field_text_changed)
         self._layout.addWidget(self._add_field)
         self._add_popup: Optional[QTextEdit] = None
 
@@ -1766,12 +1777,34 @@ class _ChecklistWidget(QWidget):
             return
         new_idx = len(self._items)
         self._items.append({'text': text, 'checked': False, 'bold': False})
+        # The draft has now become a real item — clear it so the rebuilt
+        # add field comes back empty instead of re-seeding the same text.
+        self._add_draft = ''
         self._focus_add_after_rebuild = True
         self._rebuild()
         self.content_changed.emit()
         if self._undo_stack is not None:
             self._undo_stack.record(ChecklistAddItemCmd(
                 note_name=self._cmd_ctx.current_name, item_index=new_idx, item_text=text))
+
+    def _on_add_field_text_changed(self, text: str) -> None:
+        """Track the half-typed Add-item text so it survives rebuilds."""
+        self._add_draft = text
+
+    def get_add_draft(self) -> str:
+        """Current unsubmitted Add-item text in on-disk (marker) form, '' if empty."""
+        return self._placeholders_to_markers(self._add_draft)
+
+    def set_add_draft(self, text: str) -> None:
+        """Restore a persisted Add-item draft (marker form, as stored on disk).
+
+        Call AFTER ``set_items`` so any image markers in the draft register
+        their ``[Image #N]`` placeholders after the items' own.
+        """
+        display = self._markers_to_placeholders(text) if text else ''
+        self._add_draft = display
+        if self._add_field is not None and not sip.isdeleted(self._add_field):
+            self._add_field.setText(display)
 
     def _expand_add_field(self) -> None:
         """Swap the Add item QLineEdit for a wrapping editor."""
@@ -2020,7 +2053,11 @@ class _ChecklistWidget(QWidget):
         wrap.deleteLater()
         if self._add_field and not sip.isdeleted(self._add_field):
             self._add_field.setVisible(True)
-            if save and new_text:
+            if save:
+                # Sync the line edit (and thus the persisted draft via its
+                # textChanged) to the popup's true content — including the
+                # empty case, so clearing the popup and leaving genuinely
+                # empties the draft instead of resurrecting the old text.
                 self._add_field.setText(new_text)
 
     def _toggle_completed(self) -> None:

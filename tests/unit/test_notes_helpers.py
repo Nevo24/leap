@@ -684,6 +684,37 @@ class TestGetSetMode:
         assert meta['n'] == {'created_at': 12345, 'mode': 'checklist'}
 
 
+class TestGetSetAddDraft:
+    def test_default_is_empty(self, notes_dir: Path) -> None:
+        assert nd._get_note_add_draft('unknown') == ''
+
+    def test_set_then_get(self, notes_dir: Path) -> None:
+        nd._set_note_add_draft('n', 'half typed')
+        assert nd._get_note_add_draft('n') == 'half typed'
+
+    def test_set_preserves_other_meta(self, notes_dir: Path) -> None:
+        nd._save_notes_meta({'n': {'mode': 'checklist', 'created_at': 9}})
+        nd._set_note_add_draft('n', 'draft')
+        assert nd._load_notes_meta()['n'] == {
+            'mode': 'checklist', 'created_at': 9, 'add_draft': 'draft'}
+
+    def test_empty_clears_existing_key(self, notes_dir: Path) -> None:
+        nd._save_notes_meta({'n': {'mode': 'checklist', 'add_draft': 'x'}})
+        nd._set_note_add_draft('n', '')
+        # Draft key dropped, but the rest of the entry survives.
+        assert nd._load_notes_meta()['n'] == {'mode': 'checklist'}
+
+    def test_empty_on_unknown_is_noop(self, notes_dir: Path) -> None:
+        # No meta file at all — clearing a non-existent draft must not
+        # create a spurious file.
+        nd._set_note_add_draft('n', '')
+        assert not (notes_dir / '.notes_meta.json').exists()
+
+    def test_round_trip_image_marker(self, notes_dir: Path) -> None:
+        nd._set_note_add_draft('n', 'see ![image](abc.png) here')
+        assert nd._get_note_add_draft('n') == 'see ![image](abc.png) here'
+
+
 class TestRemoveNoteMeta:
     def test_remove_existing(self, notes_dir: Path) -> None:
         nd._save_notes_meta({'a': {'mode': 'text'}, 'b': {'mode': 'text'}})
