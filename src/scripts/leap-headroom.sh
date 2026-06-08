@@ -5,31 +5,59 @@
 set -euo pipefail
 PORT=8787; URL="http://localhost:${PORT}"
 export PATH="$HOME/.local/bin:$PATH"
-# Write autostart to the RC file Leap itself targets (matches configure-shell-helper / uninstall).
-RC="$HOME/.zshrc"
-if [ "$(basename "${SHELL:-zsh}")" = "bash" ]; then RC="$HOME/.bashrc"; fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- 1. Install headroom -------------------------------------------------
-echo "==> 1/3 Install headroom"
-command -v brew >/dev/null || { echo "Need Homebrew: https://brew.sh"; exit 1; }
+# Match the rest of the Leap CLI's output style (configure-shell-helper, leap-update, ...)
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'; PROMPT_PREFIX="→"
+
+# --- 1. Install / update headroom ----------------------------------------
+echo -e "$PROMPT_PREFIX 1/3 Install / update headroom"
+command -v brew >/dev/null || { echo -e "${RED}✗ Need Homebrew: https://brew.sh${NC}"; exit 1; }
 command -v pipx >/dev/null || { brew install pipx; pipx ensurepath; }
 command -v python3.13 >/dev/null || brew install python@3.13   # headroom's deps don't support 3.14 yet
-pipx list 2>/dev/null | grep -q headroom-ai || pipx install --python python3.13 "headroom-ai[proxy]"
 
-# --- 2. Auto-start the proxy (background, no global env changes) ----------
-echo "==> 2/3 Auto-start the proxy"
-M="# >>> leap-headroom >>>"
-grep -qF "$M" "$RC" 2>/dev/null || cat >> "$RC" <<EOF
+HEADROOM_UPGRADED=0
+if ! pipx list 2>/dev/null | grep -q headroom-ai; then
+    pipx install --python python3.13 "headroom-ai[proxy]"
+else
+    # Already installed. Ask before hitting the network (default No), and only if
+    # a newer release exists, offer to upgrade (default Yes). The proxy's wedge
+    # bugs are headroom-side, so staying current matters - but the check is opt-in
+    # so a routine `leap --headroom` doesn't phone PyPI every time.
+    chk=""; read -r -p "  Check for a headroom update? [y/N] " chk || true
+    case "$chk" in
+        y|Y|yes|YES)
+            installed=$(pipx runpip headroom-ai show headroom-ai 2>/dev/null | awk '/^Version:/{print $2}' || true)
+            latest=$(curl -fsS -m 10 https://pypi.org/pypi/headroom-ai/json 2>/dev/null \
+                     | python3 -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null || true)
+            if [ -z "$installed" ] || [ -z "$latest" ]; then
+                # Couldn't determine one side - don't claim up-to-date we can't prove.
+                echo -e "  ${YELLOW}⚠ Update check unavailable (offline?) - keeping current version${NC}"
+            elif [ "$installed" != "$latest" ]; then
+                echo -e "  ${YELLOW}⚠ Headroom $installed is installed; $latest is available${NC}"
+                ans=""; read -r -p "  Upgrade now? [Y/n] " ans || true
+                case "$ans" in
+                    n|N|no|NO) echo "  Keeping $installed" ;;
+                    *)         pipx upgrade headroom-ai && HEADROOM_UPGRADED=1 ;;   # default Yes
+                esac
+            else
+                echo -e "  ${GREEN}✓ Headroom $installed is already up to date${NC}"
+            fi
+            # The next step opens a full-screen picker that clears the terminal,
+            # so pause here to let the update result actually be read.
+            read -r -p "  Press Enter to continue... " _ || true
+            ;;
+        *) : ;;   # skip the check
+    esac
+fi
 
-${M}
-headroom-up() { lsof -ti tcp:${PORT} >/dev/null 2>&1 && return; mkdir -p ~/.headroom; nohup headroom proxy --port ${PORT} --no-telemetry > ~/.headroom/proxy.log 2>&1 & disown; }
-headroom-up
-# <<< leap-headroom <<<
-EOF
-lsof -ti tcp:${PORT} >/dev/null 2>&1 || { mkdir -p ~/.headroom; nohup headroom proxy --port ${PORT} --no-telemetry > ~/.headroom/proxy.log 2>&1 & disown; }
-
-# --- 3. Pick which Leap CLIs route through headroom ----------------------
-echo "==> 3/3 Choose which Leap CLIs should use headroom"
+# --- 2. Pick which Leap CLIs route through headroom ----------------------
+# The proxy auto-start + health watchdog are NOT wired here: their scripts live
+# in the repo (src/scripts/leap-headroom-{up,watchdog}.sh) and are launched by
+# the managed shell block, which configure-shell-helper.sh regenerates on every
+# install/update - gated on the .storage/headroom_enabled marker that step 3
+# writes below. Step 3 also refreshes that block and starts/stops the proxy now.
+echo -e "$PROMPT_PREFIX 2/3 Choose which Leap CLIs should use headroom"
 : "${LEAP_PROJECT_DIR:?Open a new terminal after installing Leap, then re-run}"
 
 # Helper goes in a temp file so its interactive UI reads the terminal
@@ -204,5 +232,50 @@ else:
 PY
 python3 "$HR_PY" "$LEAP_PROJECT_DIR" "$URL"
 
+# --- 3. Apply: marker + managed-block refresh + start/stop the proxy -----
+# The .storage/headroom_enabled marker is the single switch the managed shell
+# block keys off. It's present iff at least one CLI is routed through the proxy
+# (port 8787 in cli_env.json). Writing/removing it, then regenerating the block,
+# makes the autostart appear/disappear immediately - and persist across updates.
+echo -e "$PROMPT_PREFIX 3/3 Apply"
+ENV_FILE="$LEAP_PROJECT_DIR/.storage/cli_env.json"
+MARKER="$LEAP_PROJECT_DIR/.storage/headroom_enabled"
+UP="$SCRIPT_DIR/leap-headroom-up.sh"
+WATCH="$SCRIPT_DIR/leap-headroom-watchdog.sh"
+
+# Any routed CLI's base URL contains "localhost:8787" (claude/copilot bare, codex
+# with a "/v1" suffix), so match the host:port, not a trailing quote.
+if [ -f "$ENV_FILE" ] && grep -q "localhost:${PORT}" "$ENV_FILE"; then
+    : > "$MARKER"
+    enabled=1
+else
+    rm -f "$MARKER"
+    enabled=0
+fi
+
+# Regenerate the managed shell block so the autostart lines now match the marker.
+"$SCRIPT_DIR/configure-shell-helper.sh" --update "$LEAP_PROJECT_DIR" >/dev/null
+
+if [ "$enabled" = 1 ]; then
+    chmod +x "$UP" "$WATCH" 2>/dev/null || true
+    if [ "$HEADROOM_UPGRADED" = 1 ]; then
+        # A healthy old-version proxy wouldn't be recycled by the health check,
+        # so force it down (and clear the start marker) to bring up the new one.
+        pkill -f "headroom proxy --port ${PORT}" 2>/dev/null || true
+        rm -f "$HOME/.headroom/started_at"
+    fi
+    "$UP" || true                              # bring the proxy up now (quick; backgrounds it)
+    nohup "$WATCH" >/dev/null 2>&1 & disown    # ensure the health watcher is running
+    echo -e "  ${GREEN}✓ Headroom routing is ON - proxy + watchdog running${NC}"
+else
+    pkill -f "leap-headroom-watchdog.sh" 2>/dev/null || true
+    pkill -f "headroom proxy --port ${PORT}" 2>/dev/null || true
+    # Clear the start marker too: after a deliberate kill there's no cold-loading
+    # proxy, so a later re-enable must not see a "recent start" and skip launching.
+    rm -rf "$HOME/.headroom/watchdog.lock" "$HOME/.headroom/up.lock"
+    rm -f "$HOME/.headroom/started_at"
+    echo -e "  ${YELLOW}⚠ No CLIs routed - proxy + watchdog stopped${NC}"
+fi
+
 echo
-echo "Done. Start a routed CLI normally (e.g. 'leap mytag' and pick it). Check savings: headroom perf"
+echo -e "${GREEN}✓ Done${NC} - start a routed CLI normally (e.g. 'leap mytag' and pick it). Check savings: headroom perf"

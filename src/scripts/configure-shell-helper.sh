@@ -39,6 +39,11 @@ if [ -f "$RC_FILE" ]; then
     sed_inplace '/^# Extra flags can also be passed inline/d' "$RC_FILE"
     # Remove legacy leap-cleanup comment (auto-cleanup runs on every leap invocation)
     sed_inplace '/^#        leap-cleanup$/d' "$RC_FILE"
+    # Migrate away from the old standalone Headroom block: its autostart is now
+    # folded into the managed block below, gated on .storage/headroom_enabled.
+    if grep -q "# >>> leap-headroom >>>" "$RC_FILE" 2>/dev/null; then
+        sed_inplace '/# >>> leap-headroom >>>/,/# <<< leap-headroom <<</d' "$RC_FILE"
+    fi
 fi
 
 # Silently strip any existing Leap block. The content is 100% regenerated
@@ -100,6 +105,35 @@ if [ -f "$LEAP_PROJECT_DIR/src/scripts/_leap" ]; then
         autoload -Uz compinit && compinit -u
     fi
 fi
+EOF
+fi
+
+# Headroom context-compression proxy auto-start + 5-min health watchdog.
+# Emitted only while at least one CLI is routed through Headroom. Living inside
+# the managed block means update/reconfigure regenerate it - so it self-heals,
+# stays current, and is never stranded on old logic. The scripts run from the
+# repo, so `git pull` (i.e. `leap --update`) refreshes their behavior
+# automatically.
+#
+# Reconcile the marker from the real source of truth (cli_env.json): present iff
+# a CLI is routed through the proxy (localhost:8787). This both migrates users off
+# the old standalone-block design (marker recreated) and clears a stale marker
+# left by a hand-edit of cli_env.json. Guarded on the file EXISTING so a missing
+# cli_env.json (fresh install, or a transient absence) can never tear down a
+# working setup - we only ever reconcile against a file we can actually read.
+if [ -f "$REPO_PATH/.storage/cli_env.json" ]; then
+    if grep -q "localhost:8787" "$REPO_PATH/.storage/cli_env.json"; then
+        : > "$REPO_PATH/.storage/headroom_enabled"
+    else
+        rm -f "$REPO_PATH/.storage/headroom_enabled"
+    fi
+fi
+if [ -f "$REPO_PATH/.storage/headroom_enabled" ]; then
+    cat >> "$RC_FILE" <<'EOF'
+
+# Headroom context-compression proxy (managed by `leap --headroom`)
+[ -x "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-up.sh" ] && nohup "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-up.sh" >/dev/null 2>&1 & disown
+[ -x "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-watchdog.sh" ] && nohup "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-watchdog.sh" >/dev/null 2>&1 & disown
 EOF
 fi
 

@@ -517,6 +517,7 @@ update: .env
 	@echo ""
 	@echo "$(PROMPT_PREFIX) Updating shell configuration..."
 	@$(MAKE) .detect-shell-update
+	@$(MAKE) .restart-headroom
 	@if [ -f "$(REPO_PATH)/.storage/slack/config.json" ]; then \
 		echo ""; \
 		echo "$(PROMPT_PREFIX) Detected Slack integration"; \
@@ -601,6 +602,7 @@ reconfigure:
 	@$(MAKE) .migrate-from-claudeq
 	@$(MAKE) write-install-metadata
 	@$(MAKE) .detect-shell-update
+	@$(MAKE) .restart-headroom
 	@$(MAKE) .configure-vscode
 	@$(MAKE) .configure-cursor
 	@$(MAKE) .configure-jetbrains
@@ -1017,6 +1019,23 @@ endef
 .detect-shell-update:
 	@chmod +x $(SCRIPTS_DIR)/configure-shell-helper.sh
 	@$(SCRIPTS_DIR)/configure-shell-helper.sh --update $(REPO_PATH)
+
+# Restart the Headroom proxy + health watchdog onto freshly-pulled script code.
+# Only acts when Headroom is enabled (the .storage/headroom_enabled marker). The
+# running watcher holds its lock with the OLD code, so we stop both and relaunch
+# the watcher detached; its first iteration brings the proxy back up.
+.PHONY: .restart-headroom
+.restart-headroom:
+	@if [ -f "$(REPO_PATH)/.storage/headroom_enabled" ]; then \
+		echo "$(PROMPT_PREFIX) Restarting Headroom proxy on updated code..."; \
+		pkill -f "leap-headroom-watchdog.sh" 2>/dev/null || true; \
+		pkill -f "headroom proxy --port 8787" 2>/dev/null || true; \
+		rm -rf "$$HOME/.headroom/watchdog.lock" "$$HOME/.headroom/up.lock"; \
+		rm -f "$$HOME/.headroom/started_at"; \
+		chmod +x $(SCRIPTS_DIR)/leap-headroom-up.sh $(SCRIPTS_DIR)/leap-headroom-watchdog.sh 2>/dev/null || true; \
+		( nohup $(SCRIPTS_DIR)/leap-headroom-watchdog.sh >/dev/null 2>&1 & ); \
+		echo "$(GREEN)✓ Headroom proxy restarted$(NC)"; \
+	fi
 
 .PHONY: uninstall-monitor
 uninstall-monitor:

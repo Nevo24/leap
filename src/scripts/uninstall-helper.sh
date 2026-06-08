@@ -65,15 +65,24 @@ remove_shell_config() {
     echo -e "${GREEN}✓ Removed shell configuration from $RC_FILE${NC}"
 }
 
-# Remove the Headroom integration (`leap --headroom`): the autostart block from
-# the RC file, the running proxy, and any Headroom routing left in per-CLI env.
-# The headroom tool itself (pipx) and ~/.headroom are left for the user.
+# Remove the Headroom integration (`leap --headroom`): the running proxy + health
+# watchdog, the enable marker, and any Headroom routing left in per-CLI env. The
+# autostart lines live INSIDE the managed block (gated on the marker), so
+# remove_shell_config already strips them; we also strip the legacy standalone
+# block for users who installed before it was folded in. The headroom tool
+# itself (pipx), the repo scripts, and ~/.headroom state are left for the user.
 remove_headroom() {
     local RC_FILE="$1"
     if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ] && grep -q "# >>> leap-headroom >>>" "$RC_FILE" 2>/dev/null; then
         sed_inplace '/# >>> leap-headroom >>>/,/# <<< leap-headroom <<</d' "$RC_FILE"
-        echo -e "${GREEN}✓ Removed Headroom autostart from $RC_FILE${NC}"
+        echo -e "${GREEN}✓ Removed legacy Headroom autostart from $RC_FILE${NC}"
     fi
+    # Tear down the background health watcher (pkill -f on the script path is the
+    # authoritative stop - no PID-reuse risk) and remove the enable marker so a
+    # later reconfigure won't re-add the autostart.
+    pkill -f "leap-headroom-watchdog.sh" 2>/dev/null && echo "  Stopped Headroom health watchdog" || true
+    rm -rf "$HOME/.headroom/watchdog.lock" "$HOME/.headroom/up.lock"
+    rm -f "$REPO_PATH/.storage/headroom_enabled"
     # Stop the background proxy we started (matched narrowly, won't touch other procs)
     pkill -f "headroom proxy --port 8787" 2>/dev/null && echo "  Stopped Headroom proxy" || true
     # Strip Headroom routing from per-CLI env so leftover entries can't break CLIs later
