@@ -1137,8 +1137,20 @@ class CLIStateTracker:
 
     # -- State polling --------------------------------------------------------
 
-    def get_state(self, pty_alive: bool) -> str:
-        """Poll the signal file and return the CLI's current state."""
+    def get_state(self, pty_alive: bool,
+                  has_pending_input: bool = False) -> str:
+        """Poll the signal file and return the CLI's current state.
+
+        ``has_pending_input`` is True when the user has unsubmitted text in the
+        input box (or is composing a ``^^`` queued message).  In that case the
+        *heuristic* idle fallbacks (cursor+silence and the safety-silence
+        timeout) are suppressed: the silence is the user pausing mid-compose,
+        not the model finishing, so flipping to IDLE would fire a false
+        "finished" notification and let the auto-sender dispatch a queued
+        message into the half-typed prompt.  Authoritative idle (the hook
+        ``signal=idle`` path and Codex transcript-completion) is NOT gated, so a
+        genuine turn end still idles even while the user is typing.
+        """
         if not pty_alive:
             was_idle = self._state == CLIState.IDLE
             with self._lock:
@@ -2089,6 +2101,19 @@ class CLIStateTracker:
                     )
                     return current
 
+                # User is composing an unsubmitted prompt (text in the input
+                # box, or a ^^ queued message): the silence is the user
+                # pausing, not the model finishing.  Don't flip to idle - that
+                # would fire a false "finished" notification and let the
+                # auto-sender dispatch a queued message into the half-typed
+                # prompt.  A genuine end still idles via the hook signal path.
+                if has_pending_input:
+                    _log.debug(
+                        'GET_STATE cursor+silence would idle but user has '
+                        'unsubmitted input (composing) - keeping running',
+                    )
+                    return current
+
                 _log.debug(
                     'GET_STATE running→idle (cursor visible + '
                     'output silent %.1fs)',
@@ -2161,6 +2186,19 @@ class CLIStateTracker:
                     with self._screen_lock:
                         self._reset_screen()
                     return CLIState.INTERRUPTED
+                # Composing guard (same rationale as the cursor+silence path):
+                # don't force-idle while the user has unsubmitted input — the
+                # silence is them pausing, not the model finishing.  Releases
+                # the moment they submit or clear the box (buffer empties), so
+                # a genuinely-hung idle still recovers; a real end idles via the
+                # hook signal regardless.
+                if has_pending_input:
+                    _log.debug(
+                        'GET_STATE safety timeout %.1fs but user has '
+                        'unsubmitted input (composing) - keeping running',
+                        silence,
+                    )
+                    return current
                 _log.debug(
                     'GET_STATE safety timeout %.1fs → idle', silence,
                 )
@@ -2231,9 +2269,18 @@ class CLIStateTracker:
 
         return current
 
-    def is_ready(self, pty_alive: bool) -> bool:
-        """Check if the auto-sender should send the next message."""
-        return self.is_ready_for_state(self.get_state(pty_alive))
+    def is_ready(self, pty_alive: bool,
+                 has_pending_input: bool = False) -> bool:
+        """Check if the auto-sender should send the next message.
+
+        ``has_pending_input`` is forwarded to :meth:`get_state` so this models
+        what the production auto-sender does (it gates dispatch on the same
+        composing-aware state): while the user has unsubmitted input, the state
+        is held RUNNING and this returns False, so a queued message is never
+        dispatched into a half-typed prompt.
+        """
+        return self.is_ready_for_state(
+            self.get_state(pty_alive, has_pending_input=has_pending_input))
 
     def is_ready_for_state(self, state: str) -> bool:
         """Check readiness for sending the next queued message.

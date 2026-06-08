@@ -527,7 +527,11 @@ class LeapServer:
             return result
 
         elif msg_type == 'status':
-            state = self.state.get_state(self.pty.is_alive())
+            state = self.state.get_state(
+                self.pty.is_alive(),
+                has_pending_input=bool(self._terminal_input_buf)
+                or self._queue_capture_mode,
+            )
             recently_sent, total_sent = self.queue.get_recently_sent()
             return {
                 'queue_size': self.queue.size,
@@ -1417,7 +1421,11 @@ class LeapServer:
             self._dispatch_wake.wait(timeout=wait)
 
             try:
-                current_state = self.state.get_state(self.pty.is_alive())
+                current_state = self.state.get_state(
+                    self.pty.is_alive(),
+                    has_pending_input=bool(self._terminal_input_buf)
+                    or self._queue_capture_mode,
+                )
 
                 # Detect state transitions for Slack output capture
                 if current_state != prev_state:

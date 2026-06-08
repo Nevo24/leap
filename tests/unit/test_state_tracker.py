@@ -887,6 +887,89 @@ class TestSafetyTimeouts:
         t[0] = 7.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
+    def test_cursor_silence_idle_held_while_composing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The reported bug: composing a prompt into a RUNNING session and
+        pausing must NOT flip to idle via cursor+silence (false 'finished'
+        notification). Same setup as the test above, but with pending input."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tracker, 'model output...')
+        t[0] = 7.0  # > 5s silence, cursor visible
+        # Control: without pending input it idles (as the test above).
+        assert tracker.get_state(
+            pty_alive=True, has_pending_input=False) == 'idle'
+        # With the user composing, it stays running.
+        t2 = [0.0]
+        tr2 = make_tracker(tmp_path, t2)
+        tr2.on_send()
+        t2[0] = 1.0
+        feed_with_visible_cursor(tr2, 'model output...')
+        t2[0] = 7.0
+        assert tr2.get_state(
+            pty_alive=True, has_pending_input=True) == 'running'
+
+    def test_safety_timeout_idle_held_while_composing(
+        self, tmp_path: Path,
+    ) -> None:
+        """The safety-silence timeout (the Codex path, cursor hidden) must
+        also not force-idle while the user is composing."""
+        # Control: cursor hidden + long silence → safety timeout idles.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_output(b'\x1b[?25lworking...')  # cursor hidden
+        t[0] = 1.0 + SAFETY_SILENCE_TIMEOUT + 5.0
+        assert tracker.get_state(
+            pty_alive=True, has_pending_input=False) == 'idle'
+        # Composing → held running.
+        t2 = [0.0]
+        tr2 = make_tracker(tmp_path, t2)
+        tr2.on_send()
+        t2[0] = 1.0
+        tr2.on_output(b'\x1b[?25lworking...')
+        t2[0] = 1.0 + SAFETY_SILENCE_TIMEOUT + 5.0
+        assert tr2.get_state(
+            pty_alive=True, has_pending_input=True) == 'running'
+
+    def test_hook_idle_not_gated_by_composing(
+        self, tmp_path: Path,
+    ) -> None:
+        """Authoritative idle (the Stop-hook signal) must still idle even while
+        the user composes — only the heuristic fallbacks are gated."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        write_signal(tracker, 'idle')
+        assert tracker.get_state(
+            pty_alive=True, has_pending_input=True) == 'idle'
+
+    def test_is_ready_false_while_composing(
+        self, tmp_path: Path,
+    ) -> None:
+        """is_ready (the auto-sender readiness check) must forward the
+        composing gate, so a queued message isn't dispatched into a half-typed
+        prompt — a cursor+silence state that would be 'ready' otherwise."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tracker, 'output...')
+        t[0] = 7.0
+        assert tracker.is_ready(pty_alive=True, has_pending_input=False) is True
+        t2 = [0.0]
+        tr2 = make_tracker(tmp_path, t2)
+        tr2.on_send()
+        t2[0] = 1.0
+        feed_with_visible_cursor(tr2, 'output...')
+        t2[0] = 7.0
+        assert tr2.is_ready(pty_alive=True, has_pending_input=True) is False
+
     def test_cursor_visible_during_streaming_stays_running(
         self, tmp_path: Path,
     ) -> None:
