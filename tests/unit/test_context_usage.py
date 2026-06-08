@@ -19,8 +19,8 @@ from leap.utils.context_usage import (
     claude_context_usage,
     codex_context_usage,
     context_window_for_model,
-    copilot_context_usage,
     gemini_context_usage,
+    statusline_context_usage,
 )
 from leap.utils.resume_store import record_session
 
@@ -513,29 +513,29 @@ class TestGeminiContextUsage:
 # Copilot: status-line state file reader
 # --------------------------------------------------------------------------
 
-class TestCopilotReader:
+class TestStatuslineReader:
     def test_reads_state_file(self, tmp_path):
         f = tmp_path / 'tag.context'
         f.write_text(json.dumps({'used_tokens': 50_000, 'window': 200_000,
                                  'model': 'gpt-5.5'}))
-        u = copilot_context_usage(str(f))
+        u = statusline_context_usage(str(f))
         assert u is not None and u.used_tokens == 50_000 and u.percent == 25
 
     def test_missing_file_returns_none(self, tmp_path):
-        assert copilot_context_usage(str(tmp_path / 'nope.context')) is None
+        assert statusline_context_usage(str(tmp_path / 'nope.context')) is None
 
     def test_empty_path_returns_none(self):
-        assert copilot_context_usage('') is None
+        assert statusline_context_usage('') is None
 
     def test_corrupt_json_returns_none(self, tmp_path):
         f = tmp_path / 'bad.context'
         f.write_text('{ not json')
-        assert copilot_context_usage(str(f)) is None
+        assert statusline_context_usage(str(f)) is None
 
     def test_no_window_returns_none(self, tmp_path):
         f = tmp_path / 'now.context'
         f.write_text(json.dumps({'used_tokens': 100}))  # no window
-        assert copilot_context_usage(str(f)) is None
+        assert statusline_context_usage(str(f)) is None
 
 
 # --------------------------------------------------------------------------
@@ -561,6 +561,36 @@ class TestProviderContextUsage:
     def test_copilot_missing_state_file_returns_none(self, tmp_path):
         (tmp_path / 'sockets').mkdir()
         assert get_provider('copilot').context_usage('copilot', 'nope', tmp_path) is None
+
+    def test_claude_prefers_statusline_file_over_transcript(self, tmp_path):
+        # When a .context file exists it is used and the transcript is ignored.
+        (tmp_path / 'sockets').mkdir()
+        (tmp_path / 'sockets' / 'tg.context').write_text(json.dumps(
+            {'used_tokens': 135_000, 'window': 1_000_000, 'model': 'claude-opus-4-8'}))
+        # Also record a transcript with a different token count.
+        transcript = tmp_path / 't.jsonl'
+        _write_jsonl(transcript, [
+            _assistant('claude-opus-4-8', inp=10_000, cache_create=0, cache_read=0),
+        ])
+        record_session(tmp_path, 'claude', 'tg',
+                       session_id='s', transcript_path=str(transcript))
+        u = get_provider('claude').context_usage('claude', 'tg', tmp_path)
+        assert u is not None
+        assert u.used_tokens == 135_000   # from the file, not 10_000 from transcript
+        assert u.window == 1_000_000      # authoritative 1M from status line
+
+    def test_claude_falls_back_to_transcript_when_no_context_file(self, tmp_path):
+        # No .context file -> transcript heuristic is used.
+        (tmp_path / 'sockets').mkdir()  # dir exists but no .context file
+        transcript = tmp_path / 't.jsonl'
+        _write_jsonl(transcript, [
+            _assistant('claude-opus-4-8', inp=50_000, cache_create=0, cache_read=0),
+        ])
+        record_session(tmp_path, 'claude', 'tg',
+                       session_id='s', transcript_path=str(transcript))
+        u = get_provider('claude').context_usage('claude', 'tg', tmp_path)
+        assert u is not None
+        assert u.used_tokens == 50_000   # from transcript
 
     def test_claude_provider_resolves_recorded_transcript(self, tmp_path):
         # Record a claude session pointing at a synthetic transcript, then ask

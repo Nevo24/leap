@@ -67,6 +67,18 @@ def _install_and_configure(provider_name: str, source_hook: str) -> bool:
             shutil.copy2(statusline_source, statusline_dest)
             os.chmod(str(statusline_dest), 0o755)
 
+    # Claude exposes the resolved context window (1M vs 200K) only via a
+    # status line.  Install that script alongside the hook so
+    # ``ClaudeProvider.configure_hooks`` can register it in settings.json;
+    # it is an optional enhancement (not gated by ``hooks_installed``).
+    if provider_name == "claude":
+        statusline_source = Path(source_hook).with_name(
+            "leap-claude-statusline.py")
+        if statusline_source.is_file():
+            statusline_dest = hook_dir / "leap-claude-statusline.py"
+            shutil.copy2(statusline_source, statusline_dest)
+            os.chmod(str(statusline_dest), 0o755)
+
     provider.configure_hooks(str(dest))
     return True
 

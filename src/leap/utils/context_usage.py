@@ -19,8 +19,10 @@ Per-CLI support:
               receives the live context numbers on stdin every render.  Leap
               installs a status-line script (``leap-copilot-statusline.py``)
               that writes ``<storage>/sockets/<tag>.context`` (JSON:
-              ``{used_tokens, window, model}``); ``copilot_context_usage``
-              reads that file.
+              ``{used_tokens, window, model}``); ``statusline_context_usage``
+              reads that file.  Claude also writes the same file via its own
+              status-line script and prefers it over the transcript (it is the
+              only place Claude exposes the resolved 1M-vs-200K window).
   - Cursor  : NOT supported - the CLI exposes no token usage at all and chats
               live in an undocumented content-addressed SQLite blob store
               (no transcript_path recorded).  Renders N/A.
@@ -379,13 +381,13 @@ def gemini_context_usage(transcript_path: str) -> Optional[ContextUsage]:
     return _context_usage(transcript_path, _gemini_usage_from_tail)
 
 
-def copilot_context_usage(state_path: str) -> Optional[ContextUsage]:
-    """Context usage from the Copilot status-line state file, or None.
+def statusline_context_usage(state_path: str) -> Optional[ContextUsage]:
+    """Context usage from a status-line state file, or None.
 
-    Unlike the transcript CLIs, Copilot's usage is written by Leap's status-line
-    script as a small JSON file (``{used_tokens, window, model}``) rather than
-    parsed from a CLI transcript.  Cached on the file's (mtime, size) like the
-    transcript path.
+    Both Copilot (always) and Claude (preferred over its transcript) get their
+    context usage from a small JSON file (``{used_tokens, window, model}``) that
+    Leap's status-line script writes, rather than from a CLI transcript.  Cached
+    on the file's (mtime, size) like the transcript path.
     """
     if not state_path:
         return None

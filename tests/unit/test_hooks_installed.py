@@ -520,3 +520,115 @@ def test_cursor_configure_hooks_survives_non_dict_hooks_value(
     ))
     provider.configure_hooks(str(dest))  # must not raise
     assert provider.hooks_installed() is True
+
+
+# --------------------------------------------------------------------------
+# Claude statusLine registration in configure_hooks
+# --------------------------------------------------------------------------
+
+_CLAUDE_STATUSLINE_SCRIPT = (
+    Path(__file__).resolve().parents[2]
+    / "src" / "scripts" / "leap-claude-statusline.py"
+)
+
+
+def _prep_claude_statusline(provider: ClaudeProvider, isolated_home: Path) -> Path:
+    """Copy leap-hook.sh AND leap-claude-statusline.py into hook_config_dir."""
+    dest = _install_hook_script(provider, isolated_home)
+    sl_dest = provider.hook_config_dir / "leap-claude-statusline.py"
+    sl_dest.write_bytes(_CLAUDE_STATUSLINE_SCRIPT.read_bytes())
+    return dest
+
+
+def test_claude_configure_hooks_installs_statusline(isolated_home: Path) -> None:
+    """configure_hooks registers leap-claude-statusline.py as the statusLine."""
+    provider = ClaudeProvider()
+    dest = _prep_claude_statusline(provider, isolated_home)
+    provider.configure_hooks(str(dest))
+
+    settings_path = isolated_home / ".claude" / "settings.json"
+    data = json.loads(settings_path.read_text())
+    sl = data.get("statusLine", {})
+    assert sl.get("type") == "command"
+    assert sl.get("command", "").endswith("leap-claude-statusline.py")
+
+
+def test_claude_configure_hooks_preserves_unrelated_settings(
+    isolated_home: Path,
+) -> None:
+    """configure_hooks must not clobber other keys in settings.json."""
+    provider = ClaudeProvider()
+    dest = _prep_claude_statusline(provider, isolated_home)
+    settings_path = isolated_home / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps({"theme": "dark", "model": "claude-opus-4-8"}))
+    provider.configure_hooks(str(dest))
+
+    data = json.loads(settings_path.read_text())
+    assert data.get("theme") == "dark"
+    assert data.get("model") == "claude-opus-4-8"
+    assert data.get("statusLine", {}).get("command", "").endswith(
+        "leap-claude-statusline.py")
+
+
+def test_claude_configure_hooks_chains_prior_statusline(isolated_home: Path) -> None:
+    """A user's existing statusLine command is saved to leap-statusline-chain."""
+    provider = ClaudeProvider()
+    dest = _prep_claude_statusline(provider, isolated_home)
+    settings_path = isolated_home / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps({
+        "statusLine": {"type": "command", "command": "/my/custom/line.sh"}}))
+    provider.configure_hooks(str(dest))
+
+    data = json.loads(settings_path.read_text())
+    assert data["statusLine"]["command"].endswith("leap-claude-statusline.py")
+    chain = (provider.hook_config_dir / "leap-statusline-chain").read_text()
+    assert chain == "/my/custom/line.sh"
+
+
+def test_claude_configure_hooks_does_not_self_chain(isolated_home: Path) -> None:
+    """Running configure_hooks twice must not chain our own script."""
+    provider = ClaudeProvider()
+    dest = _prep_claude_statusline(provider, isolated_home)
+    provider.configure_hooks(str(dest))
+    provider.configure_hooks(str(dest))  # second run
+
+    assert not (provider.hook_config_dir / "leap-statusline-chain").exists()
+
+
+def test_claude_configure_hooks_no_statusline_script_skips_registration(
+    isolated_home: Path,
+) -> None:
+    """If leap-claude-statusline.py is absent, statusLine is not written."""
+    provider = ClaudeProvider()
+    dest = _install_hook_script(provider, isolated_home)  # only hook, no statusline
+    provider.configure_hooks(str(dest))
+
+    settings_path = isolated_home / ".claude" / "settings.json"
+    data = json.loads(settings_path.read_text())
+    assert "statusLine" not in data
+
+
+def test_claude_configure_hooks_survives_null_settings(isolated_home: Path) -> None:
+    """settings.json containing JSON null must not crash configure_hooks."""
+    provider = ClaudeProvider()
+    dest = _prep_claude_statusline(provider, isolated_home)
+    settings_path = isolated_home / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text("null")
+    provider.configure_hooks(str(dest))  # must not raise
+    assert provider.hooks_installed() is True
+
+
+def test_claude_hooks_installed_unaffected_by_missing_statusline(
+    isolated_home: Path,
+) -> None:
+    """hooks_installed() returns True even when statusLine is absent -
+    the statusLine is optional, not a startup gate."""
+    provider = ClaudeProvider()
+    # Install hooks without the statusline script present
+    dest = _install_hook_script(provider, isolated_home)
+    provider.configure_hooks(str(dest))
+
+    assert provider.hooks_installed() is True

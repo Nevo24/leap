@@ -15,7 +15,11 @@ from typing import Any, Iterator, Optional
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
 from leap.utils.claude_session_move import relocate_claude_session, slugify
-from leap.utils.context_usage import ContextUsage, claude_context_usage
+from leap.utils.context_usage import (
+    ContextUsage,
+    claude_context_usage,
+    statusline_context_usage,
+)
 from leap.utils.cost_usage import CostInfo, claude_session_cost_cached
 from leap.utils.menu import MENU_OPTION_RE
 from leap.utils.resume_store import latest_transcript_for
@@ -505,7 +509,22 @@ class ClaudeProvider(CLIProvider):
 
     def context_usage(self, cli_name: str, tag: str,
                       storage_dir: Path) -> Optional[ContextUsage]:
-        """Context-window usage from the latest assistant turn's usage block."""
+        """Context-window usage, preferring the authoritative status-line value.
+
+        Leap's status line (``leap-claude-statusline.py``) writes the resolved
+        window - ``context_window_size`` (1M vs 200K, as decided by Claude for
+        the plan/env/selection) - to ``<storage>/sockets/<tag>.context`` every
+        render.  We prefer that over parsing the transcript, because the
+        transcript records no window and Leap can only *guess* 1M from a
+        ``[1m]`` suffix that auto-upgraded (Max/Team/Enterprise) sessions never
+        produce.  Falls back to the transcript heuristic when the file is absent
+        (status line not installed / not reconfigured, an older Claude build
+        that omits ``context_window``, or before the first render).
+        """
+        state = storage_dir / 'sockets' / f'{tag}.context'
+        usage = statusline_context_usage(str(state))
+        if usage is not None:
+            return usage
         transcript = latest_transcript_for(storage_dir, cli_name, tag)
         return claude_context_usage(transcript) if transcript else None
 
@@ -1117,7 +1136,9 @@ class ClaudeProvider(CLIProvider):
         if settings_path.exists():
             try:
                 with open(settings_path, "r") as f:
-                    settings = json.load(f)
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    settings = loaded
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -1211,6 +1232,32 @@ class ClaudeProvider(CLIProvider):
             make_entry("idle", matcher="resume"),
         ])
 
+        # Status line: the only place Claude exposes the resolved context
+        # window (1M vs 200K).  Register Leap's capture-only status-line
+        # script so the monitor reads the true window instead of guessing
+        # from a ``[1m]`` suffix (which auto-upgraded plans never produce).
+        # Optional enhancement: best-effort, NOT verified by
+        # ``hooks_installed`` (so a missing/failed status line never blocks
+        # session startup).  Claude allows only one ``statusLine``, so any the
+        # user already had is preserved by chaining to it via
+        # ``leap-statusline-chain`` (never chain to our own script).
+        statusline = Path(hook_script_path).with_name("leap-claude-statusline.py")
+        if statusline.is_file():
+            existing = settings.get("statusLine")
+            existing_cmd = (existing.get("command")
+                            if isinstance(existing, dict) else None)
+            if (isinstance(existing_cmd, str) and existing_cmd.strip()
+                    and "leap-claude-statusline" not in existing_cmd):
+                try:
+                    statusline.with_name("leap-statusline-chain").write_text(
+                        existing_cmd)
+                except OSError:
+                    pass
+            settings["statusLine"] = {
+                "type": "command",
+                "command": str(statusline),
+            }
+
         atomic_write_json(settings_path, settings)
 
     def hooks_installed(self) -> bool:
@@ -1251,16 +1298,30 @@ class ClaudeProvider(CLIProvider):
             return False
 
     def deconfigure_hooks(self) -> None:
-        """Remove Leap's hook entries from ~/.claude/settings.json."""
+        """Remove Leap's hook entries and status line from ~/.claude/settings.json.
+
+        Restores the user's prior status-line command from ``leap-statusline-chain``
+        if one was saved at install time, else drops the ``statusLine`` key if it
+        was ours.  Then removes the chain file and the status-line script.  All
+        best-effort; never raises.
+        """
         try:
+            chain_file = self.hook_config_dir / "leap-statusline-chain"
+            prior_cmd: Optional[str] = None
+            if chain_file.is_file():
+                try:
+                    prior_cmd = chain_file.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    pass
+
             settings_path = Path.home() / ".claude" / "settings.json"
             if settings_path.is_file():
                 with open(settings_path) as f:
                     settings = json.load(f)
+                changed = False
                 hooks = settings.get("hooks") if isinstance(settings, dict) else None
                 if isinstance(hooks, dict):
                     _MARKERS = ("leap-hook.sh", "claudeq-hook.sh")
-                    changed = False
                     for event in list(hooks.keys()):
                         entries = hooks.get(event)
                         if not isinstance(entries, list):
@@ -1282,10 +1343,29 @@ class ClaudeProvider(CLIProvider):
                             else:
                                 del hooks[event]
                             changed = True
-                    if changed:
-                        if not hooks:
-                            settings.pop("hooks", None)
-                        atomic_write_json(settings_path, settings)
+                    if changed and not hooks:
+                        settings.pop("hooks", None)
+                # Status line: restore the chained prior one, else drop ours.
+                if isinstance(settings, dict):
+                    existing = settings.get("statusLine")
+                    existing_cmd = (existing.get("command")
+                                    if isinstance(existing, dict) else None)
+                    if (isinstance(existing_cmd, str)
+                            and "leap-claude-statusline" in existing_cmd):
+                        if prior_cmd:
+                            settings["statusLine"] = {
+                                "type": "command", "command": prior_cmd}
+                        else:
+                            settings.pop("statusLine", None)
+                        changed = True
+                if changed:
+                    atomic_write_json(settings_path, settings)
+
+            for name in ("leap-statusline-chain", "leap-claude-statusline.py"):
+                try:
+                    (self.hook_config_dir / name).unlink(missing_ok=True)
+                except OSError:
+                    pass
         except Exception:
             pass
         super().deconfigure_hooks()

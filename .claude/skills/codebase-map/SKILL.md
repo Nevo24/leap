@@ -29,6 +29,7 @@ src/
 │   ├── configure_claude_hooks.py    # Legacy Claude hook config
 │   ├── configure_codex_hooks.py     # Legacy Codex hook config
 │   ├── leap-hook.sh             # CLI hook script (writes state to signal file)
+│   ├── leap-claude-statusline.py   # Claude status line: capture-only, writes <tag>.context with the authoritative 1M/200K window (chains any existing status line; silent when none)
 │   └── leap-copilot-statusline.py  # Copilot status line: writes <tag>.context for the monitor Context column (chains any existing status line)
 │
 └── leap/                     # Main Python package
@@ -52,7 +53,7 @@ src/
     │   ├── line_buffer.py       # Cursor-aware line editing buffer (raw-terminal prompts)
     │   ├── menu.py              # Numbered-menu parser (extract_menu_options, shared by server + monitor)
     │   ├── socket_utils.py      # Shared Unix socket send/recv helper
-    │   ├── context_usage.py     # Per-CLI context-window % from transcript usage (monitor Context column; Claude/Codex/Gemini parsers)
+    │   ├── context_usage.py     # Per-CLI context-window % (monitor Context column). Claude/Codex/Gemini: transcript parsers. Claude+Copilot: statusline_context_usage() reads <tag>.context written by the status-line script (authoritative window source; Claude prefers this over transcript)
     │   ├── cost_usage.py        # Per-CLI cumulative token + USD estimate feeding the Context-cell tooltip's "Last message"/"Full session" lines. Claude: walk + dedup split-line entries, incremental accumulator. Codex: read the latest token_count's cumulative total_token_usage (no walk). Gemini: walk the chat file summing per-turn tokens. Generic non-blocking cached wrapper (background pool) for the GUI thread. Copilot/Cursor: no cost (no usable data)
     │   ├── pricing.py           # Data-driven model pricing (NOT hardcoded): loads vendored assets/model_prices.json (trim of LiteLLM to claude-/gpt-/o*/gemini- ids), background-refreshes it into .storage/model_prices.json, overlays cache>vendored. ModelPricing.rate() applies the data-driven long-context tier (_above_<N>k_tokens; 200k/272k). price_for() / cost_usd() (per-token, all token classes incl. reasoning) / format_usd() / trim_models() / ensure_fresh_prices()
     │   ├── resume_store.py      # Read/write/prune of cli_sessions/<cli>/<tag>.json (used by hook + picker; + latest_transcript_for)

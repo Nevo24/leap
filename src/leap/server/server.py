@@ -113,6 +113,17 @@ class LeapServer:
             except OSError:
                 pass
 
+        # Remove stale context file from a previous session with the same tag
+        # so the monitor never briefly shows an old window/usage before the
+        # status line fires for the first time.  Applies to both Claude and
+        # Copilot (any CLI that writes <tag>.context via its status line).
+        _context_file = SOCKET_DIR / f"{tag}.context"
+        if _context_file.exists():
+            try:
+                _context_file.unlink()
+            except OSError:
+                pass
+
         # Initialize components
         self.pty = PTYHandler(
             flags, tag=tag, signal_dir=SOCKET_DIR,

@@ -47,7 +47,7 @@ from typing import Any, Optional
 
 from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
-from leap.utils.context_usage import ContextUsage, copilot_context_usage
+from leap.utils.context_usage import ContextUsage, statusline_context_usage
 
 
 COPILOT_CONFIG_DIR: Path = Path.home() / ".copilot"
@@ -363,7 +363,7 @@ class CopilotProvider(CLIProvider):
         status line isn't installed (run ``leap --reconfigure``).
         """
         state = storage_dir / 'sockets' / f'{tag}.context'
-        return copilot_context_usage(str(state))
+        return statusline_context_usage(str(state))
 
     # -- CLI-specific input behaviors ------------------------------------
 
