@@ -254,6 +254,18 @@ class MonitorWindow(
     COL_PR = 14
     COL_PR_BRANCH = 15
 
+    # Floor for a *restorable* saved window size.  A saved geometry smaller
+    # than this in either dimension is treated as corrupt and ignored in
+    # favor of the default (centered) size.  This guards against a stale
+    # ~500x500 value that older builds left in ``window_geometry`` via Qt's
+    # ``normalGeometry()`` (unreliable for a window only ever used maximized),
+    # which the current NSWindow-frame restore would otherwise apply verbatim
+    # and reopen the monitor as a tiny window.  The width floor alone catches
+    # that 500x500 case; the (lower) height floor is just a backstop for other
+    # degenerate shapes, kept small so a deliberately short window survives.
+    _MIN_RESTORE_WIDTH = 700
+    _MIN_RESTORE_HEIGHT = 300
+
     _HEADER_LABELS = [
         '', 'Tag', 'CLI', 'App', 'Project', 'Server', 'Last Msg', 'Context',
         'Path', 'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR',
@@ -547,7 +559,7 @@ class MonitorWindow(
 
         # Restore saved window geometry or center on screen
         saved_geom = self._prefs.get('window_geometry')
-        if saved_geom and len(saved_geom) == 4:
+        if self._is_restorable_geometry(saved_geom):
             # Validate the saved position is on a visible screen
             center = QPoint(saved_geom[0] + saved_geom[2] // 2,
                             saved_geom[1] + saved_geom[3] // 2)
@@ -1386,7 +1398,7 @@ class MonitorWindow(
                 # Guard with screenAt so a window saved on an external monitor
                 # that is no longer connected is not restored offscreen.
                 saved_geom = self._prefs.get('window_geometry')
-                if self._prefs.get('window_geometry_ns_frame') and saved_geom and len(saved_geom) == 4:
+                if self._prefs.get('window_geometry_ns_frame') and self._is_restorable_geometry(saved_geom):
                     qt_x, qt_y, w, h = saved_geom
                     center = QPoint(qt_x + w // 2, qt_y + h // 2)
                     if QApplication.screenAt(center) is not None:
@@ -1769,6 +1781,34 @@ class MonitorWindow(
         icon_path = find_icon()
         if icon_path:
             self.setWindowIcon(QIcon(str(icon_path)))
+
+    def _is_restorable_geometry(self, saved_geom: Optional[Any]) -> bool:
+        """True if ``saved_geom`` is a usable ``[x, y, w, h]`` window rect.
+
+        Rejects malformed values and degenerate sizes (see
+        ``_MIN_RESTORE_WIDTH`` / ``_MIN_RESTORE_HEIGHT``).  Both restore
+        sites (``_init_ui`` and ``_apply_window_effects``) gate on this so a
+        corrupt geometry never shrinks the window on either path.  Must be
+        total: ``_init_ui`` calls it outside any try/except, so a hand-edited
+        or corrupt prefs file (non-numeric or non-sequence value) must yield
+        ``False`` rather than raise and abort startup.
+        """
+        try:
+            if not saved_geom or len(saved_geom) != 4:
+                return False
+        except TypeError:
+            return False  # not a sized / indexable sequence
+        # int only, ALL FOUR fields: ``_init_ui`` consumes x, y, w and h
+        # (``saved_geom[0] + saved_geom[2] // 2`` and ``setGeometry(*saved_geom)``)
+        # and runs outside any try/except.  ``setGeometry`` / ``QPoint`` reject
+        # floats with a TypeError, and string concatenation on a non-int coord
+        # raises too - so any non-int field (only reachable via a corrupt /
+        # hand-edited prefs file; our own writes are always int) must be
+        # rejected here rather than crash startup.  ``bool`` is an ``int``
+        # subclass but the size floor below harmlessly rejects it.
+        if not all(isinstance(v, int) for v in saved_geom):
+            return False
+        return saved_geom[2] >= self._MIN_RESTORE_WIDTH and saved_geom[3] >= self._MIN_RESTORE_HEIGHT
 
     def _center_on_screen(self) -> None:
         """Resize to default dimensions and center on screen."""
