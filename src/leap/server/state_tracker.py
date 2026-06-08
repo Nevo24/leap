@@ -2120,9 +2120,36 @@ class CLIStateTracker:
                 # border, both make is_idle_prompt_visible False while the
                 # input box's own ❯ trips has_selection_cursor).  Past the
                 # cap, fall through so the idle fallback recovers.
+                # The positive dialog signal MUST stay consistent with the
+                # ↑/↓ input filter's ``screen_has_active_dialog()`` gate: if
+                # the arrow gate would pass arrows through to the dialog, this
+                # guard must NOT reset the screen out from under it.  The two
+                # disagreed on tall pickers/dialogs (the "arrows dead on a
+                # many-option question" report): with many options the focused
+                # ``❯`` cursor scrolls ABOVE the ``has_selection_cursor`` tail
+                # window and the footer (e.g. ``Enter to confirm · Esc to
+                # cancel``) sits one row ABOVE the ``╰──╯`` bottom border, so
+                # ``has_interactive_footer`` (last row only) misses it too -
+                # both False here, the screen gets reset, and the next arrow
+                # then reads "no dialog" and is stolen for history recall.
+                # ``screen_shows_selection_dialog_strict`` mirrors the generic
+                # detector the arrow gate uses (numbered cursor OR a real
+                # footer line), but is the PROSE-PROOF variant: it drops the
+                # lenient "short single-hint line" footer clause and scans the
+                # whole screen for the numbered ``❯ N.`` cursor.  That keeps
+                # this guard in sync with the arrow gate for tall dialogs
+                # (cursor scrolled above the bottom rows) WITHOUT holding
+                # RUNNING on a hookless response that merely ends in a short
+                # affordance line like ``- Press Enter to confirm``.  It is a
+                # precise dialog signal (the idle box's own ``❯`` is not a
+                # numbered ``❯ 1.`` cursor), so it does not reintroduce the
+                # wedge the cap protects against; the cap still bounds it.
+                _ui_sel = self._provider.has_selection_cursor(filled)
+                _ui_foot = self._provider.has_interactive_footer(filled)
+                _ui_dlg = self._provider.screen_shows_selection_dialog_strict(
+                    filled)
                 if (not self._provider.is_idle_prompt_visible(filled)
-                        and (self._provider.has_selection_cursor(filled)
-                             or self._provider.has_interactive_footer(filled))
+                        and (_ui_sel or _ui_foot or _ui_dlg)
                         and (self._clock() - silence_baseline)
                         <= self._heuristic_hold_cap()):
                     _log.debug(

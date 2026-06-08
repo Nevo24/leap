@@ -287,6 +287,72 @@ class CLIProvider(ABC):
                 return True
         return False
 
+    def screen_shows_selection_dialog_strict(
+        self, display_lines: list[str],
+    ) -> bool:
+        """Prose-proof variant of :meth:`screen_shows_selection_dialog` for
+        use in STATE TRANSITIONS (the running→idle interactive-UI hold),
+        where a false positive is NOT cheap: it would wrongly keep the
+        session RUNNING (and suppress the idle notification) for up to the
+        safety-silence cap.
+
+        Two differences from the lenient version, both to reject ordinary
+        response prose that merely mentions a keyboard affordance:
+
+        * The footer leg drops the "short single-hint line" clause.  A
+          response line like ``- Press Enter to confirm`` (≤40 chars, one
+          hint, no separator) is prose, not a dialog footer; a real Claude
+          dialog footer puts the affordances on ONE line with a ``·``/``•``
+          separator (``Enter to confirm · Esc to cancel``) or carries ≥2
+          hints, so it is still matched.
+        * The numbered-cursor leg scans the WHOLE screen, not just the
+          bottom rows.  A tall many-option dialog renders its focused
+          ``❯ N.`` cursor on an option that has scrolled ABOVE the bottom
+          window, yet the dialog is unmistakably live.  The numbered cursor
+          glyph (``❯``/``›``/``▶``/``▸`` immediately before ``N.``/``N)``) is
+          an Ink render artifact that does not occur in response prose, so a
+          full-screen scan stays prose-proof.
+
+        Used by the cursor+silence ``running→idle`` guard so it agrees with
+        the ↑/↓ ``screen_has_active_dialog()`` gate for tall pickers/dialogs
+        WITHOUT the lenient leg's prose false-positives.
+        """
+        if not display_lines:
+            return False
+        if self.screen_shows_numbered_selection_cursor(display_lines):
+            return True
+        # A footer line that LOOKS like a footer (≥2 hints or a separator),
+        # not a prose sentence quoting a single affordance.
+        for row in display_lines[-_SELECTION_DIALOG_TAIL_ROWS:]:
+            stripped = row.strip()
+            compact = stripped.replace(' ', '').lower()
+            hits = sum(tok in compact for tok in _SELECTION_DIALOG_FOOTER_TOKENS)
+            if hits >= 2 or any(
+                    sep in stripped for sep in _SELECTION_DIALOG_SEPARATORS):
+                return True
+        return False
+
+    def screen_shows_numbered_selection_cursor(
+        self, display_lines: list[str],
+    ) -> bool:
+        """True iff a numbered selection cursor (``❯``/``›``/``▶``/``▸``
+        immediately before ``N.`` / ``N)``) appears ANYWHERE on screen.
+
+        This glyph-before-a-number is an Ink render artifact of a live
+        menu/picker/question dialog; it does NOT occur in ordinary response
+        prose (verified empirically against captured sessions - the only
+        non-option-row occurrences are the trust dialog's own option list).
+        That makes it a PROSE-PROOF, high-confidence "a selectable dialog is
+        open" signal, safe to drive a state transition off.
+
+        Scans the whole screen (not just the bottom rows) on purpose: a tall
+        many-option question renders its focused ``❯ N.`` cursor on an option
+        that has scrolled ABOVE the bottom window while the dialog is still
+        very much open.  Used to PROMOTE such a dialog to a waiting state so
+        ↑/↓ keep reaching it indefinitely (no idle-timeout cap).
+        """
+        return any(_SELECTION_CURSOR_RE.search(row) for row in display_lines)
+
     @property
     def valid_signal_states(self) -> frozenset[str]:
         """States that can appear in the hook signal file."""

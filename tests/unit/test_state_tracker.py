@@ -972,6 +972,96 @@ class TestSafetyTimeouts:
         t[0] = 1.0 + SAFETY_SILENCE_TIMEOUT + 5.0
         assert tr.get_state(pty_alive=True) == 'idle'
 
+    def test_many_option_dialog_not_reset_so_arrows_stay_navigable(
+        self, tmp_path: Path,
+    ) -> None:
+        """A tall AskUserQuestion / picker with MANY options must NOT be
+        idled+reset by the cursor+silence fallback - otherwise the blanked
+        screen makes screen_has_active_dialog() read 'no dialog' and the
+        next ↑/↓ is stolen for history recall ("arrows dead on a many-option
+        question, forced to type the number").
+
+        The shape that broke: the focused ``❯ 1.`` cursor sits on a TOP
+        option that has scrolled above the has_selection_cursor tail window,
+        and the footer sits one row ABOVE the ``╰──╯`` bottom border, so
+        has_interactive_footer (last row only) misses it too.  When
+        is_dialog_certain ALSO misses (e.g. a footer that isn't the strict
+        ``Enter to select`` form), both legacy positive signals are False and
+        the cursor+silence fallback used to idle+reset the live UI - then
+        screen_has_active_dialog() read the blanked screen as 'no dialog' and
+        the next ↑/↓ was stolen for history recall.  The guard now uses the
+        SAME prose-proof detector the ↑/↓ gate trusts (numbered cursor /
+        real footer), so it holds RUNNING and the two stay consistent.
+        """
+        dialog = (
+            '⏺ I have a question for you.\r\n'
+            '╭────────────────────────────────────────────────╮\r\n'
+            '│ Which file should I start with?                  │\r\n'
+            '│ ❯ 1. server.py                                   │\r\n'
+            '│   2. state_tracker.py                            │\r\n'
+            '│   3. claude.py                                   │\r\n'
+            '│   4. codex.py                                    │\r\n'
+            '│   5. gemini.py                                   │\r\n'
+            '│   6. cursor_agent.py                             │\r\n'
+            '│   7. base.py                                     │\r\n'
+            '│   8. registry.py                                 │\r\n'
+            '│   9. client.py                                   │\r\n'
+            '│   10. monitor_app.py                             │\r\n'
+            '│   Enter to confirm · Esc to cancel               │\r\n'
+            '╰────────────────────────────────────────────────╯'
+        )
+        t = [0.0]
+        tr = make_tracker(tmp_path, t)
+        tr.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tr, dialog)
+        filled = [ln for ln in tr._get_display_lines() if ln.strip()]
+        # The exact failing shape: both legacy positive signals miss it, and
+        # is_dialog_certain misses it (this synthetic footer is "Enter to
+        # confirm", and the ❯1. cursor scrolled out of the last 5 rows).  Only
+        # the prose-proof strict detector (== the ↑/↓ gate) still sees it.
+        assert not tr._provider.has_selection_cursor(filled)
+        assert not tr._provider.has_interactive_footer(filled)
+        assert not tr._provider.is_dialog_certain(
+            ''.join(filled[-5:]).replace(' ', ''))
+        assert tr._provider.screen_shows_selection_dialog_strict(filled)
+        # Past the 5s cursor+silence window: the guard holds RUNNING (screen
+        # NOT reset) and the ↑/↓ gate keeps returning True, so arrows survive.
+        t[0] = 7.0
+        assert tr.get_state(pty_alive=True) == 'running'
+        assert tr.screen_has_active_dialog()
+        # Still capped: a genuinely abandoned screen recovers after the cap.
+        t[0] = 1.0 + SAFETY_SILENCE_TIMEOUT + 5.0
+        assert tr.get_state(pty_alive=True) == 'idle'
+
+    def test_prose_affordance_line_still_idles_not_held_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """A hookless response that merely ENDS with a short keyboard-
+        affordance line (e.g. ``- Press Enter to confirm``) must still idle -
+        it is prose, not a dialog.  The interactive-UI hold uses the
+        PROSE-PROOF strict detector, which (unlike the lenient ↑/↓-gate
+        variant) rejects a short single-hint line: it requires a numbered
+        ``❯ N.`` cursor or a real ``·``-separated / ≥2-hint footer.  Guards
+        against the strict-fix regressing into a false 'still running'.
+        """
+        prose = (
+            'Here is what I found in the code:\r\n'
+            'The handler resets the screen on the silence path.\r\n'
+            '- Press Esc to cancel the current operation\r\n'
+            '- Press Enter to confirm\r\n'
+            'Let me know if you want me to dig further.'
+        )
+        t = [0.0]
+        tr = make_tracker(tmp_path, t)
+        tr.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tr, prose)
+        filled = [ln for ln in tr._get_display_lines() if ln.strip()]
+        assert not tr._provider.screen_shows_selection_dialog_strict(filled)
+        t[0] = 8.0
+        assert tr.get_state(pty_alive=True) == 'idle'
+
     def test_codex_interrupted_recovers_via_safety_timeout(
         self, tmp_path: Path,
     ) -> None:
