@@ -39,6 +39,25 @@ if TYPE_CHECKING:
 
 from leap.cli_providers.states import SIGNAL_ALIASES, SIGNAL_STATES
 
+# Generic selection-dialog detection (see CLIProvider.screen_shows_selection_dialog).
+# Nav-hint tokens matched on the compacted (spaces-removed, lowercased) rows;
+# they catch "Esc to cancel", "Press enter to confirm or esc to go back",
+# "↑/↓ to navigate · enter to select · esc to cancel", etc.
+_SELECTION_DIALOG_TAIL_ROWS = 8
+_SELECTION_DIALOG_FOOTER_TOKENS = (
+    'esctocancel', 'esctogoback', 'entertoconfirm', 'entertoselect',
+    'tonavigate', '↑/↓', '↑↓',
+)
+# Footer-style separators that mark a hint-dense footer line (vs. prose).
+_SELECTION_DIALOG_SEPARATORS = ('·', '•', '⋅')
+# A single-hint row is treated as a footer only if it's short (just the hint),
+# not a long prose sentence that happens to quote the phrase.
+_SELECTION_DIALOG_FOOTER_MAX_LEN = 40
+# A selection cursor on a numbered option: "› 1.", "❯ 2)", "▶ 3.". A bare
+# cursor is excluded (it appears in idle input prompts). Glyph-independent
+# footer detection (below) covers pickers whose cursor isn't one of these.
+_SELECTION_CURSOR_RE = re.compile(r'[›❯▸▶]\s*\d+[.)]')
+
 
 class CLIProvider(ABC):
     """Abstract interface for a CLI backend."""
@@ -216,6 +235,56 @@ class CLIProvider(ABC):
         by providers with such footers (Claude).
         """
         del display_lines
+        return False
+
+    def screen_shows_selection_dialog(self, display_lines: list[str]) -> bool:
+        """True iff the bottom of the screen looks like an arrow-navigable
+        selection dialog/picker (permission prompt, trust dialog, model/theme
+        picker, …) that should receive ↑/↓ rather than Leap's history recall.
+
+        Generic, CLI-agnostic detector used ONLY by
+        ``CLIStateTracker.screen_has_active_dialog`` (the ↑/↓ input filter), so
+        a false positive is cheap: the arrow simply reaches the CLI's native
+        handling instead of driving Leap recall.  It catches pickers whose
+        footers aren't in a provider's ``dialog_patterns`` (e.g. Codex, whose
+        ``dialog_patterns`` is empty, and Gemini/Cursor non-permission pickers),
+        without each provider enumerating every footer.
+
+        Signals, scoped to the last few non-blank rows:
+        * a selection cursor on a numbered option (``› 1.`` / ``❯ 2)`` /
+          ``▶ 3.``) — the strongest standalone signal (real Codex dialogs
+          render this), or
+        * a dialog **footer line** carrying a confirm/cancel/navigate hint
+          (``esc to cancel`` / ``enter to confirm`` / ``to navigate`` / ``↑/↓``
+          …) that *looks like a footer* rather than prose quoting the phrase:
+          it has ≥2 distinct hints, or a footer separator (``·`` / ``•``), or
+          is a short hint-only line.
+
+        The footer check is **cursor-glyph independent**, so it catches pickers
+        whose selection marker isn't one of the cursor glyphs above (Gemini /
+        Cursor pickers, future CLIs). The "looks like a footer" gate is what
+        keeps a long response sentence that merely mentions "esc to cancel"
+        from matching. This method is used only by the ↑/↓ input filter, so a
+        false positive is cheap (the arrow just reaches the CLI's native
+        handling).
+        """
+        if not display_lines:
+            return False
+        tail = display_lines[-_SELECTION_DIALOG_TAIL_ROWS:]
+        # Per-row (not on the joined string) so a row ending in `›` followed by
+        # a row starting `1.` can't cross-match into a phantom `› 1.` cursor.
+        if any(_SELECTION_CURSOR_RE.search(row) for row in tail):
+            return True
+        for row in tail:
+            stripped = row.strip()
+            compact = stripped.replace(' ', '').lower()
+            hits = sum(tok in compact for tok in _SELECTION_DIALOG_FOOTER_TOKENS)
+            if hits == 0:
+                continue
+            if (hits >= 2
+                    or any(sep in stripped for sep in _SELECTION_DIALOG_SEPARATORS)
+                    or len(stripped) <= _SELECTION_DIALOG_FOOTER_MAX_LEN):
+                return True
         return False
 
     @property
@@ -853,9 +922,15 @@ class CLIProvider(ABC):
         cwd: str,
         tag: str,
         storage_dir: Optional[Path],
+        cli_name: str = '',
     ) -> str:
         """Best-effort: return the user's most recent prompt as the CLI
         recorded it (transcript or equivalent).
+
+        ``cli_name`` is the recorded CLI/provider key (the ``cli_sessions``
+        subdir), so a *custom* CLI built atop a base provider resolves its own
+        transcript dir rather than the base's.  Defaults to ``''`` for
+        backward compatibility; implementers fall back to ``self.name``.
 
         Used by the monitor's "Last Msg" column to surface prompts that
         bypassed Leap's PTY input path — most importantly Claude Code's

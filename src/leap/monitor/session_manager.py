@@ -278,6 +278,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
                     cwd=project_path or '',
                     tag=tag,
                     storage_dir=SOCKET_DIR.parent,
+                    cli_name=cli_provider,
                 )
             except Exception:
                 transcript_prompt = ''

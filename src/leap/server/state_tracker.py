@@ -2309,7 +2309,17 @@ class CLIStateTracker:
         ``/config``, ``/effort``, ``/model``, …) fire no hook at all
         and leave state ``RUNNING`` for the entire time they're open.
 
-        Two complementary checks:
+        Three checks, in order:
+
+        0. **Generic selection-dialog** — ``provider.screen_shows_selection_dialog``
+           (CLI-agnostic, base class): a numbered ``›``/``❯`` selection
+           cursor (``› 1.``) or a confirm/cancel/navigate footer
+           accompanied by a cursor.  Checked first and independent of
+           ``dialog_patterns``, so it catches Codex (whose
+           ``dialog_patterns`` is empty) and non-permission pickers in
+           Gemini/Cursor.  Safe to be permissive: this method is used
+           only for the ↑/↓ filter, so a false positive merely lets the
+           arrow reach the CLI's native handling.
 
         1. **Permission-dialog footer** — strict ``is_dialog_certain``
            on the compact form of the last 5 non-blank rows.  Catches
@@ -2317,6 +2327,7 @@ class CLIStateTracker:
            dialog and the ``❯1.`` numbered-menu cursor.  Kept strict
            because the same predicate gates state transitions where
            false positives stick state in ``needs_permission`` for 60 s.
+           Skipped for providers with no ``dialog_patterns``.
 
         2. **Idle prompt absent** — provider's ``is_idle_prompt_visible``
            checks for the standard idle input-box structure at the
@@ -2326,18 +2337,20 @@ class CLIStateTracker:
            match the strict footer, etc.  This is structural so new
            Claude pickers are caught without enumerating their footer
            text.  Providers that don't implement detection inherit the
-           default True (assume idle visible) — their behaviour is
-           determined entirely by check #1, matching the legacy path.
-
-        Returns False for providers with no ``dialog_patterns``
-        (Codex / Cursor today) — they have no PTY-based dialog
-        detection and rely entirely on hook signals.
+           default True (assume idle visible) — for them this leg is a
+           no-op and behaviour comes from checks #0 and #1.
         """
-        if not self._provider.dialog_patterns:
-            return False
         with self._screen_lock:
             all_lines = self._get_display_lines()
         filled = [ln for ln in all_lines if ln.strip()]
+        # Generic selection-dialog detection (footer / numbered cursor), checked
+        # first and independent of dialog_patterns. This is what catches Codex
+        # (empty dialog_patterns) and non-permission pickers in Gemini/Cursor,
+        # so ↑/↓ navigate the dialog instead of being stolen for history recall.
+        if self._provider.screen_shows_selection_dialog(filled):
+            return True
+        if not self._provider.dialog_patterns:
+            return False
         tail_compact = ''.join(filled[-5:]).replace(' ', '')
         if self._provider.is_dialog_certain(tail_compact):
             return True

@@ -492,6 +492,7 @@ class ClaudeProvider(CLIProvider):
         cwd: str,
         tag: str,
         storage_dir: Optional[Path],
+        cli_name: str = '',
     ) -> str:
         """Walk the transcript JSONL for the most recent user-typed prompt.
 
@@ -540,7 +541,8 @@ class ClaudeProvider(CLIProvider):
         # display another row's prompt.  Before the first hook fires,
         # ``recently_sent`` is the right source anyway; degraded for
         # a few seconds beats wrong.
-        transcript = self._latest_recorded_transcript(tag, storage_dir)
+        transcript = self._latest_recorded_transcript(
+            tag, storage_dir, cli_name or 'claude')
         if transcript is None:
             return ''
         try:
@@ -932,9 +934,10 @@ class ClaudeProvider(CLIProvider):
     def _latest_recorded_transcript(
         tag: str,
         storage_dir: Optional[Path],
+        cli: str = 'claude',
     ) -> Optional[Path]:
         """Return the absolute ``transcript_path`` from the newest record
-        in ``cli_sessions/claude/<tag>.json``, if it still exists on disk.
+        in ``cli_sessions/<cli>/<tag>.json``, if it still exists on disk.
 
         Independent of ``cwd`` / slugification, so it's safe to use from
         callers that only have ``project_path`` (a git root) rather than
@@ -955,7 +958,7 @@ class ClaudeProvider(CLIProvider):
         """
         if not tag or storage_dir is None:
             return None
-        tag_file = storage_dir / 'cli_sessions' / 'claude' / f'{tag}.json'
+        tag_file = storage_dir / 'cli_sessions' / cli / f'{tag}.json'
         if not tag_file.is_file():
             return None
         try:

@@ -36,6 +36,11 @@ from leap.utils.resume_store import latest_transcript_for
 
 CODEX_CONFIG_DIR: Path = Path.home() / ".codex"
 CODEX_HOOKS_FILE: Path = CODEX_CONFIG_DIR / "hooks.json"
+
+# Transcript path -> (mtime_ns, size, last user prompt). Caches the rollout
+# scan so the monitor's per-refresh "Last Msg" lookup is a single stat once the
+# file is unchanged (mirrors ClaudeProvider's prompt cache). One entry per path.
+_LAST_PROMPT_CACHE: dict[str, tuple[int, int, str]] = {}
 HOOK_MARKER: str = "leap-hook.sh"
 
 
@@ -178,6 +183,64 @@ class CodexProvider(CLIProvider):
             if isinstance(text, str) and text:
                 out.append(text)
         return out
+
+    def extract_last_user_prompt(
+        self,
+        cwd: str,
+        tag: str,
+        storage_dir: Optional[Path],
+        cli_name: str = '',
+    ) -> str:
+        """Most recent user-typed prompt from the Codex rollout.
+
+        Read from the transcript rather than Leap's PTY ``recently_sent``
+        capture, which can carry stray keystrokes (e.g. a leading ``2`` that
+        the terminal echoed ahead of ``hi`` -> "2hi" in the Last-Msg column).
+        Codex records each submission as an ``event_msg``/``user_message`` whose
+        ``message`` is the clean text; the session-start ``<environment_context>``
+        block (a ``response_item``) is skipped.  Returns ``''`` on any
+        miss/error so the caller falls back to ``recently_sent``.
+        """
+        del cwd  # transcript resolved by recorded tag, not cwd
+        if storage_dir is None:
+            return ''
+        transcript = latest_transcript_for(storage_dir, cli_name or self.name, tag)
+        if not transcript:
+            return ''
+        try:
+            st = os.stat(transcript)
+        except OSError:
+            return ''
+        cached = _LAST_PROMPT_CACHE.get(transcript)
+        if (cached is not None and cached[0] == st.st_mtime_ns
+                and cached[1] == st.st_size):
+            return cached[2]
+        last = ''
+        try:
+            with open(transcript, 'rb') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    payload = entry.get('payload')
+                    if (entry.get('type') == 'event_msg'
+                            and isinstance(payload, dict)
+                            and payload.get('type') == 'user_message'):
+                        msg = payload.get('message')
+                        if (isinstance(msg, str) and msg.strip()
+                                and not msg.lstrip().startswith('<environment_context')):
+                            last = msg
+        except OSError:
+            return ''
+        result = last.strip()
+        _LAST_PROMPT_CACHE[transcript] = (st.st_mtime_ns, st.st_size, result)
+        return result
 
     # -- Resume support --------------------------------------------------
 

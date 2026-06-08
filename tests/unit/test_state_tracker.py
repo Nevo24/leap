@@ -2780,23 +2780,98 @@ class TestScreenHasActiveDialog:
         )
         assert tracker.screen_has_active_dialog() is False
 
-    def test_returns_false_for_providers_without_dialog_patterns(
+    def test_codex_selection_dialog_detected_despite_empty_patterns(
         self, tmp_path: Path,
     ) -> None:
-        # Codex/Cursor have empty dialog_patterns and rely on hook
-        # signals — they have no PTY-based dialog detection so we
-        # short-circuit to False rather than scanning the screen.
+        # Codex has empty dialog_patterns, but the generic selection-dialog
+        # detector (numbered ›/❯ cursor + confirm/cancel footer) must still
+        # detect its arrow-navigable dialogs so ↑/↓ navigate the dialog instead
+        # of being stolen for history recall. Real Codex trust dialog (uses the
+        # › U+203A cursor):
         from leap.cli_providers.codex import CodexProvider
         t = [0.0]
         tracker = make_tracker(tmp_path, t, provider=CodexProvider())
         tracker.on_send()
         feed_screen_text(
             tracker,
-            'Enter to select · Esc to cancel\n'
-            '> 1. Yes\n'
-            '  2. No\n',
+            'Do you trust the authors of this folder and want to let them '
+            'run hooks?\n'
+            '› 1. Review hooks\n'
+            '  2. Trust all and continue\n'
+            "  3. Continue without trusting (hooks won't run)\n"
+            'Press enter to confirm or esc to go back\n',
+        )
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_codex_idle_prompt_is_not_a_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        # Codex's idle input box also uses the › glyph (ghost-text hint) and a
+        # model/status footer — it must NOT be read as a selection dialog, or
+        # ↑/↓ history recall would never work for Codex.
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            '› Use /skills to list available skills\n'
+            'gpt-5.5   default   fast   · ~\n',
         )
         assert tracker.screen_has_active_dialog() is False
+
+    def test_cursor_does_not_cross_match_across_rows(
+        self, tmp_path: Path,
+    ) -> None:
+        # A row ending in › followed by a row starting "1." must not be read as
+        # a "› 1." selection cursor (the regex is applied per row, not on the
+        # joined screen text).
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'see the quote that ends with ›\n'
+            '1. this is just response prose, not an option\n',
+        )
+        assert tracker.screen_has_active_dialog() is False
+
+    def test_picker_detected_without_a_cursor_glyph(
+        self, tmp_path: Path,
+    ) -> None:
+        # Glyph-independent: a picker whose selection marker isn't ›/❯ (here a
+        # plain `*`) is still detected via its footer line (>=2 nav hints).
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Pick a model\n'
+            '* gpt-5\n'
+            '  opus\n'
+            'enter to confirm   esc to cancel\n',
+        )
+        assert tracker.screen_has_active_dialog() is True
+
+    def test_short_single_hint_footer_detected(
+        self, tmp_path: Path,
+    ) -> None:
+        # A short hint-only footer line is a footer; a long prose sentence
+        # quoting the same phrase is not (covered by the one-pattern test).
+        from leap.cli_providers.codex import CodexProvider
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_send()
+        feed_screen_text(
+            tracker,
+            'Delete this file?\n'
+            'Yes\n'
+            'No\n'
+            'Esc to cancel\n',
+        )
+        assert tracker.screen_has_active_dialog() is True
 
     def test_returns_false_when_idle_prompt_box_visible(
         self, tmp_path: Path,

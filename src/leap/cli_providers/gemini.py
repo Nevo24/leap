@@ -13,6 +13,7 @@ Key differences from Claude Code:
 """
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -32,6 +33,11 @@ GEMINI_SETTINGS_FILE: Path = GEMINI_CONFIG_DIR / "settings.json"
 # Matches Gemini's top-level ``"sessionId": "<uuid>"`` field in the
 # session JSON.  Used by :meth:`GeminiProvider.extract_session_id`.
 _SESSION_ID_RE: re.Pattern[str] = re.compile(r'"sessionId"\s*:\s*"([^"]+)"')
+
+# Transcript path -> (mtime_ns, size, last user prompt). Caches the chat scan so
+# the monitor's per-refresh "Last Msg" lookup is a single stat once the file is
+# unchanged (mirrors ClaudeProvider's prompt cache). One entry per path.
+_LAST_PROMPT_CACHE: dict[str, tuple[int, int, str]] = {}
 HOOK_MARKER: str = "leap-hook.sh"
 
 
@@ -158,6 +164,63 @@ class GeminiProvider(CLIProvider):
             if isinstance(msg, str) and msg:
                 out.append(msg)
         return out
+
+    def extract_last_user_prompt(
+        self,
+        cwd: str,
+        tag: str,
+        storage_dir: Optional[Path],
+        cli_name: str = '',
+    ) -> str:
+        """Most recent user-typed prompt from the Gemini chat session.
+
+        Read from the transcript rather than Leap's PTY ``recently_sent``
+        capture (which can carry stray echoed keystrokes).  Each ``type ==
+        'user'`` entry carries ``content`` as a list of ``{'text': ...}`` parts;
+        we join the text of the last one.  Returns ``''`` on any miss/error so
+        the caller falls back to ``recently_sent``.
+        """
+        del cwd  # transcript resolved by recorded tag, not cwd
+        if storage_dir is None:
+            return ''
+        transcript = latest_transcript_for(storage_dir, cli_name or self.name, tag)
+        if not transcript:
+            return ''
+        try:
+            st = os.stat(transcript)
+        except OSError:
+            return ''
+        cached = _LAST_PROMPT_CACHE.get(transcript)
+        if (cached is not None and cached[0] == st.st_mtime_ns
+                and cached[1] == st.st_size):
+            return cached[2]
+        last = ''
+        try:
+            with open(transcript, 'rb') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(entry, dict) or entry.get('type') != 'user':
+                        continue
+                    content = entry.get('content')
+                    if not isinstance(content, list):
+                        continue
+                    text = ''.join(
+                        part.get('text', '') for part in content
+                        if isinstance(part, dict) and isinstance(part.get('text'), str)
+                    )
+                    if text.strip():
+                        last = text
+        except OSError:
+            return ''
+        result = last.strip()
+        _LAST_PROMPT_CACHE[transcript] = (st.st_mtime_ns, st.st_size, result)
+        return result
 
     # -- Resume support --------------------------------------------------
     #

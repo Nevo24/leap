@@ -204,6 +204,10 @@ Override these only if the CLI differs from the defaults:
 | `relocate_session()` | Returns `None` (no cross-cwd) | Implement for the **move mechanism** — physically (or logically) bring the session's on-disk state under the user's chosen cwd. Required when `requires_cwd_bound_resume = True`. |
 | `session_exists()` | Returns `True` | Override if your CLI records sessions with empty `transcript_path` so the picker's path-based stale-check can't filter them — return `False` when the session's on-disk state has been deleted out-of-band. |
 | `context_usage(cli_name, tag, storage_dir)` | Returns `None` | Implement (with `supports_context_usage = True`) to show the monitor's **Context** column — locate your own source (a transcript via `latest_transcript_for`, or Copilot's status-line state file) and return prompt-tokens vs the context window. See **Context-usage column** below. |
+| `session_cost(cli_name, tag, storage_dir)` | Returns `None` | Implement (with `supports_cost = True`) to add cost lines to the Context tooltip — sum the session's billable tokens from your transcript and price them via `leap.utils.pricing` (`price_for` / `cost_usd`). See **Context-usage column** + `cost_usage.py`. |
+| `input_history(cwd)` | Returns `None` (passthrough — CLI handles ↑/↓ natively) | Return the CLI's on-disk input history (oldest→newest) so Leap drives ↑/↓ recall and keeps its input mirror in sync for `^^`. **Opting in steals ↑/↓** — read the **↑/↓ recall, dialogs & 'Last Msg'** note below. |
+| `extract_last_user_prompt(cwd, tag, storage_dir, cli_name='')` | Returns `''` (monitor falls back to Leap's PTY `recently_sent` capture) | Read the user's most recent prompt from the transcript so the **Last Msg** column is accurate. The PTY fallback can carry stray echoed keystrokes (e.g. a leading `2` → "2hi"); reading the transcript avoids that. Resolve via `latest_transcript_for(storage_dir, cli_name or self.name, tag)` (`cli_name` is the recorded `cli_sessions` subdir, so a custom CLI built atop your provider resolves its own transcripts). |
+| `screen_shows_selection_dialog(display_lines)` | Generic detector: a numbered `›`/`❯`/`▶` cursor, **or** a footer *line* carrying confirm/cancel/navigate hints (≥2 hints, or a `·` separator, or a short hint-only line) — cursor-glyph independent | Override only if your CLI's arrow-navigable dialog isn't caught by the generic detector. Drives ↑/↓ passthrough — see the note below. |
 | `deconfigure_hooks()` | Removes `leap-hook.sh` + `leap-hook-process.py` from `hook_config_dir` | Override if `configure_hooks()` also writes into a CLI settings/config file — undo those changes surgically, write back atomically, then call `super().deconfigure_hooks()`. See **`deconfigure_hooks()`** section in step 4. |
 
 ### Leap Resume feature (`leap --resume`)
@@ -493,6 +497,43 @@ fallback if the window is ambiguous (usage above a window size proves a larger o
 **Cursor** — its CLI exposes no token usage at all, records no `transcript_path`,
 and stores chats in an opaque content-addressed SQLite blob store. There's no
 on-disk number to read, so its Context cell shows `N/A`.
+
+### ↑/↓ history recall, dialogs & the "Last Msg" column
+
+Three small features interact here; getting them right avoids a classic bug
+("arrows stuck in a selection dialog").
+
+1. **`input_history(cwd)` — opt into ↑/↓ recall.** Return the CLI's own
+   on-disk history (oldest→newest) and Leap intercepts ↑/↓ to drive recall
+   itself, keeping its input mirror in sync so a later `^^` captures the
+   recalled text. Returning `None` = passthrough (the CLI handles ↑/↓).
+
+2. **The dialog trap.** Once you implement `input_history`, Leap **steals**
+   ↑/↓ at the prompt — *including while your CLI is showing an arrow-navigable
+   selection dialog* (permission/trust/model picker). To stop that, the input
+   filter passes ↑/↓ through whenever `CLIStateTracker.screen_has_active_dialog()`
+   is True. That method now calls the **generic**
+   `CLIProvider.screen_shows_selection_dialog(display_lines)` first, which fires
+   on a numbered `›`/`❯`/`▶` selection cursor (`› 1.`) **or** a footer *line*
+   carrying confirm/cancel/navigate hints (`esc to cancel` / `enter to confirm`
+   / `↑/↓ to navigate`) that *looks like a footer* — ≥2 hints, a `·` separator,
+   or a short hint-only line — rather than prose quoting the phrase. It's
+   **cursor-glyph independent**, so most TUIs (Codex, Gemini, Cursor) are
+   covered with no per-CLI code. **Verify**: trigger a multi-option dialog in
+   your CLI and confirm ↑/↓ navigate it. If they don't, your dialog renders
+   differently (e.g. a hint-less footer) — override
+   `screen_shows_selection_dialog` with a detector for it (keep it
+   bottom-of-screen scoped so response prose doesn't false-match). This method
+   is used **only** for the arrow filter, so a false positive is cheap (the
+   arrow just reaches the CLI's native handling).
+
+3. **`extract_last_user_prompt(...)` — accurate "Last Msg".** Without it the
+   monitor's Last-Msg column falls back to Leap's PTY `recently_sent` capture,
+   which can include stray echoed keystrokes (a leading `2` showed up as
+   "2hi"). Read the last user prompt from the transcript instead (resolve via
+   `latest_transcript_for(storage_dir, cli_name or self.name, tag)` — `cli_name`
+   is passed by the monitor so a custom CLI atop your provider resolves its own
+   `cli_sessions` subdir); return `''` on any miss so the PTY fallback applies.
 
 ### 2. Register the Provider
 
