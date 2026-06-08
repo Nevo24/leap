@@ -1875,16 +1875,62 @@ class TableBuilderMixin(_Base):
                                         row_color)
                     self._build_path_cell(row, tag, 'N/A', row_color)
                     self._build_branch_cell(row, tag, 'N/A', row_color)
-                    # Remove the live status cell widget (coloured
-                    # indicator + label) before switching to plain text,
-                    # otherwise the old widget renders on top of "N/A".
-                    self.table.removeCellWidget(row, self.COL_STATUS)
-                    self._cell_cache.pop((tag, 'status'), None)
-                    self._set_cell_text(row, self.COL_STATUS, 'N/A',
-                                        row_color)
-                    status_item = self.table.item(row, self.COL_STATUS)
-                    if status_item and not row_color:
-                        status_item.setForeground(QColor(current_theme().text_primary))
+                    # Status shows N/A for dead rows, but keep the
+                    # auto-approve menu button on the left so a pinned /
+                    # offline session can pre-set the approval mode its
+                    # next run will start in (persisted to pinned
+                    # sessions, read by the server at start).  The
+                    # state-key change ('dead', ...) forces a rebuild that
+                    # replaces any live status widget still in the cell.
+                    dead_status_state = ('dead', row_color)
+                    if not self._cell_cached(tag, 'status', dead_status_state,
+                                             row, self.COL_STATUS):
+                        ds_container = QWidget()
+                        ds_layout = QHBoxLayout(ds_container)
+                        ds_layout.setContentsMargins(0, 0, 2, 0)
+                        ds_layout.setSpacing(0)
+
+                        ds_menu_btn = HoverIconButton(
+                            _THREE_DOT_SVG, self._zoomed_btn_w(14))
+                        ds_menu_btn.setFixedSize(
+                            self._zoomed_btn_w(24),
+                            ds_menu_btn.sizeHint().height())
+                        ds_menu_btn.setStyleSheet(
+                            menu_btn_style(font_size=self._zoomed_size()))
+                        ds_menu_btn.setToolTip(
+                            'Approval mode - auto-approve permission '
+                            'prompts or ask you first')
+                        ds_menu_btn.clicked.connect(
+                            lambda checked, btn=ds_menu_btn, t=tag:
+                                self._show_auto_approve_menu(
+                                    btn, btn.rect().bottomLeft(), t)
+                        )
+                        ds_layout.addWidget(ds_menu_btn, 0, Qt.AlignVCenter)
+
+                        ds_label = QLabel('N/A')
+                        ds_label.setAlignment(Qt.AlignCenter)
+                        if not row_color:
+                            pal = ds_label.palette()
+                            pal.setColor(QPalette.WindowText,
+                                         QColor(current_theme().text_primary))
+                            ds_label.setPalette(pal)
+                        ds_layout.addWidget(ds_label, 1)
+
+                        # Right spacer matches the button width so 'N/A'
+                        # stays centered.
+                        ds_spacer = QWidget()
+                        ds_spacer.setFixedWidth(self._zoomed_btn_w(24))
+                        ds_layout.addWidget(ds_spacer)
+
+                        s_item = self.table.item(row, self.COL_STATUS)
+                        if not s_item:
+                            s_item = QTableWidgetItem('')
+                            self.table.setItem(row, self.COL_STATUS, s_item)
+                        s_item.setText('')
+                        self._set_cell_widget(row, self.COL_STATUS, ds_container)
+                        self._apply_row_color_to_widget(ds_container, row_color)
+                        self._cache_cell(tag, 'status', dead_status_state,
+                                         row, self.COL_STATUS)
 
                     self._set_cell_text(row, self.COL_TASK, 'N/A',
                                         row_color)
@@ -1893,8 +1939,7 @@ class TableBuilderMixin(_Base):
                     self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
 
                     # Queue N/A with menu button
-                    dead_q_state = ('dead', session.get('auto_send_mode', AutoSendMode.PAUSE),
-                                    row_color)
+                    dead_q_state = ('dead', row_color)
                     if not self._cell_cached(tag, 'queue', dead_q_state,
                                              row, self.COL_QUEUE):
                         dq_container = QWidget()
@@ -2002,10 +2047,26 @@ class TableBuilderMixin(_Base):
                         c_layout.setContentsMargins(0, 0, 2, 0)
                         c_layout.setSpacing(0)
 
-                        # Left spacer balances the indicator dot width
-                        spacer = QWidget()
-                        spacer.setFixedWidth(int(max(10, self._zoomed_size(-3)) * 1.4))
-                        c_layout.addWidget(spacer)
+                        # Left auto-approve menu button — controls how
+                        # this session reacts when it hits a permission
+                        # prompt (auto-approve vs. ask).  Also visually
+                        # balances the change-indicator dot on the right.
+                        approve_btn = HoverIconButton(
+                            _THREE_DOT_SVG, self._zoomed_btn_w(14))
+                        approve_btn.setFixedSize(
+                            self._zoomed_btn_w(24),
+                            approve_btn.sizeHint().height())
+                        approve_btn.setStyleSheet(
+                            menu_btn_style(font_size=self._zoomed_size()))
+                        approve_btn.setToolTip(
+                            'Approval mode - auto-approve permission '
+                            'prompts or ask you first')
+                        approve_btn.clicked.connect(
+                            lambda checked, btn=approve_btn, t=tag:
+                                self._show_auto_approve_menu(
+                                    btn, btn.rect().bottomLeft(), t)
+                        )
+                        c_layout.addWidget(approve_btn, 0, Qt.AlignVCenter)
 
                         # Status text — colored, bold, centered
                         status_fg = color.name()
@@ -2023,12 +2084,14 @@ class TableBuilderMixin(_Base):
                         status_label.setToolTip(text)
                         c_layout.addWidget(status_label, 1)
 
-                        # Right-aligned change indicator dot
+                        # Right-aligned change indicator dot.  Its box
+                        # width matches the left menu button so the status
+                        # text stays centered between them.
                         fire_label = QLabel(
                             '\U0001f525' if show_fire else '')
                         fire_label.setObjectName('_fireLabel')
                         fire_px = max(10, self._zoomed_size(-3))
-                        fire_label.setFixedWidth(int(fire_px * 1.4))
+                        fire_label.setFixedWidth(self._zoomed_btn_w(24))
                         fire_label.setAlignment(
                             Qt.AlignCenter | Qt.AlignVCenter)
                         if show_fire:
@@ -2070,8 +2133,8 @@ class TableBuilderMixin(_Base):
                                 _handler = self._show_running_status_menu
                             else:
                                 _handler = self._show_permission_menu
-                            for child in (spacer, status_label,
-                                          fire_label, container):
+                            for child in (status_label, fire_label,
+                                          container):
                                 child.setContextMenuPolicy(
                                     Qt.CustomContextMenu)
                                 child.customContextMenuRequested.connect(
@@ -2152,9 +2215,8 @@ class TableBuilderMixin(_Base):
                         row_color)
 
                     # Queue column with menu button on the left
-                    auto_send_mode = session.get('auto_send_mode', AutoSendMode.PAUSE)
                     queue_size = session['queue_size']
-                    q_state = (queue_size, auto_send_mode, row_color)
+                    q_state = (queue_size, row_color)
                     if not self._cell_cached(tag, 'queue', q_state,
                                              row, self.COL_QUEUE):
                         q_container = QWidget()
@@ -2823,14 +2885,7 @@ class TableBuilderMixin(_Base):
     def _show_queue_context_menu(
         self, label: QLabel, pos: 'QPoint', tag: str,
     ) -> None:
-        """Show context menu on the Queue column left button."""
-        current_mode = AutoSendMode.PAUSE
-        for s in self.sessions:
-            if s['tag'] == tag:
-                current_mode = s.get('auto_send_mode', AutoSendMode.PAUSE)
-                break
-        default_mode = load_settings().get('auto_send_mode', AutoSendMode.PAUSE)
-
+        """Show the queue-options menu on the Queue column left button."""
         menu = QMenu(self)
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
@@ -2856,50 +2911,78 @@ class TableBuilderMixin(_Base):
             lambda _checked, t=tag: self._clear_queue(t)
         )
 
-        menu.addSeparator()
-
-        pause_label = 'Pause on input'
-        if default_mode == AutoSendMode.PAUSE:
-            pause_label += ' (default)'
-        pause_action = menu.addAction(pause_label)
-        pause_action.setCheckable(True)
-        pause_action.setChecked(current_mode == AutoSendMode.PAUSE)
-        pause_action.setToolTip(
-            'Auto-send queued messages only when the CLI is idle.\n'
-            '\n'
-            '\u25cb Idle - sends next queued message\n'
-            '\u25cf Running - waits until finished\n'
-            '\u25b2 Permission - queue waits for your answer\n'
-            '\u25c6 Question - queue waits for your answer\n'
-            '\u25c7 Interrupted - waits (needs manual resume)')
-        pause_action.triggered.connect(
-            lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.PAUSE)
-        )
-
-        always_label = 'Always send'
-        if default_mode == AutoSendMode.ALWAYS:
-            always_label += ' (default)'
-        always_action = menu.addAction(always_label)
-        always_action.setCheckable(True)
-        always_action.setChecked(current_mode == AutoSendMode.ALWAYS)
-        always_action.setToolTip(
-            'Auto-approve permission prompts and send queued\n'
-            'messages when idle.\n'
-            '\n'
-            '\u25cb Idle - sends next queued message\n'
-            '\u25cf Running - waits until finished\n'
-            '\u25b2 Permission - auto-approves "Yes"\n'
-            '\u25c6 Question - queue waits for your answer\n'
-            '\u25c7 Interrupted - waits (needs manual resume)')
-        always_action.triggered.connect(
-            lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.ALWAYS)
-        )
-
         menu.exec_(label.mapToGlobal(pos))
         # Clear stuck hover state after menu closes
         if not sip.isdeleted(label):
             label.setAttribute(Qt.WA_UnderMouse, False)
             label.update()
+
+    def _show_auto_approve_menu(
+        self, btn: QPushButton, pos: 'QPoint', tag: str,
+    ) -> None:
+        """Show the approval-mode menu on the Status column left button.
+
+        Controls what a session does when it hits a permission prompt:
+        ``Ask for approval`` (PAUSE) stops and waits for the user, while
+        ``Auto-approve`` (ALWAYS) answers "Yes" automatically.  Both
+        modes still auto-send queued messages once the CLI is idle and
+        both wait at a question.
+        """
+        current_mode = AutoSendMode.PAUSE
+        for s in self.sessions:
+            if s['tag'] == tag:
+                current_mode = s.get('auto_send_mode', AutoSendMode.PAUSE)
+                break
+        default_mode = load_settings().get('auto_send_mode', AutoSendMode.PAUSE)
+
+        menu = QMenu(self)
+        if self._prefs.get('show_tooltips', True):
+            menu.setToolTipsVisible(True)
+
+        ask_label = 'Ask for approval'
+        if default_mode == AutoSendMode.PAUSE:
+            ask_label += ' (default)'
+        ask_action = menu.addAction(ask_label)
+        ask_action.setCheckable(True)
+        ask_action.setChecked(current_mode == AutoSendMode.PAUSE)
+        ask_action.setToolTip(
+            'Stop at permission prompts and wait for you to approve.\n'
+            'Queued messages still auto-send once the CLI is idle.\n'
+            '\n'
+            '○ Idle - sends next queued message\n'
+            '● Running - waits until finished\n'
+            '▲ Permission - waits for your approval\n'
+            '◆ Question - waits for your answer\n'
+            '◇ Interrupted - waits (needs manual resume)')
+        ask_action.triggered.connect(
+            lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.PAUSE)
+        )
+
+        auto_label = 'Auto-approve'
+        if default_mode == AutoSendMode.ALWAYS:
+            auto_label += ' (default)'
+        auto_action = menu.addAction(auto_label)
+        auto_action.setCheckable(True)
+        auto_action.setChecked(current_mode == AutoSendMode.ALWAYS)
+        auto_action.setToolTip(
+            'Automatically approve permission prompts ("Yes") so the\n'
+            'session keeps running unattended. Questions still wait\n'
+            'for your answer.\n'
+            '\n'
+            '○ Idle - sends next queued message\n'
+            '● Running - waits until finished\n'
+            '▲ Permission - auto-approves "Yes"\n'
+            '◆ Question - waits for your answer\n'
+            '◇ Interrupted - waits (needs manual resume)')
+        auto_action.triggered.connect(
+            lambda _checked, t=tag: self._set_auto_send_mode(t, AutoSendMode.ALWAYS)
+        )
+
+        menu.exec_(btn.mapToGlobal(pos))
+        # Clear stuck hover state after menu closes
+        if not sip.isdeleted(btn):
+            btn.setAttribute(Qt.WA_UnderMouse, False)
+            btn.update()
 
     def _show_queue_action_menu(
         self, btn: QPushButton, pos: 'QPoint', tag: str,
@@ -2969,12 +3052,15 @@ class TableBuilderMixin(_Base):
         if tag in self._pinned_sessions:
             self._pinned_sessions[tag]['auto_send_mode'] = mode
             update_pinned_session_field(tag, 'auto_send_mode', mode)
-        # Invalidate cache so next refresh rebuilds with new mode
-        self._cell_cache.pop((tag, 'queue'), None)
+        # No cell-cache invalidation needed: the Status menu button is
+        # static and the menu reads the mode live from ``self.sessions``
+        # (updated just above), so the checkmark is correct on next open.
+        label = ('Auto-approve' if mode == AutoSendMode.ALWAYS
+                 else 'Ask for approval')
         if response and response.get('status') == 'ok':
-            self._show_status(f'Auto-send mode: {mode}')
+            self._show_status(f'Approval mode: {label}')
         else:
-            self._show_status(f'Auto-send mode: {mode} (server offline)')
+            self._show_status(f'Approval mode: {label} (server offline)')
 
     def _edit_queue_messages(self, tag: str) -> None:
         """Open the queue edit dialog for a session."""

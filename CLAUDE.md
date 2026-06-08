@@ -122,7 +122,7 @@ ALWAYS-mode auto-approve is hook-based: Claude's `PermissionRequest` hook return
 | `!l` or `!list` | Show queue |
 | `!c` or `!clear` | Clear queue |
 | `!f` or `!force` | Force-send next queued message |
-| `!autosend` or `!as` | Toggle auto-send mode (pause/always) |
+| `!autoapprove` or `!aa` | Set approval mode (`ask`/`auto`; legacy `!autosend`/`!as` and `pause`/`always` still accepted) |
 | `!slack` or `!slack on/off` | Show status or toggle Slack for this session |
 | `!x` or `!quit` (`Ctrl+D`) | Exit client |
 

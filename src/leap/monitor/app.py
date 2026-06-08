@@ -349,6 +349,14 @@ class MonitorWindow(
             self._prefs.pop('column_widths', None)
             self._prefs['app_column_migrated'] = True
             self._save_prefs()
+        # One-time: the Status column gained a left menu button (approval
+        # mode), so it needs more room.  Drop saved column_widths once so
+        # the new weighted equal-distribution (wider Status) takes effect;
+        # the user can still re-drag any column afterwards.
+        if not self._prefs.get('status_col_widened'):
+            self._prefs.pop('column_widths', None)
+            self._prefs['status_col_widened'] = True
+            self._save_prefs()
         self._pinned_sessions: dict[str, dict[str, Any]] = load_pinned_sessions()
         self._deleted_tags: set[str] = set()  # suppress re-pin after explicit delete
         self._starting_tags: set[str] = set()  # guard against double-click server start
@@ -1786,10 +1794,18 @@ class MonitorWindow(
             col for col in range(col_count)
             if col != self.COL_DELETE and not self.table.isColumnHidden(col)
         ]
-        col_width = available // max(len(visible_cols), 1)
+        # Status carries an extra left menu button (approval mode) plus
+        # the change-indicator dot, so give it a wider share than the
+        # other otherwise-equal columns.
+        weights = {self.COL_STATUS: 1.5}
+        total_weight = sum(weights.get(c, 1.0) for c in visible_cols)
         self._resizing_columns = True
         for col in visible_cols:
-            self.table.setColumnWidth(col, col_width)
+            # Bare int (no per-column floor): the sum of floored shares is
+            # always <= available, so columns never overflow the viewport
+            # (matches the original ``available // n`` behavior).
+            w = int(available * weights.get(col, 1.0) / max(total_weight, 1))
+            self.table.setColumnWidth(col, w)
         self._resizing_columns = False
         # Equal widths is a fresh "intent" — capture so resizeEvent reads it back
         self._snapshot_widths_to_prefs()

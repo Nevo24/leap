@@ -255,22 +255,22 @@ class SettingsDialog(ZoomMixin, QDialog):
         cleanup_btn.clicked.connect(self._cleanup_repos)
         grid.addWidget(cleanup_btn, 3, 3)
 
-        # Default auto-send mode
-        auto_send_label = QLabel('Default auto-send:')
+        # Default approval mode
+        auto_send_label = QLabel('Default approval mode:')
         auto_send_label.setToolTip(
-            'Default auto-send mode for new sessions.\n'
+            'Default approval mode for new sessions.\n'
             '\n'
-            'Pause on input:\n'
-            '  Sends queued messages only when the CLI is idle.\n'
-            '  Waits during running, permission, and question states.\n'
+            'Ask for approval:\n'
+            '  Stops at permission prompts and waits for you to\n'
+            '  approve. Queued messages still auto-send when idle.\n'
             '\n'
-            'Always send:\n'
-            '  Auto-approves permission prompts ("Yes") and sends\n'
-            '  queued messages when idle. Waits during questions.')
+            'Auto-approve:\n'
+            '  Auto-approves permission prompts ("Yes") so sessions\n'
+            '  run unattended. Questions still wait for your answer.')
         grid.addWidget(auto_send_label, 4, 0)
         self._auto_send_combo = QComboBox()
         self._auto_send_combo.setToolTip(auto_send_label.toolTip())
-        self._auto_send_combo.addItems(['Pause on input', 'Always send'])
+        self._auto_send_combo.addItems(['Ask for approval', 'Auto-approve'])
         if current_auto_send_mode == AutoSendMode.ALWAYS:
             self._auto_send_combo.setCurrentIndex(1)
         grid.addWidget(self._auto_send_combo, 4, 1)

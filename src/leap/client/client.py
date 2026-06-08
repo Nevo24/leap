@@ -391,13 +391,13 @@ class LeapClient:
                 CLIState.INTERRUPTED: '\u26a1 Interrupted - will auto-send next message',
             }
             mode_display = {
-                AutoSendMode.PAUSE: 'Pause on input',
-                AutoSendMode.ALWAYS: 'Always send',
+                AutoSendMode.PAUSE: 'Ask for approval',
+                AutoSendMode.ALWAYS: 'Auto-approve',
             }
 
             print("\n\U0001f4ca Server status:")
             print(f"  {state_display.get(cli_state, cli_state)}")
-            print(f"  Auto-send: {mode_display.get(auto_send_mode, auto_send_mode)}")
+            print(f"  Approval: {mode_display.get(auto_send_mode, auto_send_mode)}")
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
             if queue_contents:
@@ -505,10 +505,10 @@ class LeapClient:
         # Fetch current auto-send mode from server
         response = self.socket.get_status(silent=True)
         as_mode = response.get('auto_send_mode', AutoSendMode.PAUSE) if response else AutoSendMode.PAUSE
-        as_label = 'pause' if as_mode == AutoSendMode.PAUSE else 'always'
+        as_label = 'ask' if as_mode == AutoSendMode.PAUSE else 'auto'
         notif_label = 'on' if self.show_auto_sent_notifications else 'off'
 
-        print(f"  \U0001F916 Auto-send mode: !autosend always/pause      (or !as)   [current: {as_label}]")
+        print(f"  \U0001F916 Approval mode: !autoapprove ask/auto        (or !aa)   [current: {as_label}]")
         print(f"  \U0001F514 Auto-sent notifications: !auto-sent on/off  (or !asm)  [current: {notif_label}]")
         if self._is_slack_installed():
             print()
@@ -594,34 +594,44 @@ class LeapClient:
         else:
             print("✗ Invalid option. Use: on/off\n")
 
-    def _handle_auto_send_mode(self, line_lower: str) -> None:
+    def _handle_approval_mode(self, line_lower: str) -> None:
         """
-        Handle !autosend / !as mode command.
+        Handle the !autoapprove / !aa approval-mode command.
 
         Args:
             line_lower: Lowercased input line.
         """
+        # Accept the monitor's vocabulary (ask / auto) plus the legacy
+        # pause / always aliases so existing habits keep working.
+        token_map = {
+            'ask': AutoSendMode.PAUSE,
+            'auto': AutoSendMode.ALWAYS,
+            'pause': AutoSendMode.PAUSE,
+            'always': AutoSendMode.ALWAYS,
+        }
+        mode_display = {
+            AutoSendMode.PAUSE: 'Ask for approval',
+            AutoSendMode.ALWAYS: 'Auto-approve',
+        }
         parts = line_lower.split(None, 1)
         if len(parts) < 2:
             # Show current mode from server
             response = self.socket.get_status(silent=True)
             mode = response.get('auto_send_mode', AutoSendMode.PAUSE) if response else AutoSendMode.PAUSE
-            mode_display = {AutoSendMode.PAUSE: 'Pause on input', AutoSendMode.ALWAYS: 'Always send'}
-            print(f"Auto-send mode: {mode_display.get(mode, mode)}")
-            print("Usage: !autosend pause/always  (or !as pause/always)\n")
+            print(f"Approval mode: {mode_display.get(mode, mode)}")
+            print("Usage: !autoapprove ask/auto  (or !aa ask/auto)\n")
             return
 
-        mode = parts[1].strip()
-        if mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
-            print("\u2717 Invalid mode. Use: pause or always\n")
+        mode = token_map.get(parts[1].strip())
+        if mode is None:
+            print("\u2717 Invalid mode. Use: ask or auto\n")
             return
 
         response = self.socket.set_auto_send_mode(mode)
         if response and response.get('status') == 'ok':
-            mode_display = {AutoSendMode.PAUSE: 'Pause on input', AutoSendMode.ALWAYS: 'Always send'}
-            print(f"\u2713 Auto-send mode: {mode_display.get(mode, mode)}\n")
+            print(f"\u2713 Approval mode: {mode_display.get(mode, mode)}\n")
         else:
-            print("\u2717 Failed to set auto-send mode\n")
+            print("\u2717 Failed to set approval mode\n")
 
     def _is_slack_installed(self) -> bool:
         """Check if the Slack app has been configured."""
@@ -768,12 +778,13 @@ class LeapClient:
             self._handle_auto_sent_toggle(line_lower)
             return True
 
-        # !autosend / !as
-        if line_lower in ['!autosend', '!as']:
-            self._handle_auto_send_mode(line_lower)
+        # !autoapprove / !aa (legacy aliases: !autosend / !as)
+        if line_lower in ['!autoapprove', '!aa', '!autosend', '!as']:
+            self._handle_approval_mode(line_lower)
             return True
-        if line_lower.startswith('!autosend ') or line_lower.startswith('!as '):
-            self._handle_auto_send_mode(line_lower)
+        if (line_lower.startswith('!autoapprove ') or line_lower.startswith('!aa ')
+                or line_lower.startswith('!autosend ') or line_lower.startswith('!as ')):
+            self._handle_approval_mode(line_lower)
             return True
 
         # !slack
