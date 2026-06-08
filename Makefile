@@ -1020,21 +1020,22 @@ endef
 	@chmod +x $(SCRIPTS_DIR)/configure-shell-helper.sh
 	@$(SCRIPTS_DIR)/configure-shell-helper.sh --update $(REPO_PATH)
 
-# Restart the Headroom proxy + health watchdog onto freshly-pulled script code.
-# Only acts when Headroom is enabled (the .storage/headroom_enabled marker). The
-# running watcher holds its lock with the OLD code, so we stop both and relaunch
-# the watcher detached; its first iteration brings the proxy back up.
+# Reload ONLY the Headroom health watchdog onto freshly-pulled script code.
+# Only acts when Headroom is enabled (the .storage/headroom_enabled marker).
+# We deliberately do NOT touch the running proxy: `git pull` updates our wrapper
+# scripts, not the headroom binary (a separate pipx package), so killing the proxy
+# would interrupt active Leap sessions' in-flight requests for no benefit. The
+# reloaded (new-code) watcher adopts the existing healthy proxy and applies any
+# changed launch flags on the proxy's next natural recycle (wedge / 24h backstop).
 .PHONY: .restart-headroom
 .restart-headroom:
 	@if [ -f "$(REPO_PATH)/.storage/headroom_enabled" ]; then \
-		echo "$(PROMPT_PREFIX) Restarting Headroom proxy on updated code..."; \
+		echo "$(PROMPT_PREFIX) Reloading Headroom watchdog onto updated code..."; \
 		pkill -f "leap-headroom-watchdog.sh" 2>/dev/null || true; \
-		pkill -f "headroom proxy --port 8787" 2>/dev/null || true; \
-		rm -rf "$$HOME/.headroom/watchdog.lock" "$$HOME/.headroom/up.lock"; \
-		rm -f "$$HOME/.headroom/started_at"; \
+		rm -rf "$$HOME/.headroom/watchdog.lock"; \
 		chmod +x $(SCRIPTS_DIR)/leap-headroom-up.sh $(SCRIPTS_DIR)/leap-headroom-watchdog.sh 2>/dev/null || true; \
 		( nohup $(SCRIPTS_DIR)/leap-headroom-watchdog.sh >/dev/null 2>&1 & ); \
-		echo "$(GREEN)✓ Headroom proxy restarted$(NC)"; \
+		echo "$(GREEN)✓ Headroom watchdog reloaded (proxy left running)$(NC)"; \
 	fi
 
 .PHONY: uninstall-monitor
