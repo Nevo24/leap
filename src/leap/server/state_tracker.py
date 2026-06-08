@@ -426,12 +426,34 @@ class CLIStateTracker:
         """
         if not self._awaiting_resume_after_prompt or silence_ref is None:
             return False
-        grace_timeout = (
+        return (self._clock() - silence_ref) <= self._heuristic_hold_cap()
+
+    def _heuristic_hold_cap(self) -> float:
+        """Max silence (seconds) a *heuristic* RUNNING-hold may persist
+        before it must yield to the idle fallbacks.
+
+        Caps the SCREEN-content RUNNING-holds that have no reliable
+        user-recoverable release: the post-answer resume grace and the
+        on-screen picker/dialog guard.  Both run BEFORE the safety-silence
+        fallback and ``return`` out of ``get_state``, so an *uncapped* hold
+        starves that net and wedges the session RUNNING forever whenever
+        is_idle_prompt_visible mis-reads the screen and no Stop hook follows
+        (an interrupt, a hookless slash command like ``/cost``, a label drawn
+        into the idle-box border).  Capping at the provider's safety-silence
+        timeout (default ``SAFETY_SILENCE_TIMEOUT``) guarantees recovery: once
+        the cap elapses the hold falls through to the idle fallback.
+
+        The composing-an-unsubmitted-prompt guard is deliberately NOT capped
+        with this: it is released deterministically when the input box empties
+        (submit / Ctrl+C / clear), so it is a user-recoverable "still typing"
+        hold, not a wedge - and capping it would re-introduce a false
+        "finished" notification for anyone who pauses mid-compose.  The
+        authoritative ``signal=idle`` (Stop hook) path is unaffected."""
+        return (
             self._provider.silence_timeout
             if self._provider.silence_timeout is not None
             else SAFETY_SILENCE_TIMEOUT
         )
-        return (self._clock() - silence_ref) <= grace_timeout
 
     # -- Public API -----------------------------------------------------------
 
@@ -2091,9 +2113,18 @@ class CLIStateTracker:
                 # without these detectors (base defaults: is_idle_prompt_visible
                 # True / has_selection_cursor / has_interactive_footer False) —
                 # Claude-only.
+                # CAPPED at the safety-silence timeout (see
+                # _heuristic_hold_cap): an uncapped hold here wedges the
+                # session RUNNING forever when no Stop hook follows (the
+                # interrupt-resume screen, or a label drawn into the idle-box
+                # border, both make is_idle_prompt_visible False while the
+                # input box's own ❯ trips has_selection_cursor).  Past the
+                # cap, fall through so the idle fallback recovers.
                 if (not self._provider.is_idle_prompt_visible(filled)
                         and (self._provider.has_selection_cursor(filled)
-                             or self._provider.has_interactive_footer(filled))):
+                             or self._provider.has_interactive_footer(filled))
+                        and (self._clock() - silence_baseline)
+                        <= self._heuristic_hold_cap()):
                     _log.debug(
                         'GET_STATE cursor+silence would idle but the idle '
                         'prompt is absent and a selection cursor / nav footer '
@@ -2106,7 +2137,13 @@ class CLIStateTracker:
                 # pausing, not the model finishing.  Don't flip to idle - that
                 # would fire a false "finished" notification and let the
                 # auto-sender dispatch a queued message into the half-typed
-                # prompt.  A genuine end still idles via the hook signal path.
+                # prompt.  NOT capped: released deterministically when the box
+                # empties (submit / Ctrl+C / clear), so it is a user-recoverable
+                # "still typing" hold, not a permanent wedge - capping it would
+                # re-introduce the false "finished" notification for anyone who
+                # pauses mid-compose.  The auto-sender separately refuses to
+                # dispatch while the box is non-empty.  A genuine end idles via
+                # the hook signal regardless.
                 if has_pending_input:
                     _log.debug(
                         'GET_STATE cursor+silence would idle but user has '
@@ -2188,10 +2225,11 @@ class CLIStateTracker:
                     return CLIState.INTERRUPTED
                 # Composing guard (same rationale as the cursor+silence path):
                 # don't force-idle while the user has unsubmitted input — the
-                # silence is them pausing, not the model finishing.  Releases
-                # the moment they submit or clear the box (buffer empties), so
-                # a genuinely-hung idle still recovers; a real end idles via the
-                # hook signal regardless.
+                # silence is them pausing, not the model finishing.  NOT capped
+                # (matches the cursor+silence composing guard): the hold is
+                # released deterministically when the box empties, so it is a
+                # user-recoverable "still typing" hold, not a permanent wedge.
+                # A real end still idles via the hook signal regardless.
                 if has_pending_input:
                     _log.debug(
                         'GET_STATE safety timeout %.1fs but user has '
@@ -2239,7 +2277,18 @@ class CLIStateTracker:
                     dialog_on_screen = (
                         self._provider.has_dialog_indicator(compact)
                     )
-                if (signal_state == current or self._trust_dialog_phase
+                # The signal-confirms keep is scoped to PROMPT_STATES: a hook
+                # writes needs_permission/needs_input, so a matching signal
+                # genuinely confirms the dialog is still pending.  INTERRUPTED,
+                # by contrast, writes its OWN signal (no hook is involved), so
+                # signal_state == INTERRUPTED is circular - leaving it unscoped
+                # kept a stuck INTERRUPTED alive forever for
+                # cursor_hidden_while_idle providers (Codex), the documented
+                # "interrupt sticks in INTERRUPTED" failure mode, since none of
+                # the cursor-based self-dismissal paths apply there.
+                signal_confirms = (signal_state == current
+                                   and current in PROMPT_STATES)
+                if (signal_confirms or self._trust_dialog_phase
                         or dialog_on_screen):
                     _log.debug(
                         'GET_STATE waiting timeout %s %.1fs but %s - '
@@ -2247,7 +2296,7 @@ class CLIStateTracker:
                         'trust dialog active'
                         if self._trust_dialog_phase
                         else 'signal confirms'
-                        if signal_state == current
+                        if signal_confirms
                         else 'dialog still on screen',
                     )
                 else:

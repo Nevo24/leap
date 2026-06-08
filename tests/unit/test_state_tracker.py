@@ -936,6 +936,66 @@ class TestSafetyTimeouts:
         assert tr2.get_state(
             pty_alive=True, has_pending_input=True) == 'running'
 
+    def test_interactive_ui_guard_is_capped_and_recovers(
+        self, tmp_path: Path,
+    ) -> None:
+        """The on-screen-picker RUNNING-hold (interactive-UI guard: idle box
+        absent + a selection cursor / nav footer present) is CAPPED too.  It
+        preserves a live picker, but must not wedge RUNNING forever when the
+        screen lingers with no output and no Stop hook - the nushi wedge,
+        where a label drawn into the idle-box border made is_idle_prompt_visible
+        False while the input box's own ❯ tripped has_selection_cursor."""
+        # A picker with a bare ❯ cursor (no numbered option, so is_dialog_certain
+        # does NOT promote it to needs_permission first) and ≥5 rows (so the
+        # "too little content" idle fallback doesn't kick in).
+        picker = (
+            'Select a session to resume:\r\n'
+            '❯ Fix the auth bug\r\n'
+            '  Add more tests\r\n'
+            '  Refactor the parser\r\n'
+            '  Start a fresh session\r\n'
+            '  (scroll for more)'
+        )
+        t = [0.0]
+        tr = make_tracker(tmp_path, t)
+        tr.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tr, picker)
+        # Sanity: this screen trips the guard, not is_dialog_certain.
+        filled = [ln for ln in tr._get_display_lines() if ln.strip()]
+        assert not tr._provider.is_idle_prompt_visible(filled)
+        assert tr._provider.has_selection_cursor(filled)
+        # Within the cap: the picker is preserved (held RUNNING).
+        t[0] = 7.0
+        assert tr.get_state(pty_alive=True) == 'running'
+        # Past the cap: recovers to idle instead of wedging forever.
+        t[0] = 1.0 + SAFETY_SILENCE_TIMEOUT + 5.0
+        assert tr.get_state(pty_alive=True) == 'idle'
+
+    def test_codex_interrupted_recovers_via_safety_timeout(
+        self, tmp_path: Path,
+    ) -> None:
+        """A cursor_hidden_while_idle provider (Codex) that enters INTERRUPTED
+        must recover to idle via the safety-waiting-timeout - it can't
+        self-dismiss INTERRUPTED through the cursor+silence path.  Previously
+        the timeout's 'signal confirms' keep fired unconditionally for
+        INTERRUPTED (which writes its OWN 'interrupted' signal), so the session
+        stuck in INTERRUPTED forever (the 'interrupt sticks' bug).  The keep is
+        now scoped to PROMPT_STATES, so the self-written signal no longer
+        blocks recovery."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t, provider=CodexProvider())
+        tracker.on_send()
+        t[0] = 1.0
+        tracker.on_input(b'\x1b')  # user pressed Esc → interrupt pending
+        feed_with_hidden_cursor(
+            tracker, 'Conversation interrupted - tell the model what to do')
+        assert tracker.current_state == 'interrupted'
+        # Past the safety-waiting-timeout with no further output: recovers to
+        # idle instead of sticking in INTERRUPTED forever.
+        t[0] = 1.0 + SAFETY_WAITING_TIMEOUT + 5.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
     def test_hook_idle_not_gated_by_composing(
         self, tmp_path: Path,
     ) -> None:

@@ -1400,6 +1400,13 @@ class LeapServer:
         delayed_prev_state: str = ''
         delayed_queue_has_next: bool = False
         delayed_target_state: str = ''
+        # Dispatch debounce: count consecutive polls in a dispatchable ready
+        # state.  A queued message is only sent once the state has been ready
+        # for two consecutive polls, so a single-poll false-idle (a transient
+        # glitch in a provider's silence heuristic) can't type the message
+        # into a turn that is actually still running.  Reset whenever the
+        # state is not dispatchable; bypassed by a force-dispatch.
+        idle_confirm_polls = 0
         while self.running:
             # Wait for a producer's wake-up signal or for the periodic
             # state-poll timeout — whichever comes first.  Short wait
@@ -1507,6 +1514,7 @@ class LeapServer:
                     continue
 
                 if self.queue.is_empty:
+                    idle_confirm_polls = 0
                     continue
                 # Never dispatch through a permission / input prompt
                 # or an interrupted state — those are real "waiting
@@ -1514,10 +1522,34 @@ class LeapServer:
                 # ``_capture_force_dispatch`` is set (user typed
                 # ^^ + Enter); otherwise stick to IDLE-only.
                 if current_state in WAITING_STATES:
+                    idle_confirm_polls = 0
                     continue
                 if (not self._capture_force_dispatch
                         and not self.state.is_ready_for_state(current_state)):
+                    idle_confirm_polls = 0
                     continue
+                # Never type a queued message into a half-typed prompt: if
+                # the user has unsubmitted text in the input box (or is
+                # composing a ^^ message), skip this dispatch.  The
+                # composing-aware state usually holds RUNNING here, but that
+                # hold is capped (so a long compose-pause can idle), so guard
+                # the dispatch directly too.  An explicit ^^+Enter
+                # force-dispatch bypasses this (the capture cleared the box).
+                if (not self._capture_force_dispatch
+                        and (self._terminal_input_buf
+                             or self._queue_capture_mode)):
+                    idle_confirm_polls = 0
+                    continue
+                # Dispatch debounce: require the ready state to persist for two
+                # consecutive polls before sending, so a single-poll false-idle
+                # (a transient glitch in a provider's silence heuristic) can't
+                # type a queued message into a turn that is actually still
+                # running.  A force-dispatch (^^ + Enter) bypasses it - the
+                # user explicitly asked to send now.
+                if not self._capture_force_dispatch:
+                    idle_confirm_polls += 1
+                    if idle_confirm_polls < 2:
+                        continue
 
                 # Flush pending Slack write BEFORE sending the next
                 # message — on_send() deletes the signal file, so the
@@ -1545,6 +1577,7 @@ class LeapServer:
 
                 message = self.queue.pop()
                 if not message:
+                    idle_confirm_polls = 0
                     continue
 
                 try:
@@ -1553,6 +1586,10 @@ class LeapServer:
                 except Exception as e:
                     print(f"Error sending to CLI, requeuing: {e}", file=sys.stderr, flush=True)
                     self.queue.requeue(message)
+                # Re-arm the debounce: the next queued message must independently
+                # observe two consecutive ready polls (the session is RUNNING
+                # again right after a send anyway).
+                idle_confirm_polls = 0
             except Exception:
                 print(
                     "Error in auto-sender loop iteration:",

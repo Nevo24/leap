@@ -86,6 +86,15 @@ class CodexProvider(CLIProvider):
         return []
 
     @property
+    def trust_dialog_patterns(self) -> list[bytes]:
+        # Codex (Ratatui TUI) has no workspace-trust dialog on startup.
+        # Without this override it inherits the base (Claude) trust patterns
+        # and could false-fire idle→needs_permission on agent output that
+        # happens to quote them.  The other non-Claude providers (Copilot,
+        # Cursor, Gemini) already override this; Codex was the gap.
+        return []
+
+    @property
     def valid_signal_states(self) -> frozenset[str]:
         # Codex's Stop hook writes 'idle'.  Since there's no Notification
         # hook, needs_permission/needs_input come from PTY output only

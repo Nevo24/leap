@@ -237,6 +237,57 @@ class TestClaudeProvider:
         assert not provider._is_prompt_box_hr(long_table_mid)
         assert not provider._is_prompt_box_hr(long_table_bot)
 
+    def test_claude_idle_prompt_visible_with_label_in_border(self) -> None:
+        # Regression: Claude can draw a short badge (active skill / model /
+        # plan-mode) INTO the input-box top border, e.g.
+        # ``────psakdin-case-law-source────``.  The border is still the
+        # idle box's rule, so the idle prompt MUST be detected.  An earlier
+        # strict "every char is ─" check rejected it, which (combined with
+        # the cursor+silence interactive-UI guard, which holds RUNNING when
+        # the idle box is absent yet a ❯ is on screen) wedged the session
+        # RUNNING forever when no Stop hook followed.  Captured live in
+        # ``.storage/state_logs/nushi.log``.
+        from leap.cli_providers.claude import ClaudeProvider
+        provider = ClaudeProvider()
+        labelled_hr = '─' * 140 + 'psakdin-case-law-source' + '─' * 4
+        assert provider._is_prompt_box_hr(labelled_hr)
+        idle = [
+            'Some prior response text',
+            labelled_hr,
+            '❯ hitell me a long story',
+            '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+        ]
+        assert provider.is_idle_prompt_visible(idle)
+        # But a label longer than the cap is NOT a border: guards against a
+        # prose line that merely starts with a long ─ run.
+        prose_with_rule = (
+            '─' * 60 + 'this is a long sentence that only happens to '
+            'begin with a horizontal rule and must not count as a border'
+        )
+        assert not provider._is_prompt_box_hr(prose_with_rule)
+        # The slider axis is still rejected even when it leads with ─.
+        assert not provider._is_prompt_box_hr(
+            '─' * 30 + '▲' + '─' * 30)
+        # A box-drawing border that leads with ─ but embeds a junction
+        # glyph is still rejected (the label-safety check, not just the
+        # leading-glyph check).
+        assert not provider._is_prompt_box_hr(
+            '─' * 60 + '┬' + '─' * 60)
+        # The label-safety check is an ALLOWLIST (letters/digits/name
+        # punctuation only), so a ─-led rule embedding GRAPHICS is rejected -
+        # a progress bar, geometric shapes, or a percent bar must never be
+        # taken for the input-box border (else a mid-response render directly
+        # above a ❯ line could false-idle a live turn).
+        for graphic in ('████░░░░', '■■■', '50%', '•••', '▰▰▱▱'):
+            assert not provider._is_prompt_box_hr(
+                '─' * 30 + graphic + '─' * 30), graphic
+        # ...but plain-text badges with name punctuation (versions, paths,
+        # parens) are still accepted as a border.
+        for badge in ('Sonnet 4.6', 'claude-opus-4-8', 'plan mode',
+                      'output_style/explanatory', '(current)'):
+            assert provider._is_prompt_box_hr(
+                '─' * 80 + badge + '─' * 4), badge
+
     def test_claude_idle_prompt_visible_at_narrow_terminal_width(
         self,
     ) -> None:

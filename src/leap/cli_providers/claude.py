@@ -143,29 +143,66 @@ class ClaudeProvider(CLIProvider):
     # check below regardless of length, so 40 doesn't sacrifice
     # protection against inline rule widgets.
     _MIN_HR_LEN: int = 40
+    # A short text label may be drawn INTO the input-box border (active
+    # model / skill / plan-mode badge), e.g.
+    # ``────psakdin-case-law-source────``.  Such a border is still the idle
+    # box's rule; only its embedded text differs from a bare rule.  Cap the
+    # label length so a prose line that merely contains a long ``─`` run is
+    # not mistaken for a border.
+    _HR_MAX_LABEL_LEN: int = 40
+    # Punctuation (besides letters/digits) allowed inside a border badge -
+    # the chars that appear in model / skill / plan-mode names and versions.
+    _HR_LABEL_PUNCT: frozenset = frozenset('-_./()')
+
+    def _is_hr_label_safe(self, label: str) -> bool:
+        """True iff *label* (the non-``─``, non-space chars of a candidate
+        border) is a plain TEXT badge - letters, digits, and a few name
+        punctuation marks - rather than graphics.
+
+        This is an ALLOWLIST, not a blocklist, on purpose: any graphical glyph
+        (box-drawing table borders, block-element progress bars ``████░░░░``,
+        geometric shapes, slider axes, arrows, percent bars) is rejected.  The
+        failure mode is asymmetric - a border mis-classified as "not a border"
+        merely falls back to the cap (idles after the safety timeout), whereas
+        a too-lenient accept would false-IDLE a live screen.  So we err strict:
+        a real badge with an unexpected char just loses the fast path, never
+        causes a wrong idle.  ``─`` itself is never passed in (it's the rule
+        glyph)."""
+        return all(ch.isalnum() or ch in self._HR_LABEL_PUNCT for ch in label)
 
     def _is_prompt_box_hr(self, line: str) -> bool:
         """Line is a horizontal-rule border of the idle input box.
 
-        Strict: every non-whitespace character must be ``─``.  This
-        rejects:
-        * slider widgets like ``──────▲──────`` (has ``▲``)
-        * table borders like ``┌─────┬─────┐`` (has ``┌``/``┬``/``┐``)
-        * markdown table inner rows like ``├─────┼─────┤`` (has
-          ``├``/``┼``/``┤``)
-        * any other box-drawing or response text that happens to
-          contain a long ``─`` run.
+        A border is a terminal-wide run of ``─`` that may carry a short text
+        label drawn into it (model / skill / plan-mode badge), e.g.
+        ``────psakdin-case-law-source────``.  It must START with ``─`` and
+        contain at least ``_MIN_HR_LEN`` rule glyphs.  Rejected:
+        * slider widgets like ``──────▲──────`` (``▲`` is a widget glyph)
+        * table / box borders like ``┌─────┬─────┐`` / ``├──┼──┤`` (box-
+          drawing glyphs other than ``─``)
+        * prose lines that merely contain a long ``─`` run (label longer
+          than ``_HR_MAX_LABEL_LEN``, or the line not led by the rule glyph).
 
-        Real Claude HR rows have *no* other characters — terminal-wide
-        ``─`` only.
+        An earlier version required *every* non-space char to be ``─``, which
+        rejected a labelled border outright; combined with the cursor+silence
+        guard (which holds RUNNING when the idle box is absent yet a ``❯`` is
+        on screen) that wedged the session RUNNING whenever Claude drew a
+        badge into the border and no Stop hook followed.
         """
         stripped = line.strip()
         if len(stripped) < self._MIN_HR_LEN:
             return False
-        for ch in stripped:
-            if ch != self._HR_CHAR and ch != ' ':
-                return False
-        return True
+        if not stripped.startswith(self._HR_CHAR):
+            return False
+        label = ''.join(
+            ch for ch in stripped
+            if ch != self._HR_CHAR and ch != ' '
+        )
+        if len(label) > self._HR_MAX_LABEL_LEN:
+            return False
+        if not self._is_hr_label_safe(label):
+            return False
+        return stripped.count(self._HR_CHAR) >= self._MIN_HR_LEN
 
     def _is_prompt_box_input_row(self, line: str) -> bool:
         """Line is the ``❯ ...`` input row at the centre of the box.
