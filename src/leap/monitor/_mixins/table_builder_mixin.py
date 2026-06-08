@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import subprocess
 import time
@@ -225,22 +226,66 @@ class TableBuilderMixin(_Base):
         if row_color:
             color = ensure_contrast(color, row_color)
         item.setForeground(QColor(color))
+        # --- Context-cell tooltip (rich text, theme-coloured) -----------
+        # Two visually separated blocks.  The old plain-text form stacked a
+        # capped GAUGE ("used / window tokens") directly above an unbounded
+        # cumulative METER ("Session total: N tokens") in the same unit, so
+        # the session total read as if it had blown past the 1M window cap.
+        # We now label the live window apart from the cumulative usage and
+        # spell out *why* the total dwarfs the window (every turn re-reads the
+        # whole context, and each read is counted again).  The QToolTip QSS in
+        # app.py paints a dark themed background, so theme text colours stay
+        # readable here.
+        sec, pri, dim = t.text_secondary, t.text_primary, t.text_muted
+        # Tooltip is rich text now, so anything that can carry markup chars is
+        # HTML-escaped: the model id (free-form) and the format_usd output
+        # (it returns "<$0.01" for sub-cent amounts, whose leading "<" would
+        # otherwise be parsed as a tag and eat the rest of the line).  Bare
+        # integers are safe.  Skip the model line entirely when the id is
+        # missing rather than show a stray blank line.
+        model_html = (f"<div style='color:{dim}'>{html.escape(usage.model)}</div>"
+                      if usage.model else "")
         tooltip = (
-            f'{usage.used_tokens:,} / {usage.window:,} tokens ({usage.model})')
-        # Cost-supporting CLIs (Claude today) add last-message and whole-session
-        # token + USD lines.  Cost is an estimate ("est.") because subscription
-        # users aren't billed per token; the $ is dropped when the model price
-        # is unknown so we never show a fabricated $0.
+            f"<div style='color:{sec}'><b>Context window</b>"
+            f" <span style='color:{dim}'>· loaded now</span></div>"
+            f"<div style='color:{pri}'>{usage.used_tokens:,} /"
+            f" {usage.window:,} tokens"
+            f" <span style='color:{dim}'>· {usage.percent}% used</span></div>"
+            f"{model_html}"
+        )
+        # Cost-supporting CLIs (Claude/Codex/Gemini) add the cumulative
+        # token + USD meter.  Cost is an estimate ("est.") because
+        # subscription users aren't billed per token; the $ is dropped when
+        # the model price is unknown so we never show a fabricated $0.
         if provider.supports_cost:
             cost = provider.session_cost(cli_provider, tag, SOCKET_DIR.parent)
             if cost is not None:
-                last_line = f'Last message: {cost.last_turn_tokens:,} tokens'
+                last_val = f"{cost.last_turn_tokens:,} tokens"
                 if cost.last_turn_cost_usd is not None:
-                    last_line += f' · ~{format_usd(cost.last_turn_cost_usd)} (est.)'
-                sess_line = f'Session total: {cost.session_tokens:,} tokens'
+                    last_val += (f" · ~{html.escape(format_usd(cost.last_turn_cost_usd))}"
+                                 f" <span style='color:{dim}'>est.</span>")
+                sess_val = f"{cost.session_tokens:,} tokens"
                 if cost.session_cost_usd is not None:
-                    sess_line += f' · ~{format_usd(cost.session_cost_usd)} (est.)'
-                tooltip = f'{tooltip}\n{last_line}\n{sess_line}'
+                    sess_val += (f" · ~{html.escape(format_usd(cost.session_cost_usd))}"
+                                 f" <span style='color:{dim}'>est.</span>")
+                # Only advertise "estimated cost" when a $ is actually shown;
+                # an unknown model price drops the $, leaving token counts only.
+                has_cost = (cost.last_turn_cost_usd is not None
+                            or cost.session_cost_usd is not None)
+                cost_hint = (f" <span style='color:{dim}'>· estimated cost</span>"
+                             if has_cost else "")
+                tooltip += (
+                    "<hr>"
+                    f"<div style='color:{sec}'><b>Tokens used</b>{cost_hint}</div>"
+                    "<table cellspacing='0' cellpadding='0'>"
+                    f"<tr><td style='color:{sec}'>Last&nbsp;message&nbsp;&nbsp;&nbsp;"
+                    f"</td><td style='color:{pri}'>{last_val}</td></tr>"
+                    f"<tr><td style='color:{sec}'>Full&nbsp;session&nbsp;&nbsp;&nbsp;"
+                    f"</td><td style='color:{pri}'>{sess_val}</td></tr>"
+                    "</table>"
+                    f"<div style='color:{dim}'>Why so large? Every turn re-reads"
+                    f" the<br>whole context, and each read is counted again.</div>"
+                )
         item.setToolTip(tooltip)
 
     def _cell_cached(self, tag: str, col: str, state: tuple,
