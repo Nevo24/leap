@@ -102,10 +102,30 @@ def _escape_groovy(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$')
 
 
-def _jetbrains_rename_tab(title: str) -> None:
-    """Rename the currently selected JetBrains terminal tab via ideScript.
+def _jetbrains_rename_tab(title: str, shell_pid: int) -> None:
+    """Rename *our own* JetBrains terminal tab via ideScript.
 
     Runs in the background to avoid blocking startup.
+
+    The tab is identified by the shell process that owns it, NOT by which
+    tab happens to be focused.  An earlier version renamed
+    ``getSelectedContent()`` (the active tab), which races badly when two
+    ``leap`` servers start in quick succession: server 1's async rename
+    fires after the user has already focused server 2's new tab, so the
+    name lands on the wrong tab (and the OSC title, which correctly
+    reaches each tab's own PTY, is left out of sync with the visible
+    display name).
+
+    Matching is by two race-free keys, in order:
+      1. The tab's shell PID == ``shell_pid`` (our controlling shell, i.e.
+         the server process's parent).  Deterministic and available
+         immediately, independent of whether the OSC has been parsed yet.
+      2. Fallback: the tab's OSC *application* title == ``title``.  The OSC
+         is written to the correct PTY before this runs, so when the PID
+         lookup is unavailable (older API, indirect launch chain) the
+         application title still identifies the right tab.
+    If neither matches we leave every tab alone rather than risk renaming
+    the wrong one.
     """
     cli_path = _resolve_jetbrains_cli()
     if not cli_path:
@@ -121,6 +141,7 @@ def _jetbrains_rename_tab(title: str) -> None:
     # /foo/project matching when /foo/project-v2 is the real project.
     groovy_script = f'''import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.util.ui.UIUtil
 
 IDE.application.invokeLater {{
     var allProjects = ProjectManager.getInstance().getOpenProjects()
@@ -148,9 +169,46 @@ IDE.application.invokeLater {{
         if (terminalWindow != null) {{
             try {{
                 var contentManager = terminalWindow.getContentManager()
-                var content = contentManager.getSelectedContent()
-                if (content != null) {{
-                    content.setDisplayName("{escaped_title}")
+                var widgetClass = Class.forName(
+                    "org.jetbrains.plugins.terminal.ShellTerminalWidget")
+                var n = contentManager.getContentCount()
+                var pidMatch = null
+                var titleMatch = null
+                for (var i = 0; i < n; i++) {{
+                    var content = contentManager.getContent(i)
+                    if (content == null) continue
+                    var widgets = UIUtil.findComponentsOfType(
+                        content.getComponent(), widgetClass)
+                    if (widgets.isEmpty()) continue
+                    var widget = widgets.get(0)
+                    try {{
+                        var proc = widget.getProcessTtyConnector().getProcess()
+                        if (proc != null && proc.pid() == {shell_pid}L) {{
+                            pidMatch = content
+                            break
+                        }}
+                    }} catch (Throwable t) {{
+                    }}
+                    try {{
+                        var app = widget.getTerminalTitle().getApplicationTitle()
+                        if (app != null && app.equals("{escaped_title}")) {{
+                            titleMatch = content
+                        }}
+                    }} catch (Throwable t) {{
+                    }}
+                }}
+                var target = pidMatch != null ? pidMatch : titleMatch
+                if (target == null) {{
+                    // No tab matched by PID or OSC title — e.g. a JetBrains
+                    // build whose terminal widget we can't introspect
+                    // (ShellTerminalWidget absent / different process API).
+                    // Fall back to the selected tab so the session still
+                    // gets named: same as the pre-identity behavior, and no
+                    // worse than it for the common single-active-tab case.
+                    target = contentManager.getSelectedContent()
+                }}
+                if (target != null) {{
+                    target.setDisplayName("{escaped_title}")
                 }}
             }} catch (Exception e) {{
             }}
@@ -401,9 +459,14 @@ def set_terminal_title(title: str, *, vscode_rename: bool = True) -> None:
         # JetBrains: rename via ideScript (handles manually-named tabs).
         # Quick-exit if not in JetBrains (cached check, no thread spawned).
         if _resolve_jetbrains_cli():
+            # Our controlling shell is this process's parent; JetBrains
+            # reports it as the owner of our terminal tab, so the rename can
+            # find *our* tab regardless of which tab is focused when the
+            # async ideScript finally runs.
+            shell_pid = os.getppid()
             threading.Thread(
                 target=_jetbrains_rename_tab,
-                args=(title,),
+                args=(title, shell_pid),
                 daemon=True,
             ).start()
 
