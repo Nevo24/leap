@@ -16,6 +16,7 @@ from PyQt5.QtCore import QEvent, QModelIndex, QObject, QPoint, Qt, QTimer
 from PyQt5.QtGui import QColor, QCursor, QIcon, QPixmap, QPainter, QPen
 from PyQt5.QtSvg import QSvgRenderer
 
+from leap.monitor import columns
 from leap.monitor.themes import current_theme
 from leap.monitor.ui.ui_widgets import ElidedLabel
 
@@ -353,18 +354,11 @@ def menu_btn_style(fg_override: Optional[str] = None,
     )
 
 
-# Column groups for vertical separators.
-# Groups: [X, Tag, CLI, App, Project] | [Server, Last Msg, Context, Path, ServerBranch, Status, Queue] | [Client] | [Slack] | [PR, PRBranch]
-# Indices here are positional and MUST track the COL_* constants in monitor/app.py — if you
-# add/remove/reorder a column there, update this list (and _CENTER_COLS / _MONO_COLS in
-# _mixins/table_builder_mixin.py) in the same change.
-COLUMN_GROUPS: list[list[int]] = [
-    [0, 1, 2, 3, 4],            # Info
-    [5, 6, 7, 8, 9, 10, 11],    # Server (incl. Context at 7)
-    [12],                        # Client
-    [13],                        # Slack
-    [14, 15],                    # PR
-]
+# Column groups for vertical separators, sourced from the single column
+# registry in ``leap.monitor.columns`` (derived from each column's ``group``).
+# Groups: [X, Tag, CLI, App, Project] | [Server, Last Msg, Context, Path,
+# Server Branch, Status, Queue] | [Client] | [Slack] | [PR, PR Branch].
+COLUMN_GROUPS: list[list[int]] = columns.COLUMN_GROUPS
 
 # Precomputed: column index → group index (for fast lookup)
 _COL_TO_GROUP: dict[int, int] = {

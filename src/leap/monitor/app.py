@@ -41,6 +41,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtSvg import QSvgRenderer
 
 from leap.cli_providers.states import CLIState
+from leap.monitor import columns
 from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
 from leap.monitor.dialogs.settings_dialog import detect_default_difftool
 from leap.monitor.dialogs.whats_new_dialog import WhatsNewDialog
@@ -236,23 +237,25 @@ class MonitorWindow(
 ):
     """Main window for Leap Monitor."""
 
-    # Column indices
-    COL_DELETE = 0
-    COL_TAG = 1
-    COL_CLI = 2
-    COL_APP = 3
-    COL_PROJECT = 4
-    COL_SERVER = 5
-    COL_TASK = 6
-    COL_CONTEXT = 7
-    COL_PATH = 8
-    COL_SERVER_BRANCH = 9
-    COL_STATUS = 10
-    COL_QUEUE = 11
-    COL_CLIENT = 12
-    COL_SLACK = 13
-    COL_PR = 14
-    COL_PR_BRANCH = 15
+    # Session-table column indices.  Single source of truth: ``columns.py``.
+    # Re-exported as class attributes so the established ``self.COL_*`` access
+    # used across app.py and the table mixins keeps working unchanged.
+    COL_DELETE = columns.COL_DELETE
+    COL_TAG = columns.COL_TAG
+    COL_CLI = columns.COL_CLI
+    COL_APP = columns.COL_APP
+    COL_PROJECT = columns.COL_PROJECT
+    COL_SERVER = columns.COL_SERVER
+    COL_TASK = columns.COL_TASK
+    COL_CONTEXT = columns.COL_CONTEXT
+    COL_PATH = columns.COL_PATH
+    COL_SERVER_BRANCH = columns.COL_SERVER_BRANCH
+    COL_STATUS = columns.COL_STATUS
+    COL_QUEUE = columns.COL_QUEUE
+    COL_CLIENT = columns.COL_CLIENT
+    COL_SLACK = columns.COL_SLACK
+    COL_PR = columns.COL_PR
+    COL_PR_BRANCH = columns.COL_PR_BRANCH
 
     # Floor for a *restorable* saved window size.  A saved geometry smaller
     # than this in either dimension is treated as corrupt and ignored in
@@ -266,12 +269,8 @@ class MonitorWindow(
     _MIN_RESTORE_WIDTH = 700
     _MIN_RESTORE_HEIGHT = 300
 
-    _HEADER_LABELS = [
-        '', 'Tag', 'CLI', 'App', 'Project', 'Server', 'Last Msg', 'Context',
-        'Path', 'Server Branch', 'Status', 'Queue', 'Client', 'Slack', 'PR',
-        'PR Branch',
-    ]
-    _NON_TOGGLEABLE_COLS = frozenset({0, 1})  # Delete and Tag always visible
+    _HEADER_LABELS = columns.HEADER_LABELS
+    _NON_TOGGLEABLE_COLS = columns.NON_TOGGLEABLE_COLS  # Delete and Tag always visible
 
     # Row sort modes for the toolbar Sort control.  'manual' is the
     # default: it honors the user's drag-arranged ``row_order``.  The

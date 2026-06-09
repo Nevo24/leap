@@ -77,6 +77,7 @@ src/
     │
     ├── monitor/                 # GUI Monitor (PyQt5)
     │   ├── app.py               # MonitorWindow (core window + UI init + lifecycle)
+    │   ├── columns.py           # Session-table column registry: single source for indices, labels, mono/center/toggle sets, separator groups
     │   ├── server_launcher.py   # PR server clone/checkout/start flow
     │   ├── session_manager.py   # Session discovery + read_client_pid()
     │   ├── scm_polling.py       # SCM poller + background workers (SessionRefreshWorker also scans Cursor GUI agent tabs when enabled)
@@ -206,6 +207,7 @@ assets/
 | `_TagSessionPicker` | `monitor/dialogs/resume_session_dialog.py` | Sub-dialog for tags with >1 recorded session |
 | `SCMSetupDialog` | `monitor/dialogs/scm_setup_dialog.py` | Abstract base: Save / Connect-Disconnect / Cancel actions |
 | `ColorPickerPopup` | `monitor/ui/table_helpers.py` | Row color picker popup (grid of swatches + clear) |
+| `COLUMNS` / `ColumnSpec` | `monitor/columns.py` | Single source of truth for session-table layout; `MonitorWindow.COL_*`, `_HEADER_LABELS`, `_CENTER_COLS`/`_MONO_COLS`, and `COLUMN_GROUPS` all derive from it |
 | `DockBadge` | `monitor/ui/dock_badge.py` | Dock icon badge overlay + notification event detection |
 | `Theme` / `current_theme()` | `monitor/themes.py` | Theme dataclass + manager API (9 built-in themes) |
 | `ensure_contrast()` | `monitor/themes.py` | WCAG contrast safety-net (returns black/white if ratio < 4.5:1) |

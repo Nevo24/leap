@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QPoint, QSize, Qt
 from PyQt5.QtGui import QColor, QCursor, QFont, QPalette
 
+from leap.monitor import columns
 from leap.monitor.dialogs.notes_dialog import NotesDialog
 from leap.monitor.dialogs.queue_edit_dialog import QueueEditDialog
 from leap.monitor.dialogs.scm_template_dialog import PresetEditorDialog
@@ -75,9 +76,11 @@ def _hex_to_rgb_str(hex_color: str) -> str:
 class TableBuilderMixin(_Base):
     """Methods for table construction, cell helpers, refresh, settings, and preset editor."""
 
-    _CENTER_COLS = frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15})  # All data columns
-    # Columns that display technical/code data — rendered in monospace font
-    _MONO_COLS = frozenset({4, 8, 9, 15})  # Project, Path, Server Branch, PR Branch
+    # Cell alignment / font column sets, sourced from the single column
+    # registry in ``leap.monitor.columns`` so there are no magic numbers to
+    # drift out of sync with the table layout.
+    _CENTER_COLS = columns.CENTER_COLS  # All data columns (everything but Delete)
+    _MONO_COLS = columns.MONO_COLS  # Project, Path, Server Branch, PR Branch
 
     def _set_cell_widget(self, row: int, col: int, widget: QWidget) -> None:
         """Set a cell widget wrapped in a hover-aware container.
