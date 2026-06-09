@@ -30,8 +30,8 @@ On disk, each file holds a JSON list of entries shaped::
     }
 
 Writers call :func:`record_session` to upsert an entry (dedup by
-``session_id``, atomic rename); readers call :func:`load_tag_rows`
-to get a pre-filtered list of
+``session_id``, cap to :data:`MAX_ENTRIES_PER_TAG`, atomic rename);
+readers call :func:`load_tag_rows` to get a pre-filtered list of
 ``TagRow`` values, newest-first, with stale (disk-deleted transcript)
 entries already dropped.
 """
@@ -48,6 +48,9 @@ from typing import Optional
 
 from leap.utils.atomic_write import atomic_write_json
 
+
+# Cap per (cli, tag) file; oldest-first trimming keeps this bounded.
+MAX_ENTRIES_PER_TAG: int = 20
 
 # Matches the ``<tag>`` and ``<cli>`` identifiers we're willing to
 # persist on disk — plain alphanumerics plus ``-``/``_``.  Guards
@@ -145,9 +148,9 @@ def record_session(
     """Upsert an entry into ``<storage>/cli_sessions/<cli>/<tag>.json``.
 
     Dedupes by ``session_id`` (a repeated hook for the same session
-    just bumps ``last_seen``) and writes atomically via tmp-file +
-    ``os.replace``.  Silent on all failures — this is best-effort
-    bookkeeping, never the critical path.
+    just bumps ``last_seen``), trims to :data:`MAX_ENTRIES_PER_TAG`, and
+    writes atomically via tmp-file + ``os.replace``.  Silent on all
+    failures — this is best-effort bookkeeping, never the critical path.
     """
     if not (cli and tag and session_id):
         return
@@ -191,6 +194,7 @@ def record_session(
             "project_path": project_path or "",
             "last_seen": time.time(),
         })
+        entries = entries[-MAX_ENTRIES_PER_TAG:]
         # ``atomic_write_json`` uses ``tempfile.mkstemp`` for a unique tmp
         # filename and ``fsync``s before rename — both matter here.
         # Two hooks firing concurrently for the same (cli, tag) used to

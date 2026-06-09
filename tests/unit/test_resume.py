@@ -19,6 +19,7 @@ from leap.cli_providers.registry import (
     get_provider,
 )
 from leap.utils.resume_store import (
+    MAX_ENTRIES_PER_TAG,
     SessionRecord,
     TagRow,
     latest_transcript_for,
@@ -593,20 +594,17 @@ class TestResumeStore:
         rows = load_tag_rows(tmp_path)
         assert len(rows[0].sessions) == 1, "repeated record should bump, not append"
 
-    def test_no_cap_retains_all_sessions(self, tmp_path, live_transcript):
-        # There is no per-tag cap: every distinct session is retained so a
-        # long-lived conversation is never evicted by a churn of newer ones.
+    def test_cap_keeps_newest(self, tmp_path, live_transcript):
         tp = live_transcript()
-        n = 500
-        for i in range(n):
+        for i in range(MAX_ENTRIES_PER_TAG + 5):
             record_session(tmp_path, "codex", "cap",
                            session_id=f"id-{i}", transcript_path=tp)
         rows = load_tag_rows(tmp_path)
         sessions = rows[0].sessions
-        assert len(sessions) == n
+        assert len(sessions) == MAX_ENTRIES_PER_TAG
         ids = {s.session_id for s in sessions}
-        assert "id-0" in ids, "oldest must be kept (no cap)"
-        assert f"id-{n - 1}" in ids, "newest must be kept"
+        assert "id-0" not in ids, "oldest should be trimmed"
+        assert f"id-{MAX_ENTRIES_PER_TAG + 4}" in ids, "newest should be kept"
 
     def test_stale_transcript_dropped(self, tmp_path, live_transcript):
         tp = live_transcript()
