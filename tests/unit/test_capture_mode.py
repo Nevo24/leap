@@ -9,8 +9,11 @@ Covers:
 """
 
 import hashlib
+import json
 import os
+import tempfile
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -77,6 +80,10 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._suppress_send_until = 0.0
     srv._saved_messages = []
     srv._saved_msg_index = -1
+    # Isolate the saved-messages store: a fresh empty temp dir per server so
+    # no test reads (or writes) the developer's real .storage file. The file
+    # itself does not exist yet, so _load_saved_messages() returns [].
+    srv._SAVED_MESSAGES_FILE = Path(tempfile.mkdtemp()) / 'saved_messages.json'
     srv._prev_filter_state = None
     srv._send_clear_queue = []
     srv._dispatch_wake = threading.Event()
@@ -636,7 +643,8 @@ class TestPasteCollapse:
         """Recalled multi-line saved messages show a [Paste #<hash>] token."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
-        srv._saved_messages = ['line1\nline2\nline3']
+        # Browse reloads from disk on entry, so seed the store there.
+        srv._SAVED_MESSAGES_FILE.write_text(json.dumps(['line1\nline2\nline3']))
         srv._queue_capture_mode = True
         with patch.object(srv, '_capture_display'):
             srv._browse_saved_history(-1)
@@ -648,7 +656,8 @@ class TestPasteCollapse:
         """Recalling the same saved msg twice keeps the same [Paste #<hash>]."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
-        srv._saved_messages = ['same\ncontent\nhere']
+        # Browse reloads from disk on entry, so seed the store there.
+        srv._SAVED_MESSAGES_FILE.write_text(json.dumps(['same\ncontent\nhere']))
         srv._queue_capture_mode = True
         with patch.object(srv, '_capture_display'):
             srv._browse_saved_history(-1)
@@ -664,7 +673,8 @@ class TestPasteCollapse:
         """Short single-line saved messages are not collapsed."""
         srv = make_server(CLIState.IDLE)
         srv.pty.process.child_fd = 999
-        srv._saved_messages = ['hello world']
+        # Browse reloads from disk on entry, so seed the store there.
+        srv._SAVED_MESSAGES_FILE.write_text(json.dumps(['hello world']))
         srv._queue_capture_mode = True
         with patch.object(srv, '_capture_display'):
             srv._browse_saved_history(-1)
@@ -1298,3 +1308,58 @@ class TestExceptionSafety:
         srv._queue_capture_mode = False
         srv.state.current_state = None
         assert srv._input_filter(b'hello') == b'hello'
+
+
+class TestSavedMessagesCrossSession:
+    """Saved messages are shared across concurrently-running sessions.
+
+    Each server caches its own in-memory copy, so a save in one session
+    must re-load from disk both when persisting (so it doesn't clobber the
+    other session's additions) and when another session starts browsing
+    (so the new message is visible without a restart).
+    """
+
+    @staticmethod
+    def _session(tmp_path, name: str) -> LeapServer:
+        srv = make_server(CLIState.IDLE)
+        srv.pty.process.child_fd = 999
+        # Both sessions point at the same on-disk store, but each keeps
+        # its own (initially empty) in-memory list, like two live servers.
+        srv._SAVED_MESSAGES_FILE = tmp_path / 'saved_messages.json'
+        srv._saved_messages = []
+        srv._saved_msg_index = -1
+        srv._queue_capture_buf = bytearray()
+        srv._capture_utf8_buf = bytearray()
+        srv._paste_text_map = {}
+        srv._capture_image_map = {}
+        return srv
+
+    @staticmethod
+    def _save(srv: LeapServer, msg: str) -> None:
+        srv._queue_capture_buf = bytearray(msg.encode('utf-8'))
+        srv._save_capture_message()
+
+    def test_browse_sees_message_saved_by_other_session(self, tmp_path):
+        sx = self._session(tmp_path, 'X')
+        sy = self._session(tmp_path, 'Y')  # started before X's save
+
+        self._save(sx, 'from session X')
+
+        # Y still has a stale empty in-memory list; browsing must reload.
+        with patch.object(sy, '_capture_display'):
+            sy._queue_capture_mode = True
+            sy._browse_saved_history(-1)
+        assert sy._queue_capture_buf == b'from session X'
+
+    def test_concurrent_saves_do_not_clobber(self, tmp_path):
+        sx = self._session(tmp_path, 'X')
+        sy = self._session(tmp_path, 'Y')  # stale empty list
+
+        self._save(sx, 'from session X')
+        # Y persists from its stale list; the reload-before-save merge must
+        # keep X's entry instead of overwriting the file with just Y's.
+        self._save(sy, 'from session Y')
+
+        on_disk = json.loads(
+            (tmp_path / 'saved_messages.json').read_text())
+        assert on_disk == ['from session X', 'from session Y']

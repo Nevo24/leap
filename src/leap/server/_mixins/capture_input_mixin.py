@@ -178,6 +178,11 @@ class CaptureInputMixin:
         # the user typed them.
         if self._capture_image_map:
             msg = self._capture_resolve_images(msg)
+        # Re-load from disk first so a message saved by another running
+        # session isn't clobbered when we persist.  Each session keeps its
+        # own in-memory copy, so without this merge the last writer would
+        # overwrite the file and drop the other session's additions.
+        self._saved_messages = self._load_saved_messages()
         # Remove duplicate if already at the end
         if self._saved_messages and self._saved_messages[-1] == msg:
             pass
@@ -228,6 +233,13 @@ class CaptureInputMixin:
 
     def _browse_saved_history(self, direction: int) -> None:
         """Browse saved messages. direction: -1=up (older), +1=down (newer)."""
+        if self._saved_msg_index == -1:
+            # Not browsing yet — re-load from disk so messages saved by
+            # other running sessions are visible.  Each session caches its
+            # own in-memory copy, and this is the only entry point that
+            # refreshes it (mid-browse reloads would shift indices under
+            # the user, so we only refresh when starting a fresh browse).
+            self._saved_messages = self._load_saved_messages()
         if not self._saved_messages:
             return
         count = len(self._saved_messages)
