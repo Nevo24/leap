@@ -1249,163 +1249,7 @@ class CLIStateTracker:
                 new_state == CLIState.IDLE
                 and current == CLIState.RUNNING
             ):
-                # Running indicator guard: a between-turns auto-compact
-                # immediately follows the Stop hook that wrote 'idle'.
-                # Honouring the signal here would make the session read
-                # as idle for the entire compaction — stay running
-                # until the indicator disappears.
-                with self._screen_lock:
-                    running_indicator = self._screen_has_running_indicator()
-                if running_indicator:
-                    _log.debug(
-                        'GET_STATE signal=idle but running indicator '
-                        'on screen - keeping running',
-                    )
-                    try:
-                        self._signal_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    return current
-
-                # Transcript guard: provider's per-session transcript
-                # shows an unanswered tool_use from the current turn.
-                # Catches Stop-hook-fires-mid-tool races (the model still
-                # has work pending) that the screen guards above don't
-                # cover.  See ClaudeProvider.transcript_says_running.
-                if self._transcript_says_running():
-                    _log.debug(
-                        'GET_STATE signal=idle but transcript shows '
-                        'unanswered tool_use - keeping running',
-                    )
-                    try:
-                        self._signal_file.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    return current
-
-                # Convert to INTERRUPTED if EITHER:
-                #   (a) ``_interrupt_pending`` + interrupt pattern on
-                #       pyte's rendered screen, OR
-                #   (b) the transcript records a ``[Request interrupted
-                #       by user]`` entry above the current turn's most
-                #       recent assistant tool_use.
-                # Path (a) alone misses the common Ink-TUI redraw case
-                # where pyte never observes "Interrupted" in its buffer
-                # (verified on a real session: 0 has_Interrupted=True
-                # observations across 147k RUNNING ON_OUTPUT polls
-                # spanning the entire interrupt window).
-                # Path (b) doesn't require ``_interrupt_pending`` —
-                # the transcript is independent evidence and the timestamp
-                # filter in ``transcript_says_interrupted`` already
-                # restricts to the current turn.
-                has_pattern = False
-                has_transcript_interrupt = False
-                if self._interrupt_pending:
-                    interrupted_pattern = self._provider.interrupted_pattern
-                    pattern_str = interrupted_pattern.decode(
-                        'utf-8', errors='replace',
-                    )
-                    with self._screen_lock:
-                        screen_text = self._get_screen_text()
-                        compact = screen_text.replace(
-                            ' ', '',
-                        ).replace('\n', '')
-                    has_pattern = pattern_str in compact
-                # Transcript check is independent of the pending flag
-                # — covers races where Esc fires while ``pty_alive``
-                # is briefly False (which silently clears
-                # ``_interrupt_pending`` in the pty-dead path).
-                if not has_pattern:
-                    has_transcript_interrupt = (
-                        self._transcript_says_interrupted()
-                    )
-
-                if (self._interrupt_pending and has_pattern) \
-                        or has_transcript_interrupt:
-                    _log.debug(
-                        'GET_STATE signal=idle + %s → interrupted',
-                        'interrupt_pending + pattern on screen'
-                        if has_pattern
-                        else 'transcript interrupt marker',
-                    )
-                    self._interrupt_pending = False
-                    self._user_responded = False
-                    with self._lock:
-                        self._state = CLIState.INTERRUPTED
-                        self._waiting_since = self._clock()
-                    self._write_interrupted_signal()
-                    self._user_input_since_idle = False
-                    with self._screen_lock:
-                        self._reset_screen()
-                    return CLIState.INTERRUPTED
-                else:
-                    if self._interrupt_pending:
-                        _log.debug(
-                            'GET_STATE signal=idle + interrupt_pending '
-                            'but NO pattern on screen → idle '
-                            '(CLI ignored the Escape)',
-                        )
-                    else:
-                        _log.debug('GET_STATE signal transition running→idle')
-                    self._interrupt_pending = False
-
-                    # Stop hook fires for some Claude tools (notably
-                    # AskUserQuestion / "Proceed?") that leave a dialog
-                    # awaiting user input — the agent is "done" from the
-                    # hook's perspective but the user still has to answer.
-                    # If a dialog footer is in the bottom 5 rows, treat
-                    # the signal as a running→needs_permission transition.
-                    # Mirrors the cursor+silence proactive check at
-                    # ~line 1300, but for the immediate signal path.
-                    with self._screen_lock:
-                        all_lines = self._get_display_lines()
-                    filled = [ln for ln in all_lines if ln.strip()]
-                    compact_tail = ''.join(filled[-5:]).replace(' ', '')
-                    if self._provider.is_dialog_certain(compact_tail):
-                        _log.debug(
-                            'GET_STATE signal=idle but dialog on '
-                            'screen → needs_permission',
-                        )
-                        # Defensive reset (matches the cursor+silence
-                        # proactive check at ~line 1330): clear any
-                        # stale _user_responded so the next waiting→idle
-                        # signal isn't accepted before the user has
-                        # actually answered THIS dialog.
-                        self._user_responded = False
-                        if self._trust_dialog_phase:
-                            self._seen_user_input = False
-                            self._trust_dialog_phase = False
-                        with self._lock:
-                            self._state = CLIState.NEEDS_PERMISSION
-                            self._waiting_since = self._clock()
-                        self._user_input_since_idle = False
-                        with self._screen_lock:
-                            self._prompt_snapshot = all_lines
-                            # Do NOT reset the screen here.  See
-                            # _handle_idle_output's mid-session proactive
-                            # check for the rationale: the dialog must
-                            # remain in the live buffer so the
-                            # waiting→idle self-dismissal check at
-                            # ~line 1207 can correctly tell whether the
-                            # user has answered.
-                        try:
-                            self._signal_file.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                        return CLIState.NEEDS_PERMISSION
-
-                    with self._lock:
-                        self._state = CLIState.IDLE
-                        self._waiting_since = None
-                    self._user_input_since_idle = False
-                    if self._trust_dialog_phase:
-                        self._seen_user_input = False
-                    self._trust_dialog_phase = False
-                    with self._screen_lock:
-                        self._last_running_snapshot = self._get_display_lines()
-                        self._reset_screen()
-                        self._prompt_snapshot = []
-                    return CLIState.IDLE
+                return self._signal_running_to_idle(current)
 
             # -- waiting → idle (requires _user_responded) --
             elif (
@@ -1452,166 +1296,343 @@ class CLIStateTracker:
 
             # -- All other signal transitions --
             else:
-                # Late Notification guard: the Notification hook can
-                # take ~6s to arrive — by then the cursor+silence
-                # heuristic has already moved running→idle and the
-                # dialog may have been auto-accepted (bypass) or the
-                # CLI finished.  Verify the dialog is actually visible
-                # before transitioning.
-                # Covers both needs_permission (permission_prompt) and
-                # needs_input (elicitation_dialog).  Dialogs may use
-                # different UI formats: standard footer ("Enter to
-                # select / Esc to cancel") or numbered menus (❯ 1. Yes).
-                # Delegate to provider.has_dialog_indicator() which
-                # knows all its dialog formats.
-                # Skip for providers with empty dialog_patterns (Codex)
-                # — they have no PTY-based dialog detection and rely
-                # entirely on hook signals.
-                if (
-                    current == CLIState.IDLE
-                    and new_state in (
-                        CLIState.NEEDS_PERMISSION,
-                        CLIState.NEEDS_INPUT,
-                    )
-                    and self._provider.dialog_patterns
-                ):
-                    with self._screen_lock:
-                        screen_text = self._get_screen_text()
-                        compact = screen_text.replace(
-                            ' ', '',
-                        ).replace('\n', '')
-                        # After running→idle the screen was reset.  The
-                        # Notification hook can arrive seconds later, by
-                        # which time the live screen may be empty or may
-                        # contain only partial TUI redraws (without the
-                        # full dialog).  Always check the snapshot saved
-                        # at running→idle time as a fallback.
-                        if self._last_running_snapshot:
-                            fallback = '\n'.join(
-                                self._last_running_snapshot,
-                            )
-                            compact += fallback.replace(
-                                ' ', '',
-                            ).replace('\n', '')
-                    has_dialog = self._provider.has_dialog_indicator(
-                        compact,
-                    )
-                    if not has_dialog:
-                        _log.debug(
-                            'GET_STATE signal=%s from idle but no '
-                            'dialog patterns on screen - ignoring '
-                            'stale notification',
-                            new_state,
-                        )
-                        # Delete the stale signal so it doesn't block
-                        # future transitions on every poll cycle.
-                        try:
-                            self._signal_file.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                        return current
-
-                # RUNNING-state stale-signal guard.  Distinct rationale
-                # from the IDLE guard above: the only path that reaches
-                # RUNNING with an incoming permission/input signal that
-                # is *actually stale* is when the user pressed Enter to
-                # answer a prompt — that transition resets both the
-                # pyte screen and ``_last_running_snapshot``, so an
-                # empty-screen + empty-snapshot pair is the signature
-                # of a freshly-answered dialog whose hook is arriving
-                # late (see ``test_stale_notification_rejected_after_
-                # enter_from_permission``).
-                #
-                # We deliberately do NOT require dialog patterns on
-                # screen here.  In multi-agent runs the parent stays
-                # RUNNING for the entire turn (no ``Stop`` hook fires
-                # for subagents) and ``_last_running_snapshot`` never
-                # gets populated.  When the subagent's permission
-                # ``Notification`` hook fires before pyte has processed
-                # the dialog footer bytes, the live screen has the
-                # subagent's *prior* output but no footer pattern yet —
-                # the old pattern-only check rejected those valid
-                # signals, leaving auto-approve stuck waiting for the
-                # 5 s cursor+silence fallback (or indefinitely, if the
-                # TUI kept emitting bytes).  Treat any non-empty screen
-                # as evidence that the running state isn't a freshly-
-                # reset post-Enter snapshot, and let the signal through.
-                if (
-                    current == CLIState.RUNNING
-                    and new_state in (
-                        CLIState.NEEDS_PERMISSION,
-                        CLIState.NEEDS_INPUT,
-                    )
-                    and self._provider.dialog_patterns
-                ):
-                    # Read both pieces under the same lock so a concurrent
-                    # on_input(Enter) can't reset one but not the other
-                    # between our reads — without this, a screen-cleared-
-                    # but-snapshot-not-yet-cleared interleaving could let
-                    # a genuinely stale signal slip past the guard (or
-                    # vice versa).  Mirrors the IDLE guard above, which
-                    # also reads ``_last_running_snapshot`` inside the
-                    # screen lock.
-                    with self._screen_lock:
-                        screen_text = self._get_screen_text()
-                        screen_compact = screen_text.replace(
-                            ' ', '',
-                        ).replace('\n', '')
-                        snapshot_empty = not self._last_running_snapshot
-                    if not screen_compact and snapshot_empty:
-                        _log.debug(
-                            'GET_STATE signal=%s from running with '
-                            'empty screen + empty snapshot - ignoring '
-                            'stale notification (post-Enter race)',
-                            new_state,
-                        )
-                        try:
-                            self._signal_file.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                        return current
-
-                if current == CLIState.INTERRUPTED:
-                    self._suppress_stale_interrupt = True
-                _log.debug(
-                    'GET_STATE signal transition %s→%s',
-                    current, new_state,
-                )
-                self._interrupt_pending = False
-                with self._lock:
-                    self._state = new_state
-                    if new_state in PROMPT_STATES:
-                        self._waiting_since = self._clock()
-                    else:
-                        self._waiting_since = None
-                # Preserve _user_responded when coming from IDLE: a false
-                # running→idle may have left us in IDLE while a dialog
-                # was still on screen.  If the user answered during that
-                # IDLE window, on_input() set _user_responded=True; we
-                # must not wipe it here or the cursor-hidden / waiting→
-                # idle exit paths will never fire.  All other source
-                # states (RUNNING, INTERRUPTED) reset it as before.
-                if current != CLIState.IDLE:
-                    self._user_responded = False
-                # Clear trust dialog phase on any signal transition —
-                # if a real permission prompt fires after the trust
-                # dialog, we must not treat its output as startup.
-                if self._trust_dialog_phase:
-                    if new_state == CLIState.IDLE:
-                        self._seen_user_input = False
-                    self._trust_dialog_phase = False
-                with self._screen_lock:
-                    if new_state in PROMPT_STATES:
-                        self._prompt_snapshot = self._capture_prompt_snapshot()
-                    else:
-                        self._prompt_snapshot = []
-                        self._last_running_snapshot = []
-                    self._reset_screen()
-                if new_state == CLIState.IDLE:
-                    self._user_input_since_idle = False
-                return new_state
+                return self._signal_apply_other(current, new_state)
 
         return None
+
+    def _signal_running_to_idle(self, current: str) -> Optional[str]:
+        """Resolve a hook ``signal=idle`` arriving while RUNNING.
+
+        Honours the idle signal unless a guard says the turn is not really
+        over: a between-turns auto-compact indicator, an in-flight tool per
+        the transcript, a still-visible dialog (-> NEEDS_PERMISSION), or a
+        transcript interrupt marker (-> INTERRUPTED).  Returns the resolved
+        state, or None to fall through to the caller's ``return current``.
+        """
+        # Running indicator guard: a between-turns auto-compact
+        # immediately follows the Stop hook that wrote 'idle'.
+        # Honouring the signal here would make the session read
+        # as idle for the entire compaction — stay running
+        # until the indicator disappears.
+        with self._screen_lock:
+            running_indicator = self._screen_has_running_indicator()
+        if running_indicator:
+            _log.debug(
+                'GET_STATE signal=idle but running indicator '
+                'on screen - keeping running',
+            )
+            try:
+                self._signal_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return current
+
+        # Transcript guard: provider's per-session transcript
+        # shows an unanswered tool_use from the current turn.
+        # Catches Stop-hook-fires-mid-tool races (the model still
+        # has work pending) that the screen guards above don't
+        # cover.  See ClaudeProvider.transcript_says_running.
+        if self._transcript_says_running():
+            _log.debug(
+                'GET_STATE signal=idle but transcript shows '
+                'unanswered tool_use - keeping running',
+            )
+            try:
+                self._signal_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return current
+
+        # Convert to INTERRUPTED if EITHER:
+        #   (a) ``_interrupt_pending`` + interrupt pattern on
+        #       pyte's rendered screen, OR
+        #   (b) the transcript records a ``[Request interrupted
+        #       by user]`` entry above the current turn's most
+        #       recent assistant tool_use.
+        # Path (a) alone misses the common Ink-TUI redraw case
+        # where pyte never observes "Interrupted" in its buffer
+        # (verified on a real session: 0 has_Interrupted=True
+        # observations across 147k RUNNING ON_OUTPUT polls
+        # spanning the entire interrupt window).
+        # Path (b) doesn't require ``_interrupt_pending`` —
+        # the transcript is independent evidence and the timestamp
+        # filter in ``transcript_says_interrupted`` already
+        # restricts to the current turn.
+        has_pattern = False
+        has_transcript_interrupt = False
+        if self._interrupt_pending:
+            interrupted_pattern = self._provider.interrupted_pattern
+            pattern_str = interrupted_pattern.decode(
+                'utf-8', errors='replace',
+            )
+            with self._screen_lock:
+                screen_text = self._get_screen_text()
+                compact = screen_text.replace(
+                    ' ', '',
+                ).replace('\n', '')
+            has_pattern = pattern_str in compact
+        # Transcript check is independent of the pending flag
+        # — covers races where Esc fires while ``pty_alive``
+        # is briefly False (which silently clears
+        # ``_interrupt_pending`` in the pty-dead path).
+        if not has_pattern:
+            has_transcript_interrupt = (
+                self._transcript_says_interrupted()
+            )
+
+        if (self._interrupt_pending and has_pattern) \
+                or has_transcript_interrupt:
+            _log.debug(
+                'GET_STATE signal=idle + %s → interrupted',
+                'interrupt_pending + pattern on screen'
+                if has_pattern
+                else 'transcript interrupt marker',
+            )
+            self._interrupt_pending = False
+            self._user_responded = False
+            with self._lock:
+                self._state = CLIState.INTERRUPTED
+                self._waiting_since = self._clock()
+            self._write_interrupted_signal()
+            self._user_input_since_idle = False
+            with self._screen_lock:
+                self._reset_screen()
+            return CLIState.INTERRUPTED
+        else:
+            if self._interrupt_pending:
+                _log.debug(
+                    'GET_STATE signal=idle + interrupt_pending '
+                    'but NO pattern on screen → idle '
+                    '(CLI ignored the Escape)',
+                )
+            else:
+                _log.debug('GET_STATE signal transition running→idle')
+            self._interrupt_pending = False
+
+            # Stop hook fires for some Claude tools (notably
+            # AskUserQuestion / "Proceed?") that leave a dialog
+            # awaiting user input — the agent is "done" from the
+            # hook's perspective but the user still has to answer.
+            # If a dialog footer is in the bottom 5 rows, treat
+            # the signal as a running→needs_permission transition.
+            # Mirrors the cursor+silence proactive check at
+            # ~line 1300, but for the immediate signal path.
+            with self._screen_lock:
+                all_lines = self._get_display_lines()
+            filled = [ln for ln in all_lines if ln.strip()]
+            compact_tail = ''.join(filled[-5:]).replace(' ', '')
+            if self._provider.is_dialog_certain(compact_tail):
+                _log.debug(
+                    'GET_STATE signal=idle but dialog on '
+                    'screen → needs_permission',
+                )
+                # Defensive reset (matches the cursor+silence
+                # proactive check at ~line 1330): clear any
+                # stale _user_responded so the next waiting→idle
+                # signal isn't accepted before the user has
+                # actually answered THIS dialog.
+                self._user_responded = False
+                if self._trust_dialog_phase:
+                    self._seen_user_input = False
+                    self._trust_dialog_phase = False
+                with self._lock:
+                    self._state = CLIState.NEEDS_PERMISSION
+                    self._waiting_since = self._clock()
+                self._user_input_since_idle = False
+                with self._screen_lock:
+                    self._prompt_snapshot = all_lines
+                    # Do NOT reset the screen here.  See
+                    # _handle_idle_output's mid-session proactive
+                    # check for the rationale: the dialog must
+                    # remain in the live buffer so the
+                    # waiting→idle self-dismissal check at
+                    # ~line 1207 can correctly tell whether the
+                    # user has answered.
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return CLIState.NEEDS_PERMISSION
+
+            with self._lock:
+                self._state = CLIState.IDLE
+                self._waiting_since = None
+            self._user_input_since_idle = False
+            if self._trust_dialog_phase:
+                self._seen_user_input = False
+            self._trust_dialog_phase = False
+            with self._screen_lock:
+                self._last_running_snapshot = self._get_display_lines()
+                self._reset_screen()
+                self._prompt_snapshot = []
+            return CLIState.IDLE
+
+    def _signal_apply_other(self, current: str, new_state: str) -> Optional[str]:
+        """Apply any signal transition not special-cased above.
+
+        Runs the Late-Notification stale-signal guard (a slow Notification
+        hook racing the cursor+silence heuristic) and the post-Enter stale
+        guard, then commits the new state.  Returns the resolved state, or
+        None to fall through to the caller's ``return current``.
+        """
+        # Late Notification guard: the Notification hook can
+        # take ~6s to arrive — by then the cursor+silence
+        # heuristic has already moved running→idle and the
+        # dialog may have been auto-accepted (bypass) or the
+        # CLI finished.  Verify the dialog is actually visible
+        # before transitioning.
+        # Covers both needs_permission (permission_prompt) and
+        # needs_input (elicitation_dialog).  Dialogs may use
+        # different UI formats: standard footer ("Enter to
+        # select / Esc to cancel") or numbered menus (❯ 1. Yes).
+        # Delegate to provider.has_dialog_indicator() which
+        # knows all its dialog formats.
+        # Skip for providers with empty dialog_patterns (Codex)
+        # — they have no PTY-based dialog detection and rely
+        # entirely on hook signals.
+        if (
+            current == CLIState.IDLE
+            and new_state in (
+                CLIState.NEEDS_PERMISSION,
+                CLIState.NEEDS_INPUT,
+            )
+            and self._provider.dialog_patterns
+        ):
+            with self._screen_lock:
+                screen_text = self._get_screen_text()
+                compact = screen_text.replace(
+                    ' ', '',
+                ).replace('\n', '')
+                # After running→idle the screen was reset.  The
+                # Notification hook can arrive seconds later, by
+                # which time the live screen may be empty or may
+                # contain only partial TUI redraws (without the
+                # full dialog).  Always check the snapshot saved
+                # at running→idle time as a fallback.
+                if self._last_running_snapshot:
+                    fallback = '\n'.join(
+                        self._last_running_snapshot,
+                    )
+                    compact += fallback.replace(
+                        ' ', '',
+                    ).replace('\n', '')
+            has_dialog = self._provider.has_dialog_indicator(
+                compact,
+            )
+            if not has_dialog:
+                _log.debug(
+                    'GET_STATE signal=%s from idle but no '
+                    'dialog patterns on screen - ignoring '
+                    'stale notification',
+                    new_state,
+                )
+                # Delete the stale signal so it doesn't block
+                # future transitions on every poll cycle.
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return current
+
+        # RUNNING-state stale-signal guard.  Distinct rationale
+        # from the IDLE guard above: the only path that reaches
+        # RUNNING with an incoming permission/input signal that
+        # is *actually stale* is when the user pressed Enter to
+        # answer a prompt — that transition resets both the
+        # pyte screen and ``_last_running_snapshot``, so an
+        # empty-screen + empty-snapshot pair is the signature
+        # of a freshly-answered dialog whose hook is arriving
+        # late (see ``test_stale_notification_rejected_after_
+        # enter_from_permission``).
+        #
+        # We deliberately do NOT require dialog patterns on
+        # screen here.  In multi-agent runs the parent stays
+        # RUNNING for the entire turn (no ``Stop`` hook fires
+        # for subagents) and ``_last_running_snapshot`` never
+        # gets populated.  When the subagent's permission
+        # ``Notification`` hook fires before pyte has processed
+        # the dialog footer bytes, the live screen has the
+        # subagent's *prior* output but no footer pattern yet —
+        # the old pattern-only check rejected those valid
+        # signals, leaving auto-approve stuck waiting for the
+        # 5 s cursor+silence fallback (or indefinitely, if the
+        # TUI kept emitting bytes).  Treat any non-empty screen
+        # as evidence that the running state isn't a freshly-
+        # reset post-Enter snapshot, and let the signal through.
+        if (
+            current == CLIState.RUNNING
+            and new_state in (
+                CLIState.NEEDS_PERMISSION,
+                CLIState.NEEDS_INPUT,
+            )
+            and self._provider.dialog_patterns
+        ):
+            # Read both pieces under the same lock so a concurrent
+            # on_input(Enter) can't reset one but not the other
+            # between our reads — without this, a screen-cleared-
+            # but-snapshot-not-yet-cleared interleaving could let
+            # a genuinely stale signal slip past the guard (or
+            # vice versa).  Mirrors the IDLE guard above, which
+            # also reads ``_last_running_snapshot`` inside the
+            # screen lock.
+            with self._screen_lock:
+                screen_text = self._get_screen_text()
+                screen_compact = screen_text.replace(
+                    ' ', '',
+                ).replace('\n', '')
+                snapshot_empty = not self._last_running_snapshot
+            if not screen_compact and snapshot_empty:
+                _log.debug(
+                    'GET_STATE signal=%s from running with '
+                    'empty screen + empty snapshot - ignoring '
+                    'stale notification (post-Enter race)',
+                    new_state,
+                )
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return current
+
+        if current == CLIState.INTERRUPTED:
+            self._suppress_stale_interrupt = True
+        _log.debug(
+            'GET_STATE signal transition %s→%s',
+            current, new_state,
+        )
+        self._interrupt_pending = False
+        with self._lock:
+            self._state = new_state
+            if new_state in PROMPT_STATES:
+                self._waiting_since = self._clock()
+            else:
+                self._waiting_since = None
+        # Preserve _user_responded when coming from IDLE: a false
+        # running→idle may have left us in IDLE while a dialog
+        # was still on screen.  If the user answered during that
+        # IDLE window, on_input() set _user_responded=True; we
+        # must not wipe it here or the cursor-hidden / waiting→
+        # idle exit paths will never fire.  All other source
+        # states (RUNNING, INTERRUPTED) reset it as before.
+        if current != CLIState.IDLE:
+            self._user_responded = False
+        # Clear trust dialog phase on any signal transition —
+        # if a real permission prompt fires after the trust
+        # dialog, we must not treat its output as startup.
+        if self._trust_dialog_phase:
+            if new_state == CLIState.IDLE:
+                self._seen_user_input = False
+            self._trust_dialog_phase = False
+        with self._screen_lock:
+            if new_state in PROMPT_STATES:
+                self._prompt_snapshot = self._capture_prompt_snapshot()
+            else:
+                self._prompt_snapshot = []
+                self._last_running_snapshot = []
+            self._reset_screen()
+        if new_state == CLIState.IDLE:
+            self._user_input_since_idle = False
+        return new_state
 
     def _try_transcript_idle(self, current: str) -> Optional[str]:
         # -- Transcript-based idle detection (Codex) --
@@ -1976,9 +1997,9 @@ class CLIStateTracker:
 
     def _try_running_to_idle_via_silence(self, current: str, has_pending_input: bool) -> Optional[str]:
         # -- Running → idle via cursor visibility + output silence --
-        # For Ink TUIs: cursor visible + no output for >2s = CLI
+        # For Ink TUIs: cursor visible + no output for >5s = CLI
         # returned to idle prompt.  Handles cases where the Stop hook
-        # doesn't fire (e.g. /clear, /help).  2s is long enough that
+        # doesn't fire (e.g. /clear, /help).  5s is long enough that
         # brief streaming pauses don't false-trigger, but short enough
         # that /clear resolves quickly.  Disabled for Ratatui TUIs.
         #
@@ -2072,171 +2093,185 @@ class CLIStateTracker:
                 # quiet without ending the agent loop.  If the
                 # transcript shows an unanswered tool_use, stay
                 # running until the tool actually returns.
-                if self._transcript_says_running():
-                    _log.debug(
-                        'GET_STATE cursor+silence would idle but '
-                        'transcript shows tool_use - keeping running',
-                    )
-                    return current
-
-                # User-interrupt guard before falling to idle: when
-                # ``transcript_says_running`` is False *because* the
-                # user cancelled mid-tool-use, the transcript records
-                # ``[Request interrupted by user]`` above the in-turn
-                # assistant entry.  Without this branch we'd flip to
-                # IDLE and the auto-sender would dispatch the next
-                # queued message into Claude's "What should Claude do
-                # instead?" prompt — visually indistinguishable from
-                # the interrupt being silently ignored.
-                if self._transcript_says_interrupted():
-                    _log.debug(
-                        'GET_STATE cursor+silence + transcript '
-                        'interrupt marker → interrupted',
-                    )
-                    self._interrupt_pending = False
-                    self._user_responded = False
-                    with self._lock:
-                        self._state = CLIState.INTERRUPTED
-                        self._waiting_since = self._clock()
-                    self._write_interrupted_signal()
-                    self._user_input_since_idle = False
-                    with self._screen_lock:
-                        self._reset_screen()
-                    return CLIState.INTERRUPTED
-
-                # Just answered a mid-turn dialog and Claude hasn't truly
-                # resumed yet: this silence is the model's first-token
-                # latency, not end-of-turn.  The dialog-dismissal render
-                # already moved _last_output_time past _running_since (so
-                # the rebase gate opened), the transcript can't confirm
-                # running because its only assistant entry is the dialog's
-                # tool_use at ts <= _running_since, and the running
-                # indicator only matches "Compacting conversation" — so
-                # nothing else here is holding us in RUNNING.  Idling now
-                # would flush a queued message into the live turn.  Stay
-                # RUNNING and let the Stop hook end the turn at the right
-                # moment.  Cap the grace at the safety-silence timeout
-                # (NOT an unconditional ``return``) so a genuinely hung
-                # post-answer turn with no Stop hook still recovers via the
-                # safety fallback below — this block runs before it, so
-                # returning early past the cap would starve that net.
-                if self._post_answer_grace_holds(silence_baseline):
-                    _log.debug(
-                        'GET_STATE cursor+silence would idle but a '
-                        'dialog was just answered - keeping running '
-                        '(awaiting post-answer resume; %.1fs silent)',
-                        self._clock() - self._last_output_time,
-                    )
-                    return current
-
-                # Interactive UI guard.  An is_dialog_certain miss above
-                # does NOT mean "idle" — it can also be a slash-command
-                # picker (/model, /resume, /mcp, …) or a dialog whose
-                # footer isn't the strict "Enter to select / Esc to
-                # cancel" form (e.g. Claude's "Esc to close" / "Enter to
-                # approve" / multi-select footers).  All of those leave
-                # the idle input box GONE from the bottom of the screen.
-                # But "idle box absent" alone is too broad — plain response
-                # text (a numbered list, a long body ending in "> ") also
-                # lacks the box yet must still idle.  A real picker/dialog
-                # additionally shows EITHER a ❯/› selection cursor on a focused
-                # option (has_selection_cursor) OR a nav/dismiss footer at the
-                # bottom (has_interactive_footer — e.g. the /agents tabbed view,
-                # which has no cursor); plain response text has neither.  So
-                # require: idle box absent AND (selection cursor OR nav footer).
-                # Idling a real UI here would (a) _reset_screen(), blanking it
-                # so screen_has_active_dialog() then reads "no dialog" and ↑/↓
-                # get stolen for history recall (the "arrows stuck in a picker
-                # after a few seconds" bug), and (b) let the auto-sender flush
-                # a queued message straight into the open UI.  When the user
-                # dismisses the UI the idle box returns and the normal idle
-                # path fires; a genuinely silent in-flight tool is already
-                # held above by transcript_says_running().  No-op for providers
-                # without these detectors (base defaults: is_idle_prompt_visible
-                # True / has_selection_cursor / has_interactive_footer False) —
-                # Claude-only.
-                # CAPPED at the safety-silence timeout (see
-                # _heuristic_hold_cap): an uncapped hold here wedges the
-                # session RUNNING forever when no Stop hook follows (the
-                # interrupt-resume screen, or a label drawn into the idle-box
-                # border, both make is_idle_prompt_visible False while the
-                # input box's own ❯ trips has_selection_cursor).  Past the
-                # cap, fall through so the idle fallback recovers.
-                # The positive dialog signal MUST stay consistent with the
-                # ↑/↓ input filter's ``screen_has_active_dialog()`` gate: if
-                # the arrow gate would pass arrows through to the dialog, this
-                # guard must NOT reset the screen out from under it.  The two
-                # disagreed on tall pickers/dialogs (the "arrows dead on a
-                # many-option question" report): with many options the focused
-                # ``❯`` cursor scrolls ABOVE the ``has_selection_cursor`` tail
-                # window and the footer (e.g. ``Enter to confirm · Esc to
-                # cancel``) sits one row ABOVE the ``╰──╯`` bottom border, so
-                # ``has_interactive_footer`` (last row only) misses it too -
-                # both False here, the screen gets reset, and the next arrow
-                # then reads "no dialog" and is stolen for history recall.
-                # ``screen_shows_selection_dialog_strict`` mirrors the generic
-                # detector the arrow gate uses (numbered cursor OR a real
-                # footer line), but is the PROSE-PROOF variant: it drops the
-                # lenient "short single-hint line" footer clause and scans the
-                # whole screen for the numbered ``❯ N.`` cursor.  That keeps
-                # this guard in sync with the arrow gate for tall dialogs
-                # (cursor scrolled above the bottom rows) WITHOUT holding
-                # RUNNING on a hookless response that merely ends in a short
-                # affordance line like ``- Press Enter to confirm``.  It is a
-                # precise dialog signal (the idle box's own ``❯`` is not a
-                # numbered ``❯ 1.`` cursor), so it does not reintroduce the
-                # wedge the cap protects against; the cap still bounds it.
-                _ui_sel = self._provider.has_selection_cursor(filled)
-                _ui_foot = self._provider.has_interactive_footer(filled)
-                _ui_dlg = self._provider.screen_shows_selection_dialog_strict(
-                    filled)
-                if (not self._provider.is_idle_prompt_visible(filled)
-                        and (_ui_sel or _ui_foot or _ui_dlg)
-                        and (self._clock() - silence_baseline)
-                        <= self._heuristic_hold_cap()):
-                    _log.debug(
-                        'GET_STATE cursor+silence would idle but the idle '
-                        'prompt is absent and a selection cursor / nav footer '
-                        'is on screen (picker/dialog) - keeping running',
-                    )
-                    return current
-
-                # User is composing an unsubmitted prompt (text in the input
-                # box, or a ^^ queued message): the silence is the user
-                # pausing, not the model finishing.  Don't flip to idle - that
-                # would fire a false "finished" notification and let the
-                # auto-sender dispatch a queued message into the half-typed
-                # prompt.  NOT capped: released deterministically when the box
-                # empties (submit / Ctrl+C / clear), so it is a user-recoverable
-                # "still typing" hold, not a permanent wedge - capping it would
-                # re-introduce the false "finished" notification for anyone who
-                # pauses mid-compose.  The auto-sender separately refuses to
-                # dispatch while the box is non-empty.  A genuine end idles via
-                # the hook signal regardless.
-                if has_pending_input:
-                    _log.debug(
-                        'GET_STATE cursor+silence would idle but user has '
-                        'unsubmitted input (composing) - keeping running',
-                    )
-                    return current
-
-                _log.debug(
-                    'GET_STATE running→idle (cursor visible + '
-                    'output silent %.1fs)',
-                    self._clock() - self._last_output_time,
+                return self._resolve_silent_running(
+                    current, silence_baseline, filled, has_pending_input,
                 )
-                self._interrupt_pending = False
-                with self._lock:
-                    self._state = CLIState.IDLE
-                    self._waiting_since = None
-                self._user_input_since_idle = False
-                with self._screen_lock:
-                    self._last_running_snapshot = self._get_display_lines()
-                    self._reset_screen()
-                    self._prompt_snapshot = []
-                return CLIState.IDLE
 
         return None
+
+    def _resolve_silent_running(self, current: str, silence_baseline: float,
+                               filled: list, has_pending_input: bool) -> Optional[str]:
+        """Decide the state when RUNNING has gone cursor-visible + silent.
+
+        Reached only from :meth:`_try_running_to_idle_via_silence` once the
+        screen looks idle (cursor visible, no running indicator, no certain
+        dialog footer).  Returns the resolved state - keeping RUNNING via the
+        transcript / post-answer-grace / interactive-UI / composing guards, or
+        finally flipping to IDLE (or INTERRUPTED on a transcript interrupt).
+        """
+        if self._transcript_says_running():
+            _log.debug(
+                'GET_STATE cursor+silence would idle but '
+                'transcript shows tool_use - keeping running',
+            )
+            return current
+
+        # User-interrupt guard before falling to idle: when
+        # ``transcript_says_running`` is False *because* the
+        # user cancelled mid-tool-use, the transcript records
+        # ``[Request interrupted by user]`` above the in-turn
+        # assistant entry.  Without this branch we'd flip to
+        # IDLE and the auto-sender would dispatch the next
+        # queued message into Claude's "What should Claude do
+        # instead?" prompt — visually indistinguishable from
+        # the interrupt being silently ignored.
+        if self._transcript_says_interrupted():
+            _log.debug(
+                'GET_STATE cursor+silence + transcript '
+                'interrupt marker → interrupted',
+            )
+            self._interrupt_pending = False
+            self._user_responded = False
+            with self._lock:
+                self._state = CLIState.INTERRUPTED
+                self._waiting_since = self._clock()
+            self._write_interrupted_signal()
+            self._user_input_since_idle = False
+            with self._screen_lock:
+                self._reset_screen()
+            return CLIState.INTERRUPTED
+
+        # Just answered a mid-turn dialog and Claude hasn't truly
+        # resumed yet: this silence is the model's first-token
+        # latency, not end-of-turn.  The dialog-dismissal render
+        # already moved _last_output_time past _running_since (so
+        # the rebase gate opened), the transcript can't confirm
+        # running because its only assistant entry is the dialog's
+        # tool_use at ts <= _running_since, and the running
+        # indicator only matches "Compacting conversation" — so
+        # nothing else here is holding us in RUNNING.  Idling now
+        # would flush a queued message into the live turn.  Stay
+        # RUNNING and let the Stop hook end the turn at the right
+        # moment.  Cap the grace at the safety-silence timeout
+        # (NOT an unconditional ``return``) so a genuinely hung
+        # post-answer turn with no Stop hook still recovers via the
+        # safety fallback below — this block runs before it, so
+        # returning early past the cap would starve that net.
+        if self._post_answer_grace_holds(silence_baseline):
+            _log.debug(
+                'GET_STATE cursor+silence would idle but a '
+                'dialog was just answered - keeping running '
+                '(awaiting post-answer resume; %.1fs silent)',
+                self._clock() - self._last_output_time,
+            )
+            return current
+
+        # Interactive UI guard.  An is_dialog_certain miss above
+        # does NOT mean "idle" — it can also be a slash-command
+        # picker (/model, /resume, /mcp, …) or a dialog whose
+        # footer isn't the strict "Enter to select / Esc to
+        # cancel" form (e.g. Claude's "Esc to close" / "Enter to
+        # approve" / multi-select footers).  All of those leave
+        # the idle input box GONE from the bottom of the screen.
+        # But "idle box absent" alone is too broad — plain response
+        # text (a numbered list, a long body ending in "> ") also
+        # lacks the box yet must still idle.  A real picker/dialog
+        # additionally shows EITHER a ❯/› selection cursor on a focused
+        # option (has_selection_cursor) OR a nav/dismiss footer at the
+        # bottom (has_interactive_footer — e.g. the /agents tabbed view,
+        # which has no cursor); plain response text has neither.  So
+        # require: idle box absent AND (selection cursor OR nav footer).
+        # Idling a real UI here would (a) _reset_screen(), blanking it
+        # so screen_has_active_dialog() then reads "no dialog" and ↑/↓
+        # get stolen for history recall (the "arrows stuck in a picker
+        # after a few seconds" bug), and (b) let the auto-sender flush
+        # a queued message straight into the open UI.  When the user
+        # dismisses the UI the idle box returns and the normal idle
+        # path fires; a genuinely silent in-flight tool is already
+        # held above by transcript_says_running().  No-op for providers
+        # without these detectors (base defaults: is_idle_prompt_visible
+        # True / has_selection_cursor / has_interactive_footer False) —
+        # Claude-only.
+        # CAPPED at the safety-silence timeout (see
+        # _heuristic_hold_cap): an uncapped hold here wedges the
+        # session RUNNING forever when no Stop hook follows (the
+        # interrupt-resume screen, or a label drawn into the idle-box
+        # border, both make is_idle_prompt_visible False while the
+        # input box's own ❯ trips has_selection_cursor).  Past the
+        # cap, fall through so the idle fallback recovers.
+        # The positive dialog signal MUST stay consistent with the
+        # ↑/↓ input filter's ``screen_has_active_dialog()`` gate: if
+        # the arrow gate would pass arrows through to the dialog, this
+        # guard must NOT reset the screen out from under it.  The two
+        # disagreed on tall pickers/dialogs (the "arrows dead on a
+        # many-option question" report): with many options the focused
+        # ``❯`` cursor scrolls ABOVE the ``has_selection_cursor`` tail
+        # window and the footer (e.g. ``Enter to confirm · Esc to
+        # cancel``) sits one row ABOVE the ``╰──╯`` bottom border, so
+        # ``has_interactive_footer`` (last row only) misses it too -
+        # both False here, the screen gets reset, and the next arrow
+        # then reads "no dialog" and is stolen for history recall.
+        # ``screen_shows_selection_dialog_strict`` mirrors the generic
+        # detector the arrow gate uses (numbered cursor OR a real
+        # footer line), but is the PROSE-PROOF variant: it drops the
+        # lenient "short single-hint line" footer clause and scans the
+        # whole screen for the numbered ``❯ N.`` cursor.  That keeps
+        # this guard in sync with the arrow gate for tall dialogs
+        # (cursor scrolled above the bottom rows) WITHOUT holding
+        # RUNNING on a hookless response that merely ends in a short
+        # affordance line like ``- Press Enter to confirm``.  It is a
+        # precise dialog signal (the idle box's own ``❯`` is not a
+        # numbered ``❯ 1.`` cursor), so it does not reintroduce the
+        # wedge the cap protects against; the cap still bounds it.
+        _ui_sel = self._provider.has_selection_cursor(filled)
+        _ui_foot = self._provider.has_interactive_footer(filled)
+        _ui_dlg = self._provider.screen_shows_selection_dialog_strict(
+            filled)
+        if (not self._provider.is_idle_prompt_visible(filled)
+                and (_ui_sel or _ui_foot or _ui_dlg)
+                and (self._clock() - silence_baseline)
+                <= self._heuristic_hold_cap()):
+            _log.debug(
+                'GET_STATE cursor+silence would idle but the idle '
+                'prompt is absent and a selection cursor / nav footer '
+                'is on screen (picker/dialog) - keeping running',
+            )
+            return current
+
+        # User is composing an unsubmitted prompt (text in the input
+        # box, or a ^^ queued message): the silence is the user
+        # pausing, not the model finishing.  Don't flip to idle - that
+        # would fire a false "finished" notification and let the
+        # auto-sender dispatch a queued message into the half-typed
+        # prompt.  NOT capped: released deterministically when the box
+        # empties (submit / Ctrl+C / clear), so it is a user-recoverable
+        # "still typing" hold, not a permanent wedge - capping it would
+        # re-introduce the false "finished" notification for anyone who
+        # pauses mid-compose.  The auto-sender separately refuses to
+        # dispatch while the box is non-empty.  A genuine end idles via
+        # the hook signal regardless.
+        if has_pending_input:
+            _log.debug(
+                'GET_STATE cursor+silence would idle but user has '
+                'unsubmitted input (composing) - keeping running',
+            )
+            return current
+
+        _log.debug(
+            'GET_STATE running→idle (cursor visible + '
+            'output silent %.1fs)',
+            self._clock() - self._last_output_time,
+        )
+        self._interrupt_pending = False
+        with self._lock:
+            self._state = CLIState.IDLE
+            self._waiting_since = None
+        self._user_input_since_idle = False
+        with self._screen_lock:
+            self._last_running_snapshot = self._get_display_lines()
+            self._reset_screen()
+            self._prompt_snapshot = []
+        return CLIState.IDLE
 
     def _try_safety_silence_timeout(self, current: str, has_pending_input: bool) -> Optional[str]:
         # -- Safety fallback: silence timeout --
