@@ -30,6 +30,8 @@ from Quartz import (
     kCGEventFlagMaskShift, kCGHIDEventTap,
 )
 
+from leap.utils.constants import JETBRAINS_IDES
+
 logger = logging.getLogger(__name__)
 
 # JetBrains IDE names used across navigation functions
@@ -123,6 +125,23 @@ def is_ide_app(name: Optional[str]) -> bool:
     if name in ('VS Code', 'Cursor'):
         return True
     return any(jb in name for jb in _JETBRAINS_IDE_NAMES)
+
+
+def is_jetbrains_app(app_path: Optional[str]) -> bool:
+    """True if the picked ``.app`` bundle is a JetBrains-family IDE.
+
+    Matches the bundle basename against ``_JETBRAINS_IDE_NAMES`` so
+    ``PyCharm.app``, ``IntelliJ IDEA.app``, ``RubyMine.app``,
+    ``CLion.app``, ``Android Studio.app`` etc. all resolve as JetBrains -
+    *including* the ones :func:`detect_supported_ide_for_move` returns
+    ``None`` for (RubyMine/CLion/DataGrip), since the ``.idea/.name``
+    tab-alias mechanism works for every JetBrains IDE regardless of
+    whether Leap can drive its integrated terminal.
+    """
+    if not app_path:
+        return False
+    bundle = os.path.basename(app_path.rstrip('/'))
+    return any(jb in bundle for jb in _JETBRAINS_IDE_NAMES)
 
 
 def detect_supported_ide_for_move(app_path: str) -> Optional[str]:
@@ -2108,6 +2127,110 @@ def _is_jetbrains_running(ide: str) -> bool:
         logger.debug("_is_jetbrains_running error", exc_info=True)
         return True
     return False
+
+
+def is_jetbrains_project_open(
+    app_path: Optional[str],
+    project_path: Optional[str],
+) -> bool:
+    """Best-effort: True iff the JetBrains *app_path* currently has
+    *project_path* open.
+
+    Used to decide whether to skip the ``.idea/.name`` alias prompt.
+    JetBrains reads ``.idea/.name`` only when it *loads* a project, so
+    relabelling one that's already open is futile - ``open -a`` merely
+    focuses the live window (no reload) and the IDE overwrites our write
+    on its next workspace save.
+
+    Works for every JetBrains IDE: resolves the launcher from the picked
+    ``.app`` bundle via ``JETBRAINS_IDES`` (the full ``cmd -> display name``
+    map), so RubyMine/CLion/DataGrip are covered too - not just the subset in
+    ``_IDE_CMD_MAP`` wired for "move session".
+
+    Conservative by design: returns False whenever it can't *positively*
+    confirm the project is open - not a recognised JetBrains bundle, IDE not
+    running, or any ideScript error/timeout. A False just means "go ahead and
+    prompt", which is the pre-probe behaviour, so a probe failure never makes
+    things worse.
+
+    Runs synchronously on the caller's thread; gated on
+    ``_is_jetbrains_running`` first so we never cold-start an IDE just to
+    probe it, and capped at a short timeout so a busy/indexing IDE can't
+    stall the caller (it falls through to "prompt" instead).
+    """
+    if not app_path or not project_path:
+        return False
+    bundle = os.path.basename(app_path.rstrip('/'))
+    ide_cmd: Optional[str] = None
+    ide_name: Optional[str] = None
+    for cmd, display in JETBRAINS_IDES.items():
+        if display in bundle:
+            ide_cmd, ide_name = cmd, display
+            break
+    if not ide_cmd or not ide_name:
+        return False  # Unrecognised JetBrains bundle - default to prompting.
+    if not _is_jetbrains_running(ide_name):
+        return False  # Not running -> the project can't be open.
+
+    # Pin to the user-picked bundle's binary so ideScript reaches the
+    # instance we'll actually open (mirrors _open_jetbrains_terminal).
+    candidate = os.path.join(app_path, 'Contents', 'MacOS', ide_cmd)
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        ide_cmd = candidate
+
+    result_path: Optional[str] = None
+    tmp_script_path: Optional[str] = None
+    try:
+        result_file = tempfile.NamedTemporaryFile(
+            mode='w', suffix='.txt', prefix='leap-ideprobe-', delete=False,
+        )
+        result_file.close()
+        result_path = result_file.name
+
+        groovy_script = f'''import com.intellij.openapi.project.ProjectManager
+import java.io.FileWriter
+
+var allProjects = ProjectManager.getInstance().getOpenProjects()
+var found = false
+for (var i = 0; i < allProjects.length; i++) {{
+    var bp = allProjects[i].getBasePath()
+    if (bp != null && bp.equals("{_escape_groovy(project_path)}")) {{
+        found = true
+        break
+    }}
+}}
+var fw = new FileWriter("{_escape_groovy(result_path)}")
+fw.write(found ? "OPEN" : "CLOSED")
+fw.close()
+'''
+        env = _jetbrains_env()
+        with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.groovy', delete=False,
+        ) as tmp:
+            tmp.write(groovy_script)
+            tmp_script_path = tmp.name
+        try:
+            subprocess.run(
+                [ide_cmd, 'ideScript', tmp_script_path],
+                capture_output=True, timeout=8, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        try:
+            with open(result_path) as f:
+                return f.read().strip() == 'OPEN'
+        except OSError:
+            return False
+    except Exception:
+        logger.debug("is_jetbrains_project_open error", exc_info=True)
+        return False
+    finally:
+        for p in (result_path, tmp_script_path):
+            if p:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
 
 def _open_jetbrains_terminal(

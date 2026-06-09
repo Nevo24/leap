@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from leap.monitor.navigation import detect_supported_ide_for_move
+from leap.monitor.navigation import (
+    detect_supported_ide_for_move, is_jetbrains_app,
+)
 
 
 @pytest.mark.parametrize('app_path,expected', [
@@ -35,3 +37,30 @@ def test_cursor_is_now_movable_not_excluded() -> None:
     # which hid the "move session to IDE" option for it.  It must now be
     # offered, exactly like VS Code.
     assert detect_supported_ide_for_move('/Applications/Cursor.app') == 'Cursor'
+
+
+@pytest.mark.parametrize('app_path,expected', [
+    # JetBrains family the "move" helper drives → True.
+    ('/Applications/PyCharm.app', True),
+    ('/Applications/IntelliJ IDEA.app', True),
+    ('/Applications/GoLand.app', True),
+    ('/Applications/WebStorm.app', True),
+    ('/Applications/PhpStorm.app', True),
+    ('/Applications/Android Studio.app', True),
+    # JetBrains family that detect_supported_ide_for_move returns None for
+    # (no driven terminal) — the .idea/.name alias still applies, so True.
+    ('/Applications/RubyMine.app', True),
+    ('/Applications/CLion.app', True),
+    ('/Applications/DataGrip.app', True),
+    # Toolbox / trailing slash variants resolve by basename.
+    ('/Users/me/Applications/JetBrains Toolbox/PyCharm.app/', True),
+    # Non-JetBrains apps → False (no .idea concept).
+    ('/Applications/Visual Studio Code.app', False),
+    ('/Applications/Cursor.app', False),
+    ('/Applications/Sublime Text.app', False),
+    ('/Applications/Xcode.app', False),
+    ('', False),
+    (None, False),
+])
+def test_is_jetbrains_app(app_path: object, expected: bool) -> None:
+    assert is_jetbrains_app(app_path) is expected

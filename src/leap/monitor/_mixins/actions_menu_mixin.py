@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Optional
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QDialog, QFileDialog, QHBoxLayout, QLabel, QMenu, QMessageBox,
-    QPushButton, QVBoxLayout,
+    QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
+    QMenu, QMessageBox, QPushButton, QVBoxLayout,
 )
 from PyQt5.QtGui import QCursor
 
@@ -22,7 +22,7 @@ from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
 from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
 from leap.monitor.navigation import (
     detect_supported_ide_for_move, find_terminal_with_title,
-    open_terminal_with_command,
+    is_jetbrains_app, is_jetbrains_project_open, open_terminal_with_command,
 )
 from leap.monitor.scm_polling import BackgroundCallWorker
 from leap.monitor.session_manager import load_session_metadata
@@ -222,6 +222,7 @@ class ActionsMenuMixin(_Base):
         if tag.startswith(CURSOR_GUI_TAG_PREFIX):
             # Cursor editor Agent-tab rows aren't Leap sessions - there's
             # nothing to "move", so just open the folder in the chosen app.
+            self._maybe_set_jetbrains_alias(tag, path, project_path)
             self._just_open_ide(tag, path, project_path)
             return
 
@@ -229,7 +230,9 @@ class ActionsMenuMixin(_Base):
         if preferred_ide is None:
             # Sublime, Xcode, Arduino, Cursor, RubyMine/CLion/etc. —
             # no integrated terminal we drive from leap, so fall back
-            # to plain "open the .app".
+            # to plain "open the .app". RubyMine/CLion are still JetBrains,
+            # so the alias prompt below self-gates and reaches them too.
+            self._maybe_set_jetbrains_alias(tag, path, project_path)
             self._just_open_ide(tag, path, project_path)
             return
 
@@ -249,11 +252,116 @@ class ActionsMenuMixin(_Base):
         choice = self._ask_move_to_ide_choice(tag, app_label)
         if choice == 'cancel':
             return
+        # Offer a JetBrains tab alias once the user has committed to
+        # opening (cancelling above skips this). Self-gates to JetBrains.
+        self._maybe_set_jetbrains_alias(tag, path, project_path)
         if choice == 'only':
             self._just_open_ide(tag, path, project_path)
             return
         # 'move'
         self._move_session_to_ide(tag, path, project_path, preferred_ide)
+
+    def _maybe_set_jetbrains_alias(
+        self, tag: str, app_path: str, project_path: Optional[str],
+    ) -> None:
+        """Offer to set the project's JetBrains tab name before opening.
+
+        JetBrains reads ``<project>/.idea/.name`` on project load and shows
+        its contents as the display name in the IDE's project tab. When the
+        chosen ``.app`` is a JetBrains IDE and the session has a real project
+        directory, prompt for an alias (the field always defaults to the
+        *tag*) and write it to ``.idea/.name`` before launch so the tab is
+        labelled.
+
+        No-op for non-JetBrains apps or sessions without a project directory.
+        Three outcomes from the prompt:
+
+        * **OK + a value** -> write it as the alias.
+        * **OK + blank** -> keep the current name unchanged (the previous
+          alias if a ``.name`` already exists, otherwise the repo name).
+        * **"Use project's name"** (the relabelled Cancel button, or Escape)
+          -> delete any ``.name`` so the IDE falls back to the repo
+          (directory) name.
+
+        The prompt's message spells out what blank vs. "Use project's name"
+        will leave you with.
+
+        JetBrains reads ``.idea/.name`` only when it *loads* a project, so if
+        the IDE already has it open the prompt is skipped (relabelling a live
+        window is futile) - see ``is_jetbrains_project_open``, which covers the
+        whole JetBrains family and is best-effort (a probe that can't confirm
+        falls through to prompting).
+        """
+        if not is_jetbrains_app(app_path):
+            return
+        if not project_path or not os.path.isdir(project_path):
+            return
+
+        # If the IDE already has this project open, relabelling is futile -
+        # JetBrains won't re-read .idea/.name without a reload and will
+        # overwrite our value on its next save. Skip the prompt entirely.
+        if is_jetbrains_project_open(app_path, project_path):
+            logger.info(
+                "Project already open in %s; skipping IDE tab alias prompt",
+                app_path,
+            )
+            return
+
+        idea_dir = os.path.join(project_path, '.idea')
+        name_file = os.path.join(idea_dir, '.name')
+
+        existing = ''
+        try:
+            with open(name_file, 'r') as f:
+                existing = f.read().strip()
+        except OSError:
+            existing = ''
+
+        repo_name = os.path.basename(os.path.normpath(project_path))
+        if existing:
+            label = (
+                'Name to show on the project tab in the IDE.\n'
+                f"Leave blank to keep '{existing}' (previous alias); "
+                f"use the project's name to revert to '{repo_name}'."
+            )
+        else:
+            label = (
+                'Name to show on the project tab in the IDE.\n'
+                f"Leave blank or use the project's name to keep '{repo_name}'."
+            )
+
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle('IDE tab alias')
+        dlg.setLabelText(label)
+        dlg.setTextValue(tag)
+        dlg.setCancelButtonText("Use project's name")
+        accepted = dlg.exec_() == QDialog.Accepted
+        alias = dlg.textValue().strip()
+
+        if not accepted:
+            # "Use project's name" (or Escape) -> drop any alias so the IDE
+            # falls back to the repo (directory) name.
+            try:
+                os.remove(name_file)
+                logger.info("Cleared IDE tab alias: %s", name_file)
+                self._show_status(f"Using project name: {repo_name}")
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                self._show_status(f"Couldn't clear IDE tab alias: {e}")
+            return
+
+        if not alias:
+            return  # Blank + OK -> keep the current name (no change).
+
+        try:
+            os.makedirs(idea_dir, exist_ok=True)
+            with open(name_file, 'w') as f:
+                f.write(alias)
+            logger.info("Set IDE tab alias '%s' -> %s", alias, name_file)
+            self._show_status(f"Set IDE tab alias: {name_file}")
+        except OSError as e:
+            self._show_status(f"Couldn't set IDE tab alias: {e}")
 
     def _focus_existing_session_tab(
         self, tag: str, preferred_ide: str, project_path: str,
