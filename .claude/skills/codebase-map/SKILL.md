@@ -63,11 +63,13 @@ src/
     │   └── cursor_session_move.py  # Cursor cross-cwd move (whole chat directory tree)
     │
     ├── server/                  # PTY Server
-    │   ├── server.py            # LeapServer - main orchestrator
+    │   ├── server.py            # LeapServer - main orchestrator (composed with _mixins/)
     │   ├── pty_handler.py       # CLI PTY (pexpect, provider-driven)
     │   ├── socket_handler.py    # Unix socket server
     │   ├── queue_manager.py     # Message queue persistence
-    │   └── metadata.py          # Session metadata (IDE, project, branch, cli_provider)
+    │   ├── metadata.py          # Session metadata (IDE, project, branch, cli_provider)
+    │   └── _mixins/             # LeapServer mixin classes
+    │       └── capture_input_mixin.py  # "^^" capture editor + terminal input-mirror (paste/image, saved msgs, csi-u)
     │
     ├── client/                  # Interactive Client
     │   ├── client.py            # LeapClient - main class
@@ -181,6 +183,7 @@ assets/
 | `GeminiProvider` | `cli_providers/gemini.py` | Gemini CLI (Ink TUI, radio-button approval, AfterAgent/Notification hooks) |
 | `get_provider()` | `cli_providers/registry.py` | Provider lookup by name (`'claude'`, `'codex'`, `'cursor-agent'`, `'gemini'`) |
 | `LeapServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
+| `CaptureInputMixin` | `server/_mixins/capture_input_mixin.py` | `^^` capture-mode editor + terminal input-buffer mirror (paste/image handling, saved-message history, stale-input clearing) mixed into `LeapServer` |
 | `LeapClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI core window (uses mixins for methods) |
