@@ -69,7 +69,8 @@ src/
     │   ├── queue_manager.py     # Message queue persistence
     │   ├── metadata.py          # Session metadata (IDE, project, branch, cli_provider)
     │   └── _mixins/             # LeapServer mixin classes
-    │       └── capture_input_mixin.py  # "^^" capture editor + terminal input-mirror (paste/image, saved msgs, csi-u)
+    │       ├── capture_input_mixin.py  # "^^" capture editor + terminal input-mirror (paste/image, saved msgs, csi-u)
+    │       └── io_filter_mixin.py      # PTY input/output byte-stream filters (keystroke dispatch, ↑/↓ recall, OSC title strip)
     │
     ├── client/                  # Interactive Client
     │   ├── client.py            # LeapClient - main class
@@ -184,6 +185,7 @@ assets/
 | `get_provider()` | `cli_providers/registry.py` | Provider lookup by name (`'claude'`, `'codex'`, `'cursor-agent'`, `'gemini'`) |
 | `LeapServer` | `server/server.py` | Orchestrates PTY, socket, queue, metadata |
 | `CaptureInputMixin` | `server/_mixins/capture_input_mixin.py` | `^^` capture-mode editor + terminal input-buffer mirror (paste/image handling, saved-message history, stale-input clearing) mixed into `LeapServer` |
+| `IOFilterMixin` | `server/_mixins/io_filter_mixin.py` | PTY input/output byte-stream filters (`_input_filter_impl` keystroke dispatch + ↑/↓ recall + auto-approve gate; `_output_filter_impl` OSC-title strip) mixed into `LeapServer` |
 | `LeapClient` | `client/client.py` | Interactive client with image support |
 | `SocketClient` | `client/socket_client.py` | Client-side socket communication (shared `_send_request`) |
 | `MonitorWindow` | `monitor/app.py` | PyQt5 GUI core window (uses mixins for methods) |
