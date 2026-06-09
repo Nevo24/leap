@@ -298,6 +298,22 @@ class TestEvaluateSleepGuard:
         assert fake._lid_close_guard.is_active
         assert fake._last_running_at == 1000.0
 
+    def test_churning_session_keeps_guards_active(
+        self, monkeypatch: Any,
+    ) -> None:
+        # CHURNING is idle-at-the-prompt but a background Monitor is still
+        # working, so the machine must stay awake (same as RUNNING).
+        fake, clock = _wire(monkeypatch)
+        clock.t = 1000.0
+        # Production carries the raw string from the JSON status response, not
+        # the enum - assert on that exact shape (str-Enum equality must hold).
+        fake.sessions = [{'tag': 'x', 'cli_state': CLIState.CHURNING.value}]
+        assert fake.sessions[0]['cli_state'] == 'churning'
+        app.MonitorWindow._evaluate_sleep_guard(fake)
+        assert fake._sleep_guard.is_active
+        assert fake._lid_close_guard.is_active
+        assert fake._last_running_at == 1000.0
+
     def test_holds_through_grace_then_releases_both_at_30s(
         self, monkeypatch: Any,
     ) -> None:

@@ -2397,9 +2397,11 @@ class MonitorWindow(
         """Re-decide whether the caffeinate + lid-close guards should hold.
 
         Called once per session-refresh tick (and once on toggle).  The
-        guards run whenever any session reports ``RUNNING``; they are
-        released only after every session has stayed out of RUNNING for
-        at least ``_SLEEP_GUARD_RUNNING_GRACE_SECONDS``.
+        guards run whenever any session reports ``RUNNING`` or ``CHURNING``
+        (the latter is idle-at-the-prompt but a background Monitor is still
+        working, so the machine must stay awake); they are released only
+        after every session has stayed out of both for at least
+        ``_SLEEP_GUARD_RUNNING_GRACE_SECONDS``.
 
         Both guards follow the same activation window — the lid-close
         guard piggy-backs on the caffeinate one so the user never sees
@@ -2419,7 +2421,7 @@ class MonitorWindow(
             return
 
         any_running = any(
-            s.get('cli_state', CLIState.IDLE) == CLIState.RUNNING
+            s.get('cli_state', CLIState.IDLE) in (CLIState.RUNNING, CLIState.CHURNING)
             for s in self.sessions
         )
         now = time.monotonic()

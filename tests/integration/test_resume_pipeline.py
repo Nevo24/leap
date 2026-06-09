@@ -45,7 +45,6 @@ from leap.cli_providers.registry import (
     reload_custom_clis,
 )
 from leap.utils.resume_store import (
-    MAX_ENTRIES_PER_TAG,
     load_tag_rows,
     record_session,
 )
@@ -520,13 +519,15 @@ class TestHookProcessDedupAndCap:
         records = _load_records(tmp_path, "claude", "dedup")
         assert len(records) == 1, "three hook fires for same UUID should upsert"
 
-    def test_oldest_dropped_past_cap(self, tmp_path):
+    def test_all_sessions_retained_no_cap(self, tmp_path):
         transcript = tmp_path / "t.jsonl"
         transcript.write_text("x")
         # File has no .claude/projects/ segment → session_id must be
         # extracted from the hook payload's ``session_id`` field.
         # Switch to codex, which uses the direct field.
-        for i in range(MAX_ENTRIES_PER_TAG + 3):
+        # There is no per-tag cap: the oldest session is never evicted.
+        n = 50
+        for i in range(n):
             result, _ = _invoke_hook_process(
                 tag="cap", cli="codex", storage_dir=tmp_path,
                 hook_payload={"session_id": f"sid-{i:02d}",
@@ -535,10 +536,10 @@ class TestHookProcessDedupAndCap:
             )
             assert result.returncode == 0, result.stderr
         records = _load_records(tmp_path, "codex", "cap")
-        assert len(records) == MAX_ENTRIES_PER_TAG
+        assert len(records) == n
         ids = [r["session_id"] for r in records]
-        assert "sid-00" not in ids
-        assert f"sid-{MAX_ENTRIES_PER_TAG + 2:02d}" in ids
+        assert "sid-00" in ids, "oldest must be kept (no cap)"
+        assert f"sid-{n - 1:02d}" in ids
 
 
 class TestHookProcessCustomCli:
