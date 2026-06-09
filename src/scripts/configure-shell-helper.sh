@@ -132,8 +132,10 @@ if [ -f "$REPO_PATH/.storage/headroom_enabled" ]; then
     cat >> "$RC_FILE" <<'EOF'
 
 # Headroom context-compression proxy (managed by `leap --headroom`)
-[ -x "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-up.sh" ] && nohup "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-up.sh" >/dev/null 2>&1 & disown
-[ -x "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-watchdog.sh" ] && nohup "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-watchdog.sh" >/dev/null 2>&1 & disown
+# Backgrounded inside a subshell so the interactive shell never registers the job
+# and stays silent (a bare `& disown` prints a "[1] <pid>" notice on every shell).
+[ -x "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-up.sh" ] && ( nohup "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-up.sh" >/dev/null 2>&1 & )
+[ -x "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-watchdog.sh" ] && ( nohup "$LEAP_PROJECT_DIR/src/scripts/leap-headroom-watchdog.sh" >/dev/null 2>&1 & )
 EOF
 fi
 
