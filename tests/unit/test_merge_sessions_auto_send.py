@@ -370,6 +370,7 @@ class TestHelpersAreCalled:
                 'branch': 'main',
                 'cli_provider': 'claude',
                 'auto_send_mode': 'pause',
+                'churn_queue_mode': 'wait',
             },
         })
         active = [_make_active(tag='mytag', auto_send_mode='pause')]

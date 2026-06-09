@@ -11,7 +11,7 @@ from typing import Callable, TYPE_CHECKING, Any, Optional
 from PyQt5.QtWidgets import QMessageBox
 
 from leap.cli_providers.registry import DEFAULT_PROVIDER
-from leap.cli_providers.states import AutoSendMode
+from leap.cli_providers.states import AutoSendMode, ChurnQueueMode
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
@@ -107,6 +107,11 @@ class SessionMixin(_Base):
                     or existing.get('auto_send_mode')
                     or AutoSendMode.PAUSE
                 ),
+                'churn_queue_mode': (
+                    s.get('churn_queue_mode')
+                    or existing.get('churn_queue_mode')
+                    or ChurnQueueMode.WAIT
+                ),
             }
             if self._pinned_sessions.get(tag) != pin_data:
                 self._pinned_sessions[tag] = pin_data
@@ -178,6 +183,7 @@ class SessionMixin(_Base):
                     'tag': tag,
                     'queue_size': 0,
                     'auto_send_mode': pin.get('auto_send_mode', AutoSendMode.PAUSE),
+                    'churn_queue_mode': pin.get('churn_queue_mode', ChurnQueueMode.WAIT),
                     'project': project_name,
                     'branch': pinned_branch,
                     'pr_branch': pinned_branch if pin.get('remote_project_path') else None,

@@ -123,7 +123,8 @@ ALWAYS-mode auto-approve is hook-based: Claude's `PermissionRequest` hook return
 | `!l` or `!list` | Show queue |
 | `!c` or `!clear` | Clear queue |
 | `!f` or `!force` | Force-send next queued message |
-| `!autoapprove` or `!aa` | Set approval mode (`ask`/`auto`; legacy `!autosend`/`!as` and `pause`/`always` still accepted) |
+| `!autoapprove` or `!aa` | Set approval mode (`ask`/`auto`; legacy `!autosend`/`!as` and `pause`/`always` still accepted). `!autoapprove default <mode>` sets the global default |
+| `!churn` or `!ch` | Set churn-queue mode (`send`/`wait`) - whether to auto-send the next queued message while a background Monitor keeps a finished session churning. `!churn default <mode>` sets the global default |
 | `!slack` or `!slack on/off` | Show status or toggle Slack for this session |
 | `!x` or `!quit` (`Ctrl+D`) | Exit client |
 

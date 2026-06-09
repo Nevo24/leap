@@ -30,7 +30,7 @@ from leap.monitor.pr_tracking.config import (
     load_saved_presets, update_pinned_session_field,
 )
 from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name, get_provider
-from leap.cli_providers.states import AutoSendMode, CLIState
+from leap.cli_providers.states import AutoSendMode, ChurnQueueMode, CLIState
 from leap.monitor.ui.image_text_edit import SendMessageDialog, SendPresetDialog
 from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
@@ -2004,6 +2004,7 @@ class TableBuilderMixin(_Base):
                         CLIState.NEEDS_PERMISSION: ('\u25b2  Permission', QColor(t.status_permission)),
                         CLIState.NEEDS_INPUT: ('\u25c6  Question', QColor(t.status_input)),
                         CLIState.INTERRUPTED: ('\u25c7  Interrupted', QColor(t.status_interrupted)),
+                        CLIState.CHURNING: ('\u27f3  Churning', QColor(t.status_churning)),
                     }
                     text, color = state_display.get(cli_state, (cli_state, QColor(t.status_idle)))
 
@@ -2035,6 +2036,7 @@ class TableBuilderMixin(_Base):
                         CLIState.NEEDS_PERMISSION: 'Needs your permission to use a tool',
                         CLIState.NEEDS_INPUT: 'Asking you a question',
                         CLIState.INTERRUPTED: 'Was interrupted - will accept next queued message',
+                        CLIState.CHURNING: 'Idle, but a background monitor is still running - it will re-invoke this session',
                     }
 
                     # Adjust status color for row background contrast
@@ -2814,6 +2816,7 @@ class TableBuilderMixin(_Base):
             show_cursor_gui_agents=self._prefs.get('show_cursor_gui_agents', True),
             notification_prefs=get_notification_prefs(self._prefs),
             current_auto_send_mode=server_settings.get('auto_send_mode', AutoSendMode.PAUSE),
+            current_churn_queue_mode=server_settings.get('churn_queue_mode', ChurnQueueMode.WAIT),
             current_diff_tool=self._prefs.get('default_diff_tool', ''),
             new_status_seconds=self._prefs.get('new_status_seconds', 60),
             current_global_shortcut=self._prefs.get('global_shortcut', ''),
@@ -2859,6 +2862,7 @@ class TableBuilderMixin(_Base):
             self._save_prefs()
             # Save auto-send mode to server settings (read by new servers)
             server_settings['auto_send_mode'] = dialog.selected_auto_send_mode()
+            server_settings['churn_queue_mode'] = dialog.selected_churn_queue_mode()
             save_settings(server_settings)
             self._apply_tooltips_setting()
             if new_shortcut != old_shortcut:
@@ -2912,6 +2916,43 @@ class TableBuilderMixin(_Base):
         clear_action.setEnabled(queue_size > 0)
         clear_action.triggered.connect(
             lambda _checked, t=tag: self._clear_queue(t)
+        )
+
+        # While "Churning" (turn ended but a background monitor is still
+        # active), should the queue dispatch or wait?  Per-session, checkable,
+        # default-suffixed - mirrors the approval-mode menu.
+        menu.addSeparator()
+        churn_mode = ChurnQueueMode.WAIT
+        for s in self.sessions:
+            if s['tag'] == tag:
+                churn_mode = s.get('churn_queue_mode', ChurnQueueMode.WAIT)
+                break
+        churn_default = load_settings().get('churn_queue_mode', ChurnQueueMode.WAIT)
+
+        wait_label = 'While churning: wait'
+        if churn_default == ChurnQueueMode.WAIT:
+            wait_label += ' (default)'
+        wait_action = menu.addAction(wait_label)
+        wait_action.setCheckable(True)
+        wait_action.setChecked(churn_mode == ChurnQueueMode.WAIT)
+        wait_action.setToolTip(
+            'While a background monitor keeps this session churning, hold\n'
+            'queued messages until the monitor finishes and it fully idles.')
+        wait_action.triggered.connect(
+            lambda _checked, t=tag: self._set_churn_queue_mode(t, ChurnQueueMode.WAIT)
+        )
+
+        send_label = 'While churning: send next'
+        if churn_default == ChurnQueueMode.SEND:
+            send_label += ' (default)'
+        send_action = menu.addAction(send_label)
+        send_action.setCheckable(True)
+        send_action.setChecked(churn_mode == ChurnQueueMode.SEND)
+        send_action.setToolTip(
+            'Dispatch the next queued message even while a background monitor\n'
+            'is active - the session is idle/ready, so it starts a new turn.')
+        send_action.triggered.connect(
+            lambda _checked, t=tag: self._set_churn_queue_mode(t, ChurnQueueMode.SEND)
         )
 
         menu.exec_(label.mapToGlobal(pos))
@@ -3064,6 +3105,31 @@ class TableBuilderMixin(_Base):
             self._show_status(f'Approval mode: {label}')
         else:
             self._show_status(f'Approval mode: {label} (server offline)')
+
+    def _set_churn_queue_mode(self, tag: str, mode: str) -> None:
+        """Send set_churn_queue_mode to the Leap server (per-session).
+
+        Twin of ``_set_auto_send_mode``: updates local session data for the
+        next menu open and persists via the targeted
+        ``update_pinned_session_field`` (never ``save_pinned_sessions``) so a
+        per-session toggle can't clobber another tag's server-side write.
+        """
+        socket_path = SOCKET_DIR / f"{tag}.sock"
+        response = send_socket_request(
+            socket_path, {'type': 'set_churn_queue_mode', 'mode': mode},
+        )
+        for s in self.sessions:
+            if s['tag'] == tag:
+                s['churn_queue_mode'] = mode
+                break
+        if tag in self._pinned_sessions:
+            self._pinned_sessions[tag]['churn_queue_mode'] = mode
+            update_pinned_session_field(tag, 'churn_queue_mode', mode)
+        label = ('send next' if mode == ChurnQueueMode.SEND else 'wait')
+        if response and response.get('status') == 'ok':
+            self._show_status(f'While churning: {label}')
+        else:
+            self._show_status(f'While churning: {label} (server offline)')
 
     def _edit_queue_messages(self, tag: str) -> None:
         """Open the queue edit dialog for a session."""

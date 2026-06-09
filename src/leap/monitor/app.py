@@ -629,7 +629,8 @@ class MonitorWindow(
                 '\u25cf Running - actively processing\n'
                 '\u25b2 Permission - needs your approval\n'
                 '\u25c6 Question - asking a clarifying question\n'
-                '\u25c7 Interrupted - stopped, needs manual resume'
+                '\u25c7 Interrupted - stopped, needs manual resume\n'
+                '\u27f3 Churning - idle, but a background monitor is still active'
             ),
             self.COL_TASK: 'The last message sent to the CLI',
             self.COL_CONTEXT: (

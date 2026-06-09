@@ -17,7 +17,7 @@ from PyQt5.QtGui import QKeySequence
 
 from leap.monitor.dialogs.notifications_dialog import NotificationsDialog
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
-from leap.cli_providers.states import AutoSendMode
+from leap.cli_providers.states import AutoSendMode, ChurnQueueMode
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import THEMES, current_theme
 
@@ -173,6 +173,7 @@ class SettingsDialog(ZoomMixin, QDialog):
         show_cursor_gui_agents: bool = True,
         notification_prefs: Optional[dict[str, dict[str, Any]]] = None,
         current_auto_send_mode: str = AutoSendMode.PAUSE,
+        current_churn_queue_mode: str = ChurnQueueMode.WAIT,
         current_diff_tool: str = '',
         new_status_seconds: int = 60,
         current_global_shortcut: str = '',
@@ -274,6 +275,27 @@ class SettingsDialog(ZoomMixin, QDialog):
         if current_auto_send_mode == AutoSendMode.ALWAYS:
             self._auto_send_combo.setCurrentIndex(1)
         grid.addWidget(self._auto_send_combo, 4, 1)
+
+        # Default churn-queue behavior (beside approval mode, row 4 cols 2-3).
+        churn_label = QLabel('Default while churning:')
+        churn_label.setToolTip(
+            'Default queue behavior for new sessions when a turn has ended but\n'
+            'a background monitor is still active (state "Churning").\n'
+            '\n'
+            'Wait:\n'
+            '  Hold queued messages until the monitor finishes and the\n'
+            '  session fully idles.\n'
+            '\n'
+            'Send next:\n'
+            '  Dispatch the next queued message while churning (the session is\n'
+            '  idle and ready, so it just starts a new turn).')
+        grid.addWidget(churn_label, 4, 2)
+        self._churn_combo = QComboBox()
+        self._churn_combo.setToolTip(churn_label.toolTip())
+        self._churn_combo.addItems(['Wait', 'Send next'])
+        if current_churn_queue_mode == ChurnQueueMode.SEND:
+            self._churn_combo.setCurrentIndex(1)
+        grid.addWidget(self._churn_combo, 4, 3)
 
         # Git diff tool
         diff_label = QLabel('Git diff tool:')
@@ -640,6 +662,11 @@ class SettingsDialog(ZoomMixin, QDialog):
     def selected_auto_send_mode(self) -> str:
         """Return the selected default auto-send mode."""
         return AutoSendMode.ALWAYS if self._auto_send_combo.currentIndex() == 1 else AutoSendMode.PAUSE
+
+    def selected_churn_queue_mode(self) -> str:
+        """Return the selected default churn-queue mode."""
+        return (ChurnQueueMode.SEND if self._churn_combo.currentIndex() == 1
+                else ChurnQueueMode.WAIT)
 
     def new_status_seconds(self) -> int:
         """Return the new-status fire indicator duration in seconds."""

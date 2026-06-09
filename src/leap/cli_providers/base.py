@@ -237,6 +237,32 @@ class CLIProvider(ABC):
         del display_lines
         return False
 
+    def background_work_state(self, display_lines: list[str]) -> Optional[bool]:
+        """Tri-state read of "is a background task still running?".
+
+        Claude Code's ``Monitor`` keeps running after the Stop hook fires (the
+        idle prompt is shown and ready for input).  When active, the tracker
+        refines the *returned* state IDLE -> CHURNING so a "watching a
+        background task" session is shown distinctly from a "done, awaiting
+        you" one.
+
+        Returns a *tri-state* because the tracker keeps a sticky flag:
+
+        * ``True``  - a marker is on screen now (set the flag).
+        * ``False`` - a clean idle prompt with NO marker is on screen (the task
+          finished; clear the flag).
+        * ``None``  - the screen is ambiguous (blank just after a screen reset,
+          a partial/incremental repaint, or mid-turn response text).  The
+          tracker must leave its flag UNCHANGED - recomputing it from such a
+          screen is exactly what would briefly drop it to False mid-churn and
+          let the auto-sender dispatch into a churning session.
+
+        Default ``None`` so non-Claude providers never touch the flag (it stays
+        at its initial False and they never report CHURNING).
+        """
+        del display_lines
+        return None
+
     def screen_shows_selection_dialog(self, display_lines: list[str]) -> bool:
         """True iff the bottom of the screen looks like an arrow-navigable
         selection dialog/picker (permission prompt, trust dialog, model/theme

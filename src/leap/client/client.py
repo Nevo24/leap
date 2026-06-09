@@ -16,7 +16,7 @@ import time
 from typing import Optional
 
 from leap.cli_providers.registry import DEFAULT_PROVIDER, get_display_name
-from leap.cli_providers.states import AutoSendMode, CLIState
+from leap.cli_providers.states import AutoSendMode, ChurnQueueMode, CLIState
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, SLACK_DIR, SLACK_BOT_LOCK,
     ensure_storage_dirs, load_settings, save_settings,
@@ -382,6 +382,7 @@ class LeapClient:
             queue_contents = response.get('queue_contents', [])
             cli_state = response.get('cli_state', CLIState.IDLE)
             auto_send_mode = response.get('auto_send_mode', AutoSendMode.PAUSE)
+            churn_queue_mode = response.get('churn_queue_mode', ChurnQueueMode.WAIT)
 
             state_display = {
                 CLIState.IDLE: '\u2713 Idle - will accept next message',
@@ -389,15 +390,21 @@ class LeapClient:
                 CLIState.NEEDS_PERMISSION: '\u26a0\ufe0f Needs Permission - waiting for tool approval',
                 CLIState.NEEDS_INPUT: '\u2753 Needs Input - asking you something',
                 CLIState.INTERRUPTED: '\u26a1 Interrupted - will auto-send next message',
+                CLIState.CHURNING: '\u27f3 Churning - background monitor still active',
             }
             mode_display = {
                 AutoSendMode.PAUSE: 'Ask for approval',
                 AutoSendMode.ALWAYS: 'Auto-approve',
             }
+            churn_display = {
+                ChurnQueueMode.WAIT: 'Wait',
+                ChurnQueueMode.SEND: 'Send next',
+            }
 
             print("\n\U0001f4ca Server status:")
             print(f"  {state_display.get(cli_state, cli_state)}")
             print(f"  Approval: {mode_display.get(auto_send_mode, auto_send_mode)}")
+            print(f"  While churning: {churn_display.get(churn_queue_mode, churn_queue_mode)}")
             print(f"  Queue: {queue_size} message{'s' if queue_size != 1 else ''}")
 
             if queue_contents:
@@ -502,14 +509,25 @@ class LeapClient:
         print()
         print("  \U0001F5BC  Ctrl+V (not Cmd+V) pastes clipboard image as [Image #N]")
         print()
-        # Fetch current auto-send mode from server
+        # Fetch this session's modes from the server + the global defaults.
         response = self.socket.get_status(silent=True)
+        defaults = load_settings()
         as_mode = response.get('auto_send_mode', AutoSendMode.PAUSE) if response else AutoSendMode.PAUSE
         as_label = 'ask' if as_mode == AutoSendMode.PAUSE else 'auto'
+        as_def = 'auto' if defaults.get('auto_send_mode') == AutoSendMode.ALWAYS else 'ask'
+        churn_mode = response.get('churn_queue_mode', ChurnQueueMode.WAIT) if response else ChurnQueueMode.WAIT
+        churn_label = 'send' if churn_mode == ChurnQueueMode.SEND else 'wait'
+        churn_def = 'send' if defaults.get('churn_queue_mode') == ChurnQueueMode.SEND else 'wait'
         notif_label = 'on' if self.show_auto_sent_notifications else 'off'
 
-        print(f"  \U0001F916 Approval mode: !autoapprove ask/auto        (or !aa)   [current: {as_label}]")
-        print(f"  \U0001F514 Auto-sent notifications: !auto-sent on/off  (or !asm)  [current: {notif_label}]")
+        # Syntax columns padded to a fixed width so the (or !xx) / [status]
+        # columns line up.  ``default`` is an optional prefix before the value.
+        a_syntax = 'Approval mode: !autoapprove (optional: default) ask/auto'
+        c_syntax = 'While churning: !churn (optional: default) send/wait'
+        n_syntax = 'Auto-sent notifications: !auto-sent on/off'
+        print(f"  \U0001F916 {a_syntax:<56}  (or {'!aa':<4})  [now: {as_label} / default: {as_def}]")
+        print(f"  ⟳  {c_syntax:<56}  (or {'!ch':<4})  [now: {churn_label} / default: {churn_def}]")
+        print(f"  \U0001F514 {n_syntax:<56}  (or {'!asm':<4})  [current: {notif_label}]")
         if self._is_slack_installed():
             print()
             slack_enabled = response.get('slack_enabled', False) if response else False
@@ -613,18 +631,34 @@ class LeapClient:
             AutoSendMode.PAUSE: 'Ask for approval',
             AutoSendMode.ALWAYS: 'Auto-approve',
         }
-        parts = line_lower.split(None, 1)
+        parts = line_lower.split(None, 2)
         if len(parts) < 2:
-            # Show current mode from server
+            # Show this session's mode + the global default for new sessions.
             response = self.socket.get_status(silent=True)
             mode = response.get('auto_send_mode', AutoSendMode.PAUSE) if response else AutoSendMode.PAUSE
-            print(f"Approval mode: {mode_display.get(mode, mode)}")
-            print("Usage: !autoapprove ask/auto  (or !aa ask/auto)\n")
+            default = load_settings().get('auto_send_mode', AutoSendMode.PAUSE)
+            print(f"Approval mode - session: {mode_display.get(mode, mode)}, "
+                  f"default: {mode_display.get(default, default)}")
+            print("Usage: !autoapprove ask/auto  |  !autoapprove default ask/auto  (or !aa)\n")
+            return
+
+        # "default <mode>" sets the global default for NEW sessions (open
+        # sessions keep their snapshot, same as the Settings dialog).
+        if parts[1] == 'default':
+            mode = token_map.get(parts[2].strip()) if len(parts) >= 3 else None
+            if mode is None:
+                print("Usage: !autoapprove default ask/auto\n")
+                return
+            settings = load_settings()
+            settings['auto_send_mode'] = mode
+            save_settings(settings)
+            print(f"\u2713 Default approval mode (new sessions): "
+                  f"{mode_display.get(mode, mode)}\n")
             return
 
         mode = token_map.get(parts[1].strip())
         if mode is None:
-            print("\u2717 Invalid mode. Use: ask or auto\n")
+            print("\u2717 Invalid mode. Use: ask or auto  (or 'default ask/auto')\n")
             return
 
         response = self.socket.set_auto_send_mode(mode)
@@ -632,6 +666,63 @@ class LeapClient:
             print(f"\u2713 Approval mode: {mode_display.get(mode, mode)}\n")
         else:
             print("\u2717 Failed to set approval mode\n")
+
+    def _handle_churn_mode(self, line_lower: str) -> None:
+        """
+        Handle the !churn / !ch churn-queue command.
+
+        Controls whether queued messages dispatch while the session is
+        CHURNING (the turn has ended but a background monitor is still active):
+        ``send`` dispatches the next queued message, ``wait`` holds the queue
+        until the monitor finishes and the session fully idles.
+
+        Args:
+            line_lower: Lowercased input line.
+        """
+        token_map = {
+            'send': ChurnQueueMode.SEND,
+            'wait': ChurnQueueMode.WAIT,
+        }
+        mode_display = {
+            ChurnQueueMode.SEND: 'Send next',
+            ChurnQueueMode.WAIT: 'Wait',
+        }
+        parts = line_lower.split(None, 2)
+        if len(parts) < 2:
+            # Show this session's mode + the global default for new sessions.
+            response = self.socket.get_status(silent=True)
+            mode = (response.get('churn_queue_mode', ChurnQueueMode.WAIT)
+                    if response else ChurnQueueMode.WAIT)
+            default = load_settings().get('churn_queue_mode', ChurnQueueMode.WAIT)
+            print(f"While churning - session: {mode_display.get(mode, mode)}, "
+                  f"default: {mode_display.get(default, default)}")
+            print("Usage: !churn send/wait  |  !churn default send/wait  (or !ch)\n")
+            return
+
+        # "default <mode>" sets the global default for NEW sessions (open
+        # sessions keep their snapshot, same as the Settings dialog).
+        if parts[1] == 'default':
+            mode = token_map.get(parts[2].strip()) if len(parts) >= 3 else None
+            if mode is None:
+                print("Usage: !churn default send/wait\n")
+                return
+            settings = load_settings()
+            settings['churn_queue_mode'] = mode
+            save_settings(settings)
+            print(f"\u2713 Default while churning (new sessions): "
+                  f"{mode_display.get(mode, mode)}\n")
+            return
+
+        mode = token_map.get(parts[1].strip())
+        if mode is None:
+            print("\u2717 Invalid mode. Use: send or wait  (or 'default send/wait')\n")
+            return
+
+        response = self.socket.set_churn_queue_mode(mode)
+        if response and response.get('status') == 'ok':
+            print(f"\u2713 While churning: {mode_display.get(mode, mode)}\n")
+        else:
+            print("\u2717 Failed to set churn mode\n")
 
     def _is_slack_installed(self) -> bool:
         """Check if the Slack app has been configured."""
@@ -785,6 +876,14 @@ class LeapClient:
         if (line_lower.startswith('!autoapprove ') or line_lower.startswith('!aa ')
                 or line_lower.startswith('!autosend ') or line_lower.startswith('!as ')):
             self._handle_approval_mode(line_lower)
+            return True
+
+        # !churn / !ch (auto-send while a background monitor keeps churning)
+        if line_lower in ['!churn', '!ch']:
+            self._handle_churn_mode(line_lower)
+            return True
+        if line_lower.startswith('!churn ') or line_lower.startswith('!ch '):
+            self._handle_churn_mode(line_lower)
             return True
 
         # !slack

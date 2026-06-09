@@ -193,3 +193,22 @@ class SocketClient:
             {'type': 'set_auto_send_mode', 'mode': mode},
             silent=silent,
         )
+
+    def set_churn_queue_mode(
+        self, mode: str, silent: bool = False
+    ) -> Optional[dict[str, Any]]:
+        """
+        Set the churn-queue mode on the server (whether to auto-send while a
+        background monitor keeps a finished session churning).
+
+        Args:
+            mode: 'send' or 'wait'.
+            silent: If True, suppress error messages.
+
+        Returns:
+            Server response dictionary, or None on error.
+        """
+        return self._send_request(
+            {'type': 'set_churn_queue_mode', 'mode': mode},
+            silent=silent,
+        )

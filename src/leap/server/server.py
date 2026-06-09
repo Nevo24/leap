@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.registry import get_display_name, get_provider
-from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES
+from leap.cli_providers.states import AutoSendMode, ChurnQueueMode, CLIState, PROMPT_STATES
 from leap.utils.atomic_write import atomic_write_json
 from leap.utils.constants import (
     QUEUE_DIR, SOCKET_DIR, HISTORY_DIR, NOTE_IMAGES_DIR, QUEUE_IMAGES_DIR,
@@ -141,9 +141,21 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
         if pinned_mode not in (AutoSendMode.PAUSE, AutoSendMode.ALWAYS):
             pinned_mode = AutoSendMode.PAUSE
         self._save_pinned_auto_send_mode(tag, pinned_mode)
+        # Churn-queue mode (whether to auto-send while a background monitor is
+        # active): global default -> per-session pin, the same snapshot model
+        # as auto_send_mode so a later global change can't retroactively flip
+        # an already-open session.  Coerced to a valid value defensively.
+        global_churn = load_settings().get('churn_queue_mode', ChurnQueueMode.WAIT)
+        if global_churn not in (ChurnQueueMode.SEND, ChurnQueueMode.WAIT):
+            global_churn = ChurnQueueMode.WAIT
+        pinned_churn = self._load_pinned_churn_queue_mode(tag, global_churn)
+        if pinned_churn not in (ChurnQueueMode.SEND, ChurnQueueMode.WAIT):
+            pinned_churn = ChurnQueueMode.WAIT
+        self._save_pinned_churn_queue_mode(tag, pinned_churn)
         self.state = CLIStateTracker(
             signal_file=SOCKET_DIR / f"{tag}.signal",
             auto_send_mode=pinned_mode,
+            churn_queue_mode=pinned_churn,
             provider=self._provider,
             cwd=os.getcwd(),
             tag=tag,
@@ -412,6 +424,58 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
         except (OSError, ValueError):
             pass
 
+    @staticmethod
+    def _load_pinned_churn_queue_mode(tag: str, default: str) -> str:
+        """Read churn_queue_mode from pinned sessions for this tag.
+
+        Twin of ``_load_pinned_auto_send_mode`` (same corruption-tolerance on
+        the ``__init__`` snapshot path); see it for the rationale.
+        """
+        pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        try:
+            if pinned_file.exists():
+                with open(pinned_file, 'r') as f:
+                    loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    return default
+                entry = loaded.get(tag, {})
+                if not isinstance(entry, dict):
+                    return default
+                mode = entry.get('churn_queue_mode', default)
+                return mode if isinstance(mode, str) and mode else default
+        except (OSError, ValueError):
+            pass
+        return default
+
+    @staticmethod
+    def _save_pinned_churn_queue_mode(tag: str, mode: str) -> None:
+        """Persist churn_queue_mode in pinned sessions for this tag.
+
+        Twin of ``_save_pinned_auto_send_mode`` (creates the file/entry and
+        self-heals a corrupt pin file); see it for the rationale.
+        """
+        pinned_file = STORAGE_DIR / "pinned_sessions.json"
+        try:
+            pinned: dict[str, Any] = {}
+            if pinned_file.exists():
+                try:
+                    with open(pinned_file, 'r') as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        pinned = loaded
+                except (OSError, ValueError):
+                    pass
+            entry = pinned.get(tag, {})
+            if not isinstance(entry, dict):
+                entry = {}
+            if entry.get('churn_queue_mode') == mode:
+                return
+            entry['churn_queue_mode'] = mode
+            pinned[tag] = entry
+            atomic_write_json(pinned_file, pinned)
+        except (OSError, ValueError):
+            pass
+
     def _handle_message(self, msg: dict[str, Any]) -> dict[str, Any]:
         """
         Handle incoming client message.
@@ -538,6 +602,7 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
                 'ready': self.state.is_ready_for_state(state),
                 'cli_state': state,
                 'auto_send_mode': self.state.auto_send_mode,
+                'churn_queue_mode': self.state.churn_queue_mode,
                 'cli_running': self.pty.is_alive(),
                 'slack_enabled': self.output_capture.is_enabled(),
                 'cli_provider': self._provider.name,
@@ -632,6 +697,19 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
             ):
                 self._try_auto_approve()
             return {'status': 'ok', 'auto_send_mode': mode}
+
+        elif msg_type == 'set_churn_queue_mode':
+            mode = msg.get('mode', '')
+            if mode not in (ChurnQueueMode.SEND, ChurnQueueMode.WAIT):
+                return {'status': 'error',
+                        'message': f"Invalid mode: {mode}. Use 'send' or 'wait'."}
+            self.state.churn_queue_mode = mode
+            # Per-session toggle only; the global default is written solely by
+            # the Settings dialog (mirrors set_auto_send_mode above).  No
+            # immediate side effect - the auto-sender re-reads readiness each
+            # poll, so a switch to SEND dispatches on the next loop iteration.
+            self._save_pinned_churn_queue_mode(self.tag, mode)
+            return {'status': 'ok', 'churn_queue_mode': mode}
 
         elif msg_type == 'interrupt':
             # Interrupt key is provider-specific: Escape cancels in

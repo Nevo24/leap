@@ -76,6 +76,7 @@ class Theme:
     status_input: str = '#64b5f6'
     status_interrupted: str = '#ffd54f'
     status_idle: str = '#ffffff'  # idle / default text
+    status_churning: str = '#42a5f5'  # idle, but a background monitor is active
 
     # PR-status accent colors.  Closed PRs reuse ``accent_red`` (already
     # tuned per theme); "merged" has no native accent, so it gets its own

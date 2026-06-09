@@ -325,6 +325,74 @@ class ClaudeProvider(CLIProvider):
         last = display_lines[-1].lower()
         return any(m in last for m in self._INTERACTIVE_FOOTER_MARKERS)
 
+    # Footer / mode-line text Claude renders while a background ``Monitor`` task
+    # is active after the turn ends (idle prompt visible).  Validated against a
+    # live churn (Claude Code v2.1.162): the persistent mode line reads
+    # ``bypass permissions on · 1 monitor · ← for agents`` and the activity line
+    # ``✻ <word> for Ns · 1 monitor still running``.  The activity word is
+    # randomized (Cogitated / Cooked / Brewed / Baked / Crunched), so it is NOT
+    # matched; the stable ``<n> monitor`` count - present in both lines, absent
+    # from the normal ``(shift+tab to cycle)`` idle footer - is.
+    _CHURN_MARKERS: tuple = ('monitor still running',)
+    _CHURN_COUNT_RE = re.compile(r'\b\d+\s+monitors?\b')
+
+    # Markers of Claude's idle mode line, present whether or not a Monitor is
+    # active (``... · 1 monitor · ← for agents`` vs ``... (shift+tab to cycle)
+    # · ← for agents``).  Their presence means the idle prompt is genuinely
+    # rendered - distinguishing a real "no monitor" idle from a blank/partial
+    # screen, which is what makes the cleared (False) verdict safe.
+    _IDLE_MODE_MARKERS: tuple = ('for agents', 'shift+tab to cycle')
+
+    def background_work_state(self, display_lines: list[str]) -> Optional[bool]:
+        """Tri-state: is a background ``Monitor`` active at the idle prompt?
+
+        Claude's turn has ended (Stop hook fired, idle box visible) but a
+        background ``Monitor`` may still be running and will re-invoke the
+        session.  Detected from the footer / mode-line in the tail rows (e.g.
+        ``1 monitor still running`` / ``· 1 monitor ·``).  Used only to refine
+        the returned state IDLE -> CHURNING; never stored, never gates the hook
+        signal.
+
+        Returns ``True`` (marker present), ``False`` (idle mode line rendered
+        with NO marker -> Monitor finished), or ``None`` (ambiguous screen ->
+        leave the tracker's sticky flag unchanged).  See
+        ``CLIProvider.background_work_state`` for why the tri-state matters.
+        """
+        if not display_lines:
+            return None
+        # Anchor the tail to the last NON-BLANK row, not the bottom of the
+        # buffer.  In a tall terminal with a short conversation, Claude renders
+        # the input box + mode line mid-screen and pads many blank rows below,
+        # so a naive ``display_lines[-N:]`` grabs only trailing blanks and never
+        # sees the footer.
+        last = next((i for i in range(len(display_lines) - 1, -1, -1)
+                     if display_lines[i].strip()), None)
+        if last is None:
+            return None
+        tail = display_lines[max(0, last - self._IDLE_TAIL_WINDOW + 1):last + 1]
+        joined = '\n'.join(tail).lower()
+        # The specific "N monitor still running" phrase (activity line) is safe
+        # to match anywhere in the tail - response text won't contain it.
+        if any(m in joined for m in self._CHURN_MARKERS):
+            return True
+        # The bare "N monitor" count lives in the persistent mode line.  Find
+        # the mode line(s) in the tail by their stable markers and check the
+        # count THERE - not on a fixed row (a trailing clipboard/paste hint can
+        # displace the mode line from the last non-blank row), and not across
+        # the whole tail (response text mentioning monitors would false-positive
+        # and wrongly stick the session in CHURNING, holding its queue).
+        mode_rows = [ln for ln in tail
+                     if any(m in ln.lower() for m in self._IDLE_MODE_MARKERS)]
+        if mode_rows:
+            if any(self._CHURN_COUNT_RE.search(ln.lower()) for ln in mode_rows):
+                return True
+            # Mode line rendered with NO monitor count -> the Monitor finished.
+            return False
+        # No mode line in the tail (blank buffer just after a screen reset, a
+        # partial repaint, or mid-turn response text) -> ambiguous; leave the
+        # tracker's sticky flag unchanged.
+        return None
+
     # -- Menu / option parsing -------------------------------------------
 
     @property

@@ -805,7 +805,8 @@ def write_pinned_session_entry(tag: str, entry: dict[str, Any]) -> None:
         pinned = _safe_load_pinned()
         disk_entry = pinned.get(tag, {})
         new_entry: dict[str, Any] = {
-            k: v for k, v in entry.items() if k != 'auto_send_mode'
+            k: v for k, v in entry.items()
+            if k not in ('auto_send_mode', 'churn_queue_mode')
         }
         # Server is the source of truth for ``auto_send_mode`` — always
         # carry disk's value over the caller's (possibly stale)
@@ -815,6 +816,14 @@ def write_pinned_session_entry(tag: str, entry: dict[str, Any]) -> None:
             new_entry['auto_send_mode'] = disk_entry['auto_send_mode']
         elif 'auto_send_mode' in entry:
             new_entry['auto_send_mode'] = entry['auto_send_mode']
+        # Same server-owned treatment for ``churn_queue_mode`` (written only by
+        # the server's ``_save_pinned_churn_queue_mode`` and the monitor's
+        # targeted ``update_pinned_session_field``): carry disk's value over a
+        # possibly-stale in-memory copy so a full entry rewrite can't clobber it.
+        if isinstance(disk_entry, dict) and 'churn_queue_mode' in disk_entry:
+            new_entry['churn_queue_mode'] = disk_entry['churn_queue_mode']
+        elif 'churn_queue_mode' in entry:
+            new_entry['churn_queue_mode'] = entry['churn_queue_mode']
         # Short-circuit when disk already matches — avoids an
         # unnecessary fsync on no-op refreshes (e.g., monitor's
         # ``_merge_sessions`` rebuilding the same ``pin_data`` that

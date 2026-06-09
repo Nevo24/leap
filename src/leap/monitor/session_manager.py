@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from leap.cli_providers.registry import DEFAULT_PROVIDER, get_provider
-from leap.cli_providers.states import AutoSendMode, CLIState
+from leap.cli_providers.states import AutoSendMode, ChurnQueueMode, CLIState
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.ide_detection import get_git_branch
 from leap.utils.socket_utils import send_socket_request
@@ -205,6 +205,8 @@ def get_active_sessions() -> list[dict[str, Any]]:
         queue_size = status_response.get('queue_size', 0)
         cli_state = status_response.get('cli_state', CLIState.IDLE)
         auto_send_mode = status_response.get('auto_send_mode', AutoSendMode.PAUSE)
+        churn_queue_mode = status_response.get(
+            'churn_queue_mode', ChurnQueueMode.WAIT)
         slack_enabled = status_response.get('slack_enabled', False)
         recently_sent = status_response.get('recently_sent', [])
         current_task = recently_sent[-1] if recently_sent else ''
@@ -292,6 +294,7 @@ def get_active_sessions() -> list[dict[str, Any]]:
             'tag': tag,
             'cli_state': cli_state,
             'auto_send_mode': auto_send_mode,
+            'churn_queue_mode': churn_queue_mode,
             'queue_size': queue_size,
             'project': project_name or 'N/A',
             'branch': branch_name or 'N/A',

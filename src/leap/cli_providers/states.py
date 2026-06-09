@@ -18,6 +18,13 @@ class CLIState(str, Enum):
     NEEDS_PERMISSION = 'needs_permission'
     NEEDS_INPUT = 'needs_input'
     INTERRUPTED = 'interrupted'
+    # Turn ended (idle prompt shown, ready for input) but a background task -
+    # Claude Code's `Monitor` - is still active and will re-invoke the session.
+    # Idle-derived and Claude-only: surfaced distinctly so a "watching CI"
+    # session is not shown identical to a "done, awaiting you" one.  Computed at
+    # the get_state boundary from a screen marker; never stored in _state and
+    # never written to / read from the hook signal file (not in SIGNAL_STATES).
+    CHURNING = 'churning'
 
 
 class AutoSendMode(str, Enum):
@@ -30,6 +37,21 @@ class AutoSendMode(str, Enum):
 
     PAUSE = 'pause'
     ALWAYS = 'always'
+
+
+class ChurnQueueMode(str, Enum):
+    """Auto-send behavior while a session is CHURNING (idle, but a background
+    monitor is still active and will re-invoke it).
+
+    SEND: dispatch the next queued message while churning - the session is
+          idle/ready, so sending is safe and simply starts a new turn.
+    WAIT: hold queued messages until the monitor finishes and the session
+          fully idles.  The default (a queued follow-up usually means "after
+          the background work", not "alongside it"); ``!force`` overrides.
+    """
+
+    SEND = 'send'
+    WAIT = 'wait'
 
 
 # CLI is waiting for user action (not producing output).

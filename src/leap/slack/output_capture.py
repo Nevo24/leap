@@ -67,6 +67,12 @@ class OutputCapture:
             return
         if new_state == prev_state:
             return
+        # CHURNING is idle-with-a-background-Monitor: the turn ended, there is a
+        # response to post and input is accepted, so for Slack treat it as IDLE.
+        # Without this, a turn that ends while a Monitor is active (RUNNING ->
+        # CHURNING) would never post its response to Slack.
+        if new_state == CLIState.CHURNING:
+            new_state = CLIState.IDLE
         if new_state not in (CLIState.IDLE, CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT, CLIState.INTERRUPTED):
             return
 
@@ -114,6 +120,8 @@ class OutputCapture:
         """
         if not self._enabled:
             return
+        if current_state == CLIState.CHURNING:  # idle-with-Monitor; see on_state_change
+            current_state = CLIState.IDLE
         if current_state not in (CLIState.IDLE, CLIState.NEEDS_PERMISSION, CLIState.NEEDS_INPUT, CLIState.INTERRUPTED):
             return
 

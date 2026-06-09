@@ -23,7 +23,13 @@ import pyte
 
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.registry import get_provider
-from leap.cli_providers.states import AutoSendMode, CLIState, PROMPT_STATES, WAITING_STATES
+from leap.cli_providers.states import (
+    AutoSendMode,
+    ChurnQueueMode,
+    CLIState,
+    PROMPT_STATES,
+    WAITING_STATES,
+)
 from leap.utils.constants import (
     SAFETY_SILENCE_TIMEOUT,
     SAFETY_WAITING_TIMEOUT,
@@ -94,6 +100,7 @@ class CLIStateTracker:
         self,
         signal_file: Path,
         auto_send_mode: AutoSendMode = AutoSendMode.PAUSE,
+        churn_queue_mode: str = ChurnQueueMode.WAIT,
         clock: Optional[Callable[[], float]] = None,
         provider: Optional[CLIProvider] = None,
         cwd: Optional[str] = None,
@@ -101,6 +108,8 @@ class CLIStateTracker:
     ) -> None:
         self._signal_file = signal_file
         self._auto_send_mode = auto_send_mode
+        # Whether to auto-send while CHURNING (idle + background monitor).
+        self._churn_queue_mode = churn_queue_mode
         self._clock = clock or time.time
         self._provider = provider or get_provider()
         # Captured once; immune to runtime chdir.  Used by the
@@ -172,6 +181,11 @@ class CLIStateTracker:
 
         # -- Stale interrupt suppression --
         self._suppress_stale_interrupt: bool = False
+
+        # -- Background-task (Claude `Monitor`) marker on the idle screen --
+        # Updated on every output render in on_output; refines get_state's
+        # returned IDLE -> CHURNING (never stored in _state).
+        self._background_active: bool = False
 
         # -- pyte virtual terminal --
         self._screen: pyte.Screen = pyte.Screen(
@@ -822,6 +836,21 @@ class CLIStateTracker:
                 )
                 self._reset_screen()
 
+            # Track whether the provider's background-task marker (Claude's
+            # ``Monitor``) is active, so get_state can refine IDLE -> CHURNING.
+            # STICKY: set True when a marker shows, cleared only when a clean
+            # idle prompt with no marker shows (the Monitor finished), and left
+            # UNCHANGED on an ambiguous screen (None) - a blank buffer right
+            # after a get_state _reset_screen(), or a partial/incremental
+            # repaint during the quiet wait between Monitor events.  Recomputing
+            # the flag unconditionally from such a screen is what briefly
+            # dropped it to False mid-churn, letting the auto-sender dispatch a
+            # queued message into the churning session.
+            _bg_state = self._provider.background_work_state(
+                self._get_display_lines())
+            if _bg_state is not None:
+                self._background_active = _bg_state
+
     # -- on_output sub-handlers -----------------------------------------------
 
     def _handle_idle_output(self, now: float) -> None:
@@ -1205,28 +1234,42 @@ class CLIStateTracker:
         if current == CLIState.IDLE:
             self._awaiting_resume_after_prompt = False
 
-        # Evaluate the transition heuristics in priority order; the
-        # first one that returns a state decides, mirroring the original
-        # top-to-bottom fall-through. None means "no transition, keep looking".
+        # Evaluate the transition heuristics in priority order; the first that
+        # yields a state decides, mirroring the original top-to-bottom
+        # fall-through (the ``elif`` chain both picks the first match and skips
+        # the rest, so later heuristics' side effects don't run - exactly like
+        # the early ``return`` it replaces).  None means "no transition".
+        result = current
         if (s := self._apply_signal_transition(current)) is not None:
-            return s
-        if (s := self._try_transcript_idle(current)) is not None:
-            return s
-        if (s := self._try_footer_transition(current)) is not None:
-            return s
-        if (s := self._try_waiting_to_running_via_cursor(current)) is not None:
-            return s
-        if (s := self._try_waiting_to_idle_via_dismissal(current)) is not None:
-            return s
-        if (s := self._try_auto_resume_via_cursor(current)) is not None:
-            return s
-        if (s := self._try_running_to_idle_via_silence(current, has_pending_input)) is not None:
-            return s
-        if (s := self._try_safety_silence_timeout(current, has_pending_input)) is not None:
-            return s
-        if (s := self._try_safety_stuck_waiting(current)) is not None:
-            return s
-        return current
+            result = s
+        elif (s := self._try_transcript_idle(current)) is not None:
+            result = s
+        elif (s := self._try_footer_transition(current)) is not None:
+            result = s
+        elif (s := self._try_waiting_to_running_via_cursor(current)) is not None:
+            result = s
+        elif (s := self._try_waiting_to_idle_via_dismissal(current)) is not None:
+            result = s
+        elif (s := self._try_auto_resume_via_cursor(current)) is not None:
+            result = s
+        elif (s := self._try_running_to_idle_via_silence(current, has_pending_input)) is not None:
+            result = s
+        elif (s := self._try_safety_silence_timeout(current, has_pending_input)) is not None:
+            result = s
+        elif (s := self._try_safety_stuck_waiting(current)) is not None:
+            result = s
+
+        # Idle-refinement (presentation only): the turn has ended, but if a
+        # background task (Claude's ``Monitor``) is still active on screen,
+        # surface CHURNING instead of plain IDLE so a "watching a background
+        # task" session reads distinctly from a "done, awaiting you" one.  The
+        # internal ``self._state`` stays IDLE - CHURNING never enters the
+        # transition machinery above, ``on_output``, or the hook signal file -
+        # and is held out of WAITING_STATES, so the auto-sender gates it purely
+        # through ``is_ready_for_state``.
+        if result == CLIState.IDLE and self._background_active:
+            return CLIState.CHURNING
+        return result
 
     def _apply_signal_transition(self, current: str) -> Optional[str]:
         # -- Read signal file --
@@ -2445,11 +2488,17 @@ class CLIStateTracker:
     def is_ready_for_state(self, state: str) -> bool:
         """Check readiness for sending the next queued message.
 
-        In both modes, queued messages are only sent when IDLE.
-        Permission auto-approve (ALWAYS mode) is handled separately
-        by the auto-sender loop in ``LeapServer``.
+        Queued messages dispatch when IDLE.  CHURNING (idle, but a background
+        monitor is still active) dispatches only when this session's
+        churn-queue mode is SEND; the default WAIT holds the queue until the
+        monitor finishes and the session fully idles.  Permission auto-approve
+        (ALWAYS mode) is handled separately by the auto-sender loop.
         """
-        return state == CLIState.IDLE
+        if state == CLIState.IDLE:
+            return True
+        if state == CLIState.CHURNING:
+            return self._churn_queue_mode == ChurnQueueMode.SEND
+        return False
 
     @staticmethod
     def _is_csi_u_interrupt(data: bytes) -> bool:
@@ -2636,6 +2685,15 @@ class CLIStateTracker:
     @auto_send_mode.setter
     def auto_send_mode(self, mode: AutoSendMode) -> None:
         self._auto_send_mode = mode
+
+    @property
+    def churn_queue_mode(self) -> str:
+        """Whether queued messages dispatch while CHURNING (send/wait)."""
+        return self._churn_queue_mode
+
+    @churn_queue_mode.setter
+    def churn_queue_mode(self, mode: str) -> None:
+        self._churn_queue_mode = mode
 
     def cleanup(self) -> None:
         """Delete the signal file."""
