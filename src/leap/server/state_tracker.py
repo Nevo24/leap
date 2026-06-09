@@ -1205,6 +1205,30 @@ class CLIStateTracker:
         if current == CLIState.IDLE:
             self._awaiting_resume_after_prompt = False
 
+        # Evaluate the transition heuristics in priority order; the
+        # first one that returns a state decides, mirroring the original
+        # top-to-bottom fall-through. None means "no transition, keep looking".
+        if (s := self._apply_signal_transition(current)) is not None:
+            return s
+        if (s := self._try_transcript_idle(current)) is not None:
+            return s
+        if (s := self._try_footer_transition(current)) is not None:
+            return s
+        if (s := self._try_waiting_to_running_via_cursor(current)) is not None:
+            return s
+        if (s := self._try_waiting_to_idle_via_dismissal(current)) is not None:
+            return s
+        if (s := self._try_auto_resume_via_cursor(current)) is not None:
+            return s
+        if (s := self._try_running_to_idle_via_silence(current, has_pending_input)) is not None:
+            return s
+        if (s := self._try_safety_silence_timeout(current, has_pending_input)) is not None:
+            return s
+        if (s := self._try_safety_stuck_waiting(current)) is not None:
+            return s
+        return current
+
+    def _apply_signal_transition(self, current: str) -> Optional[str]:
         # -- Read signal file --
         new_state = self._read_signal_state()
         if new_state and new_state != current:
@@ -1587,6 +1611,9 @@ class CLIStateTracker:
                     self._user_input_since_idle = False
                 return new_state
 
+        return None
+
+    def _try_transcript_idle(self, current: str) -> Optional[str]:
         # -- Transcript-based idle detection (Codex) --
         if current == CLIState.RUNNING and self._provider.transcript_sessions_dir:
             msg = self._provider.read_transcript_completion(
@@ -1616,6 +1643,9 @@ class CLIStateTracker:
                     self._reset_screen()
                 return CLIState.IDLE
 
+        return None
+
+    def _try_footer_transition(self, current: str) -> Optional[str]:
         # -- Footer-driven transitions for non-quiescent CLIs (Copilot) --
         # Some CLIs animate their idle prompt and emit PTY output
         # continuously even when idle (GitHub Copilot repaints its input
@@ -1723,6 +1753,9 @@ class CLIStateTracker:
                         self._prompt_snapshot = []
                     return CLIState.IDLE
 
+        return None
+
+    def _try_waiting_to_running_via_cursor(self, current: str) -> Optional[str]:
         # -- Waiting → running via cursor visibility (poll-based) --
         # When the user answers a permission/input prompt directly in the
         # terminal, on_input() sets _user_responded but no signal fires
@@ -1771,6 +1804,9 @@ class CLIStateTracker:
                     self._waiting_since = None
                 return CLIState.RUNNING
 
+        return None
+
+    def _try_waiting_to_idle_via_dismissal(self, current: str) -> Optional[str]:
         # -- Waiting → idle via indicator-gone + cursor visible + silence --
         # Mirror of the running→idle cursor+silence fallback, for the
         # cases where no hook fires to end a waiting state:
@@ -1890,6 +1926,9 @@ class CLIStateTracker:
                         pass
                     return CLIState.IDLE
 
+        return None
+
+    def _try_auto_resume_via_cursor(self, current: str) -> Optional[str]:
         # -- Auto-resume via cursor visibility (poll-based) --
         # Checked at poll time (every 0.5s) rather than on_output to
         # avoid false triggers from mid-render cursor-hidden state.
@@ -1933,6 +1972,9 @@ class CLIStateTracker:
                     pass
                 return CLIState.RUNNING
 
+        return None
+
+    def _try_running_to_idle_via_silence(self, current: str, has_pending_input: bool) -> Optional[str]:
         # -- Running → idle via cursor visibility + output silence --
         # For Ink TUIs: cursor visible + no output for >2s = CLI
         # returned to idle prompt.  Handles cases where the Stop hook
@@ -2194,6 +2236,9 @@ class CLIStateTracker:
                     self._prompt_snapshot = []
                 return CLIState.IDLE
 
+        return None
+
+    def _try_safety_silence_timeout(self, current: str, has_pending_input: bool) -> Optional[str]:
         # -- Safety fallback: silence timeout --
         silence_timeout = (
             self._provider.silence_timeout
@@ -2278,6 +2323,9 @@ class CLIStateTracker:
                     self._prompt_snapshot = []
                 return CLIState.IDLE
 
+        return None
+
+    def _try_safety_stuck_waiting(self, current: str) -> Optional[str]:
         # -- Safety fallback: stuck waiting state --
         if current in WAITING_STATES and self._last_output_time > 0:
             silence = self._clock() - self._last_output_time
@@ -2343,7 +2391,8 @@ class CLIStateTracker:
                         self._last_running_snapshot = []
                     return CLIState.IDLE
 
-        return current
+        return None
+
 
     def is_ready(self, pty_alive: bool,
                  has_pending_input: bool = False) -> bool:
