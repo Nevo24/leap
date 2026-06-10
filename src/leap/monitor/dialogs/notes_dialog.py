@@ -74,9 +74,9 @@ from leap.monitor.leap_sender import (
     prepend_to_leap_queue, send_to_leap_session_raw,
 )
 from leap.monitor.pr_tracking.config import (
-    load_dialog_geometry, load_dialog_geometry_state,
+    load_dialog_flag, load_dialog_geometry, load_dialog_geometry_state,
     load_dialog_splitter_sizes, load_monitor_prefs, load_saved_presets,
-    save_dialog_geometry, save_dialog_geometry_state,
+    save_dialog_flag, save_dialog_geometry, save_dialog_geometry_state,
     save_dialog_splitter_sizes, save_monitor_prefs, save_named_preset,
 )
 from leap.monitor.themes import current_theme
@@ -236,6 +236,27 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
+        # Sidebar collapse toggle. Lives in the right panel (always visible)
+        # so the affordance to bring the notes list back never disappears,
+        # even when the list itself is hidden.
+        self._sidebar_toggle = QPushButton('')
+        self._sidebar_toggle.setFixedWidth(30)
+        self._sidebar_toggle.setCursor(Qt.PointingHandCursor)
+        # A bordered, theme-aware chip (not a bare flat glyph) so the
+        # affordance is obviously an interactive control; it brightens to
+        # the accent color on hover. Font-size is intentionally omitted so
+        # the dialog-level zoom rule still cascades in.
+        _tt = current_theme()
+        self._sidebar_toggle.setStyleSheet(
+            f'QPushButton {{ border: 1px solid {_tt.button_border}; '
+            f'border-radius: 4px; padding: 0 0 3px 0; font-weight: bold; '
+            f'color: {_tt.text_secondary}; background: {_tt.button_bg}; }}'
+            f'QPushButton:hover {{ color: {_tt.accent_blue}; '
+            f'border-color: {_tt.accent_blue}; '
+            f'background: {_tt.button_hover_bg}; }}'
+        )
+        self._sidebar_toggle.clicked.connect(self._toggle_sidebar)
+        header_row.addWidget(self._sidebar_toggle)
         self._title_label = QLabel('')
         # Omit font-size so the dialog's buttons stylesheet cascades in.
         self._title_label.setStyleSheet('font-weight: bold;')
@@ -345,6 +366,15 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         if saved_sizes and len(saved_sizes) == 2:
             splitter.setSizes(saved_sizes)
 
+        # Sidebar collapse state. ``_expanded_sizes`` remembers the split
+        # ratio to restore on expand; it survives a collapse so closing the
+        # dialog while collapsed does not clobber the saved widths with [0, x].
+        self._expanded_sizes: list[int] = (
+            saved_sizes if saved_sizes and len(saved_sizes) == 2 else [])
+        self._sidebar_collapsed: bool = load_dialog_flag(
+            'notes_dialog_sidebar_collapsed')
+        self._apply_sidebar_collapsed(persist=False)
+
         root_layout.addWidget(splitter, 1)
 
         # Bottom bar
@@ -353,6 +383,7 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             'Cmd+N: New note  |  Cmd+Shift+N: New folder'
             '  |  Cmd+F: Find in note  |  Cmd+Shift+F: Search notes'
             '  |  Cmd+K: Insert link  |  Cmd+B: Bold'
+            '  |  Cmd+\\: Toggle sidebar'
             '  |  Cmd+/\u2212/0/Scroll: Zoom'
             '  |  Cmd+Z/Shift+Z: Undo/Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
@@ -1640,8 +1671,12 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         save_dialog_geometry_state(
             'notes_dialog', bytes(self.saveGeometry()))
         if hasattr(self, '_splitter') and not sip.isdeleted(self._splitter):
-            save_dialog_splitter_sizes(
-                'notes_dialog_main', self._splitter.sizes())
+            # While collapsed the live sizes are [0, x]; persist the
+            # remembered expanded widths so the split survives a reopen.
+            sizes = self._splitter.sizes()
+            if self._sidebar_collapsed and len(self._expanded_sizes) == 2:
+                sizes = self._expanded_sizes
+            save_dialog_splitter_sizes('notes_dialog_main', sizes)
         super().done(result)
 
     def closeEvent(self, event: 'QCloseEvent') -> None:  # type: ignore[override]
@@ -1676,8 +1711,12 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         save_dialog_geometry_state(
             'notes_dialog', bytes(self.saveGeometry()))
         if hasattr(self, '_splitter') and not sip.isdeleted(self._splitter):
-            save_dialog_splitter_sizes(
-                'notes_dialog_main', self._splitter.sizes())
+            # While collapsed the live sizes are [0, x]; persist the
+            # remembered expanded widths so the split survives a reopen.
+            sizes = self._splitter.sizes()
+            if self._sidebar_collapsed and len(self._expanded_sizes) == 2:
+                sizes = self._expanded_sizes
+            save_dialog_splitter_sizes('notes_dialog_main', sizes)
         super().closeEvent(event)
         # Emit finished so _on_notes_closed cleans up (closeEvent does
         # not call done(), so finished is not emitted by default).
@@ -1702,6 +1741,43 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             f' font-family: Menlo; }}'
         )
         self._checklist.set_font_size(self._font_size)
+
+    def _toggle_sidebar(self) -> None:
+        """Hide or reveal the notes-list sidebar so the note can be read full
+        width.  Toggling preserves the user's split ratio for the next expand.
+        """
+        self._sidebar_collapsed = not self._sidebar_collapsed
+        self._apply_sidebar_collapsed(persist=True)
+
+    def _apply_sidebar_collapsed(self, persist: bool) -> None:
+        """Reflect ``self._sidebar_collapsed`` in the UI.
+
+        On a user collapse we snapshot the live split sizes into
+        ``_expanded_sizes`` so expand restores the exact widths the user
+        last dragged to.  The snapshot is skipped on the initial restore
+        (``persist=False``) because the splitter sizes are not yet realized
+        before the dialog is shown and would clobber the saved widths.  The
+        toggle glyph/tooltip always points at the *action* (hide when shown,
+        show when hidden), and it lives in the always-visible right panel so
+        the way back is never lost.
+        """
+        if self._sidebar_collapsed:
+            if persist:
+                live = self._splitter.sizes()
+                if len(live) == 2 and live[0] > 0:
+                    self._expanded_sizes = live
+            self._left_panel.setVisible(False)
+            self._sidebar_toggle.setText('›')  # ›  reveal
+            self._sidebar_toggle.setToolTip('Show notes list (Cmd+\\)')
+        else:
+            self._left_panel.setVisible(True)
+            if len(self._expanded_sizes) == 2:
+                self._splitter.setSizes(self._expanded_sizes)
+            self._sidebar_toggle.setText('‹')  # ‹  hide
+            self._sidebar_toggle.setToolTip('Hide notes list (Cmd+\\)')
+        if persist:
+            save_dialog_flag(
+                'notes_dialog_sidebar_collapsed', self._sidebar_collapsed)
 
     def _apply_sidebar_font_size(self) -> None:
         """Apply the sidebar font size to the tree and search bar.
@@ -2415,7 +2491,11 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
                 return
             if event.key() == Qt.Key_F:
                 if mods & Qt.ShiftModifier:
-                    # Cmd+Shift+F → focus sidebar (search all notes)
+                    # Cmd+Shift+F → focus sidebar (search all notes).
+                    # The search box lives in the sidebar, so reveal it
+                    # first if collapsed — otherwise the focus is a no-op.
+                    if self._sidebar_collapsed:
+                        self._toggle_sidebar()
                     QApplication.setActiveWindow(self)
                     self._search.setFocus()
                     self._search.selectAll()
@@ -2425,6 +2505,10 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
                 return
             if event.key() == Qt.Key_K:
                 self._insert_link()
+                return
+            if event.key() == Qt.Key_Backslash:
+                # Cmd+\ → toggle the notes-list sidebar (VS Code-style)
+                self._toggle_sidebar()
                 return
             if event.key() in (Qt.Key_Equal, Qt.Key_Plus):
                 self._zoom(1)

@@ -188,6 +188,22 @@ def save_dialog_splitter_sizes(key: str, sizes: list[int]) -> None:
     save_monitor_prefs(prefs)
 
 
+def load_dialog_flag(key: str, default: bool = False) -> bool:
+    """Return a saved boolean UI flag for the given dialog key."""
+    prefs = load_monitor_prefs()
+    value = prefs.get('dialog_flags', {}).get(key)
+    return bool(value) if isinstance(value, bool) else default
+
+
+def save_dialog_flag(key: str, value: bool) -> None:
+    """Persist a boolean UI flag for the given dialog key."""
+    prefs = load_monitor_prefs()
+    flags = prefs.get('dialog_flags', {})
+    flags[key] = bool(value)
+    prefs['dialog_flags'] = flags
+    save_monitor_prefs(prefs)
+
+
 def load_dialog_geometry_state(key: str) -> Optional[bytes]:
     """Return the saved Qt window-state blob for *key*, or None.
 
