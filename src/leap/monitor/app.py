@@ -1338,7 +1338,8 @@ class MonitorWindow(
             n = commits_behind
             self._update_text_label.setText(
                 f"A new version of Leap is available "
-                f"({n} commit{'s' if n != 1 else ''} behind origin/main)."
+                f"({n} commit{'s' if n != 1 else ''} behind origin/main). "
+                f"Your open sessions will keep running - updating won't restart them."
             )
             self._update_banner.setVisible(True)
         else:
