@@ -25,7 +25,9 @@ from leap.monitor.navigation import (
     is_jetbrains_app, is_jetbrains_project_open, open_terminal_with_command,
 )
 from leap.monitor.scm_polling import BackgroundCallWorker
-from leap.monitor.session_manager import load_session_metadata
+from leap.monitor.session_manager import (
+    _get_git_project_name, load_session_metadata,
+)
 from leap.utils.constants import STORAGE_DIR
 from leap.utils.resume_store import load_tag_rows
 
@@ -269,22 +271,23 @@ class ActionsMenuMixin(_Base):
         JetBrains reads ``<project>/.idea/.name`` on project load and shows
         its contents as the display name in the IDE's project tab. When the
         chosen ``.app`` is a JetBrains IDE and the session has a real project
-        directory, prompt for an alias (the field always defaults to the
-        *tag*) and write it to ``.idea/.name`` before launch so the tab is
-        labelled.
+        directory, prompt for an alias (the field defaults to
+        ``<project name> (<tag>)`` - the git project name, or the folder name
+        when there's no remote) and write it to ``.idea/.name`` before launch
+        so the tab is labelled.
 
         No-op for non-JetBrains apps or sessions without a project directory.
         Three outcomes from the prompt:
 
         * **OK + a value** -> write it as the alias.
-        * **OK + blank** -> keep the current name unchanged (the previous
-          alias if a ``.name`` already exists, otherwise the repo name).
-        * **"Use project's name"** (the relabelled Cancel button, or Escape)
-          -> delete any ``.name`` so the IDE falls back to the repo
-          (directory) name.
+        * **OK + blank** -> delete any ``.name`` so the IDE falls back to the
+          folder (directory) name.
+        * **Cancel / Escape** -> leave the current name untouched (the
+          previous alias if a ``.name`` already exists, otherwise the folder
+          name).
 
-        The prompt's message spells out what blank vs. "Use project's name"
-        will leave you with.
+        The prompt's message spells out what blank vs. Cancel will leave you
+        with.
 
         JetBrains reads ``.idea/.name`` only when it *loads* a project, so if
         the IDE already has it open the prompt is skipped (relabelling a live
@@ -317,42 +320,47 @@ class ActionsMenuMixin(_Base):
         except OSError:
             existing = ''
 
+        # Folder name is what JetBrains shows when there's no .idea/.name -
+        # referenced in the label wording below.
         repo_name = os.path.basename(os.path.normpath(project_path))
+        # Suggested default: the git project name (falls back to the folder
+        # name when there's no remote), tagged with the session name.
+        proj_name = _get_git_project_name(project_path) or repo_name
+        suggested = f'{proj_name} ({tag})'
+
         if existing:
             label = (
-                'Name to show on the project tab in the IDE.\n'
-                f"Leave blank to keep '{existing}' (previous alias); "
-                f"use the project's name to revert to '{repo_name}'."
+                'Name shown on the IDE project tab:\n'
+                f"Blank removes the alias (back to '{repo_name}'); "
+                f"Cancel keeps '{existing}'."
             )
         else:
             label = (
-                'Name to show on the project tab in the IDE.\n'
-                f"Leave blank or use the project's name to keep '{repo_name}'."
+                'Name shown on the IDE project tab:\n'
+                f"Blank or Cancel keeps the default name '{repo_name}'."
             )
 
         dlg = QInputDialog(self)
         dlg.setWindowTitle('IDE tab alias')
         dlg.setLabelText(label)
-        dlg.setTextValue(tag)
-        dlg.setCancelButtonText("Use project's name")
+        dlg.setTextValue(suggested)
         accepted = dlg.exec_() == QDialog.Accepted
+        if not accepted:
+            return  # Cancel / Escape -> leave the current name untouched.
         alias = dlg.textValue().strip()
 
-        if not accepted:
-            # "Use project's name" (or Escape) -> drop any alias so the IDE
-            # falls back to the repo (directory) name.
+        if not alias:
+            # Blank -> remove any alias so the IDE shows the folder name.
             try:
                 os.remove(name_file)
                 logger.info("Cleared IDE tab alias: %s", name_file)
-                self._show_status(f"Using project name: {repo_name}")
+                self._show_status(
+                    f"Removed IDE tab alias (default name: {repo_name})")
             except FileNotFoundError:
                 pass
             except OSError as e:
                 self._show_status(f"Couldn't clear IDE tab alias: {e}")
             return
-
-        if not alias:
-            return  # Blank + OK -> keep the current name (no change).
 
         try:
             os.makedirs(idea_dir, exist_ok=True)
