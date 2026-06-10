@@ -46,8 +46,8 @@ from leap.monitor.dialogs.notes.note_text_edit import (
 from leap.monitor.dialogs.notes.rtl import _apply_rtl_direction
 from leap.monitor.dialogs.notes.text_helpers import (
     _BOLD_END, _BOLD_START, _INLINE_FORMAT_RE, _LINK_RE, _UrlHighlighter,
-    _link_at_stripped_pos, _strip_inline_formats, _try_open_url,
-    _url_at_line_edit_pos,
+    _link_at_stripped_pos, _strip_inline_formats, _strip_variation_selectors,
+    _try_open_url, _url_at_line_edit_pos,
 )
 from leap.monitor.dialogs.notes_undo import (
     ChecklistAddItemCmd, ChecklistDeleteItemCmd, ChecklistReorderCmd,
@@ -239,6 +239,22 @@ class _ItemLineEdit(QLineEdit):
                     return filename
         return None
 
+    def paste(self) -> None:  # type: ignore[override]
+        # Strip emoji variation selectors (U+FE0E/U+FE0F) from pasted
+        # text — they render as a tofu box and break Qt's line shaping,
+        # hiding every character after them. QLineEdit has no
+        # insertFromMimeData hook; the paste() slot is what both Cmd+V
+        # and the context-menu Paste route through. See
+        # _strip_variation_selectors.
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData() if clipboard is not None else None
+        if mime is not None and mime.hasText():
+            cleaned = _strip_variation_selectors(mime.text())
+            if cleaned != mime.text():
+                self.insert(cleaned)
+                return
+        super().paste()
+
     def keyPressEvent(self, event: 'QKeyEvent') -> None:  # type: ignore[override]
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             self.enter_pressed.emit()
@@ -360,7 +376,11 @@ class _ChecklistItemWidget(QFrame):
         # Raw text (may contain markdown link syntax).  The line edit
         # shows a *stripped* version; the raw is the source of truth and
         # is what gets persisted + round-tripped through the popup.
-        self._raw_text: str = text
+        # Drop emoji variation selectors up front so raw and the
+        # stripped display stay the same length — the display↔raw
+        # position mappers (_display_to_raw_pos / _link_at_stripped_pos)
+        # walk raw and would otherwise drift by one per selector.
+        self._raw_text: str = _strip_variation_selectors(text)
         self._popup: Optional[QTextEdit] = None
         self._flatten_on_paste: bool = True
 
@@ -618,6 +638,10 @@ class _ChecklistItemWidget(QFrame):
         result; the line edit then shows the stripped form.  Emits
         ``text_edited`` so the parent checklist persists the change.
         """
+        # Normalize first (drop emoji variation selectors) so raw and
+        # the stripped display stay length-aligned for the position
+        # mappers — see __init__.
+        raw = _strip_variation_selectors(raw)
         if raw == self._raw_text:
             return
         self._raw_text = raw

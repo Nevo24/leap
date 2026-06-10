@@ -31,7 +31,7 @@ from leap.monitor.dialogs.notes.image_helpers import (
 )
 from leap.monitor.dialogs.notes.text_helpers import (
     _BOLD_END, _BOLD_START, _INLINE_FORMAT_RE, _LINK_RE, _UrlHighlighter,
-    _link_char_format, _try_open_url, _url_at_pos,
+    _link_char_format, _strip_variation_selectors, _try_open_url, _url_at_pos,
 )
 from leap.monitor.themes import current_theme
 from leap.utils.constants import NOTE_IMAGES_DIR
@@ -485,6 +485,10 @@ class _NoteTextEdit(QTextEdit):
         link — the whole STX/ETX block contains a single markdown link,
         rendered with bold weight AND link colour+underline).
         """
+        # Drop emoji variation selectors (U+FE0E/U+FE0F) before insert —
+        # they render as a tofu box and break Qt's line shaping, hiding
+        # every character after them. See _strip_variation_selectors.
+        text = _strip_variation_selectors(text)
         pos = 0
         for m in _INLINE_FORMAT_RE.finditer(text):
             if m.start() > pos:

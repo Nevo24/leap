@@ -44,6 +44,22 @@ _INLINE_FORMAT_RE = re.compile(
     r'(?<!!)\[([^\]]+)\]\((\S+://[^\s\)]+)\)'
     f'|{_BOLD_START}(.+?){_BOLD_END}'
 )
+# Emoji variation selectors: VS-15 (U+FE0E, text presentation) and
+# VS-16 (U+FE0F, emoji presentation).  A pasted glyph like "➡️" is the
+# base arrow U+27A1 followed by U+FE0F.  Qt's QLineEdit/QTextEdit text
+# shaping mis-handles these zero-width selectors on macOS: the selector
+# renders as a tofu box AND every character after it on the line is
+# dropped from the render (the stored text is intact, but the user sees
+# only the box).  Stripping the selector leaves the base code point,
+# which renders fine — emoji that are emoji by default (🎉, ✅) carry no
+# selector and are unaffected, so this only changes presentation-hint
+# noise the user never typed deliberately.
+_VARIATION_SELECTOR_RE = re.compile('[\uFE0E\uFE0F]')
+
+
+def _strip_variation_selectors(text: str) -> str:
+    """Remove emoji variation selectors that break Qt line rendering."""
+    return _VARIATION_SELECTOR_RE.sub('', text)
 
 
 # ── URL highlighting ────────────────────────────────────────────────
@@ -204,7 +220,8 @@ def _strip_inline_formats(text: str) -> str:
     styling) — the rich-text overlay handles styled rendering.
     """
     text = _LINK_RE.sub(r'\1', text)
-    return text.replace(_BOLD_START, '').replace(_BOLD_END, '')
+    text = text.replace(_BOLD_START, '').replace(_BOLD_END, '')
+    return _strip_variation_selectors(text)
 
 
 def _link_at_stripped_pos(raw: str, stripped_pos: int) -> Optional[str]:

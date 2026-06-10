@@ -27,6 +27,7 @@ from leap.monitor.dialogs.notes.note_text_edit import (
     _FSI, _PDI, _is_preformatted_line, _isolate_table_cells,
     _strip_cell_isolates, _wrap_cell,
 )
+from leap.monitor.dialogs.notes.text_helpers import _strip_variation_selectors
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,23 @@ class TestStripInlineFormats:
         assert nd._strip_inline_formats(
             '\x02[link](http://x.com)\x03'
         ) == 'link'
+
+    def test_strips_variation_selector(self) -> None:
+        # VS-16 (U+FE0F) after the arrow breaks Qt rendering — drop it.
+        assert nd._strip_inline_formats('➡️ text') == '➡ text'
+
+
+class TestStripVariationSelectors:
+    def test_strips_vs16(self) -> None:
+        assert _strip_variation_selectors('➡️ x') == '➡ x'
+
+    def test_strips_vs15(self) -> None:
+        assert _strip_variation_selectors('a︎b') == 'ab'
+
+    def test_leaves_default_emoji_untouched(self) -> None:
+        # 🎉 (U+1F389) carries no selector — must be preserved.
+        assert _strip_variation_selectors('\U0001f389 party') == (
+            '\U0001f389 party')
 
 
 class TestUrlInTextAtCol:
