@@ -234,15 +234,49 @@ class BackgroundLoopsMixin:
 
         Skips the write when CLI output was received recently to avoid
         interleaving OSC escape sequences with the TUI rendering, which
-        can corrupt colors and produce visual artefacts.
+        can corrupt colors and produce visual artefacts.  This silence
+        guard is never bypassed: the title-keeper writes to stdout from
+        this thread while the relay writes the CLI's output to the same
+        fd, so a write mid-render races and corrupts the frame.
+
+        A JetBrains tab that Leap has ever renamed is "pinned" - its
+        display name stops tracking the OSC application title - so if the
+        tab gets knocked back to a bare name mid-turn, only the ideScript
+        rename (which rides inside set_terminal_title) restores it.  While
+        the CLI streams, the guard suppresses that rename, so the tab
+        stays bare for the whole active stretch.  To heal it promptly
+        without bypassing the guard, the busy->idle edge shortens the poll
+        until output falls quiet, then re-asserts on the very next quiet
+        tick instead of waiting up to a full interval.
         """
+        prev_state = self.state.current_state
+        # Deadline until which we poll quickly so a post-idle re-assert
+        # lands as soon as output goes quiet (0 = no pending re-assert).
+        idle_assert_deadline = 0.0
         while self.running:
-            if time.time() - self._last_output_time > 0.2:
+            cur_state = self.state.current_state
+            if prev_state != CLIState.IDLE and cur_state == CLIState.IDLE:
+                idle_assert_deadline = time.time() + 3.0
+            elif cur_state != CLIState.IDLE:
+                # Back to work before output quiesced - the pending
+                # post-idle re-assert is moot; a fresh edge will arm it
+                # again when this turn ends.
+                idle_assert_deadline = 0.0
+            prev_state = cur_state
+
+            output_quiet = time.time() - self._last_output_time > 0.2
+            if output_quiet:
                 try:
                     set_terminal_title(f"lps {self.tag}", vscode_rename=False)
                 except Exception:
                     pass
-            time.sleep(TITLE_RESET_INTERVAL)
+                idle_assert_deadline = 0.0
+            # Interruptible wait so cleanup() can stop this loop promptly
+            # (and join it) before it writes the bare tab name on exit.
+            if not output_quiet and time.time() < idle_assert_deadline:
+                self._title_keeper_stop.wait(0.1)
+            else:
+                self._title_keeper_stop.wait(TITLE_RESET_INTERVAL)
 
     def _stdin_watchdog_loop(self) -> None:
         """Background thread to detect when the terminal is closed.

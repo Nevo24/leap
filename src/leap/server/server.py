@@ -253,6 +253,12 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
         # repeats and keeps the ID stable across save/recall cycles.
         self._paste_text_map: dict[str, str] = {}
         self._last_output_time: float = 0.0  # timestamp of last CLI output
+        # Stop signal + handle for the title-keeper thread, so cleanup can
+        # join it before writing the bare tab name (otherwise a late "lps
+        # <tag>" write from the loop can land after cleanup's bare write
+        # and leave the dead session's tab stuck with the Leap label).
+        self._title_keeper_stop: threading.Event = threading.Event()
+        self._title_keeper_thread: Optional[threading.Thread] = None
         # Wake-up signal for the auto-sender — set when a message
         # is queued so dispatch is near-instant instead of waiting
         # out the current POLL_INTERVAL sleep.
@@ -1527,7 +1533,10 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
         # Start background threads
         self.socket_handler.start()
         threading.Thread(target=self._auto_sender_loop, daemon=True).start()
-        threading.Thread(target=self._title_keeper_loop, daemon=True).start()
+        self._title_keeper_thread = threading.Thread(
+            target=self._title_keeper_loop, daemon=True
+        )
+        self._title_keeper_thread.start()
         threading.Thread(target=self._stdin_watchdog_loop, daemon=True).start()
 
         # Wait for the socket to be bound before releasing the startup lock,
@@ -1656,6 +1665,15 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
         # that case, but narrower windows are still better).
         self.pty.terminate()
         self.metadata.cleanup()
+        # Stop the title-keeper and wait for it to exit BEFORE writing the
+        # bare name below, so a late ``lps <tag>`` write from its loop
+        # can't land after our bare write and re-label the dead tab.  The
+        # loop waits on this event, so it wakes immediately rather than
+        # after a full TITLE_RESET_INTERVAL; the join is bounded so a
+        # wedged thread never stalls shutdown.
+        self._title_keeper_stop.set()
+        if self._title_keeper_thread is not None:
+            self._title_keeper_thread.join(timeout=2.0)
         # Strip the ``lps <tag>`` tab name back to just ``<tag>`` so a
         # post-server shell prompt (or whatever takes over the tab next)
         # doesn't carry the Leap label.  Done AFTER ``pty.terminate()``
