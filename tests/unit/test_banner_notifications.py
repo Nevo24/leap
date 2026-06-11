@@ -16,7 +16,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from leap.monitor._mixins.pr_display_mixin import PRDisplayMixin
+from leap.monitor._mixins.notifications_mixin import NotificationsMixin
+from leap.monitor._mixins.pr_display_mixin import (
+    _USER_NOTIFICATION_TYPES, PRDisplayMixin,
+)
+from leap.monitor.pr_tracking.base import UserNotification
 from leap.monitor.ui.dock_badge import NotificationEvent, NotificationType
 
 
@@ -93,3 +97,72 @@ class TestSessionEventBannerKey:
         _send(fs, [NotificationEvent(type=NotificationType.SESSION_COMPLETED, tag='a')])
         _send(fs, [NotificationEvent(type=NotificationType.SESSION_COMPLETED, tag='b')])
         assert len(fs.banners) == 2
+
+
+class TestActiveWindowGate:
+    """While the monitor window is active, session/PR banners are
+    suppressed (their state is visible in the table) but one-shot user
+    notifications must still banner - they never re-fire, so suppression
+    would drop them permanently (e.g. the launch-time first poll)."""
+
+    def test_user_notification_banners_while_active(self) -> None:
+        fs = _fake_self()
+        fs.isActiveWindow = lambda: True
+        _send(fs, [_review('https://gitlab.com/o/r/-/merge_requests/1')])
+        assert len(fs.banners) == 1
+
+    def test_session_event_suppressed_while_active(self) -> None:
+        fs = _fake_self()
+        fs.isActiveWindow = lambda: True
+        _send(fs, [NotificationEvent(type=NotificationType.SESSION_COMPLETED,
+                                     tag='mytag')])
+        assert fs.banners == []
+
+    def test_mixed_batch_while_active_banners_only_user_notifs(self) -> None:
+        fs = _fake_self()
+        fs.isActiveWindow = lambda: True
+        _send(fs, [
+            NotificationEvent(type=NotificationType.SESSION_COMPLETED, tag='a'),
+            _review('https://gitlab.com/o/r/-/merge_requests/2'),
+            NotificationEvent(type=NotificationType.PR_UNRESPONDED, tag='b',
+                              unresponded_count=1),
+        ])
+        assert len(fs.banners) == 1
+        assert fs.banners[0][2] == NotificationType.REVIEW_REQUESTED
+
+    def test_active_tick_resets_session_coalescing(self) -> None:
+        # Pre-fix semantics that must survive: an active tick clears the
+        # coalescing set, so a session event that re-fires after the user
+        # looked at the window banners again.
+        fs = _fake_self()
+        ev = NotificationEvent(type=NotificationType.SESSION_COMPLETED,
+                               tag='mytag')
+        _send(fs, [ev])
+        assert len(fs.banners) == 1
+        fs.isActiveWindow = lambda: True
+        _send(fs, [])
+        fs.isActiveWindow = lambda: False
+        _send(fs, [NotificationEvent(type=NotificationType.SESSION_COMPLETED,
+                                     tag='mytag')])
+        assert len(fs.banners) == 2
+
+
+class TestUserNotifTypeCoupling:
+    """_send_banner_notifications special-cases _USER_NOTIFICATION_TYPES.
+    Every reason _notification_to_event can produce must be a member, or
+    a future reason would silently get session-event treatment (active-
+    window suppression + a (tag, type) key that collapses distinct
+    targets)."""
+
+    def test_every_event_reason_is_in_user_notification_types(self) -> None:
+        for reason in ('review_requested', 'assigned', 'mentioned'):
+            n = UserNotification(id='1', scm_type='gitlab', reason=reason,
+                                 title='t', target_url='u')
+            ev = NotificationsMixin._notification_to_event(n)
+            assert ev is not None, reason
+            assert ev.type in _USER_NOTIFICATION_TYPES, reason
+
+    def test_other_reason_produces_no_event(self) -> None:
+        n = UserNotification(id='1', scm_type='gitlab', reason='other',
+                             title='t', target_url='u')
+        assert NotificationsMixin._notification_to_event(n) is None

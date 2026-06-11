@@ -182,6 +182,58 @@ def _load_user_notifications() -> Optional[object]:
     return _un_center_class
 
 
+def _status_allows_banners(status: int) -> bool:
+    """Map a ``UNAuthorizationStatus`` to "banners can be delivered".
+
+    ``denied`` is the only status that means notifications are off.
+    ``notDetermined`` precedes the first authorization prompt (the
+    monitor's startup ``requestAuthorization`` surfaces it), and unknown
+    future values stay optimistic — both so the warning banner never
+    shows a false positive.
+    """
+    if status in _UN_GRANTED_STATUSES:
+        return True
+    return status != _UN_STATUS_DENIED
+
+
+def _read_un_settings_status() -> Optional[int]:
+    """Return the current ``UNAuthorizationStatus``, or None if unavailable.
+
+    ``getNotificationSettings`` reflects the *live* authorization state —
+    it reports ``denied`` after the user flips the System Settings toggle
+    off — unlike ``requestAuthorization``, whose ``granted`` flag is the
+    historical first-prompt response.  This is the primary signal on
+    macOS 26+, where ``com.apple.ncprefs.plist`` no longer exists.
+    """
+    center_cls = _load_user_notifications()
+    if center_cls is None:
+        return None
+    try:
+        center = center_cls.currentNotificationCenter()
+        result: list[Optional[int]] = [None]
+        done = [False]
+
+        def _on_settings(settings: object) -> None:
+            try:
+                result[0] = int(settings.authorizationStatus())
+            except Exception:
+                result[0] = None
+            done[0] = True
+
+        center.getNotificationSettingsWithCompletionHandler_(_on_settings)
+
+        timeout = 2.0
+        step = 0.02
+        while not done[0] and timeout > 0:
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(step))
+            timeout -= step
+        return result[0]
+    except Exception as exc:
+        logger.debug("getNotificationSettings failed: %s", exc)
+        return None
+
+
 def check_accessibility() -> bool:
     """Return True if this process has macOS Accessibility permission."""
     if not _HAS_COCOA:
@@ -196,18 +248,21 @@ def check_accessibility() -> bool:
 def check_notifications() -> bool:
     """Return True if notifications are currently allowed for this process.
 
-    The authoritative signal is ``~/Library/Preferences/com.apple.ncprefs.plist``
-    — specifically bit 25 of the per-bundle ``flags`` field, which
-    mirrors the "Allow Notifications" master toggle in System Settings.
-    Unlike ``UNUserNotificationCenter.requestAuthorization`` (which
-    only reports the historical response to the first prompt and stays
-    "granted" even after the user flips the toggle off), the plist
-    reflects live state.
+    Signal priority:
 
-    The UN API is used only as a distant fallback for the exotic case
-    where the plist can't be read at all.  Returns ``True``
-    optimistically when no signal is available so the banner never
-    shows a false positive on an unsupported system.
+    1. ``~/Library/Preferences/com.apple.ncprefs.plist`` — bit 25 of the
+       per-bundle ``flags`` field mirrors the "Allow Notifications"
+       master toggle.  Authoritative on macOS 14/15, but the plist was
+       removed in macOS 26 (notification settings moved into usernoted's
+       TCC-protected store), so this path returns None there.
+    2. ``getNotificationSettings`` ``authorizationStatus`` — the live UN
+       signal (reports ``denied`` after a later toggle-off, unlike
+       ``requestAuthorization``).  Primary on macOS 26+.
+    3. ``requestAuthorization`` granted flag — historical-only last
+       resort.
+
+    Returns ``True`` optimistically when no signal is available so the
+    banner never shows a false positive on an unsupported system.
     """
     bundle_id = _current_bundle_id()
     if bundle_id:
@@ -215,8 +270,13 @@ def check_notifications() -> bool:
         if plist_result is not None:
             return plist_result
 
-    # Fallback: UN framework (historical signal, better than nothing if
-    # the plist path fails — which doesn't happen on healthy macOS).
+    # Live UN settings — primary on macOS 26+, where the plist is gone.
+    status = _read_un_settings_status()
+    if status is not None:
+        return _status_allows_banners(status)
+
+    # Last resort: requestAuthorization (historical signal, better than
+    # nothing if both live signals are unavailable).
     center_cls = _load_user_notifications()
     if center_cls is None:
         return True

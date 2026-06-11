@@ -32,6 +32,16 @@ _SESSION_NOTIFICATION_TYPES = {
     NotificationType.SESSION_INTERRUPTED,
 }
 
+# One-shot user notification types (GitLab Todos / GitHub notifications).
+# Unlike session/PR events these never re-fire — they're consumed into the
+# seen-set the moment they're detected — so their banners must not be
+# suppressed while the monitor window is active.
+_USER_NOTIFICATION_TYPES = {
+    NotificationType.REVIEW_REQUESTED,
+    NotificationType.ASSIGNED,
+    NotificationType.MENTIONED,
+}
+
 # Category identifiers for UNUserNotificationCenter
 _CAT_SESSION_WITH_CLIENT = 'leap_session_with_client'
 _CAT_SESSION_SERVER_ONLY = 'leap_session_server_only'
@@ -141,9 +151,15 @@ def _setup_modern_notifications(monitor: MonitorWindow) -> None:
             def userNotificationCenter_willPresentNotification_withCompletionHandler_(
                 self, center: object, notification: object, completion: object,
             ) -> None:
-                # Show banner + sound even when app is in foreground
-                # UNNotificationPresentationOptionBanner=16 | Sound=2
-                completion(16 | 2)
+                # Present even when the app is foreground (user notifications
+                # are sent regardless of window focus).  Banner=16 | Sound=2 |
+                # List=8: without List, a foreground-presented notification
+                # leaves no trace in Notification Center, so a banner that
+                # auto-dismisses unseen is unrecoverable.
+                try:
+                    completion(16 | 2 | 8)
+                except Exception:
+                    logger.debug("willPresent completion failed", exc_info=True)
 
         delegate = _LeapUNDelegate.alloc().init()
         delegate.monitor_ref = monitor
@@ -407,23 +423,29 @@ class PRDisplayMixin(_Base):
 
         Coalesces repeated (tag, type) combos while the window is inactive —
         only the first occurrence triggers a banner/sound.
+
+        While the window is active, session/PR events are suppressed
+        entirely — they re-derive from state the user is already looking
+        at in the table.  User notifications (review-requested / assigned
+        / mentioned) are one-shot: they were consumed into the seen-set
+        before this runs and never re-fire, so suppressing them here would
+        drop their banner permanently (the launch-time first poll, which
+        batches everything that arrived while the monitor was off, lands
+        exactly while the freshly opened window is still focused).  They
+        banner regardless of focus — the UN delegate opts into foreground
+        presentation, so macOS shows them even while the app is frontmost.
         """
         if self.isActiveWindow():
             self._banner_notified: set[tuple[str, str]] = set()
-            return
+            events = [ev for ev in events if ev.type in _USER_NOTIFICATION_TYPES]
         if not events:
             return
 
         # Log all events to the status log (regardless of banner/sound prefs).
         # User notifications (review_requested, assigned, mentioned) are already
         # logged in _process_user_notifications — skip them here.
-        _USER_NOTIF_TYPES = {
-            NotificationType.REVIEW_REQUESTED,
-            NotificationType.ASSIGNED,
-            NotificationType.MENTIONED,
-        }
         for ev in events:
-            if ev.type not in _USER_NOTIF_TYPES:
+            if ev.type not in _USER_NOTIFICATION_TYPES:
                 subtitle, body = self._format_banner_text(ev)
                 tag_prefix = f"[{subtitle}] " if subtitle else ''
                 self._show_status(f"{tag_prefix}{body}", url=ev.url)
@@ -441,7 +463,7 @@ class PRDisplayMixin(_Base):
             # notifications of the same reason (e.g. review requests on two
             # different PRs) into a single banner — key them on their unique
             # target instead.
-            if ev.type in _USER_NOTIF_TYPES:
+            if ev.type in _USER_NOTIFICATION_TYPES:
                 key = ('usernotif', ev.url or ev.notification_title or '',
                        ev.type.value)
             else:

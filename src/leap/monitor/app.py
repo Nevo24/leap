@@ -4100,12 +4100,14 @@ class MonitorWindow(
 def _request_notification_permission() -> None:
     """Probe live notification state for the install flow and exit.
 
-    Uses the *exact same* read-only plist check the in-app banner
-    uses (``check_notifications`` → bit 25 of the per-app ``flags`` in
-    ``com.apple.ncprefs.plist``).  No ``requestAuthorization`` side
-    trip — that call has been observed to mutate the plist entry as a
-    side effect, which would make this subprocess falsely report
-    "granted" right after the user toggled the app off.
+    Uses the *exact same* read-only signals the in-app banner uses
+    (``check_notifications``): bit 25 of the per-app ``flags`` in
+    ``com.apple.ncprefs.plist``, with the UN framework's live
+    ``authorizationStatus`` as the fallback (macOS 26 removed the
+    plist).  No ``requestAuthorization`` side trip — that call has been
+    observed to mutate the plist entry as a side effect, which would
+    make this subprocess falsely report "granted" right after the user
+    toggled the app off.
 
     When the bundle is not listed in the plist at all (first-time install
     or post-rebuild where macOS removed the entry), we check the UN

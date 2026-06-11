@@ -37,6 +37,8 @@ GitHub Enterprise Server serves its REST API under `https://<host>/api/v3` (and 
 
 Per-provider enable/disable via setup dialog. Polls `get_user_notifications()` each cycle. Seen IDs deduplicated via `.storage/notification_seen.json`. First-run seeds all existing notifications as seen. 403 errors auto-disable notifications for that provider.
 
+Banners for these events fire **regardless of monitor-window focus**: they are one-shot (consumed into the seen-set the moment they're detected, never re-fired), so the focused-window suppression that session/PR banners keep would drop them permanently - the launch-time first poll batches everything that arrived while the monitor was off and lands while the freshly opened window is still focused. The foreground-presentation delegate (`willPresentNotification` in `pr_display_mixin.py`) returns Banner|Sound|List so a banner missed or suppressed (Do Not Disturb / Focus) still persists in Notification Center. By design, GitLab todos authored by the user themselves are skipped at the provider (`author == username`) - so self-triggered review requests (e.g. created by automation running under the user's own token) never log or notify. `check_notifications()` (`permissions.py`) detects macOS-side disabled notifications via `ncprefs.plist` bit 25 on macOS <= 15 and via live `UNNotificationSettings.authorizationStatus` on macOS 26+ (the plist no longer exists there).
+
 ### Persistent Rows & Pinned Sessions
 
 Rows persist via `pinned_sessions.json`. Key rules:
