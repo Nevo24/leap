@@ -166,12 +166,24 @@ _bounded() {
 # auto-lock timeout (so it stays unlocked through a multi-minute py2app build).
 # Returns non-zero if the password file is missing or the unlock fails - including
 # when the bounded unlock times out because the stored password no longer matches.
+#
+# ORDER MATTERS: unlock (with -p) FIRST, then set-keychain-settings.  Custom
+# keychains don't auto-unlock at login, so on the first build after a reboot
+# this keychain is LOCKED - and `set-keychain-settings` takes no password, so
+# running it on a locked keychain escalates to the interactive "security wants
+# to use the leap-codesign keychain" modal that hangs `leap --update` on a
+# prompt the user can't answer (the password is a random string we generated).
+# Bounding doesn't save us: when the timeout fires the modal still lingers
+# on screen.  The only real fix is to never touch the keychain before it's
+# unlocked - once unlocked with the stored password, set-keychain-settings is
+# prompt-free.  A failed/timed-out unlock returns early so the caller falls
+# through to regeneration (which deletes the stale keychain first).
 unlock_keychain() {
     [ -f "$PASS_FILE" ] || return 1
     local pw
     pw=$(cat "$PASS_FILE") || return 1
+    _bounded security unlock-keychain -p "$pw" "$KEYCHAIN" || return 1
     security set-keychain-settings "$KEYCHAIN" 2>/dev/null || true   # no-timeout
-    _bounded security unlock-keychain -p "$pw" "$KEYCHAIN"
 }
 
 # Add codesign + Apple tools to the dedicated key's partition list, authorized
