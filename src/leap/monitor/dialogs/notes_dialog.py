@@ -13,8 +13,8 @@ from typing import Optional
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QMenu, QMessageBox, QPushButton, QSplitter,
+    QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QMenu, QMessageBox, QPushButton, QSizePolicy, QSplitter,
     QStackedWidget, QStyle, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout,
     QWidget,
@@ -199,9 +199,11 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         self._tree.paste_requested.connect(self._on_paste)
         left_layout.addWidget(self._tree, 1)
 
-        # Button row
-        btn_row = QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
+        # Button grid - 2x2 so the four labels stay readable even when the
+        # sidebar is at its narrow minimum (a single row of four clipped the
+        # text, e.g. "+ Folder" -> "Folde").
+        btn_grid = QGridLayout()
+        btn_grid.setContentsMargins(0, 0, 0, 0)
 
         new_btn = QPushButton('+ Note')
         new_btn.setToolTip('New note (Cmd+N)')
@@ -219,18 +221,18 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         delete_btn.setToolTip('Delete selected')
         delete_btn.clicked.connect(self._on_delete)
 
-        btn_row.addWidget(new_btn)
-        btn_row.addWidget(folder_btn)
-        btn_row.addWidget(rename_btn)
-        btn_row.addWidget(delete_btn)
-        left_layout.addLayout(btn_row)
+        btn_grid.addWidget(new_btn, 0, 0)
+        btn_grid.addWidget(folder_btn, 0, 1)
+        btn_grid.addWidget(rename_btn, 1, 0)
+        btn_grid.addWidget(delete_btn, 1, 1)
+        left_layout.addLayout(btn_grid)
 
         left.setMinimumWidth(340)
         splitter.addWidget(left)
         splitter.setCollapsible(0, False)
 
         # ── Right panel: header + stacked editor ──
-        right = QWidget()
+        right = self._right_panel = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(6, 0, 0, 0)
 
@@ -353,7 +355,11 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         # them before they reach the dialog's keyPressEvent.
         self._tree.installEventFilter(self)
 
-        right.setMinimumWidth(375)
+        # The right panel's minimum width is floored at the toolbar row's
+        # natural width by _apply_toolbar_floor() (called from
+        # _apply_buttons_font_size above, and again after show / on font
+        # zoom) so the splitter can never compress the mode combo / flatten
+        # checkbox / Save / Run buttons until they overlap.
         splitter.addWidget(right)
         splitter.setCollapsible(1, False)
         splitter.setStretchFactor(0, 1)
@@ -387,6 +393,14 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
             '  |  Cmd+/\u2212/0/Scroll: Zoom'
             '  |  Cmd+Z/Shift+Z: Undo/Redo'
             '  |  Delete/\u232b: Delete  |  Right-click: More')
+        # A plain QLabel reports its full single-line text width as its
+        # minimum size, which pinned the whole dialog wider than a laptop
+        # screen (so it could never shrink to fit).  An Ignored horizontal
+        # policy tells the layout to disregard that width hint: the hint
+        # stays on one line and simply clips its tail on a narrow window,
+        # rather than forcing a wide minimum or wrapping into many lines
+        # (which would eat the editor's vertical space).
+        hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         hint.setStyleSheet(
             f'color: {current_theme().text_muted};')
         self._bottom_hint = hint
@@ -1618,6 +1632,28 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
                 and hasattr(self, '_buttons_font_size')):
             self._apply_tooltip_font_size(self._buttons_font_size)
 
+    def _apply_toolbar_floor(self) -> None:
+        """Keep the right panel at least as wide as the toolbar row.
+
+        The mode combo, flatten checkbox and Save/Run buttons have fixed
+        natural widths and can't shrink; if the splitter compressed the
+        right panel below their combined width they would overlap each
+        other (and the checkbox text).  Pin the right panel's minimum
+        width to that combined width so it never happens.  Recomputed
+        whenever the button font changes (the hints grow with the font).
+        """
+        for w in (self._mode_combo, self._flatten_paste_cb,
+                  self._save_preset_btn, self._run_session_btn):
+            w.ensurePolished()
+        floor = (
+            self._mode_combo.sizeHint().width()
+            + self._flatten_paste_cb.sizeHint().width()
+            + self._save_preset_btn.sizeHint().width()
+            + self._run_session_btn.sizeHint().width()
+            + 40  # inter-widget spacing + right-panel margin + slack
+        )
+        self._right_panel.setMinimumWidth(floor)
+
     def showEvent(self, event) -> None:  # type: ignore[override]
         """Re-apply all three saved font sizes when the dialog becomes visible.
 
@@ -1867,6 +1903,9 @@ class NotesDialog(_NotesFindBarMixin, QDialog):
         # Update the global tooltip font (Notes is the active window).
         if self.isActiveWindow():
             self._apply_tooltip_font_size(pt)
+        # The toolbar widgets just changed size with the font; re-floor the
+        # right panel so they still can't be compressed into an overlap.
+        self._apply_toolbar_floor()
 
     def _apply_tooltip_font_size(self, pt: int) -> None:
         """Ask MonitorWindow to rebuild the app QSS with this tooltip size."""
