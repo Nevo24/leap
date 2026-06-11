@@ -19,6 +19,7 @@ from leap.monitor.pr_tracking.git_utils import (
 from leap.monitor.leap_sender import send_to_leap_session
 from leap.monitor.session_manager import get_active_sessions
 from leap.monitor.cursor_gui_scan import scan_open_cursor_agents
+from leap.monitor.sleep_guard import have_internet
 
 # Maximum time to wait for all poll futures to complete
 _POLL_TIMEOUT_SECONDS = 30
@@ -535,6 +536,28 @@ class SessionRefreshWorker(QThread):
                 logger.debug("Error scanning Cursor agent tabs", exc_info=True)
                 cursor_rows = []
         self.sessions_ready.emit(sessions, cursor_rows)
+
+
+class ConnectivityProbeWorker(QThread):
+    """Background worker that probes internet connectivity off the UI thread.
+
+    ``have_internet()`` can block for a couple of seconds on a hard
+    outage, which would stutter the 1s refresh loop if run inline, so the
+    sleep-guard evaluator kicks this instead and reads the result via a
+    signal.
+    """
+
+    result_ready = pyqtSignal(bool)  # True iff a TCP handshake succeeded
+
+    def run(self) -> None:
+        try:
+            ok = have_internet()
+        except Exception:
+            # Fail open: a bug in the probe must never sleep the Mac and
+            # pause running sessions.  Treat an errored probe as online.
+            logger.debug("Error probing connectivity", exc_info=True)
+            ok = True
+        self.result_ready.emit(ok)
 
 
 class TestConnectionWorker(QThread):

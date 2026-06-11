@@ -35,6 +35,8 @@ from leap.monitor.sleep_guard import LidCloseGuard, SleepGuard
 
 # The grace constant the evaluator releases on (kept in sync with the source).
 GRACE: int = int(app.MonitorWindow._SLEEP_GUARD_RUNNING_GRACE_SECONDS)
+# Sustained-offline window after which both guards release regardless of state.
+NO_NET: int = int(app.MonitorWindow._NO_INTERNET_SLEEP_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +276,20 @@ def _wire(monkeypatch: Any, *, prevent: bool = True,
         staticmethod(lambda: fake._lid_close_guard.marker))
     fake._maybe_lid_start = lambda: app.MonitorWindow._maybe_lid_start(fake)
     fake._maybe_lid_stop = lambda: app.MonitorWindow._maybe_lid_stop(fake)
+
+    # Connectivity override state.  Seed ``_last_internet_at`` to the
+    # clock origin so the evaluator treats the Mac as online throughout
+    # the (sub-5-minute) existing tests.  The probe itself is stubbed to
+    # a recorder so no QThread is spawned; offline-override tests drive
+    # ``_last_internet_at`` directly.
+    fake._last_internet_at = 1000.0
+    fake._connectivity_probe_at = 0.0
+    fake._connectivity_worker = None
+    fake._NO_INTERNET_SLEEP_SECONDS = float(NO_NET)
+    fake._CONNECTIVITY_PROBE_INTERVAL_SECONDS = float(
+        app.MonitorWindow._CONNECTIVITY_PROBE_INTERVAL_SECONDS)
+    fake._probe_calls: list[float] = []
+    fake._maybe_probe_connectivity = lambda now: fake._probe_calls.append(now)
     return fake, clock
 
 
@@ -402,3 +418,176 @@ class TestEvaluateSleepGuard:
         fake._lid_pw_dialog_open = False
         _tick(fake, clock, at=6 + GRACE, running=False)
         assert not fake._lid_close_guard.is_active    # released on next tick
+
+    # ── Connectivity override ────────────────────────────────────────
+    def test_sustained_offline_releases_both_while_running(
+        self, monkeypatch: Any,
+    ) -> None:
+        # A session is RUNNING the whole time, but the last successful
+        # probe is the clock origin; once NO_NET seconds elapse with no
+        # fresh success, both guards must release regardless.
+        fake, clock = _wire(monkeypatch)
+        _tick(fake, clock, at=0, running=True)
+        assert fake._sleep_guard.is_active and fake._lid_close_guard.is_active
+        # _last_internet_at stays at 1000.0 (stub probe never updates it).
+        _tick(fake, clock, at=NO_NET, running=True)
+        assert not fake._sleep_guard.is_active
+        assert not fake._lid_close_guard.is_active
+        assert fake._sleep_guard.stops == 1
+        assert fake._lid_close_guard.stops == 1
+
+    def test_just_under_threshold_keeps_guards(
+        self, monkeypatch: Any,
+    ) -> None:
+        fake, clock = _wire(monkeypatch)
+        _tick(fake, clock, at=0, running=True)
+        _tick(fake, clock, at=NO_NET - 1, running=True)
+        assert fake._sleep_guard.is_active
+        assert fake._lid_close_guard.is_active
+
+    def test_connectivity_recovery_reengages_guards(
+        self, monkeypatch: Any,
+    ) -> None:
+        fake, clock = _wire(monkeypatch)
+        _tick(fake, clock, at=0, running=True)
+        _tick(fake, clock, at=NO_NET, running=True)        # offline => released
+        assert not fake._sleep_guard.is_active
+        # Simulate a probe succeeding now (what _on_connectivity_result does).
+        fake._last_internet_at = clock()
+        _tick(fake, clock, at=NO_NET + 1, running=True)    # back online
+        assert fake._sleep_guard.is_active
+        assert fake._lid_close_guard.is_active
+        assert fake._sleep_guard.starts == 2               # held, dropped, held
+
+    def test_probe_only_kicked_while_running(
+        self, monkeypatch: Any,
+    ) -> None:
+        fake, clock = _wire(monkeypatch)
+        _tick(fake, clock, at=0, running=True)
+        assert fake._probe_calls == [1000.0]               # probed while running
+        _tick(fake, clock, at=1, running=False)            # idle => no probe
+        assert fake._probe_calls == [1000.0]
+
+    def test_no_false_release_when_enabled_after_long_idle(
+        self, monkeypatch: Any,
+    ) -> None:
+        # Stale-seed regression: the monitor has been up for an hour
+        # without probing (feature off / no running session), so
+        # ``_last_internet_at`` is still the launch time.  When a session
+        # finally runs, the real probe logic must restart the offline
+        # clock so the guard engages instead of releasing on the stale
+        # seed.
+        fake, clock = _wire(monkeypatch)
+
+        class _Sig:
+            def connect(self, *_a: Any) -> None:
+                pass
+
+        class _FakeProbeWorker:
+            def __init__(self, _p: Any) -> None:
+                self.result_ready = _Sig()
+                self.finished = _Sig()
+                self.running = False
+
+            def isRunning(self) -> bool:
+                return self.running
+
+            def start(self) -> None:
+                self.running = True
+
+        monkeypatch.setattr(app, 'ConnectivityProbeWorker', _FakeProbeWorker)
+        # Use the real probe method (not the recorder stub) on this fake.
+        fake._maybe_probe_connectivity = (
+            lambda now: app.MonitorWindow._maybe_probe_connectivity(fake, now))
+        fake._on_connectivity_result = lambda ok: None
+        fake._on_connectivity_worker_finished = lambda: None
+        fake._last_internet_at = 1000.0      # launch-time seed (clock origin)
+        fake._connectivity_probe_at = 0.0
+
+        _tick(fake, clock, at=3600, running=True)   # 1h later, session runs
+        assert fake._sleep_guard.is_active, \
+            'stale launch-time seed caused a false offline-release'
+
+
+class TestMaybeProbeConnectivity:
+    """Throttle + single-in-flight guard for the off-thread probe."""
+
+    def _wire_probe(self, monkeypatch: Any) -> SimpleNamespace:
+        spawned: list[Any] = []
+
+        class _Sig:
+            def connect(self, *_a: Any) -> None:
+                pass
+
+        class _FakeProbeWorker:
+            def __init__(self, _parent: Any) -> None:
+                self.result_ready = _Sig()
+                self.finished = _Sig()
+                self.running = False
+                spawned.append(self)
+
+            def isRunning(self) -> bool:
+                return self.running
+
+            def start(self) -> None:
+                self.running = True
+
+        monkeypatch.setattr(app, 'ConnectivityProbeWorker', _FakeProbeWorker)
+        fake = SimpleNamespace()
+        fake._connectivity_worker = None
+        fake._connectivity_probe_at = 0.0
+        fake._last_internet_at = 0.0
+        fake._CONNECTIVITY_PROBE_INTERVAL_SECONDS = float(
+            app.MonitorWindow._CONNECTIVITY_PROBE_INTERVAL_SECONDS)
+        fake._on_connectivity_result = lambda ok: None
+        fake._on_connectivity_worker_finished = lambda: None
+        fake._spawned = spawned
+        return fake
+
+    def _probe(self, fake: SimpleNamespace, now: float) -> None:
+        app.MonitorWindow._maybe_probe_connectivity(fake, now)
+
+    def test_first_call_spawns_a_probe(self, monkeypatch: Any) -> None:
+        fake = self._wire_probe(monkeypatch)
+        self._probe(fake, 1000.0)
+        assert len(fake._spawned) == 1
+        assert fake._connectivity_probe_at == 1000.0
+        assert fake._connectivity_worker is fake._spawned[0]
+
+    def test_in_flight_probe_blocks_a_second(self, monkeypatch: Any) -> None:
+        fake = self._wire_probe(monkeypatch)
+        self._probe(fake, 1000.0)
+        # Worker still running, and well past the interval - in-flight wins.
+        self._probe(fake, 1000.0 + 999)
+        assert len(fake._spawned) == 1
+
+    def test_throttle_blocks_within_interval(self, monkeypatch: Any) -> None:
+        fake = self._wire_probe(monkeypatch)
+        self._probe(fake, 1000.0)
+        fake._connectivity_worker.running = False           # probe finished
+        interval = fake._CONNECTIVITY_PROBE_INTERVAL_SECONDS
+        self._probe(fake, 1000.0 + interval - 1)            # too soon
+        assert len(fake._spawned) == 1
+        self._probe(fake, 1000.0 + interval)                # due again
+        assert len(fake._spawned) == 2
+
+    def test_long_gap_resets_offline_clock(self, monkeypatch: Any) -> None:
+        # First probe after a long gap (we weren't probing) restarts the
+        # offline clock so a stale gap isn't counted as downtime.
+        fake = self._wire_probe(monkeypatch)
+        fake._last_internet_at = 0.0
+        self._probe(fake, 5000.0)                            # gap >> interval
+        assert fake._last_internet_at == 5000.0
+
+    def test_continuous_probing_does_not_reset_clock(
+        self, monkeypatch: Any,
+    ) -> None:
+        # Back-to-back probes (no gap) must NOT reset the clock, so a
+        # genuine sustained outage keeps accumulating toward release.
+        fake = self._wire_probe(monkeypatch)
+        self._probe(fake, 1000.0)                            # first probe
+        fake._connectivity_worker.running = False
+        fake._last_internet_at = 1000.0                      # last success
+        interval = fake._CONNECTIVITY_PROBE_INTERVAL_SECONDS
+        self._probe(fake, 1000.0 + interval)                 # contiguous
+        assert fake._last_internet_at == 1000.0

@@ -61,8 +61,9 @@ from leap.monitor.pr_tracking.config import (
 )
 from leap.monitor.themes import THEMES, current_theme, set_theme
 from leap.monitor.scm_polling import (
-    CollectThreadsWorker, SCMOneShotWorker, SCMPollerWorker,
-    SendThreadsCombinedWorker, SendThreadsWorker, SessionRefreshWorker,
+    CollectThreadsWorker, ConnectivityProbeWorker, SCMOneShotWorker,
+    SCMPollerWorker, SendThreadsCombinedWorker, SendThreadsWorker,
+    SessionRefreshWorker,
 )
 from leap.monitor.session_manager import get_active_sessions
 from leap.monitor.monitor_utils import find_icon, notes_icon, load_shell_env
@@ -466,6 +467,17 @@ class MonitorWindow(
         # of the way until the user asks for it.
         self._lid_expanded: bool = False
         self._last_running_at: float = 0.0
+        # Connectivity override for the sleep guards: an offline Mac
+        # can't be doing useful remote work, so after a sustained
+        # internet outage we let it sleep regardless of session state.
+        # ``_last_internet_at`` is the monotonic timestamp of the most
+        # recent successful probe, seeded to launch time so a freshly
+        # started monitor doesn't briefly think it's offline.
+        # ``_connectivity_probe_at`` throttles the off-thread probe and
+        # ``_connectivity_worker`` holds the in-flight one (at most one).
+        self._last_internet_at: float = time.monotonic()
+        self._connectivity_probe_at: float = 0.0
+        self._connectivity_worker: Optional[ConnectivityProbeWorker] = None
         # Defensive normalisation: ``block_lid_close=True`` is only
         # meaningful when the parent guard is also on.  A hand-edited
         # or partially-saved prefs file could leave them inconsistent
@@ -887,11 +899,19 @@ class MonitorWindow(
 
         self.prevent_sleep_check = QCheckBox('Prevent sleep while busy')
         self.prevent_sleep_check.setToolTip(
-            "Keep your Mac awake while any session is in 'Running' "
-            "status. Sleep is allowed again once every session has "
-            "stayed out of Running for 30 seconds.\n\n"
+            "Keep your Mac awake by running 'caffeinate -i -w "
+            "<monitor pid>' while any session is in 'Running' status "
+            "(no admin rights needed). Sleep is allowed again - the "
+            "caffeinate is killed - once every session has stayed out "
+            "of Running for 30 seconds.\n\n"
             "Display sleep is unaffected - only idle / system sleep "
             "is blocked, so battery isn't drained by the screen.\n\n"
+            "If the internet stays unreachable for 5 minutes, Leap "
+            "stops blocking sleep and lets the Mac sleep regardless of "
+            "session status - an offline Mac can't do useful remote "
+            "work, so there's no point draining the battery. Sleep "
+            "blocking resumes automatically once connectivity returns "
+            "and a session is still Running.\n\n"
             "Note: closing the lid still puts the Mac to sleep "
             "regardless. Tick 'Also block lid-close' (click the ▶ "
             "to reveal it) to override that.")
@@ -939,7 +959,12 @@ class MonitorWindow(
             "new one.\n\n"
             "Trade-off: anyone with read access to your home "
             "directory as you can decode that file. Don't tick this "
-            "if that bothers you.")
+            "if that bothers you.\n\n"
+            "Like the parent guard, this is released too if the "
+            "internet stays unreachable for 5 minutes - Leap clears "
+            "'disablesleep' and lets the Mac sleep regardless of "
+            "session status, then restores it once connectivity is "
+            "back and a session is still Running.")
         self.lid_close_check.setChecked(
             self._prefs.get('block_lid_close', False))
         # Sub-checkbox is enabled only while the parent is checked so
@@ -2394,6 +2419,16 @@ class MonitorWindow(
     # the assertion off and on.
     _SLEEP_GUARD_RUNNING_GRACE_SECONDS: float = 30.0
 
+    # When the internet has been unreachable for at least this long,
+    # release both guards regardless of session state and let macOS
+    # sleep on its own idle timer.  An offline Mac can't be doing useful
+    # remote work, so keeping it awake just drains the battery.
+    _NO_INTERNET_SLEEP_SECONDS: float = 300.0
+    # How often to probe connectivity while a guard would be holding.
+    # Probes only run in that window, so there's no network traffic at
+    # idle.
+    _CONNECTIVITY_PROBE_INTERVAL_SECONDS: float = 30.0
+
     def _evaluate_sleep_guard(self) -> None:
         """Re-decide whether the caffeinate + lid-close guards should hold.
 
@@ -2428,6 +2463,20 @@ class MonitorWindow(
         now = time.monotonic()
         if any_running:
             self._last_running_at = now
+            # Keep connectivity fresh while a guard would be holding so
+            # we both detect a sustained outage and notice recovery.
+            self._maybe_probe_connectivity(now)
+            if (
+                now - self._last_internet_at
+                    >= self._NO_INTERNET_SLEEP_SECONDS
+            ):
+                # Offline too long — stop fighting macOS and let it
+                # sleep, no matter how many sessions are Running.  Guards
+                # re-engage automatically once a probe succeeds again.
+                if self._sleep_guard.is_active:
+                    self._sleep_guard.stop()
+                self._maybe_lid_stop()
+                return
             if not self._sleep_guard.is_active:
                 self._sleep_guard.start()
             self._maybe_lid_start()
@@ -2446,6 +2495,62 @@ class MonitorWindow(
             if self._sleep_guard.is_active:
                 self._sleep_guard.stop()
             self._maybe_lid_stop()
+
+    def _maybe_probe_connectivity(self, now: float) -> None:
+        """Kick an off-thread connectivity probe if one is due.
+
+        Throttled to ``_CONNECTIVITY_PROBE_INTERVAL_SECONDS`` and guarded
+        against overlapping runs (one in-flight worker at a time).  The
+        result updates ``_last_internet_at`` via
+        :meth:`_on_connectivity_result` back on the UI thread.
+        """
+        if (
+            self._connectivity_worker is not None
+            and self._connectivity_worker.isRunning()
+        ):
+            return
+        elapsed = now - self._connectivity_probe_at
+        if elapsed < self._CONNECTIVITY_PROBE_INTERVAL_SECONDS:
+            return
+        # A gap much larger than the interval means we weren't probing
+        # continuously — the feature was off, or no session was running,
+        # so probes were paused.  We don't actually know the current
+        # connectivity yet, so restart the offline clock: assume online
+        # until a real probe fails, rather than counting that idle gap
+        # (which can be hours) as downtime and releasing the guard the
+        # instant it's enabled.  ``> 2x`` tolerates a delayed cycle /
+        # brief idle blip without resetting a genuine outage timer.
+        if elapsed > 2 * self._CONNECTIVITY_PROBE_INTERVAL_SECONDS:
+            self._last_internet_at = now
+        self._connectivity_probe_at = now
+        worker = ConnectivityProbeWorker(self)
+        worker.result_ready.connect(self._on_connectivity_result)
+        worker.finished.connect(self._on_connectivity_worker_finished)
+        self._connectivity_worker = worker
+        worker.start()
+
+    def _on_connectivity_worker_finished(self) -> None:
+        """Clear the in-flight probe reference and free the thread.
+
+        Nulls ``_connectivity_worker`` only if the finished worker is the
+        current one (a later probe may already have replaced it), then
+        ``deleteLater`` so we never call into a deleted QThread wrapper.
+        """
+        worker = self.sender()
+        if worker is self._connectivity_worker:
+            self._connectivity_worker = None
+        if isinstance(worker, ConnectivityProbeWorker):
+            worker.deleteLater()
+
+    def _on_connectivity_result(self, ok: bool) -> None:
+        """Record the latest successful connectivity probe.
+
+        Only successes move ``_last_internet_at`` forward; a failed probe
+        leaves the timestamp untouched so the elapsed-offline window keeps
+        growing toward ``_NO_INTERNET_SLEEP_SECONDS``.
+        """
+        if ok:
+            self._last_internet_at = time.monotonic()
 
     def _maybe_lid_start(self) -> None:
         """Start the lid-close guard if the sub-checkbox is enabled.

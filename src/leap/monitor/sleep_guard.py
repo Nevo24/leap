@@ -22,6 +22,7 @@ active and ``stop()`` while inactive are both no-ops.
 
 import logging
 import os
+import socket
 import subprocess
 from pathlib import Path
 from typing import Optional, Tuple
@@ -34,6 +35,47 @@ logger = logging.getLogger(__name__)
 # Marker written while we hold ``disablesleep=1`` so a crashed monitor
 # can be detected on the next launch and the kernel state cleaned up.
 _DISABLESLEEP_MARKER = STORAGE_DIR / 'disablesleep.marker'
+
+# Internet-connectivity probe targets, used by the monitor to decide
+# whether it's still worth blocking sleep.  We open a raw TCP socket to
+# public anycast DNS resolvers on port 443 (HTTPS): 443 is almost never
+# firewalled (unlike port 53, which managed/corporate networks often
+# block), a bare handshake needs no DNS lookup, and it isn't fooled by
+# captive-portal DNS/HTTP hijacking.  The asymmetry is deliberate — a
+# false "offline" would sleep the Mac and pause running sessions, so we
+# only report offline when a socket genuinely can't be opened.
+#
+# IPv4 first (the common case, so we usually short-circuit on the first
+# host), then the same resolvers' IPv6 anycast addresses so an
+# IPv6-only / NAT64 network isn't mistaken for "offline".  On an IPv4
+# network the v6 entries are never reached; on a v6-only network the v4
+# entries fail fast with ENETUNREACH rather than timing out.
+_CONNECTIVITY_HOSTS: Tuple[Tuple[str, int], ...] = (
+    ('1.1.1.1', 443),                    # Cloudflare (IPv4)
+    ('8.8.8.8', 443),                    # Google (IPv4)
+    ('2606:4700:4700::1111', 443),       # Cloudflare (IPv6)
+    ('2001:4860:4860::8888', 443),       # Google (IPv6)
+)
+_CONNECTIVITY_TIMEOUT_SECONDS = 2.0
+
+
+def have_internet() -> bool:
+    """Return True iff a TCP handshake to a public host succeeds.
+
+    Tries each host in turn with a short timeout, returning on the first
+    success.  Runs fast when online; on a hard outage it blocks for up
+    to ``len(_CONNECTIVITY_HOSTS) * _CONNECTIVITY_TIMEOUT_SECONDS``
+    seconds, so callers MUST invoke it off the UI thread.
+    """
+    for host, port in _CONNECTIVITY_HOSTS:
+        try:
+            with socket.create_connection(
+                (host, port), timeout=_CONNECTIVITY_TIMEOUT_SECONDS
+            ):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class SleepGuard:
