@@ -53,6 +53,24 @@ MENU_OPTION_RE: re.Pattern[str] = re.compile(
     r'\s*(?:[^\d\s]++\s*+)*+(\d+)(?:\.[^\w\n]+|[ \t]{2,})(.+)'
 )
 
+# Box-drawing range (U+2500–U+257F: ─ ━ │ ┌ … ╬).  These never occur in a
+# real option label, but Claude's Ink TUI pads the SELECTED option's row
+# with a trailing run of ``─`` to fill the dialog width.  ``(.+)`` in
+# MENU_OPTION_RE captures that run into the label and ``.strip()`` (which
+# only removes whitespace) leaves it, so the selected option rendered as
+# ``Local literal prefix (keep ID) ──────────`` — text plus what looks
+# like a separator line.  We strip a leading/trailing run of box-drawing
+# chars (and the whitespace around it) off each parsed label.
+_EDGE_BOX_RE: re.Pattern[str] = re.compile(
+    r'^[\s─-╿]+|[\s─-╿]+$'
+)
+
+
+def _clean_option_label(label: str) -> str:
+    """Strip surrounding whitespace and edge box-drawing fill from a
+    parsed option label (see ``_EDGE_BOX_RE``)."""
+    return _EDGE_BOX_RE.sub('', label)
+
 
 def extract_menu_options(
     prompt_output: str,
@@ -84,7 +102,8 @@ def extract_menu_options(
     for line in prompt_output.split('\n'):
         m = pattern.match(line)
         if m:
-            all_matches.append((int(m.group(1)), m.group(2).strip()))
+            all_matches.append(
+                (int(m.group(1)), _clean_option_label(m.group(2))))
 
     if not all_matches:
         return []
@@ -111,3 +130,67 @@ def extract_menu_options(
             break
 
     return result
+
+
+# Leading per-line markers Claude/Ink draw before question/header text -
+# the active-turn bullet (⏺ ●), reply gutter (⎿), box border (│), and the
+# selection cursors - stripped so the extracted question reads as plain
+# prose.
+_QUESTION_LINE_LEAD_RE: re.Pattern[str] = re.compile(
+    r'^[\s│⏺●⎿>›❯▶▸*-]+'
+)
+
+
+def extract_menu_question(
+    prompt_output: str,
+    provider: Optional['CLIProvider'] = None,
+) -> str:
+    """Extract the question/header text shown ABOVE a numbered menu.
+
+    Returns the contiguous block of non-blank text immediately preceding
+    the first option of the final 1..n sequence (the same sequence
+    :func:`extract_menu_options` returns), cleaned of box-drawing fill and
+    leading TUI markers and joined into one line.  Stops at the first
+    blank/box-only line above the options, so a large plan dumped further
+    up does not leak in - only the prompt's own question survives.
+
+    Returns ``''`` when there is no menu, no provider numbered-menu
+    support, or no text above the options.
+    """
+    if provider and not provider.has_numbered_menus:
+        return ''
+
+    pattern = (
+        provider.menu_option_regex
+        if provider and provider.menu_option_regex
+        else MENU_OPTION_RE
+    )
+
+    lines = prompt_output.split('\n')
+    matches: list[tuple[int, int]] = []  # (line_index, option_number)
+    for idx, line in enumerate(lines):
+        m = pattern.match(line)
+        if m:
+            matches.append((idx, int(m.group(1))))
+    if not matches:
+        return ''
+
+    first_option_line = matches[0][0]
+    for line_idx, num in reversed(matches):
+        if num == 1:
+            first_option_line = line_idx
+            break
+
+    # Walk upward collecting the contiguous non-blank block; stop at the
+    # first blank or box-only line.
+    block: list[str] = []
+    for line in reversed(lines[:first_option_line]):
+        cleaned = _QUESTION_LINE_LEAD_RE.sub('', line)
+        cleaned = _EDGE_BOX_RE.sub('', cleaned).strip()
+        if not cleaned:
+            if block:
+                break
+            continue
+        block.append(cleaned)
+    block.reverse()
+    return ' '.join(block).strip()

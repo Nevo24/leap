@@ -14,6 +14,7 @@ from PyQt5 import sip
 from PyQt5.QtWidgets import (
     QApplication, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
+    QWidgetAction,
 )
 from PyQt5.QtCore import QPoint, QSize, Qt
 from PyQt5.QtGui import QColor, QCursor, QFont, QPalette
@@ -36,7 +37,7 @@ from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
 )
 from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
-from leap.utils.menu import extract_menu_options
+from leap.utils.menu import extract_menu_options, extract_menu_question
 from leap.utils.pricing import format_usd
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
@@ -3241,6 +3242,32 @@ class TableBuilderMixin(_Base):
         menu = QMenu(self)
         if self._prefs.get('show_tooltips', True):
             menu.setToolTipsVisible(True)
+
+        # Header: show the question at the top, then a separating line,
+        # then the options.  Rendered as a styled QLabel inside a
+        # QWidgetAction, NOT a disabled QAction - disabled actions grey
+        # out and are hard to read (the original complaint).  Kept ENABLED
+        # so it is never faded; full primary text color, bold,
+        # word-wrapped so the whole question is visible.  A solid popup_bg
+        # background masks the menu's hover highlight, and no ``triggered``
+        # slot is connected, so clicking the header is a harmless no-op
+        # (the caller dispatches options via their own per-action slots,
+        # not the exec_() return value).
+        question = extract_menu_question(prompt_output)
+        if question:
+            t = current_theme()
+            header_label = QLabel(question)
+            header_label.setWordWrap(True)
+            header_label.setMaximumWidth(460)
+            header_label.setContentsMargins(14, 6, 14, 6)
+            header_label.setStyleSheet(
+                f'QLabel {{ color: {t.text_primary}; font-weight: 600; '
+                f'background: {t.popup_bg}; }}'
+            )
+            header_action = QWidgetAction(menu)
+            header_action.setDefaultWidget(header_label)
+            menu.addAction(header_action)
+            menu.addSeparator()
 
         for option_num, label in options:
             if label.startswith('Type something'):

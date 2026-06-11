@@ -9,7 +9,11 @@ import time
 import pytest
 
 from leap.cli_providers import get_provider
-from leap.utils.menu import MENU_OPTION_RE, extract_menu_options
+from leap.utils.menu import (
+    MENU_OPTION_RE,
+    extract_menu_options,
+    extract_menu_question,
+)
 
 
 class TestExtractMenuOptions:
@@ -296,3 +300,117 @@ def _raise_timeout(_signum: int, _frame: object) -> None:
     raise TimeoutError(
         'regex hung — catastrophic backtracking reintroduced'
     )
+
+
+class TestSelectedRowBoxFill:
+    """Claude's Ink TUI pads the SELECTED option's row with a trailing run
+    of box-drawing ``─`` to fill the dialog width.  ``(.+)`` captures it
+    into the label and ``.strip()`` (whitespace only) leaves it, so the
+    selected option rendered as ``... (keep ID) ──────────`` - text plus
+    what looks like a separator line in the monitor's right-click menu.
+    The parser must strip the edge box-drawing fill."""
+
+    def test_trailing_box_fill_stripped_from_selected_option(self) -> None:
+        prompt = (
+            "How should the stub behave?\n"
+            "❯ 1. Local literal prefix (keep ID) ────────────────────\n"
+            "     Config = WorkflowName, used for logging now.\n"
+            "  2. Drop ID from stub\n"
+            "  3. Type something.\n"
+            "  4. Chat about this\n"
+        )
+        assert extract_menu_options(prompt) == [
+            (1, "Local literal prefix (keep ID)"),
+            (2, "Drop ID from stub"),
+            (3, "Type something."),
+            (4, "Chat about this"),
+        ]
+
+    def test_heavy_and_mixed_box_chars_stripped(self) -> None:
+        # Different box-drawing glyphs across the U+2500–U+257F block.
+        prompt = (
+            "❯ 1. Keep it ━━━━━━\n"
+            "  2. Drop it ────╴╴\n"
+        )
+        assert extract_menu_options(prompt) == [
+            (1, "Keep it"),
+            (2, "Drop it"),
+        ]
+
+    def test_ascii_hyphen_in_label_is_preserved(self) -> None:
+        # A real ASCII hyphen/dash inside a label must NOT be stripped -
+        # only the Unicode box-drawing range is fill.
+        prompt = (
+            "❯ 1. Use offline-profile prefix\n"
+            "  2. Drop it\n"
+        )
+        assert extract_menu_options(prompt) == [
+            (1, "Use offline-profile prefix"),
+            (2, "Drop it"),
+        ]
+
+
+class TestExtractMenuQuestion:
+    """The question/header text shown above a numbered menu."""
+
+    def test_question_above_options(self) -> None:
+        prompt = (
+            "⏺ Stub ID\n"
+            "Config field becomes WorkflowName, matching siblings. Since the\n"
+            "prefix is out of scope for now, how should the stub behave?\n"
+            "❯ 1. Local literal prefix (keep ID) ──────────\n"
+            "     Config = WorkflowName, used for logging now.\n"
+            "  2. Drop ID from stub\n"
+            "  3. Type something.\n"
+            "  4. Chat about this\n"
+        )
+        q = extract_menu_question(prompt)
+        assert q == (
+            "Stub ID Config field becomes WorkflowName, matching siblings. "
+            "Since the prefix is out of scope for now, how should the stub "
+            "behave?"
+        )
+
+    def test_plan_above_options_does_not_leak(self) -> None:
+        # A large plan dumped far above, a blank line, then the real
+        # question right above the options.  Only the question survives.
+        prompt = (
+            "Here is the full plan:\n"
+            "1. Refactor the handler\n"
+            "2. Update the tests\n"
+            "3. Wire the registry\n"
+            "\n"
+            "Claude has written up a plan. Would you like to proceed?\n"
+            "❯ 1. Yes, proceed\n"
+            "  2. No, keep planning\n"
+        )
+        assert extract_menu_question(prompt) == (
+            "Claude has written up a plan. Would you like to proceed?"
+        )
+        # And the options are still the final 1..n sequence, not the plan.
+        assert extract_menu_options(prompt) == [
+            (1, "Yes, proceed"),
+            (2, "No, keep planning"),
+        ]
+
+    def test_no_text_above_options_returns_empty(self) -> None:
+        prompt = (
+            "❯ 1. Allow once\n"
+            "  2. Deny\n"
+        )
+        assert extract_menu_question(prompt) == ""
+
+    def test_no_menu_returns_empty(self) -> None:
+        assert extract_menu_question("Just some prose, no menu here.") == ""
+
+    def test_box_rule_between_question_and_options_is_skipped(self) -> None:
+        # A box-only rule line directly above the options is skipped (it
+        # cleans to empty while the block is still empty), so the real
+        # question above it is still found.
+        prompt = (
+            "Pick one:\n"
+            "──────────────\n"
+            "❯ 1. A\n"
+            "  2. B\n"
+        )
+        assert extract_menu_question(prompt) == "Pick one:"
