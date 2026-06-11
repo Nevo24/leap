@@ -784,7 +784,7 @@ class MonitorWindow(
 
         buttons_layout.addStretch()
 
-        reset_cols_btn = QPushButton('Reset Window Sizes')
+        reset_cols_btn = self._reset_cols_btn = QPushButton('Reset Window Sizes')
         reset_cols_btn.setObjectName('_leapGhostBtn')
         reset_cols_btn.setToolTip(
             'Reset window, column and dialog sizes to their defaults')
@@ -2210,9 +2210,27 @@ class MonitorWindow(
         if saved and len(saved) == self.table.columnCount():
             self._apply_widths_scaled(saved)
 
+    def _sync_reset_btn_enabled(self) -> None:
+        """Disable 'Reset Window Sizes' while in macOS full screen.
+
+        A full-screen window can't be moved or resized, so resetting window
+        geometry is a no-op there - grey the button out and say why.
+        """
+        btn = getattr(self, '_reset_cols_btn', None)
+        if btn is None:
+            return
+        full = self.isFullScreen()
+        btn.setEnabled(not full)
+        btn.setToolTip(
+            'Not available in full screen - exit full screen to reset sizes'
+            if full else
+            'Reset window, column and dialog sizes to their defaults')
+
     def changeEvent(self, event: QEvent) -> None:
         """Reset dock badge + tooltip font when window becomes active."""
         super().changeEvent(event)
+        if event.type() == QEvent.WindowStateChange:
+            self._sync_reset_btn_enabled()
         if event.type() == QEvent.ActivationChange and self.isActiveWindow():
             # Skip the visible side-effects (badge clear, banner refresh,
             # tooltip-font reset) when the activation is just a brief
