@@ -140,11 +140,13 @@ class TestSignalFileRaces:
     cursor+silence → needs_permission fallback is the safety net.
     """
 
-    def test_signal_unlinked_when_indicator_fires(
+    def test_stale_applied_idle_unlinked_when_indicator_fires(
         self, pty: PTYFixture,
     ) -> None:
-        """Document the unlink behaviour — when the compact indicator
-        moves us idle→running, the signal file is cleared."""
+        """When the compact indicator moves us idle→running, a stale
+        ALREADY-APPLIED 'idle' signal on disk is cleared — left in place
+        it would yank the compacting session straight back to idle on
+        the next poll (signals stay on disk after application)."""
         from tests.integration.test_compact_scenarios import (
             _CLEAR, _INDICATOR,
         )
@@ -159,14 +161,18 @@ class TestSignalFileRaces:
         pty.feed_output(_CLEAR + _INDICATOR)
         assert pty.tracker.current_state == 'running'
         assert not pty.signal_file.exists()
+        # ... and the compacting session STAYS running on the next poll.
+        assert pty.get_state() == 'running'
 
-    def test_lost_needs_permission_recovers_via_pty(
+    def test_needs_permission_signal_survives_indicator_flip(
         self, pty: PTYFixture,
     ) -> None:
-        """Worst-case race: a needs_permission signal gets unlinked
-        by our transition.  Coverage net: the PTY cursor+silence path
-        detects the dialog on screen and re-enters needs_permission
-        without the hook."""
+        """Race: a needs_permission hook fires at the same moment as the
+        compact indicator appears.  The idle→running flip clears only a
+        stale APPLIED 'idle' signal — a different pending signal must be
+        preserved, so the prompt is recovered from the signal itself (it
+        used to be unlinked wholesale and recovered only via the slower
+        PTY fallback)."""
         from tests.integration.test_compact_scenarios import (
             _CLEAR, _INDICATOR,
         )
@@ -180,17 +186,14 @@ class TestSignalFileRaces:
         pty.write_signal('idle')
         assert pty.wait_for_state('idle', timeout=1.0) == 'idle'
 
-        # Race setup: a needs_permission hook fires AT THE SAME MOMENT
-        # as the compact indicator appears.  Our on_output runs first
-        # and unlinks.  Simulate by writing needs_permission and then
-        # feeding the indicator.
         pty.write_signal('needs_permission')
         pty.feed_output(_CLEAR + _INDICATOR)
         assert pty.tracker.current_state == 'running'
-        assert not pty.signal_file.exists()  # lost
+        assert pty.signal_file.exists()  # preserved, not lost
 
         # Compaction ends; dialog is still live (CLI is waiting).  The
-        # cursor+silence running→needs_permission fallback takes over.
+        # preserved signal (or the cursor+silence fallback) re-enters
+        # needs_permission.
         pty.feed_output(
             b'\x1b[?25h'
             b'Allow tool?\r\n'
@@ -198,7 +201,6 @@ class TestSignalFileRaces:
             b'Enter to select  Esc to cancel\r\n',
         )
         _advance(6.0)
-        # PTY fallback recovers the lost signal.
         assert pty.get_state() == 'needs_permission'
 
     def test_no_signal_loss_when_already_running(

@@ -1488,15 +1488,31 @@ class CaptureInputMixin:
         updates ``_in_bracketed_paste`` for cross-chunk tracking and
         clears ``_pending_caret`` to prevent a stale ``^`` typed
         before the paste from combining with ``^`` inside it.
+
+        Markers can arrive SPLIT across two reads (PTY reads chunk at
+        arbitrary byte boundaries), so the scan prepends the last 5
+        bytes of the previous chunk — a marker is 6 bytes, so any split
+        point leaves at most 5 bytes behind.  Without the carry, a
+        split end marker left ``_in_bracketed_paste`` latched True and
+        every later keystroke was treated as paste content.
         """
         _BP_START = b'\x1b[200~'
         _BP_END = b'\x1b[201~'
+        prev_tail = self._paste_scan_tail
+        scan = prev_tail + data
+        self._paste_scan_tail = scan[-5:]
         # Use rfind so ``_in_bracketed_paste`` reflects the LAST
         # marker in the chunk — a chunk with ``start…end…start``
         # ends inside a new paste (True), and ``end…start…end``
         # ends outside (False).
-        bp_start = data.rfind(_BP_START)
-        bp_end = data.rfind(_BP_END)
+        bp_start = scan.rfind(_BP_START)
+        bp_end = scan.rfind(_BP_END)
+        # A marker beginning inside ``prev_tail`` completed SPLIT across
+        # the read boundary — the byte loop's in-chunk marker handlers
+        # never see it (its head went through the partial-escape path),
+        # so the caller reconciles the paste accumulator off these flags.
+        self._split_paste_start = 0 <= bp_start < len(prev_tail)
+        self._split_paste_end = 0 <= bp_end < len(prev_tail)
         chunk_has_paste = (
             self._in_bracketed_paste
             or bp_start >= 0
@@ -1605,6 +1621,19 @@ class CaptureInputMixin:
                         self.state.current_state != CLIState.IDLE
                         and self.state._query_in_flight
                     )
+                    # CHURNING hold: the raw state is IDLE while a
+                    # background Monitor is still re-invoking the session
+                    # (get_state refines it to CHURNING).  When this
+                    # session's churn-queue mode is WAIT, a ^^-queued
+                    # message must wait for the monitor to finish like any
+                    # other queued message - force-dispatching here would
+                    # race the Monitor's next re-invoke.
+                    churn_hold = (
+                        self.state.current_state == CLIState.IDLE
+                        and self.state.background_active
+                        and not self.state.is_ready_for_state(
+                            CLIState.CHURNING)
+                    )
                     # Clear stale text typed before ^^.
                     if self._capture_stale_visual_rows > 0:
                         self._clear_stale_cli_input(
@@ -1614,7 +1643,7 @@ class CaptureInputMixin:
                         self._capture_stale_logical_lines = 0
                     self._send_clear_queue.append(False)
                     self.queue.add(msg)
-                    if not has_real_query:
+                    if not has_real_query and not churn_hold:
                         self._capture_force_dispatch = True
                     self._dispatch_wake.set()
                     # Defer SIGWINCH so its Ink full repaint doesn't

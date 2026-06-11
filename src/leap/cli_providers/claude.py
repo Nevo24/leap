@@ -341,7 +341,12 @@ class ClaudeProvider(CLIProvider):
     # · ← for agents``).  Their presence means the idle prompt is genuinely
     # rendered - distinguishing a real "no monitor" idle from a blank/partial
     # screen, which is what makes the cleared (False) verdict safe.
-    _IDLE_MODE_MARKERS: tuple = ('for agents', 'shift+tab to cycle')
+    # The arrow glyph in '← for agents' is load-bearing: a bare 'for agents'
+    # also occurs in ordinary response prose, and a prose row masquerading as
+    # the mode line would return a false "monitor finished" verdict (False),
+    # clearing the sticky churn flag and letting the queue dispatch into a
+    # still-churning session.
+    _IDLE_MODE_MARKERS: tuple = ('← for agents', 'shift+tab to cycle')
 
     def background_work_state(self, display_lines: list[str]) -> Optional[bool]:
         """Tri-state: is a background ``Monitor`` active at the idle prompt?
@@ -1054,76 +1059,9 @@ class ClaudeProvider(CLIProvider):
             return 'running' if stop_reason == 'tool_use' else ''
         return ''
 
-    @staticmethod
-    def _latest_recorded_transcript(
-        tag: str,
-        storage_dir: Optional[Path],
-        cli: str = 'claude',
-    ) -> Optional[Path]:
-        """Return the absolute ``transcript_path`` from the newest record
-        in ``cli_sessions/<cli>/<tag>.json``, if it still exists on disk.
-
-        Independent of ``cwd`` / slugification, so it's safe to use from
-        callers that only have ``project_path`` (a git root) rather than
-        the actual launch cwd.  The hook writes the real path on every
-        fire, so by the time Claude has produced its first
-        Stop/Notification this lookup is precise.
-
-        Records older than the current server's start time are ignored
-        — same tag reused for a new session shouldn't surface the
-        previous use's "Last Msg".  ``server_started_at`` lives in
-        ``<storage>/sockets/<tag>.meta`` (written once at server init);
-        when that file or the field is missing we skip the filter so
-        legacy installs without the field still work.
-
-        Returns ``None`` before the first hook fire of the current
-        server, when the record file is missing/corrupt, or when every
-        recorded transcript was deleted out-of-band.
-        """
-        if not tag or storage_dir is None:
-            return None
-        tag_file = storage_dir / 'cli_sessions' / cli / f'{tag}.json'
-        if not tag_file.is_file():
-            return None
-        try:
-            data = json.loads(tag_file.read_text())
-        except (json.JSONDecodeError, OSError, ValueError):
-            return None
-        if not isinstance(data, list):
-            return None
-        # Look up this server's start time so we can drop records from
-        # any prior use of this tag.  Tolerate every failure mode by
-        # treating it as "no filter" — better to occasionally surface
-        # a stale prompt than to silently hide a live one.
-        server_started_at = 0.0
-        meta_file = storage_dir / 'sockets' / f'{tag}.meta'
-        try:
-            meta = json.loads(meta_file.read_text())
-            if isinstance(meta, dict):
-                ts = meta.get('server_started_at')
-                if isinstance(ts, (int, float)):
-                    server_started_at = float(ts)
-        except (OSError, json.JSONDecodeError, ValueError):
-            pass
-        for entry in reversed(data):
-            if not isinstance(entry, dict):
-                continue
-            last_seen = entry.get('last_seen', 0)
-            if (isinstance(last_seen, (int, float))
-                    and last_seen < server_started_at):
-                # Pre-server record (left over from a previous use of
-                # this tag) — don't let it drive "Last Msg".
-                continue
-            tp = entry.get('transcript_path', '')
-            if not isinstance(tp, str) or not tp:
-                continue
-            p = Path(tp)
-            try:
-                if p.is_file():
-                    return p
-            except OSError:
-                continue
-        return None
+    # ``_latest_recorded_transcript`` is inherited from ``CLIProvider`` —
+    # it moved to the base class so transcript-completion providers
+    # (Codex) can pin their session's transcript the same way.
 
     def _resolve_transcript_path(
         self,

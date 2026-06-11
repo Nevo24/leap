@@ -1,6 +1,9 @@
 """Tests for CLIStateTracker event-driven state machine."""
 
 import json
+import os
+import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -1062,6 +1065,43 @@ class TestSafetyTimeouts:
         t[0] = 8.0
         assert tr.get_state(pty_alive=True) == 'idle'
 
+    def test_bullet_and_separator_rows_still_idle_not_held_running(
+        self, tmp_path: Path,
+    ) -> None:
+        """A hookless response ending with ``•`` bullets and/or a
+        ``·``-separated status row must still idle - a bare separator with
+        NO hint token on the same row is prose (or Claude's own ``Using
+        <model> · /model to change`` status line), not a dialog footer.
+
+        Regression: the strict detector's separator leg used to fire with
+        ZERO hint tokens (it dropped the lenient version's ``hits == 0``
+        guard), so any bullet/middle-dot near the bottom held the session
+        RUNNING for the full heuristic cap instead of idling in ~5s.
+        """
+        prose = (
+            'Here is the summary of the changes:\r\n'
+            '• state_tracker.py: guard reordered\r\n'
+            '• base.py: separator leg requires a hint\r\n'
+            '• claude.py: mode-line marker tightened\r\n'
+            'Using Sonnet 4.6 · /model to change\r\n'
+            'Let me know if you want the diff.'
+        )
+        t = [0.0]
+        tr = make_tracker(tmp_path, t)
+        tr.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(tr, prose)
+        filled = [ln for ln in tr._get_display_lines() if ln.strip()]
+        # No idle box on screen, so the interactive-UI guard consults the
+        # strict detector - which must NOT see a dialog in separator-only rows.
+        assert not tr._provider.is_idle_prompt_visible(filled)
+        assert not tr._provider.screen_shows_selection_dialog_strict(filled)
+        # A real footer (hint + separator on one row) still matches.
+        assert tr._provider.screen_shows_selection_dialog_strict(
+            filled + ['  Enter to set as default · Esc to cancel'])
+        t[0] = 8.0
+        assert tr.get_state(pty_alive=True) == 'idle'
+
     def test_codex_interrupted_recovers_via_safety_timeout(
         self, tmp_path: Path,
     ) -> None:
@@ -1652,6 +1692,46 @@ class TestTrustDialog:
         feed_screen_text(tracker, 'Do you trust the contents of this directory?')
         assert tracker.current_state == 'idle'
 
+    def test_resumed_conversation_quoting_menu_is_not_a_startup_dialog(
+        self, tmp_path: Path,
+    ) -> None:
+        # Regression: at startup (no user input yet) the dialog scan ran on
+        # the FULL screen, so a --resume'd session whose replayed
+        # conversation quoted a numbered menu ("❯ 1.") mid-screen flipped
+        # straight to needs_permission at launch.  Only the last 5 non-blank
+        # rows (where a real footer/menu renders) may decide.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        feed_screen_text(
+            tracker,
+            'Resuming previous conversation...\r\n'
+            'Earlier you picked from this menu:\r\n'
+            '❯ 1. Approve\r\n'
+            '  2. Reject\r\n'
+            'I went with option 1 as you asked.\r\n'
+            'Then I updated the handler accordingly.\r\n'
+            'All tests passed after the change.\r\n'
+            '────────────────────────────────────────────────────\r\n'
+            '❯ ',
+        )
+        assert tracker.current_state == 'idle'
+
+    def test_real_startup_dialog_at_bottom_still_detected(
+        self, tmp_path: Path,
+    ) -> None:
+        # A genuine startup dialog renders its menu/footer at the bottom of
+        # the screen - the tail-restricted scan must still catch it.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        feed_screen_text(
+            tracker,
+            'Welcome to Claude Code\r\n'
+            'Select login method:\r\n'
+            '❯ 1. Claude account\r\n'
+            '  2. Console account\r\n',
+        )
+        assert tracker.current_state == 'needs_permission'
+
 
 # ---------------------------------------------------------------------------
 # Stale interrupt suppression
@@ -2081,6 +2161,103 @@ class TestCodexSpecific:
         assert tracker.get_state(pty_alive=True) == 'idle'
 
 
+class TestCodexTranscriptPinning:
+    """``read_transcript_completion`` must read THIS session's rollout, not
+    the machine-wide newest one.  With two concurrent Codex sessions, the
+    "most recently modified file in today's dir" routinely belongs to the
+    OTHER session - its ``task_complete`` used to flip this session to a
+    false idle mid-turn (dispatching the queue into a live turn) and
+    surface the other session's last message in the signal file."""
+
+    @staticmethod
+    def _write_rollout(day_dir: Path, name: str, entries: list) -> Path:
+        day_dir.mkdir(parents=True, exist_ok=True)
+        f = day_dir / name
+        f.write_text('\n'.join(json.dumps(e) for e in entries) + '\n')
+        return f
+
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import leap.cli_providers.codex as codex_mod
+        monkeypatch.setattr(
+            codex_mod, 'CODEX_CONFIG_DIR', tmp_path / 'codex')
+        day_dir = (tmp_path / 'codex' / 'sessions'
+                   / date.today().strftime('%Y/%m/%d'))
+        storage = tmp_path / 'storage'
+        (storage / 'sockets').mkdir(parents=True)
+        t = [100.0]
+        tracker = ClaudeStateTracker(
+            signal_file=storage / 'sockets' / 'codex1.signal',
+            auto_send_mode='pause',
+            clock=lambda: t[0],
+            cwd=str(tmp_path),
+            tag='codex1',
+            provider=CodexProvider(),
+        )
+        return tracker, t, day_dir, storage
+
+    @staticmethod
+    def _fresh_ts() -> str:
+        return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    def test_other_sessions_completion_does_not_idle_this_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        tracker, t, day_dir, storage = self._setup(tmp_path, monkeypatch)
+        ts = self._fresh_ts()
+        mine = self._write_rollout(day_dir, 'rollout-mine.jsonl', [
+            {'timestamp': ts, 'payload': {'type': 'task_started'}},
+        ])
+        self._write_rollout(day_dir, 'rollout-other.jsonl', [
+            {'timestamp': ts, 'payload': {
+                'type': 'task_complete',
+                'last_agent_message': 'OTHER session finished',
+            }},
+        ])
+        # The hook recorded MY transcript for this tag.
+        rec_dir = storage / 'cli_sessions' / 'codex'
+        rec_dir.mkdir(parents=True)
+        (rec_dir / 'codex1.json').write_text(json.dumps([{
+            'session_id': 'mine',
+            'transcript_path': str(mine),
+            'cwd': str(tmp_path),
+            'last_seen': time.time(),
+        }]))
+        # Make the OTHER session's rollout the newest file on disk - the
+        # exact shape during my session's silent stretch (long tool call).
+        now = time.time()
+        os.utime(mine, (now - 10, now - 10))
+
+        tracker.on_send()  # running, _running_since = fake 100.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+
+        # My own completion still idles - and carries MY message.
+        self._write_rollout(day_dir, 'rollout-mine.jsonl', [
+            {'timestamp': self._fresh_ts(), 'payload': {
+                'type': 'task_complete',
+                'last_agent_message': 'MINE finished',
+            }},
+        ])
+        assert tracker.get_state(pty_alive=True) == 'idle'
+        signal = json.loads(tracker._signal_file.read_text())
+        assert signal.get('last_assistant_message') == 'MINE finished'
+
+    def test_mtime_fallback_without_a_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Before the first hook fire there is no record - the legacy
+        # newest-file fallback still detects completion (degraded but
+        # better than nothing for single-session use).
+        tracker, t, day_dir, storage = self._setup(tmp_path, monkeypatch)
+        self._write_rollout(day_dir, 'rollout-only.jsonl', [
+            {'timestamp': self._fresh_ts(), 'payload': {
+                'type': 'task_complete',
+                'last_agent_message': 'done',
+            }},
+        ])
+        tracker.on_send()
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+
 # ---------------------------------------------------------------------------
 # /clear scenario (the original bug)
 # ---------------------------------------------------------------------------
@@ -2268,6 +2445,141 @@ class TestPastedEnter:
         tracker.on_input(b'x')  # seen user input
         tracker.on_input(b'hello\r')
         assert tracker.current_state == 'running'
+
+    def test_cr_inside_bracketed_paste_is_not_enter(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_input(b'\x1b[200~line1\rline2\x1b[201~')
+        assert tracker.current_state == 'idle'
+        assert tracker._in_bracketed_paste is False
+
+
+class TestSplitPasteMarkersTracker:
+    """Paste markers split across two on_input chunks must still be
+    tracked.  Pre-fix, a split END marker latched ``_in_bracketed_paste``
+    True: the submit Enter after the paste was classified as paste content
+    (no idle→running - the session read Idle through a real turn), and a
+    split START marker let pasted ``\\r`` bytes fire phantom Enters."""
+
+    def test_split_end_marker_unlatches_paste_mode(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_input(b'\x1b[200~line1\rline2\x1b[20')
+        assert tracker._in_bracketed_paste is True
+        t[0] = 0.1
+        tracker.on_input(b'1~')
+        assert tracker._in_bracketed_paste is False
+        # The submit Enter after the paste fires idle→running again.
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+
+    def test_split_end_at_escape_byte_unlatches_paste_mode(
+        self, tmp_path: Path,
+    ) -> None:
+        # Worst split point: the lone ESC byte ends the chunk.  Inside a
+        # paste it is held (no interrupt semantics there) and re-attached
+        # to the next chunk.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_input(b'\x1b[200~content\x1b')
+        assert tracker._in_bracketed_paste is True
+        assert tracker._interrupt_pending is False  # held, not interrupt
+        t[0] = 0.1
+        tracker.on_input(b'[201~')
+        assert tracker._in_bracketed_paste is False
+        tracker.on_input(b'\r')
+        assert tracker.current_state == 'running'
+
+    def test_split_start_marker_suppresses_pasted_enter(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_input(b'\x1b[20')
+        t[0] = 0.1
+        tracker.on_input(b'0~line1\rline2\x1b[201~')
+        # The \r was paste content - no phantom idle→running.
+        assert tracker.current_state == 'idle'
+        assert tracker._in_bracketed_paste is False
+
+    def test_stale_held_tail_is_dropped(self, tmp_path: Path) -> None:
+        # A held marker head older than the carry window is dropped (it
+        # was an incomplete escape sequence; splicing it into unrelated
+        # later input would corrupt classification).  A subsequent
+        # complete marker still resolves the paste state.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_input(b'\x1b[200~content\x1b')
+        t[0] = 5.0  # way past _INPUT_TAIL_MAX_AGE
+        tracker.on_input(b'typed')
+        assert tracker._in_bracketed_paste is True  # still inside paste
+        tracker.on_input(b'\x1b[201~')
+        assert tracker._in_bracketed_paste is False
+
+
+class TestSplitEscapeReassembly:
+    """A chunk-split arrow key (lone ESC in one read, ``[A`` in the next)
+    must not leave ``_interrupt_pending`` armed mid-turn - combined with
+    the word "Interrupted" anywhere on screen it false-flipped the session
+    to INTERRUPTED."""
+
+    def test_split_arrow_disarms_interrupt_pending(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [10.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()  # running
+        tracker.on_input(b'\x1b')  # first half of a split ↑
+        assert tracker._interrupt_pending is True  # provisional
+        t[0] = 10.05  # continuation lands within the reassembly window
+        tracker.on_input(b'[A')
+        assert tracker._interrupt_pending is False
+
+    def test_real_escape_then_late_arrow_stays_armed(
+        self, tmp_path: Path,
+    ) -> None:
+        # Two deliberate keypresses (Esc, then ↑ later) are NOT a split
+        # sequence - the interrupt must stay armed.
+        t = [10.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')
+        t[0] = 11.0  # well past the reassembly window
+        tracker.on_input(b'\x1b[A')
+        assert tracker._interrupt_pending is True
+
+    def test_lone_escape_still_interrupts_immediately(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [10.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b')
+        assert tracker._interrupt_pending is True
+
+    def test_split_at_csi_introducer_never_arms(
+        self, tmp_path: Path,
+    ) -> None:
+        # Split point after "\x1b[": the head is a paste-marker prefix, so
+        # it is held and re-attached - the reassembled "\x1b[A" parses as
+        # one CSI and never arms the flag at all.
+        t = [10.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        tracker.on_input(b'\x1b[')
+        assert tracker._interrupt_pending is False
+        t[0] = 10.05
+        tracker.on_input(b'A')
+        assert tracker._interrupt_pending is False
 
 
 # ---------------------------------------------------------------------------
@@ -3506,11 +3818,14 @@ class TestClaudeCompactingIndicator:
         feed_screen_text(tracker, '* Compacting conversation...')
         assert tracker.current_state == 'idle'
 
-    def test_running_idle_signal_ignored_while_compacting(
+    def test_running_idle_signal_held_while_compacting(
         self, tmp_path: Path,
     ) -> None:
         """Stop hook writing idle during an on-screen compaction must not
-        flip the state to idle."""
+        flip the state to idle - and the signal must be PRESERVED, not
+        consumed: no further Stop fires after a between-turns auto-compact,
+        so this signal is the only authoritative idle left.  Once the
+        indicator clears it applies."""
         t = [0.0]
         tracker = make_tracker(tmp_path, t)
         tracker.on_send()
@@ -3519,8 +3834,66 @@ class TestClaudeCompactingIndicator:
 
         write_signal(tracker, 'idle')
         assert tracker.get_state(pty_alive=True) == 'running'
-        # The stale signal should be cleared so it doesn't keep re-firing.
-        assert not tracker._signal_file.exists()
+        # Preserved for re-evaluation on the next poll.
+        assert tracker._signal_file.exists()
+        # Compaction keeps repainting (live spinner) - still held.
+        t[0] = 8.0
+        feed_screen_text(tracker, '* Compacting conversation... (20s)')
+        assert tracker.get_state(pty_alive=True) == 'running'
+        # Indicator clears - the preserved signal applies.
+        t[0] = 9.0
+        feed_screen_text(tracker, '> ')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_quoted_compacting_text_does_not_eat_the_stop_signal(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression: a response whose text merely QUOTES the busy phrase
+        near the bottom used to consume-and-drop the Stop signal while every
+        heuristic fallback stayed gated on the same indicator - wedging the
+        session in RUNNING with no cap.  A live spinner repaints every
+        second; static quoted text does not, so after a silent stretch the
+        preserved signal must apply."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_screen_text(
+            tracker,
+            'The status line then shows\r\n'
+            'Compacting conversation while it works.\r\n'
+            '> ',
+        )
+        write_signal(tracker, 'idle')
+        # Within the live-spinner window: held (could still be a real
+        # compaction that just started).
+        t[0] = 2.0
+        assert tracker.get_state(pty_alive=True) == 'running'
+        assert tracker._signal_file.exists()
+        # Output stays silent past the live-spinner window: static text,
+        # the preserved signal applies.
+        t[0] = 15.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+    def test_quoted_compacting_text_above_tail_window_idles_immediately(
+        self, tmp_path: Path,
+    ) -> None:
+        """The indicator is only matched near the bottom of the screen -
+        a quote that scrolled above the tail window must not read as busy
+        at all, so the Stop signal applies on the first poll."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        filler = '\r\n'.join(f'response line {i}' for i in range(16))
+        feed_screen_text(
+            tracker,
+            'Compacting conversation is what the spinner says.\r\n'
+            + filler + '\r\n> ',
+        )
+        write_signal(tracker, 'idle')
+        t[0] = 2.0
+        assert tracker.get_state(pty_alive=True) == 'idle'
 
     def test_cursor_silence_fallback_skipped_while_compacting(
         self, tmp_path: Path,
@@ -4248,4 +4621,67 @@ class TestTranscriptInterruptWiring:
         tracker = make_tracker(tmp_path, t, provider=provider)
         tracker.on_send()
         write_signal(tracker, 'idle')
+        assert tracker.get_state(pty_alive=True) == 'idle'
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-transition safety (compare-and-set commits)
+# ---------------------------------------------------------------------------
+
+class TestConcurrentTransitionNotClobbered:
+    """``get_state`` helpers snapshot ``current`` once, then decide over
+    several lock-free reads - meanwhile the PTY thread's ``on_output`` can
+    move the state (e.g. RUNNING→INTERRUPTED on a confirmed interrupt).
+    Pre-fix, the heuristic then committed its stale decision on top,
+    silently erasing the fresher transition - a heuristic IDLE clobbering
+    INTERRUPTED let the auto-sender dispatch into the "What should Claude
+    do instead?" prompt.  Commits now compare-and-set and abort."""
+
+    def test_heuristic_idle_does_not_clobber_concurrent_interrupt(
+        self, tmp_path: Path,
+    ) -> None:
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker,
+            'response line one\r\n'
+            'response line two\r\n'
+            'response line three\r\n'
+            '> ',
+        )
+        # Past the 5s cursor+silence window - the heuristic will decide
+        # RUNNING→IDLE.  Simulate the PTY thread committing a confirmed
+        # interrupt in the middle of that decision (between the snapshot
+        # of ``current`` and the commit) by flipping the state from
+        # inside one of the lock-free decision reads.
+        t[0] = 8.0
+
+        def flip_to_interrupted() -> bool:
+            with tracker._lock:
+                tracker._state = CLIState.INTERRUPTED
+                tracker._waiting_since = t[0]
+            return False
+
+        tracker._transcript_says_running = flip_to_interrupted
+        tracker.get_state(pty_alive=True)
+        # The concurrent INTERRUPTED must survive - pre-fix the stale
+        # IDLE commit overwrote it.
+        assert tracker.current_state == CLIState.INTERRUPTED
+
+    def test_clean_heuristic_idle_still_commits(self, tmp_path: Path) -> None:
+        # No concurrent movement: the cursor+silence idle works as before.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker,
+            'response line one\r\n'
+            'response line two\r\n'
+            'response line three\r\n'
+            '> ',
+        )
+        t[0] = 8.0
         assert tracker.get_state(pty_alive=True) == 'idle'

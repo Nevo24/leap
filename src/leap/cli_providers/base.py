@@ -347,12 +347,18 @@ class CLIProvider(ABC):
             return False
         if self.screen_shows_numbered_selection_cursor(display_lines):
             return True
-        # A footer line that LOOKS like a footer (≥2 hints or a separator),
-        # not a prose sentence quoting a single affordance.
+        # A footer line that LOOKS like a footer (≥2 hints, or a hint plus a
+        # separator), not a prose sentence quoting a single affordance.  The
+        # separator leg requires at least one hint token on the same row —
+        # without that, any `·`/`•` in the tail (response bullets, Claude's
+        # own `Using <model> · /model to change` status row) matches and the
+        # "prose-proof" contract is broken.
         for row in display_lines[-_SELECTION_DIALOG_TAIL_ROWS:]:
             stripped = row.strip()
             compact = stripped.replace(' ', '').lower()
             hits = sum(tok in compact for tok in _SELECTION_DIALOG_FOOTER_TOKENS)
+            if hits == 0:
+                continue
             if hits >= 2 or any(
                     sep in stripped for sep in _SELECTION_DIALOG_SEPARATORS):
                 return True
@@ -502,22 +508,39 @@ class CLIProvider(ABC):
         """
         return None
 
-    def read_transcript_completion(self, since: float = 0) -> Optional[str]:
+    def read_transcript_completion(
+        self,
+        since: float = 0,
+        tag: str = '',
+        storage_dir: Optional[Path] = None,
+    ) -> Optional[str]:
         """Check the CLI's transcript for a task-completion event.
 
-        Reads the tail of the most recently modified transcript file
-        and looks for a ``task_complete`` event whose ISO timestamp is
-        newer than ``since`` (Unix epoch).  This prevents detecting
-        stale completions from previous turns when the transcript is
+        Reads the tail of this session's transcript file and looks for
+        a ``task_complete`` event whose ISO timestamp is newer than
+        ``since`` (Unix epoch).  This prevents detecting stale
+        completions from previous turns when the transcript is
         incrementally updated (user message written before task_complete).
 
+        The transcript is pinned to THIS session via the recorded
+        ``transcript_path`` in ``cli_sessions/<cli>/<tag>.json`` (written
+        by the hooks).  The machine-wide most-recently-modified fallback
+        is used only before the first hook fire: with two concurrent
+        sessions of the same CLI, "newest file in today's dir" routinely
+        belongs to the OTHER session — its ``task_complete`` would flip
+        this session to a false idle mid-turn (and surface the other
+        session's last message).
+
         Called every poll cycle (~0.5s), so must be fast:
-        - Only scans today's date directory (not full rglob)
+        - Pinned lookup is one small JSON read
+        - Fallback only scans today's date directory (not full rglob)
         - Reads only the last 32KB of the file
 
         Args:
             since: Unix timestamp.  Only return completions with an
                 ISO timestamp strictly after this.
+            tag: The Leap session tag (pins the transcript lookup).
+            storage_dir: The project's ``.storage`` directory.
 
         Returns:
             The last assistant message text, or None if not found.
@@ -526,7 +549,10 @@ class CLIProvider(ABC):
         if sessions_dir is None or not sessions_dir.exists():
             return None
         try:
-            transcript = self._find_active_transcript(sessions_dir)
+            transcript = self._latest_recorded_transcript(
+                tag, storage_dir, self.name)
+            if transcript is None:
+                transcript = self._find_active_transcript(sessions_dir)
             if transcript is None:
                 return None
             if time.time() - transcript.stat().st_mtime > 30:
@@ -586,6 +612,77 @@ class CLIProvider(ABC):
                 continue
             if best is not None:
                 return best
+        return None
+
+    @staticmethod
+    def _latest_recorded_transcript(
+        tag: str,
+        storage_dir: Optional[Path],
+        cli: str = 'claude',
+    ) -> Optional[Path]:
+        """Return the absolute ``transcript_path`` from the newest record
+        in ``cli_sessions/<cli>/<tag>.json``, if it still exists on disk.
+
+        Independent of ``cwd`` / slugification, so it's safe to use from
+        callers that only have ``project_path`` (a git root) rather than
+        the actual launch cwd.  The hook writes the real path on every
+        fire, so by the time the CLI has produced its first hook event
+        this lookup is precise.
+
+        Records older than the current server's start time are ignored
+        — same tag reused for a new session shouldn't surface the
+        previous use's "Last Msg".  ``server_started_at`` lives in
+        ``<storage>/sockets/<tag>.meta`` (written once at server init);
+        when that file or the field is missing we skip the filter so
+        legacy installs without the field still work.
+
+        Returns ``None`` before the first hook fire of the current
+        server, when the record file is missing/corrupt, or when every
+        recorded transcript was deleted out-of-band.
+        """
+        if not tag or storage_dir is None:
+            return None
+        tag_file = storage_dir / 'cli_sessions' / cli / f'{tag}.json'
+        if not tag_file.is_file():
+            return None
+        try:
+            data = json.loads(tag_file.read_text())
+        except (json.JSONDecodeError, OSError, ValueError):
+            return None
+        if not isinstance(data, list):
+            return None
+        # Look up this server's start time so we can drop records from
+        # any prior use of this tag.  Tolerate every failure mode by
+        # treating it as "no filter" — better to occasionally surface
+        # a stale prompt than to silently hide a live one.
+        server_started_at = 0.0
+        meta_file = storage_dir / 'sockets' / f'{tag}.meta'
+        try:
+            meta = json.loads(meta_file.read_text())
+            if isinstance(meta, dict):
+                ts = meta.get('server_started_at')
+                if isinstance(ts, (int, float)):
+                    server_started_at = float(ts)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+        for entry in reversed(data):
+            if not isinstance(entry, dict):
+                continue
+            last_seen = entry.get('last_seen', 0)
+            if (isinstance(last_seen, (int, float))
+                    and last_seen < server_started_at):
+                # Pre-server record (left over from a previous use of
+                # this tag) — don't let it drive "Last Msg".
+                continue
+            tp = entry.get('transcript_path', '')
+            if not isinstance(tp, str) or not tp:
+                continue
+            p = Path(tp)
+            try:
+                if p.is_file():
+                    return p
+            except OSError:
+                continue
         return None
 
     def transcript_says_running(

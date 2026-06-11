@@ -85,16 +85,24 @@ class TestCompactGuards:
     """Each of the four idle paths must stay blocked while the
     indicator is on screen."""
 
-    def test_idle_signal_suppressed_while_compacting(
+    def test_idle_signal_held_and_preserved_while_compacting(
         self, pty: PTYFixture,
     ) -> None:
+        """A Stop-hook idle arriving mid-compaction is held (state stays
+        running) and the signal is PRESERVED - no further Stop fires
+        after a between-turns auto-compact, so this signal is the only
+        authoritative idle left.  It applies once the indicator clears."""
         pty.tracker.on_send()
         pty.feed_output(_CLEAR + _INDICATOR)
         assert pty.get_state() == 'running'
 
         pty.write_signal('idle')
         assert pty.get_state() == 'running'
-        assert not pty.signal_file.exists()
+        assert pty.signal_file.exists()
+
+        # Compaction ends - the preserved signal applies.
+        pty.feed_output(_CLEAR + b'\x1b[?25h> ')
+        assert pty.get_state() == 'idle'
 
     def test_cursor_silence_fallback_skipped_while_compacting(
         self, pty: PTYFixture,

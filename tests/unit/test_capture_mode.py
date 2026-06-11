@@ -68,6 +68,7 @@ def make_server(state: str = CLIState.RUNNING) -> LeapServer:
     srv._capture_initial_text = ""
     srv._partial_escape = None
     srv._pending_caret_time = 0.0
+    srv._paste_scan_tail = b''
     srv._paste_accumulator = None
     srv._paste_buf_snapshot_len = 0
     srv._paste_cursor_snapshot = 0
@@ -423,6 +424,70 @@ class TestClearWrapRowsAtCaptureEntry:
         all_writes = b''.join(c[0][1] for c in mock_write.call_args_list)
         assert b'\x1b[A\r\x1b[K' not in all_writes, \
             "no walk-up when there was no pre-capture CLI text"
+
+
+class TestSplitPasteMarkers:
+    """Paste markers split across two PTY reads must still be recognized.
+
+    PTY reads chunk at arbitrary byte boundaries, so a 6-byte marker can
+    arrive half in one read, half in the next - the split bytes travel
+    through the partial-escape continuation path, which bypasses the
+    in-chunk marker handlers.  Pre-fix, a split END marker left the
+    accumulator (and the cross-chunk in-paste flag) latched on: every
+    later keystroke - including the submit Enter - was treated as paste
+    content.
+    """
+
+    _BP_START = b'\x1b[200~'
+    _BP_END = b'\x1b[201~'
+
+    def test_split_end_marker_finalizes_accumulator(self):
+        srv = make_server(CLIState.IDLE)
+        content = b'line1\nline2\nline3'
+        srv._input_filter_impl(self._BP_START + content + self._BP_END[:2])
+        # Mid-split: still accumulating.
+        assert srv._paste_accumulator is not None
+        srv._input_filter_impl(self._BP_END[2:])
+        assert srv._paste_accumulator is None
+        assert srv._in_bracketed_paste is False
+        ph = _paste_ph('line1\nline2\nline3')
+        assert srv._terminal_input_buf == ph.encode('utf-8')
+
+    def test_split_end_marker_then_enter_still_submits(self):
+        srv = make_server(CLIState.IDLE)
+        srv._input_filter_impl(self._BP_START + b'a\nb\nc' + self._BP_END[:1])
+        srv._input_filter_impl(self._BP_END[1:])
+        assert srv._in_bracketed_paste is False
+        # The submit Enter after the paste must reach the Enter handler
+        # (pre-fix it was swallowed as paste content and the mirror buf
+        # kept the stale text, stalling queue dispatch).
+        out = srv._input_filter_impl(b'\r')
+        assert b'\r' in out
+        assert srv._terminal_input_buf == bytearray()
+
+    def test_split_start_marker_still_collapses_paste(self):
+        srv = make_server(CLIState.IDLE)
+        srv._input_filter_impl(self._BP_START[:4])  # truncated head
+        assert srv._paste_accumulator is None
+        srv._input_filter_impl(
+            self._BP_START[4:] + b'line1\nline2\nline3' + self._BP_END)
+        assert srv._paste_accumulator is None
+        assert srv._in_bracketed_paste is False
+        ph = _paste_ph('line1\nline2\nline3')
+        assert srv._terminal_input_buf == ph.encode('utf-8')
+        # No spurious Enter from the \n bytes inside the paste.
+        srv.queue.track_sent.assert_not_called()
+
+    def test_split_start_and_split_end_across_three_reads(self):
+        srv = make_server(CLIState.IDLE)
+        srv._input_filter_impl(self._BP_START[:1])
+        srv._input_filter_impl(
+            self._BP_START[1:] + b'x\ny\nz' + self._BP_END[:3])
+        srv._input_filter_impl(self._BP_END[3:])
+        assert srv._paste_accumulator is None
+        assert srv._in_bracketed_paste is False
+        ph = _paste_ph('x\ny\nz')
+        assert srv._terminal_input_buf == ph.encode('utf-8')
 
 
 class TestPasteCollapse:

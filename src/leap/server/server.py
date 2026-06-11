@@ -236,6 +236,15 @@ class LeapServer(CaptureInputMixin, IOFilterMixin, BackgroundLoopsMixin):
         # as literal text so pasted tracebacks (which contain ^^^^)
         # don't accidentally trigger capture mode.
         self._in_bracketed_paste: bool = False
+        # Last 5 bytes of the previous input chunk, prepended by
+        # ``_detect_paste`` so a paste marker split across two PTY reads
+        # is still recognized (a marker is 6 bytes; any split point
+        # leaves at most 5 behind).  The split flags record markers that
+        # completed across the boundary (their head went through the
+        # partial-escape path, so the in-chunk handlers never see them).
+        self._paste_scan_tail: bytes = b''
+        self._split_paste_start: bool = False
+        self._split_paste_end: bool = False
         # Bracketed paste capture — large pastes are collapsed into
         # a [Paste #N] placeholder in _terminal_input_buf so that ^^
         # capture shows a short token instead of the full sprawl.

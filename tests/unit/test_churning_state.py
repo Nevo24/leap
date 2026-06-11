@@ -105,6 +105,24 @@ class TestBackgroundWorkDetector:
         ] + [''] * 40  # 40 blank rows padded below (72-row terminal)
         assert p.background_work_state(lines) is True
 
+    def test_prose_for_agents_is_not_the_mode_line(self) -> None:
+        # Regression: ordinary response prose containing "for agents" (no
+        # arrow glyph) used to be mistaken for the mode line.  During a churn
+        # quiet period, a partial repaint whose tail had such a prose row
+        # (and momentarily no real mode line) returned False - clearing the
+        # sticky flag and dispatching the queue into a churning session.
+        # Prose without the rendered '← for agents' marker must be ambiguous
+        # (None), leaving the sticky flag unchanged.
+        p = ClaudeProvider()
+        assert p.background_work_state([
+            'Hooks are the right mechanism for agents to report progress.',
+        ]) is None
+        # The real mode line (arrow glyph present) still reads as before.
+        assert p.background_work_state([
+            '❯ ',
+            'bypass permissions on (shift+tab to cycle) · ← for agents',
+        ]) is False
+
     def test_other_providers_never_report_churn(self) -> None:
         # None (not False) -> base providers never touch the sticky flag.
         assert CodexProvider().background_work_state(['1 monitor still running']) is None
@@ -136,6 +154,23 @@ class TestChurningRefine:
         tr.on_input(b'\r')  # Enter from idle -> running
         tr._background_active = True
         assert tr.get_state(pty_alive=True) == CLIState.RUNNING
+
+    def test_background_active_property_exposes_sticky_flag(
+        self, tmp_path: Path,
+    ) -> None:
+        # Public read-only surface consumed by the ^^ capture dispatch:
+        # a ^^-queued message must NOT force-dispatch while the session is
+        # churning with churn-queue mode WAIT (the raw state reads IDLE, so
+        # the phantom-running check alone would force-dispatch into the
+        # Monitor's next re-invoke).
+        tr = _tracker(tmp_path, [1000.0])
+        assert tr.background_active is False
+        tr._background_active = True
+        assert tr.background_active is True
+        # The WAIT/SEND decision the capture path combines it with.
+        assert tr.is_ready_for_state(CLIState.CHURNING) is False  # WAIT
+        tr.churn_queue_mode = 'send'
+        assert tr.is_ready_for_state(CLIState.CHURNING) is True
 
 
 class TestStickyBackgroundFlag:

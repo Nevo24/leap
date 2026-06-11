@@ -46,6 +46,37 @@ _log = logging.getLogger('leap.state')
 # idle_indicator_patterns (GitHub Copilot).
 _IDLE_INDICATOR_GRACE: float = 2.0
 
+# How many non-blank bottom rows the running-indicator match scans.  A live
+# busy indicator (Claude's "Compacting conversation…" spinner) renders near
+# the footer; response text higher up that merely QUOTES the phrase must not
+# read as busy.  Generous enough to survive a couple of hint rows / partial
+# rows rendered below the spinner.
+_RUNNING_INDICATOR_TAIL_ROWS: int = 15
+
+# A LIVE busy indicator repaints continuously (Claude's compaction spinner
+# updates its elapsed-seconds counter every second).  If the PTY has been
+# output-silent longer than this while the indicator is "on screen", the
+# match is static response text QUOTING the phrase, not a live spinner -
+# so a preserved idle signal may be applied instead of holding RUNNING.
+_RUNNING_INDICATOR_SILENCE: float = 10.0
+
+# Cross-call carry for a partial bracketed-paste marker at the end of an
+# on_input chunk.  PTY reads split at arbitrary byte boundaries, so a
+# ``\x1b[200~`` / ``\x1b[201~`` marker can arrive split across two calls;
+# without the carry the marker is never recognized and the in-paste flag
+# latches wrong (a latched True swallows every subsequent Enter/Ctrl+C as
+# "paste content").  The held head is prepended to the next chunk if it
+# arrives within this window; a stale tail is dropped (the bytes were an
+# incomplete escape sequence with no classification value).
+_INPUT_TAIL_MAX_AGE: float = 0.5
+
+# A bare ESC ending a chunk is classified as an interrupt immediately (it
+# usually IS a real Escape keypress), but when the next chunk starts with
+# a CSI/SS3 continuation within this window the pair was a split escape
+# sequence (e.g. an arrow key) - reassemble it and disarm the false
+# ``_interrupt_pending``.  Two deliberate keypresses can't land this close.
+_SPLIT_ESC_REASSEMBLY_WINDOW: float = 0.15
+
 
 def _setup_debug_log(signal_file: Path) -> None:
     """Set up per-session debug log.
@@ -158,6 +189,14 @@ class CLIStateTracker:
         # Used to skip Enter-detection on ``\r`` / ``\n`` bytes that
         # are paste content, not real submits.
         self._in_bracketed_paste: bool = False
+        # Partial paste-marker head held back from the previous on_input
+        # chunk (see _INPUT_TAIL_MAX_AGE) + the time it was held.
+        self._input_tail: bytes = b''
+        self._input_tail_time: float = 0.0
+        # The previous on_input chunk ended on a bare ESC that was
+        # classified as an interrupt (see _SPLIT_ESC_REASSEMBLY_WINDOW).
+        self._trailing_esc_interrupt: bool = False
+        self._trailing_esc_time: float = 0.0
         # True from the moment the user answers a mid-turn dialog
         # (Enter from NEEDS_PERMISSION / NEEDS_INPUT — e.g.
         # AskUserQuestion, which is excluded from hook auto-approve so it
@@ -347,9 +386,19 @@ class CLIStateTracker:
                 for p in self._provider.input_dialog_patterns
             ):
                 return False
-        compact = self._get_screen_text().replace(' ', '').replace('\n', '')
+        # Match only near the bottom of the screen, where a live busy
+        # indicator actually renders (Claude's "Compacting conversation…"
+        # spinner sits just above the footer).  A full-screen match let
+        # RESPONSE TEXT quoting the indicator phrase anywhere in the
+        # 50-row buffer read as "busy" - which blocked the idle signal,
+        # the cursor+silence fallback AND the safety timeout, wedging the
+        # session in RUNNING until the text scrolled off.
+        all_lines = self._get_display_lines()
+        filled = [ln for ln in all_lines if ln.strip()]
+        tail_compact = ''.join(
+            filled[-_RUNNING_INDICATOR_TAIL_ROWS:]).replace(' ', '')
         return any(
-            p.decode('utf-8', errors='replace') in compact
+            p.decode('utf-8', errors='replace') in tail_compact
             for p in patterns
         )
 
@@ -493,15 +542,77 @@ class CLIStateTracker:
         (paste, fast typing).  This method scans the entire data for
         interrupt signals, Enter, and printable content.
         """
+        now = self._clock()
+
+        # Re-attach a partial escape/paste-marker head held back from the
+        # previous chunk so split sequences are classified as one unit.
+        # A stale tail is dropped: its bytes were an incomplete escape
+        # sequence and carry no classification value on their own.
+        if self._input_tail:
+            if now - self._input_tail_time <= _INPUT_TAIL_MAX_AGE:
+                data = self._input_tail + data
+            self._input_tail = b''
+
+        # Split-escape reassembly: the previous chunk ended on a bare ESC
+        # that was classified as an interrupt.  If this chunk immediately
+        # continues it with a CSI/SS3 introducer, the pair was a single
+        # split escape sequence (arrow key etc.) - reassemble it and
+        # disarm the false interrupt.
+        if self._trailing_esc_interrupt:
+            self._trailing_esc_interrupt = False
+            if (now - self._trailing_esc_time
+                    <= _SPLIT_ESC_REASSEMBLY_WINDOW
+                    and data[:1] in (b'[', b'O')):
+                data = b'\x1b' + data
+                if self._interrupt_pending:
+                    self._interrupt_pending = False
+                    _log.debug(
+                        'ON_INPUT split escape sequence reassembled - '
+                        'disarmed _interrupt_pending',
+                    )
+
         is_interrupt = False
         has_enter = False
         has_real_input = False  # printable chars, Enter, or Ctrl+C
         has_non_interrupt_input = False  # printable or Enter (not just Esc/Ctrl+C)
+        trailing_standalone_esc = False  # chunk ended on a lone ESC byte
         # Bracketed-paste awareness: ``\r`` / ``\n`` between
         # ``\x1b[200~`` and ``\x1b[201~`` is paste content, not a
         # real Enter submit.  Persists across calls (paste can span
         # multiple ``on_input`` chunks).
         in_paste = self._in_bracketed_paste
+
+        # Hold back a trailing partial paste-marker head (a proper prefix
+        # of ``\x1b[200~`` / ``\x1b[201~``) for the next chunk - scanning
+        # it now would mis-track the in-paste flag (a split end marker
+        # latched it True forever, swallowing every later Enter/Ctrl+C as
+        # paste content).  A lone trailing ESC is only held while inside
+        # a paste: outside one it is (most likely) a real Escape keypress
+        # that must act immediately.
+        hold = b''
+        for n in range(min(5, len(data)), 0, -1):
+            suffix = data[-n:]
+            if (b'\x1b[200~'.startswith(suffix)
+                    or b'\x1b[201~'.startswith(suffix)):
+                hold = suffix
+                break
+        if hold == b'\x1b':
+            last_start = data.rfind(b'\x1b[200~')
+            last_end = data.rfind(b'\x1b[201~')
+            if last_start > last_end:
+                ends_in_paste = True
+            elif last_end > last_start:
+                ends_in_paste = False
+            else:
+                ends_in_paste = in_paste
+            if not ends_in_paste:
+                hold = b''
+        if hold:
+            self._input_tail = hold
+            self._input_tail_time = now
+            data = data[:-len(hold)]
+            if not data:
+                return
 
         # Scan the data byte-by-byte for interrupt signals and content.
         i = 0
@@ -542,9 +653,13 @@ class CLIStateTracker:
                     i += 6
                     continue
                 if i + 1 >= len(data):
-                    # Standalone Escape at end of data
+                    # Standalone Escape at end of data.  Remember it so a
+                    # CSI/SS3 continuation arriving in the next chunk can
+                    # reassemble the split sequence and disarm the
+                    # interrupt (see _SPLIT_ESC_REASSEMBLY_WINDOW).
                     is_interrupt = True
                     has_real_input = True
+                    trailing_standalone_esc = True
                     i += 1
                 elif data[i + 1] == 0x5b:
                     # CSI sequence: \x1b[ params final
@@ -623,6 +738,9 @@ class CLIStateTracker:
         # can span ``on_input`` chunk boundaries, so the in-paste
         # flag carries over.
         self._in_bracketed_paste = in_paste
+        if trailing_standalone_esc:
+            self._trailing_esc_interrupt = True
+            self._trailing_esc_time = now
 
         # Pure terminal events (focus, mouse) with no real user input
         # — skip entirely to avoid false flag updates.
@@ -888,7 +1006,18 @@ class CLIStateTracker:
                 p.decode('utf-8', errors='replace') in compact
                 for p in trust_patterns
             )
-            is_dialog = self._provider.is_dialog_certain(compact)
+            # Dialog footers/menus render at the BOTTOM of the screen, so
+            # scan only the last 5 non-blank rows (same shape as the
+            # mid-session proactive check below).  A full-screen scan
+            # false-fired on resumed sessions (``--resume``/``--continue``)
+            # whose replayed conversation quoted a numbered menu (``❯ 1.``)
+            # or dialog phrases mid-screen.  Trust patterns stay full-screen:
+            # they are long distinctive sentences, and the trust dialog can
+            # render extra rows below its footer.
+            startup_lines = self._get_display_lines()
+            startup_filled = [ln for ln in startup_lines if ln.strip()]
+            startup_tail = ''.join(startup_filled[-5:]).replace(' ', '')
+            is_dialog = self._provider.is_dialog_certain(startup_tail)
 
             if is_trust or is_dialog:
                 _log.debug(
@@ -896,7 +1025,7 @@ class CLIStateTracker:
                     '(startup dialog: trust=%s dialog=%s)',
                     is_trust, is_dialog,
                 )
-                self._prompt_snapshot = self._get_display_lines()
+                self._prompt_snapshot = startup_lines
                 self._reset_screen()
                 if is_trust:
                     self._trust_dialog_phase = True
@@ -970,10 +1099,20 @@ class CLIStateTracker:
             with self._lock:
                 self._state = CLIState.RUNNING
                 self._waiting_since = None
-            try:
-                self._signal_file.unlink(missing_ok=True)
-            except OSError:
-                pass
+            # Clear a stale ALREADY-APPLIED idle signal: signals stay on
+            # disk after application (other consumers read them), and we
+            # only reach this branch from IDLE - so an 'idle' on disk is
+            # the consumed signal of the turn that just ended, and left
+            # in place it would yank the compacting session straight back
+            # to idle on the next poll.  Any OTHER pending signal (e.g. a
+            # needs_permission hook racing the compaction render) is
+            # PRESERVED - deleting wholesale lost the prompt until the
+            # PTY fallback re-detected it.
+            if self._read_signal_state() == CLIState.IDLE:
+                try:
+                    self._signal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
             return
 
         # -- Mid-session proactive dialog detection --
@@ -1217,6 +1356,9 @@ class CLIStateTracker:
                 self._trust_dialog_phase = False
                 self._suppress_stale_interrupt = False
                 self._awaiting_resume_after_prompt = False
+                self._in_bracketed_paste = False
+                self._input_tail = b''
+                self._trailing_esc_interrupt = False
                 with self._screen_lock:
                     self._reset_screen()
                     self._prompt_snapshot = []
@@ -1270,6 +1412,43 @@ class CLIStateTracker:
         if result == CLIState.IDLE and self._background_active:
             return CLIState.CHURNING
         return result
+
+    def _commit_state(
+        self,
+        expected: str,
+        new_state: str,
+        waiting_since: Optional[float],
+    ) -> bool:
+        """Compare-and-set commit for HEURISTIC transitions.
+
+        The ``get_state`` helpers snapshot ``current`` once and then
+        decide over several lock-free reads (screen, transcript, clock);
+        meanwhile the PTY thread's ``on_output`` may have moved
+        ``_state`` (e.g. RUNNING→INTERRUPTED on a confirmed interrupt
+        pattern).  Committing the stale decision would silently
+        overwrite that fresher transition — worst case a heuristic IDLE
+        clobbers INTERRUPTED / NEEDS_PERMISSION and the auto-sender
+        dispatches a queued message into a prompt.  Heuristic commits
+        therefore re-check the state under the lock and abort (False)
+        when another thread won the race; the caller returns None and
+        the next poll re-evaluates from the fresh state.  Callers must
+        apply their side effects (flag clears, screen resets, signal
+        writes) only AFTER a successful commit.
+
+        Authoritative transitions (hook signal file, on_input Enter,
+        on_send) intentionally do NOT use this — they carry external
+        evidence that beats a concurrent screen heuristic.
+        """
+        with self._lock:
+            if self._state != expected:
+                _log.debug(
+                    'GET_STATE %s→%s aborted - state moved to %s '
+                    'concurrently', expected, new_state, self._state,
+                )
+                return False
+            self._state = new_state
+            self._waiting_since = waiting_since
+            return True
 
     def _apply_signal_transition(self, current: str) -> Optional[str]:
         # -- Read signal file --
@@ -1357,18 +1536,37 @@ class CLIStateTracker:
         # Honouring the signal here would make the session read
         # as idle for the entire compaction — stay running
         # until the indicator disappears.
+        #
+        # The signal file is deliberately KEPT (not unlinked): no further
+        # Stop hook fires after a between-turns auto-compact, so this
+        # preserved signal is the only authoritative idle left.  Once the
+        # indicator clears, the next poll applies it.  Deleting it here
+        # turned an indicator false-positive (response text quoting the
+        # busy phrase near the footer) into an unrecoverable RUNNING wedge:
+        # the one-shot signal was consumed while every heuristic fallback
+        # stayed gated on the same indicator.
         with self._screen_lock:
             running_indicator = self._screen_has_running_indicator()
         if running_indicator:
+            # Live-vs-quoted discriminator: a real busy spinner repaints
+            # at least once a second, so prolonged PTY silence means the
+            # "indicator" is static text quoting the phrase - apply the
+            # preserved signal instead of wedging in RUNNING.
+            silence_ref = max(self._last_output_time, self._running_since)
+            if (silence_ref <= 0
+                    or (self._clock() - silence_ref)
+                    <= _RUNNING_INDICATOR_SILENCE):
+                _log.debug(
+                    'GET_STATE signal=idle but running indicator '
+                    'on screen - keeping running (signal preserved)',
+                )
+                return current
             _log.debug(
-                'GET_STATE signal=idle but running indicator '
-                'on screen - keeping running',
+                'GET_STATE signal=idle with running indicator on screen '
+                'but output silent %.1fs - static quoted text, applying '
+                'the idle signal',
+                self._clock() - silence_ref,
             )
-            try:
-                self._signal_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return current
 
         # Transcript guard: provider's per-session transcript
         # shows an unanswered tool_use from the current turn.
@@ -1682,8 +1880,12 @@ class CLIStateTracker:
         if current == CLIState.RUNNING and self._provider.transcript_sessions_dir:
             msg = self._provider.read_transcript_completion(
                 since=self._running_since,
+                tag=self._tag,
+                storage_dir=self._storage_dir,
             )
             if msg is not None:
+                if not self._commit_state(current, CLIState.IDLE, None):
+                    return None
                 _log.debug(
                     'GET_STATE transcript task_complete → idle (msg=%r)',
                     msg[:60] if msg else '',
@@ -1698,9 +1900,6 @@ class CLIStateTracker:
                 except OSError:
                     pass
                 self._interrupt_pending = False
-                with self._lock:
-                    self._state = CLIState.IDLE
-                    self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
                     self._last_running_snapshot = self._get_display_lines()
@@ -1776,6 +1975,9 @@ class CLIStateTracker:
                     elif self._provider.is_dialog_certain(compact_tail):
                         promote_to = CLIState.NEEDS_PERMISSION
                 if promote_to is not None:
+                    if not self._commit_state(
+                            current, promote_to, self._clock()):
+                        return None
                     _log.debug(
                         'GET_STATE running→%s '
                         '(footer dialog; idle-indicator provider)',
@@ -1783,9 +1985,6 @@ class CLIStateTracker:
                     )
                     self._interrupt_pending = False
                     self._user_responded = False
-                    with self._lock:
-                        self._state = promote_to
-                        self._waiting_since = self._clock()
                     self._user_input_since_idle = False
                     with self._screen_lock:
                         self._prompt_snapshot = footer_lines
@@ -1796,6 +1995,8 @@ class CLIStateTracker:
                     for p in self._provider.idle_indicator_patterns
                 )
                 if idle_on_screen and past_grace:
+                    if not self._commit_state(current, CLIState.IDLE, None):
+                        return None
                     _log.debug(
                         'GET_STATE %s→idle '
                         '(idle footer on screen; idle-indicator provider)',
@@ -1807,9 +2008,6 @@ class CLIStateTracker:
                         self._suppress_stale_interrupt = True
                     self._interrupt_pending = False
                     self._user_responded = False
-                    with self._lock:
-                        self._state = CLIState.IDLE
-                        self._waiting_since = None
                     self._user_input_since_idle = False
                     with self._screen_lock:
                         self._last_running_snapshot = list(footer_lines)
@@ -1848,6 +2046,8 @@ class CLIStateTracker:
             with self._screen_lock:
                 cursor_hidden = self._screen.cursor.hidden
             if cursor_hidden:
+                if not self._commit_state(current, CLIState.RUNNING, None):
+                    return None
                 _log.debug(
                     'GET_STATE %s→running (user_responded + cursor '
                     'hidden at poll)',
@@ -1863,9 +2063,6 @@ class CLIStateTracker:
                     self._prompt_snapshot = []
                     self._last_running_snapshot = []
                     self._reset_screen()
-                with self._lock:
-                    self._state = CLIState.RUNNING
-                    self._waiting_since = None
                 return CLIState.RUNNING
 
         return None
@@ -1944,6 +2141,9 @@ class CLIStateTracker:
                     if (current in PROMPT_STATES
                             and self._post_answer_grace_holds(
                                 self._waiting_since)):
+                        if not self._commit_state(
+                                current, CLIState.RUNNING, None):
+                            return None
                         _log.debug(
                             'GET_STATE %s→running (dialog answered + '
                             'indicator gone - Claude resuming, not idle)',
@@ -1963,10 +2163,9 @@ class CLIStateTracker:
                         with self._screen_lock:
                             self._prompt_snapshot = []
                             self._last_running_snapshot = []
-                        with self._lock:
-                            self._state = CLIState.RUNNING
-                            self._waiting_since = None
                         return CLIState.RUNNING
+                    if not self._commit_state(current, CLIState.IDLE, None):
+                        return None
                     _log.debug(
                         'GET_STATE %s→idle '
                         '(indicator gone + cursor visible + silence)',
@@ -1976,9 +2175,6 @@ class CLIStateTracker:
                         self._suppress_stale_interrupt = True
                     self._interrupt_pending = False
                     self._user_responded = False
-                    with self._lock:
-                        self._state = CLIState.IDLE
-                        self._waiting_since = None
                     self._user_input_since_idle = False
                     with self._screen_lock:
                         self._reset_screen()
@@ -2014,22 +2210,18 @@ class CLIStateTracker:
         ):
             with self._screen_lock:
                 cursor_hidden = self._screen.cursor.hidden
-            should_resume = False
             if not self._user_input_since_idle and cursor_hidden:
-                should_resume = True
-                with self._screen_lock:
-                    self._reset_screen()
-                    self._last_running_snapshot = []
-            if should_resume:
+                if not self._commit_state(current, CLIState.RUNNING, None):
+                    return None
                 _log.debug(
                     'GET_STATE idle→running (cursor hidden at poll, '
                     'auto-resume)',
                 )
+                with self._screen_lock:
+                    self._reset_screen()
+                    self._last_running_snapshot = []
                 self._running_since = self._clock()
                 self._interrupt_pending = False
-                with self._lock:
-                    self._state = CLIState.RUNNING
-                    self._waiting_since = None
                 try:
                     self._signal_file.unlink(missing_ok=True)
                 except OSError:
@@ -2099,6 +2291,9 @@ class CLIStateTracker:
             compact_tail = ''.join(filled[-5:]).replace(' ', '')
             if (cursor_visible or self._provider.dialogs_hide_cursor) \
                     and self._provider.is_dialog_certain(compact_tail):
+                if not self._commit_state(
+                        current, CLIState.NEEDS_PERMISSION, self._clock()):
+                    return None
                 _log.debug(
                     'GET_STATE running→needs_permission '
                     '(dialog on screen + output silent %.1fs)',
@@ -2108,9 +2303,6 @@ class CLIStateTracker:
                 self._user_responded = False
                 if self._trust_dialog_phase:
                     self._trust_dialog_phase = False
-                with self._lock:
-                    self._state = CLIState.NEEDS_PERMISSION
-                    self._waiting_since = self._clock()
                 with self._screen_lock:
                     # Reuse the lines already captured above instead of
                     # re-reading the screen.
@@ -2169,15 +2361,15 @@ class CLIStateTracker:
         # instead?" prompt — visually indistinguishable from
         # the interrupt being silently ignored.
         if self._transcript_says_interrupted():
+            if not self._commit_state(
+                    current, CLIState.INTERRUPTED, self._clock()):
+                return None
             _log.debug(
                 'GET_STATE cursor+silence + transcript '
                 'interrupt marker → interrupted',
             )
             self._interrupt_pending = False
             self._user_responded = False
-            with self._lock:
-                self._state = CLIState.INTERRUPTED
-                self._waiting_since = self._clock()
             self._write_interrupted_signal()
             self._user_input_since_idle = False
             with self._screen_lock:
@@ -2300,15 +2492,14 @@ class CLIStateTracker:
             )
             return current
 
+        if not self._commit_state(current, CLIState.IDLE, None):
+            return None
         _log.debug(
             'GET_STATE running→idle (cursor visible + '
             'output silent %.1fs)',
             self._clock() - self._last_output_time,
         )
         self._interrupt_pending = False
-        with self._lock:
-            self._state = CLIState.IDLE
-            self._waiting_since = None
         self._user_input_since_idle = False
         with self._screen_lock:
             self._last_running_snapshot = self._get_display_lines()
@@ -2358,6 +2549,9 @@ class CLIStateTracker:
                 # cursor+silence path above.  See that branch for the
                 # full reasoning.
                 if self._transcript_says_interrupted():
+                    if not self._commit_state(
+                            current, CLIState.INTERRUPTED, self._clock()):
+                        return None
                     _log.debug(
                         'GET_STATE safety timeout %.1fs + transcript '
                         'interrupt marker → interrupted',
@@ -2365,9 +2559,6 @@ class CLIStateTracker:
                     )
                     self._interrupt_pending = False
                     self._user_responded = False
-                    with self._lock:
-                        self._state = CLIState.INTERRUPTED
-                        self._waiting_since = self._clock()
                     self._write_interrupted_signal()
                     self._user_input_since_idle = False
                     with self._screen_lock:
@@ -2387,13 +2578,12 @@ class CLIStateTracker:
                         silence,
                     )
                     return current
+                if not self._commit_state(current, CLIState.IDLE, None):
+                    return None
                 _log.debug(
                     'GET_STATE safety timeout %.1fs → idle', silence,
                 )
                 self._interrupt_pending = False
-                with self._lock:
-                    self._state = CLIState.IDLE
-                    self._waiting_since = None
                 self._user_input_since_idle = False
                 with self._screen_lock:
                     self._last_running_snapshot = self._get_display_lines()
@@ -2453,15 +2643,14 @@ class CLIStateTracker:
                         else 'dialog still on screen',
                     )
                 else:
+                    if not self._commit_state(current, CLIState.IDLE, None):
+                        return None
                     _log.debug(
                         'GET_STATE waiting timeout %s %.1fs → idle',
                         current, silence,
                     )
                     self._interrupt_pending = False
                     self._user_responded = False
-                    with self._lock:
-                        self._state = CLIState.IDLE
-                        self._waiting_since = None
                     self._user_input_since_idle = False
                     with self._screen_lock:
                         self._reset_screen()
@@ -2685,6 +2874,13 @@ class CLIStateTracker:
     @auto_send_mode.setter
     def auto_send_mode(self, mode: AutoSendMode) -> None:
         self._auto_send_mode = mode
+
+    @property
+    def background_active(self) -> bool:
+        """Sticky churn flag: a background Monitor is still running and
+        will re-invoke this session (``get_state`` refines IDLE to
+        CHURNING while it is set)."""
+        return self._background_active
 
     @property
     def churn_queue_mode(self) -> str:

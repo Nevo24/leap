@@ -104,6 +104,26 @@ class IOFilterMixin:
             self._terminal_buf_insert(0x5e)
             self._chars_sent_to_cli += 1
 
+        # Split-marker repair: ``_detect_paste`` recognizes paste markers
+        # split across two reads (via its scan tail), but the byte loop's
+        # marker handlers below only fire on a marker fully inside this
+        # chunk — the split bytes travel through the partial-escape
+        # continuation path instead.  Reconcile the accumulator off the
+        # split flags so a split end marker can't leave it accumulating
+        # forever (swallowing the next real Enter), and a split start
+        # marker still collapses the paste to a placeholder.  Runs after
+        # the caret flush (like the in-loop marker handlers) so a flushed
+        # pre-paste ``^`` stays outside the paste snapshot.
+        if self._split_paste_end and self._paste_accumulator is not None:
+            self._finalize_paste_capture()
+        if (self._split_paste_start
+                and self._paste_accumulator is None
+                and not self._queue_capture_mode):
+            self._paste_accumulator = bytearray()
+            self._paste_buf_snapshot_len = len(self._terminal_input_buf)
+            self._paste_cursor_snapshot = self._terminal_input_cursor
+            self._paste_chars_snapshot = self._chars_sent_to_cli
+
         # Check if the very first byte is "^" and _pending_caret is set
         # from the previous chunk → double-caret capture trigger.
         # Skip if we're inside a bracketed paste.
