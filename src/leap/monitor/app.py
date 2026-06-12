@@ -76,6 +76,7 @@ from leap.monitor.ui.table_helpers import (
 )
 from leap.monitor.ui.ui_widgets import PulsingLabel, ShimmerBar, IndicatorLabel
 from leap.utils.constants import ICON_CACHE_DIR, STORAGE_DIR
+from leap.utils.terminal import default_terminal_for_first_run
 
 from leap.monitor.navigation import open_terminal_with_command
 from leap.slack.config import is_slack_installed
@@ -341,6 +342,12 @@ class MonitorWindow(
         self._prefs = load_monitor_prefs()
         if 'default_diff_tool' not in self._prefs:
             self._prefs['default_diff_tool'] = detect_default_difftool()
+            self._save_prefs()
+        # First-run default terminal: prefer iTerm2 when installed, else
+        # the always-present Apple Terminal.  Only set when unspecified so
+        # an explicit user choice is never overridden.
+        if 'default_terminal' not in self._prefs:
+            self._prefs['default_terminal'] = default_terminal_for_first_run()
             self._save_prefs()
         if 'hidden_columns' not in self._prefs:
             self._prefs['hidden_columns'] = ['Client']

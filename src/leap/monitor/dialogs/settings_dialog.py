@@ -20,6 +20,7 @@ from leap.monitor.dialogs.zoom_mixin import ZoomMixin
 from leap.cli_providers.states import AutoSendMode, ChurnQueueMode
 from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
 from leap.monitor.themes import THEMES, current_theme
+from leap.utils.terminal import iterm2_app_paths
 
 DEFAULT_REPOS_DIR = os.path.expanduser('~/leap-repos')
 
@@ -79,7 +80,7 @@ def _detect_installed_terminals() -> list[str]:
     home = Path.home()
     candidates = [
         ('Terminal.app', [Path('/System/Applications/Utilities/Terminal.app')]),
-        ('iTerm2', [Path('/Applications/iTerm.app'), home / 'Applications' / 'iTerm.app']),
+        ('iTerm2', iterm2_app_paths()),
         ('Warp', [Path('/Applications/Warp.app'), home / 'Applications' / 'Warp.app']),
         ('WezTerm', [Path('/Applications/WezTerm.app'), home / 'Applications' / 'WezTerm.app']),
         ('cmux', [Path('/Applications/cmux.app'), home / 'Applications' / 'cmux.app']),

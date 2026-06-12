@@ -49,6 +49,28 @@ _JETBRAINS_APP_PATTERNS: list[str] = [
 _jetbrains_cli_path: Optional[str] = None
 
 
+def iterm2_app_paths() -> list[Path]:
+    """Standard install locations for iTerm2's .app bundle."""
+    return [Path('/Applications/iTerm.app'), Path.home() / 'Applications' / 'iTerm.app']
+
+
+def iterm2_installed() -> bool:
+    """True if iTerm2 is installed in a standard /Applications location."""
+    return any(p.is_dir() for p in iterm2_app_paths())
+
+
+def default_terminal_for_first_run() -> str:
+    """Terminal to use as the monitor default on first launch.
+
+    Prefer iTerm2 when it's installed, otherwise fall back to the
+    built-in Apple Terminal (which is always present on macOS).  This
+    matches the implicit ``Terminal.app`` fallback used everywhere the
+    ``default_terminal`` pref is read, so behavior is unchanged when
+    iTerm2 is absent.
+    """
+    return 'iTerm2' if iterm2_installed() else 'Terminal.app'
+
+
 def _jetbrains_env() -> dict[str, str]:
     """Build an env dict with JetBrains CLI tools on PATH."""
     env = os.environ.copy()
