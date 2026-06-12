@@ -18,7 +18,7 @@ from leap.utils.claude_session_move import relocate_claude_session, slugify
 from leap.utils.context_usage import (
     ContextUsage,
     claude_context_usage,
-    statusline_context_usage,
+    claude_statusline_context_usage,
 )
 from leap.utils.cost_usage import CostInfo, claude_session_cost_cached
 from leap.utils.menu import MENU_OPTION_RE
@@ -592,10 +592,13 @@ class ClaudeProvider(CLIProvider):
         ``[1m]`` suffix that auto-upgraded (Max/Team/Enterprise) sessions never
         produce.  Falls back to the transcript heuristic when the file is absent
         (status line not installed / not reconfigured, an older Claude build
-        that omits ``context_window``, or before the first render).
+        that omits ``context_window``, or before the first render).  A recorded
+        window smaller than the recorded usage is impossible (the API rejects
+        over-window prompts) and is healed to 1M by
+        :func:`claude_statusline_context_usage`.
         """
         state = storage_dir / 'sockets' / f'{tag}.context'
-        usage = statusline_context_usage(str(state))
+        usage = claude_statusline_context_usage(str(state))
         if usage is not None:
             return usage
         transcript = latest_transcript_for(storage_dir, cli_name, tag)

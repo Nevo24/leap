@@ -412,3 +412,25 @@ def statusline_context_usage(state_path: str) -> Optional[ContextUsage]:
         result = None
     _USAGE_CACHE[state_path] = (st.st_mtime_ns, st.st_size, result)
     return result
+
+
+def claude_statusline_context_usage(state_path: str) -> Optional[ContextUsage]:
+    """Claude's status-line state, healed when the recorded window is impossible.
+
+    Claude's status-line payload can misreport ``context_window_size`` as the
+    base 200K for a session that is actually running on the 1M window (seen on
+    long-lived sessions whose conversation kept its original model after a
+    mid-session ``/model`` change).  Live context can never exceed the real
+    window - the API rejects over-window prompts - so ``used > window`` proves
+    the recorded window wrong, and 1M is the only Claude window above the
+    base.  Same safety net as :func:`_resolve_claude_window` applies on the
+    transcript path.  Claude-only: Copilot reads the raw file via
+    :func:`statusline_context_usage`.
+    """
+    usage = statusline_context_usage(state_path)
+    if (usage is not None and usage.used_tokens > usage.window
+            and usage.window < _ONE_M_CONTEXT_WINDOW):
+        return ContextUsage(used_tokens=usage.used_tokens,
+                            window=_ONE_M_CONTEXT_WINDOW,
+                            model=usage.model)
+    return usage

@@ -17,6 +17,7 @@ from leap.cli_providers.registry import get_provider
 from leap.utils.context_usage import (
     ContextUsage,
     claude_context_usage,
+    claude_statusline_context_usage,
     codex_context_usage,
     context_window_for_model,
     gemini_context_usage,
@@ -536,6 +537,74 @@ class TestStatuslineReader:
         f = tmp_path / 'now.context'
         f.write_text(json.dumps({'used_tokens': 100}))  # no window
         assert statusline_context_usage(str(f)) is None
+
+    def test_raw_reader_keeps_impossible_window(self, tmp_path):
+        # The raw reader (Copilot's path) reports the file verbatim; only the
+        # Claude wrapper applies the impossible-window safety net.
+        f = tmp_path / 'tag.context'
+        f.write_text(json.dumps({'used_tokens': 338_631, 'window': 200_000,
+                                 'model': 'gpt-5.5'}))
+        u = statusline_context_usage(str(f))
+        assert u is not None and u.window == 200_000 and u.percent == 100
+
+
+# --------------------------------------------------------------------------
+# Claude: status-line reader + impossible-window safety net
+# --------------------------------------------------------------------------
+
+class TestClaudeStatuslineSafetyNet:
+    def test_used_over_window_heals_to_one_m(self, tmp_path):
+        # Claude's payload can misreport the 200K base window for a session
+        # actually running 1M; live context above the recorded window proves
+        # the window wrong.
+        f = tmp_path / 'tag.context'
+        f.write_text(json.dumps({'used_tokens': 338_631, 'window': 200_000,
+                                 'model': 'claude-opus-4-8'}))
+        u = claude_statusline_context_usage(str(f))
+        assert u is not None
+        assert u.window == 1_000_000
+        assert u.used_tokens == 338_631
+        assert u.model == 'claude-opus-4-8'
+        assert u.percent == 34
+
+    def test_used_within_window_unchanged(self, tmp_path):
+        f = tmp_path / 'tag.context'
+        f.write_text(json.dumps({'used_tokens': 50_000, 'window': 200_000,
+                                 'model': 'claude-opus-4-8'}))
+        u = claude_statusline_context_usage(str(f))
+        assert u is not None and u.window == 200_000 and u.percent == 25
+
+    def test_used_equal_to_window_unchanged(self, tmp_path):
+        f = tmp_path / 'tag.context'
+        f.write_text(json.dumps({'used_tokens': 200_000, 'window': 200_000,
+                                 'model': 'claude-opus-4-8'}))
+        u = claude_statusline_context_usage(str(f))
+        assert u is not None and u.window == 200_000 and u.percent == 100
+
+    def test_one_m_window_never_shrunk(self, tmp_path):
+        # used > window at >= 1M is equally impossible but there is no larger
+        # Claude window to heal to - leave the record alone.
+        f = tmp_path / 'tag.context'
+        f.write_text(json.dumps({'used_tokens': 1_200_000, 'window': 1_000_000,
+                                 'model': 'claude-opus-4-8[1m]'}))
+        u = claude_statusline_context_usage(str(f))
+        assert u is not None and u.window == 1_000_000
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert claude_statusline_context_usage(
+            str(tmp_path / 'nope.context')) is None
+
+    def test_cached_raw_result_not_mutated(self, tmp_path):
+        # statusline_context_usage caches its result by (mtime, size); the
+        # healed value must be a fresh object, not an in-place edit of the
+        # cached one Copilot-style readers would also see.
+        f = tmp_path / 'tag.context'
+        f.write_text(json.dumps({'used_tokens': 338_631, 'window': 200_000,
+                                 'model': 'claude-opus-4-8'}))
+        healed = claude_statusline_context_usage(str(f))
+        raw = statusline_context_usage(str(f))
+        assert healed is not None and healed.window == 1_000_000
+        assert raw is not None and raw.window == 200_000
 
 
 # --------------------------------------------------------------------------
