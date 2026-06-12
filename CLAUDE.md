@@ -27,7 +27,7 @@ Deep subsystem docs live as on-demand skills in `.claude/skills/` - Claude loads
 | `codebase-map` | locating a file / class / module (full source tree + key-classes table) |
 | `auto-approve-architecture` | touching Claude auto-approve, the CLI state machine, or hook handling |
 | `monitor-pr-tracking` | working on monitor SCM/PR tracking or the session table |
-| `cursor-editor-agent-tabs` | working on the read-only Cursor editor Agent-tab rows |
+| `cursor-editor-agent-tabs` | working on the read-only editor-GUI agent rows (Cursor Agent tabs, VS Code Copilot chats) |
 | `monitor-code-signing` | touching Makefile signing, the py2app build, or TCC/Accessibility |
 | `add-cli-provider` | adding a new CLI backend (provider) |
 | `add-dialog` | adding a new monitor dialog / window |
@@ -52,7 +52,8 @@ src/
     │                     #   queue_manager.py, metadata.py
     ├── client/           # client.py, socket_client.py, input_handler.py, image_handler.py
     ├── monitor/          # PyQt5 GUI: app.py + _mixins/ dialogs/ ui/ pr_tracking/ resources/,
-    │                     #   themes, navigation, scm_polling, cursor_gui_scan, sleep_guard
+    │                     #   themes, navigation, scm_polling, cursor_gui_scan,
+    │                     #   vscode_copilot_scan, sleep_guard
     ├── slack/            # bot, config, output_capture, output_watcher, message_router
     └── vscode-extension/ # VS Code / Cursor terminal-selector extension
 
@@ -224,9 +225,9 @@ Runtime detection: cmux inherits Ghostty's `TERM_PROGRAM=ghostty` but also expor
 
 Monitor navigation/open/close go through cmux's **AppleScript dictionary** (`cmux.sdef`: `application > windows > tabs(workspaces) > terminals`) — **not** the bundled `cmux` CLI, because cmux's control socket defaults to `socketControlMode: cmuxOnly`, which rejects an outside process like the monitor. Three cmux quirks the helpers account for (all verified against a live app): (1) the app-level `terminals` element is unreliable (reports count 0), so they walk `windows > tabs`; (2) cmux does **not** expose a per-surface title — every `terminal.name` reads as a generic "Terminal"; (3) a shell's OSC title (`lps <tag>`, set by the server) is surfaced only as the **workspace (tab) name**, and only for the workspace's **active** surface. So `_navigate_cmux` uses two passes: first match the workspace name (hits when the session's surface is active or is the workspace's only surface), then — if that misses, meaning the target surface is inactive and its title is hidden — **probe**: `focus` each surface in a multi-surface workspace and re-read the workspace name, landing on the match (or restoring the workspace's original focus if none). `_close_cmux` matches the workspace name only (no probe — closing an inactive surface is rare and probing-to-close is more disruptive than the miss). Helpers in `navigation.py`: `_navigate_cmux` / `_close_cmux` (AppleScript, guarded on cmux already running via `_get_app_pid` so the fallback chains never cold-launch it) and `_open_cmux_terminal` (tries the CLI's `new-workspace --command` first for users who can reach the socket — it sends text+Enter — then falls back to AppleScript `new tab` + `input text` + return, which cmux runs as a normal command, verified against a live app — `input text` is not held by bracketed paste).
 
-## Cursor Editor Agent Tabs (read-only monitor rows)
+## Editor-GUI Agent Rows: Cursor Agent Tabs + VS Code Copilot Chats (read-only monitor rows)
 
-Optional, on by default (`show_cursor_gui_agents`): the monitor shows one read-only row per open Cursor *editor* Agent/Composer tab - live status, PR tracking, and one-click jump to the exact tab. It is a pure display overlay (no PTY, server, or queueing); rows carry `row_type == 'cursor_agent_gui'`. Full design - the on-disk SQLite scan, status mapping, tab focus/jump via the Cursor extension, synthetic-row reconciliation, and the two close buttons - is in the `cursor-editor-agent-tabs` skill.
+Optional, on by default (`show_editor_gui_agents`; legacy `show_cursor_gui_agents` migrated at startup): the monitor shows one read-only row per open Cursor *editor* Agent/Composer tab AND per recently-active VS Code Copilot Chat session - live status, PR tracking, one-click jump to the exact chat, and (VS Code only) editor-side rename via the tag context menu. Pure display overlay (no PTY, server, or queueing); rows carry `row_type == 'cursor_agent_gui'` / `'vscode_copilot_gui'`. VS Code "close" is a hide (persisted in the `vscode_gui_hidden` monitor pref; a new user prompt auto-unhides). Full design - the on-disk scans, status mappings, jump/rename via the shared Leap extension, synthetic-row reconciliation, and the two close buttons - is in the `cursor-editor-agent-tabs` skill.
 
 ## Monitor Code Signing
 

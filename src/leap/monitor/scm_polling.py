@@ -19,6 +19,7 @@ from leap.monitor.pr_tracking.git_utils import (
 from leap.monitor.leap_sender import send_to_leap_session
 from leap.monitor.session_manager import get_active_sessions
 from leap.monitor.cursor_gui_scan import scan_open_cursor_agents
+from leap.monitor.vscode_copilot_scan import scan_open_vscode_copilot_sessions
 from leap.monitor.sleep_guard import have_internet
 
 # Maximum time to wait for all poll futures to complete
@@ -503,40 +504,59 @@ class SendThreadsCombinedWorker(_BaseSendWorker):
 class SessionRefreshWorker(QThread):
     """Background worker for refreshing active sessions (avoids blocking on socket I/O).
 
-    Emits two lists: the real Leap sessions, and (when ``scan_cursor_gui``
-    is enabled) read-only rows for Cursor editor Agent tabs scanned from
-    disk.  The two are kept separate so Cursor-GUI rows never enter the
-    monitor's ``self.sessions`` / pinned-session machinery - they are a
-    pure display overlay added at render time.
+    Emits two lists: the real Leap sessions, and (when ``scan_editor_gui``
+    is enabled) read-only editor-GUI rows scanned from disk - Cursor
+    editor Agent tabs plus VS Code Copilot Chat sessions.  The two are
+    kept separate so editor-GUI rows never enter the monitor's
+    ``self.sessions`` / pinned-session machinery - they are a pure
+    display overlay added at render time.
+
+    ``vscode_hidden`` / ``vscode_keep_ids`` are GUI-thread snapshots of
+    the dismissed-chats pref and the PR-tracked VS Code session ids,
+    passed in at construction so the worker thread never touches the
+    monitor's mutable state.
     """
 
-    sessions_ready = pyqtSignal(list, list)  # (leap_sessions, cursor_gui_rows)
+    sessions_ready = pyqtSignal(list, list)  # (leap_sessions, editor_gui_rows)
 
     def __init__(self, parent: Optional[QWidget] = None,
-                 scan_cursor_gui: bool = False) -> None:
+                 scan_editor_gui: bool = False,
+                 vscode_hidden: Optional[dict] = None,
+                 vscode_keep_ids: Optional[set] = None) -> None:
         super().__init__(parent)
-        self._scan_cursor_gui = scan_cursor_gui
+        self._scan_editor_gui = scan_editor_gui
+        self._vscode_hidden = vscode_hidden or {}
+        self._vscode_keep_ids = vscode_keep_ids or set()
 
     def run(self) -> None:
         try:
             sessions = get_active_sessions()
         except Exception:
             # A transient leap-session fetch failure must NOT take the
-            # Cursor scan down with it: emitting ([], []) here would make
-            # _on_sessions_refreshed see zero live Cursor tags and prune
-            # every cursor-gui PR the user opted into (cursor tracking is
-            # in-memory only, so there's no auto-reconnect).  Fall through
-            # with an empty leap list but still scan Cursor below.
+            # editor scans down with it: emitting ([], []) here would make
+            # _on_sessions_refreshed see zero live editor-GUI tags and
+            # prune every editor-row PR the user opted into (that tracking
+            # is in-memory only, so there's no auto-reconnect).  Fall
+            # through with an empty leap list but still scan below.
             logger.debug("Error refreshing sessions", exc_info=True)
             sessions = []
-        cursor_rows: list = []
-        if self._scan_cursor_gui:
+        editor_rows: list = []
+        if self._scan_editor_gui:
+            # The two scans fail independently - a Cursor schema change
+            # must not take the VS Code rows down, and vice versa.
             try:
-                cursor_rows = scan_open_cursor_agents()
+                editor_rows.extend(scan_open_cursor_agents())
             except Exception:
                 logger.debug("Error scanning Cursor agent tabs", exc_info=True)
-                cursor_rows = []
-        self.sessions_ready.emit(sessions, cursor_rows)
+            try:
+                editor_rows.extend(scan_open_vscode_copilot_sessions(
+                    hidden=self._vscode_hidden,
+                    keep_ids=self._vscode_keep_ids,
+                ))
+            except Exception:
+                logger.debug("Error scanning VS Code Copilot sessions",
+                             exc_info=True)
+        self.sessions_ready.emit(sessions, editor_rows)
 
 
 class ConnectivityProbeWorker(QThread):

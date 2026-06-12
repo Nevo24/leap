@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QCursor
 
 from leap.cli_providers.registry import DEFAULT_PROVIDER
-from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
+from leap.monitor.vscode_copilot_scan import GUI_TAG_PREFIXES
 from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
 from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
 from leap.monitor.navigation import (
@@ -221,7 +221,7 @@ class ActionsMenuMixin(_Base):
         self._prefs['last_ide_app'] = path
         self._save_prefs()
 
-        if tag.startswith(CURSOR_GUI_TAG_PREFIX):
+        if tag.startswith(GUI_TAG_PREFIXES):
             # Cursor editor Agent-tab rows aren't Leap sessions - there's
             # nothing to "move", so just open the folder in the chosen app.
             self._maybe_set_jetbrains_alias(tag, path, project_path)

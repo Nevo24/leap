@@ -863,15 +863,91 @@ def focus_cursor_window(folder: str,
     Returns ``True`` when Cursor was brought forward, ``False`` when it
     isn't running or the raise script failed.
     """
-    if not _is_vscode_running('Cursor'):
+    raised = _raise_editor_window('Cursor', 'Cursor', folder)
+
+    # Hand off tab-level focus to the Leap Cursor extension.  Write the
+    # request AFTER raising the window so the (now foreground) window
+    # that owns the tab is the one whose extension acts on it - other
+    # windows skip it via the extension's focus gate.  AXRaise returns
+    # before the WindowServer finishes activating the window, so settle
+    # briefly first: otherwise, with multiple Cursor windows open, a
+    # still-foreground non-owning window's extension could consume the
+    # request (its focus gate passes) and silently drop it (it doesn't own
+    # the composer, so no tab switches, but it unlinks the file).
+    if raised:
+        time.sleep(0.3)
+        if composer_id:
+            _write_terminal_request(f'focusComposer:{composer_id}')
+
+    return raised
+
+
+def focus_vscode_chat_session(folder: str,
+                              session_id: Optional[str] = None) -> bool:
+    """Bring the VS Code window for *folder* to the front, and optionally
+    open a specific Copilot Chat session inside it.
+
+    VS Code sibling of :func:`focus_cursor_window` - same System Events
+    window raise (match the native window whose title contains the
+    project folder's basename), then session-level focus is handed off to
+    the Leap extension via a ``focusChatSession:<session_id>`` request:
+    the extension opens the session's ``vscode-chat-session://local/...``
+    resource, for which VS Code registers a chat editor.  Best-effort -
+    if the extension isn't installed the window-level raise still
+    happened.
+
+    Returns ``True`` when VS Code was brought forward, ``False`` when it
+    isn't running or the raise script failed.
+    """
+    raised = _raise_editor_window('VS Code', 'Code', folder)
+    # Same settle-then-request dance as the Cursor path (see above): only
+    # the focused window's extension consumes the shared request file.
+    if raised:
+        time.sleep(0.3)
+        if session_id:
+            _write_terminal_request(f'focusChatSession:{session_id}')
+    return raised
+
+
+def rename_vscode_chat_session(folder: str, session_id: str) -> bool:
+    """Open VS Code's own rename input for a Copilot Chat session.
+
+    Raises the owning VS Code window, then asks the Leap extension to run
+    ``agentSession.rename`` for this session (via a
+    ``renameChatSession:<id>`` request).  VS Code shows its native input
+    box pre-filled with the current title; the new title persists into
+    the chat-session store, so the monitor row label follows on the next
+    scan.  Best-effort; returns whether the window raise succeeded.
+    """
+    if not session_id:
+        return False
+    raised = _raise_editor_window('VS Code', 'Code', folder)
+    if raised:
+        time.sleep(0.3)
+        _write_terminal_request(f'renameChatSession:{session_id}')
+    return raised
+
+
+def _raise_editor_window(ide_label: str, process_name: str,
+                         folder: str) -> bool:
+    """Raise the *ide_label* (Cursor / VS Code) window for *folder*.
+
+    Neither editor exposes clickable AX elements, so the *window* is
+    raised via the System Events bridge: match the native window whose
+    title contains the project folder's basename, ``AXRaise`` it, and
+    make the app frontmost.  Returns ``True`` when the app was brought
+    forward, ``False`` when it isn't running or the script failed.
+    """
+    if not _is_vscode_running(ide_label):
         return False
     base = os.path.basename(folder.rstrip('/')) if folder else ''
     safe = _escape_applescript(base)
+    proc = _escape_applescript(process_name)
     script = (
         'with timeout of 8 seconds\n'
         'tell application "System Events"\n'
-        '  if not (exists process "Cursor") then return "noproc"\n'
-        '  tell process "Cursor"\n'
+        f'  if not (exists process "{proc}") then return "noproc"\n'
+        f'  tell process "{proc}"\n'
         '    set frontmost to true\n'
         '    repeat with w in windows\n'
         f'      if name of w contains "{safe}" then\n'
@@ -893,23 +969,7 @@ def focus_cursor_window(folder: str,
         )
     except (subprocess.SubprocessError, OSError):
         return False
-    raised = result.returncode == 0 and 'noproc' not in (result.stdout or '')
-
-    # Hand off tab-level focus to the Leap Cursor extension.  Write the
-    # request AFTER raising the window so the (now foreground) window
-    # that owns the tab is the one whose extension acts on it - other
-    # windows skip it via the extension's focus gate.  AXRaise returns
-    # before the WindowServer finishes activating the window, so settle
-    # briefly first: otherwise, with multiple Cursor windows open, a
-    # still-foreground non-owning window's extension could consume the
-    # request (its focus gate passes) and silently drop it (it doesn't own
-    # the composer, so no tab switches, but it unlinks the file).
-    if raised:
-        time.sleep(0.3)
-        if composer_id:
-            _write_terminal_request(f'focusComposer:{composer_id}')
-
-    return raised
+    return result.returncode == 0 and 'noproc' not in (result.stdout or '')
 
 
 def close_cursor_composer(folder: str, composer_id: str) -> bool:

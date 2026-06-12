@@ -42,7 +42,6 @@ from PyQt5.QtSvg import QSvgRenderer
 
 from leap.cli_providers.states import CLIState
 from leap.monitor import columns
-from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
 from leap.monitor.dialogs.settings_dialog import detect_default_difftool
 from leap.monitor.dialogs.whats_new_dialog import WhatsNewDialog
 from leap.monitor.permissions import (
@@ -305,14 +304,15 @@ class MonitorWindow(
         super().__init__()
         self._wipe_icon_cache()
         self.sessions: list[dict] = []
-        # Read-only overlay rows for Cursor editor Agent tabs (scanned
-        # from disk).  Kept out of ``self.sessions`` so they never touch
-        # the pinned-session / PR / sleep-guard machinery; merged into
-        # the rendered view in ``_update_table`` only.
+        # Read-only overlay rows for editor-GUI agents - Cursor editor
+        # Agent tabs + VS Code Copilot Chat sessions (scanned from disk).
+        # Kept out of ``self.sessions`` so they never touch the
+        # pinned-session / PR / sleep-guard machinery; merged into the
+        # rendered view in ``_update_table`` only.
         self._cursor_gui_rows: list[dict] = []
-        # Last-seen live row dict per Cursor tag, so a PR-tracked tab that's
-        # later closed can still be rendered as a "tab closed" row (keeping
-        # its PR monitored, like a dead-but-tracked regular row).
+        # Last-seen live row dict per editor-GUI tag, so a PR-tracked chat
+        # that's later closed/hidden can still be rendered as a closed row
+        # (keeping its PR monitored, like a dead-but-tracked regular row).
         self._cursor_row_cache: dict[str, dict] = {}
         # Substring filter for the main table — case-insensitive match on
         # tag / project / app / CLI / path, same priority order as the
@@ -340,6 +340,15 @@ class MonitorWindow(
         self._tracked_tags: set[str] = set()
         self._checking_tags: set[str] = set()
         self._prefs = load_monitor_prefs()
+        # The Cursor-only "show_cursor_gui_agents" toggle grew into
+        # "show_editor_gui_agents" when VS Code Copilot rows joined it -
+        # carry the user's choice over once (the legacy key then stays
+        # inert on disk).
+        if ('show_editor_gui_agents' not in self._prefs
+                and 'show_cursor_gui_agents' in self._prefs):
+            self._prefs['show_editor_gui_agents'] = bool(
+                self._prefs['show_cursor_gui_agents'])
+            self._save_prefs()
         if 'default_diff_tool' not in self._prefs:
             self._prefs['default_diff_tool'] = detect_default_difftool()
             self._save_prefs()

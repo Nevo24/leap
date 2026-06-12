@@ -638,15 +638,16 @@ class PRTrackingMixin(_Base):
 
         has_tracked = bool(self._tracked_tags)
         notif_types = self._get_notif_scm_types()
-        # Cursor editor Agent-tab rows the user opted to track (their tag
-        # is in _tracked_tags).  Marked ``_pr_only`` so the worker fetches
-        # PR state but skips /leap handling (they're not Leap sessions).
-        # Polled on the same ~30s SCM cadence, not the 1s table refresh.
+        # Editor-GUI rows (Cursor Agent tabs, VS Code Copilot chats) the
+        # user opted to track (their tag is in _tracked_tags).  Marked
+        # ``_pr_only`` so the worker fetches PR state but skips /leap
+        # handling (they're not Leap sessions).  Polled on the same ~30s
+        # SCM cadence, not the 1s table refresh.
         # Only ``project_path`` is required: _poll_session resolves the
         # branch from the folder's git remote itself (the passed ``branch``
         # is unused on that path), so requiring a non-empty ``branch`` here
-        # only served to permanently exclude a tracked Cursor row whose
-        # folder reported no branch (non-git / detached HEAD) - leaving its
+        # only served to permanently exclude a tracked row whose folder
+        # reported no branch (non-git / detached HEAD) - leaving its
         # PR cell stuck on "Checking…" forever.  Without the filter such a
         # row is polled and resolves to a normal "No PR" instead.
         cursor_poll_sessions = [

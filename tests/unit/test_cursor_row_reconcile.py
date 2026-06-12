@@ -43,7 +43,7 @@ def _row(cid: str, **extra: Any) -> dict:
     d = {
         'tag': PREFIX + cid,
         'row_type': 'cursor_agent_gui',
-        'composer_id': cid,
+        'chat_id': cid,
         'project': 'app',
         'project_path': '/repos/app',
         'branch': 'main',
@@ -254,3 +254,115 @@ def test_reorder_does_not_mutate_input() -> None:
     order = ['A', 'B', 'C']
     _reorder(order, 'A', 'C', True)
     assert order == ['A', 'B', 'C']  # original untouched
+
+
+# ---- VS Code Copilot rows share the reconcile pipeline ----
+
+
+VS_PREFIX = 'vscode-gui:'
+
+
+def _vs_row(sid: str, **extra: Any) -> dict:
+    d = {
+        'tag': VS_PREFIX + sid,
+        'row_type': 'vscode_copilot_gui',
+        'chat_id': sid,
+        'project': 'app',
+        'project_path': '/repos/app',
+        'branch': 'main',
+        'display_label': f'chat {sid}',
+        'status_kind': 'idle',
+        'status_text': '○  Idle',
+    }
+    d.update(extra)
+    return d
+
+
+def test_tracked_vscode_chat_synthesizes_chat_hidden() -> None:
+    """A tracked VS Code chat that leaves the scan (hidden / aged out)
+    survives as a synthesized row - with VS Code wording, not 'Tab
+    closed'."""
+    s = _Stub()
+    _reconcile(s, [_vs_row('v1')])
+    s._tracked_tags.add(VS_PREFIX + 'v1')
+    _reconcile(s, [])
+    assert len(s._cursor_gui_rows) == 1
+    synth = s._cursor_gui_rows[0]
+    assert synth['tag'] == VS_PREFIX + 'v1'
+    assert synth['_tab_closed'] is True
+    assert synth['status_text'] == '○  Chat hidden'
+    assert synth['project_path'] == '/repos/app'
+
+
+def test_untracked_vscode_chat_drops_without_synthesis() -> None:
+    s = _Stub()
+    _reconcile(s, [_vs_row('v1')])
+    _reconcile(s, [])
+    assert s._cursor_gui_rows == []
+
+
+def test_mixed_editors_reconcile_independently() -> None:
+    """One tracked chat per editor, both gone from the scan: each
+    synthesizes with its own wording."""
+    s = _Stub()
+    _reconcile(s, [_row('c1'), _vs_row('v1')])
+    s._tracked_tags.add(PREFIX + 'c1')
+    s._tracked_tags.add(VS_PREFIX + 'v1')
+    _reconcile(s, [])
+    by_tag = {r['tag']: r for r in s._cursor_gui_rows}
+    assert by_tag[PREFIX + 'c1']['status_text'] == '○  Tab closed'
+    assert by_tag[VS_PREFIX + 'v1']['status_text'] == '○  Chat hidden'
+
+
+# ---- Editor-profile dispatch (the table that replaced inline branching) ----
+
+
+def test_editor_profiles_cover_all_gui_row_types() -> None:
+    from leap.monitor._mixins.table_builder_mixin import (
+        _EDITOR_PROFILES, _EditorRowProfile)
+    from leap.monitor.vscode_copilot_scan import GUI_ROW_TYPES
+    for row_type in GUI_ROW_TYPES:
+        prof = _EDITOR_PROFILES[row_type]
+        assert isinstance(prof, _EditorRowProfile)
+        for cb in (prof.on_close_full, prof.on_close_server, prof.on_jump):
+            assert callable(cb)
+
+
+class _RecorderWin:
+    """A fake MonitorWindow: every attribute access returns a recorder."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def __getattr__(self, name: str):
+        return lambda *a: self.calls.append((name, a))
+
+
+def test_cursor_profile_dispatch_passes_folder() -> None:
+    from leap.monitor._mixins.table_builder_mixin import _EDITOR_PROFILES
+    w = _RecorderWin()
+    p = _EDITOR_PROFILES['cursor_agent_gui']
+    p.on_close_full(w, '/f', 'cid', 'lbl', 'tag', True)
+    p.on_close_server(w, '/f', 'cid', 'lbl')
+    p.on_jump(w, '/f', 'cid')
+    assert w.calls == [
+        ('_close_cursor_tab_and_untrack', ('/f', 'cid', 'lbl', 'tag', True)),
+        ('_close_cursor_tab', ('/f', 'cid', 'lbl')),
+        ('_jump_to_cursor_window', ('/f', 'cid')),
+    ]
+
+
+def test_vscode_profile_dispatch_drops_folder_on_close() -> None:
+    """The VS Code adapter must drop the folder arg the Cursor close
+    needs (VS Code hides have no folder), while jump keeps it."""
+    from leap.monitor._mixins.table_builder_mixin import _EDITOR_PROFILES
+    w = _RecorderWin()
+    p = _EDITOR_PROFILES['vscode_copilot_gui']
+    p.on_close_full(w, '/f', 'cid', 'lbl', 'tag', True)
+    p.on_close_server(w, '/f', 'cid', 'lbl')
+    p.on_jump(w, '/f', 'cid')
+    assert w.calls == [
+        ('_hide_vscode_chat_and_untrack', ('cid', 'lbl', 'tag', True)),
+        ('_hide_vscode_chat', ('cid', 'lbl')),
+        ('_jump_to_vscode_chat', ('/f', 'cid')),
+    ]

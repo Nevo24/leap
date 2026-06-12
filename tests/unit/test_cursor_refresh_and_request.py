@@ -40,8 +40,10 @@ class _RecordingSignal:
 class _FakeWorker:
     """Just enough of SessionRefreshWorker for run() to execute."""
 
-    def __init__(self, scan_cursor_gui: bool) -> None:
-        self._scan_cursor_gui = scan_cursor_gui
+    def __init__(self, scan_editor_gui: bool) -> None:
+        self._scan_editor_gui = scan_editor_gui
+        self._vscode_hidden: dict = {}
+        self._vscode_keep_ids: set = set()
         self.sessions_ready = _RecordingSignal()
 
 
@@ -57,14 +59,18 @@ def test_cursor_scanned_even_when_leap_fetch_fails(
         scm_polling, 'scan_open_cursor_agents',
         lambda: [{'tag': 'cursor-gui:abc'}],
     )
-    w = _FakeWorker(scan_cursor_gui=True)
+    monkeypatch.setattr(
+        scm_polling, 'scan_open_vscode_copilot_sessions',
+        lambda hidden=None, keep_ids=None: [],
+    )
+    w = _FakeWorker(scan_editor_gui=True)
     scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]
     # Leap list empty (fetch failed) but the Cursor rows survive, so
     # _on_sessions_refreshed won't prune the user's Cursor PR tracking.
     assert w.sessions_ready.calls == [([], [{'tag': 'cursor-gui:abc'}])]
 
 
-def test_leap_fetch_failure_without_cursor_scan_emits_empty(
+def test_leap_fetch_failure_without_editor_scan_emits_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(scm_polling, 'get_active_sessions', _boom)
@@ -73,7 +79,12 @@ def test_leap_fetch_failure_without_cursor_scan_emits_empty(
         scm_polling, 'scan_open_cursor_agents',
         lambda: (_ for _ in ()).throw(AssertionError('should not scan')),
     )
-    w = _FakeWorker(scan_cursor_gui=False)
+    monkeypatch.setattr(
+        scm_polling, 'scan_open_vscode_copilot_sessions',
+        lambda hidden=None, keep_ids=None:
+            (_ for _ in ()).throw(AssertionError('should not scan')),
+    )
+    w = _FakeWorker(scan_editor_gui=False)
     scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]
     assert w.sessions_ready.calls == [([], [])]
 
@@ -86,11 +97,37 @@ def test_happy_path_emits_both(monkeypatch: pytest.MonkeyPatch) -> None:
         scm_polling, 'scan_open_cursor_agents',
         lambda: [{'tag': 'cursor-gui:abc'}],
     )
-    w = _FakeWorker(scan_cursor_gui=True)
+    monkeypatch.setattr(
+        scm_polling, 'scan_open_vscode_copilot_sessions',
+        lambda hidden=None, keep_ids=None: [{'tag': 'vscode-gui:def'}],
+    )
+    w = _FakeWorker(scan_editor_gui=True)
     scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]
     assert w.sessions_ready.calls == [
-        ([{'tag': 'real'}], [{'tag': 'cursor-gui:abc'}]),
+        ([{'tag': 'real'}],
+         [{'tag': 'cursor-gui:abc'}, {'tag': 'vscode-gui:def'}]),
     ]
+
+
+def test_one_editor_scan_failure_keeps_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Cursor schema change (scan raises) must not take down the
+    VS Code rows, and vice versa."""
+    monkeypatch.setattr(
+        scm_polling, 'get_active_sessions', lambda: [],
+    )
+    monkeypatch.setattr(
+        scm_polling, 'scan_open_cursor_agents',
+        lambda: (_ for _ in ()).throw(RuntimeError('schema drift')),
+    )
+    monkeypatch.setattr(
+        scm_polling, 'scan_open_vscode_copilot_sessions',
+        lambda hidden=None, keep_ids=None: [{'tag': 'vscode-gui:def'}],
+    )
+    w = _FakeWorker(scan_editor_gui=True)
+    scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]
+    assert w.sessions_ready.calls == [([], [{'tag': 'vscode-gui:def'}])]
 
 
 # --------------------------------------------------------------------------

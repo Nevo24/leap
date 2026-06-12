@@ -14,7 +14,7 @@ from leap.cli_providers.registry import DEFAULT_PROVIDER
 from leap.cli_providers.states import AutoSendMode, ChurnQueueMode
 from leap.utils.constants import SOCKET_DIR
 from leap.utils.socket_utils import send_socket_request
-from leap.monitor.cursor_gui_scan import CURSOR_GUI_TAG_PREFIX
+from leap.monitor.vscode_copilot_scan import GUI_TAG_PREFIXES
 from leap.monitor.session_manager import (
     is_client_lock_held, load_session_metadata, read_client_pid, session_exists,
 )
@@ -619,7 +619,7 @@ class SessionMixin(_Base):
                 | self._starting_tags | self._moving_tags)
 
         def _is_orphan(t: str) -> bool:
-            return t not in keep and not t.startswith(CURSOR_GUI_TAG_PREFIX)
+            return t not in keep and not t.startswith(GUI_TAG_PREFIXES)
 
         changed = False
         for tag in [t for t in self._row_colors if _is_orphan(t)]:

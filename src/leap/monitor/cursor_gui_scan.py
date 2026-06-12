@@ -47,7 +47,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from leap.utils.ide_detection import get_git_branch
 
@@ -249,11 +249,21 @@ def _open_composer_ids(ws_db: Path) -> list[str]:
     return ids
 
 
-def _cursor_pids() -> list[str]:
-    """PIDs of running Cursor processes (main app + helpers)."""
+# ---- Open-workspace detection (shared with the VS Code Copilot scanner) --
+#
+# Cursor and VS Code are both VS Code at heart: identical
+# ``workspaceStorage/<hash>/state.vscdb`` layout, so the lsof-based
+# open-workspace probe and the workspace.json→folder resolution are one
+# implementation parameterized by (pgrep pattern, storage dir, cache).
+# vscode_copilot_scan imports these; each editor passes its own cache dict
+# so their TTL windows stay independent.
+
+
+def _pids_for(pgrep_pattern: str) -> list[str]:
+    """PIDs whose command line matches *pgrep_pattern* (main app + helpers)."""
     try:
         result = subprocess.run(
-            ['pgrep', '-f', 'Cursor.app'],
+            ['pgrep', '-f', pgrep_pattern],
             capture_output=True, text=True, timeout=5,
         )
     except (subprocess.SubprocessError, OSError):
@@ -261,20 +271,27 @@ def _cursor_pids() -> list[str]:
     return [p for p in result.stdout.split() if p.isdigit()]
 
 
-def _open_workspace_hashes() -> set[str]:
-    """Hashes of workspaceStorage dirs whose ``state.vscdb`` Cursor holds
-    open - i.e. the currently-open workspaces.
+def _detect_open_workspace_hashes(pids_fn: Callable[[], list[str]],
+                                  cache: dict,
+                                  ttl: float = _OPENWS_TTL) -> set[str]:
+    """Hashes of workspaceStorage dirs whose ``state.vscdb`` the editor
+    holds open - i.e. its currently-open workspaces.
 
-    Uses ``lsof`` so it works regardless of whether Cursor is frontmost
-    (System Events only enumerates windows for the active app).  Parses
-    stdout regardless of lsof's exit code (lsof returns non-zero on
-    benign per-fd warnings while still emitting valid output).  TTL-cached.
+    *pids_fn* supplies the editor's process ids (a callable, not a list,
+    so a warm cache skips the pgrep entirely and so tests can monkeypatch
+    the per-editor ``_*_pids`` seam).  Uses ``lsof`` - pid-scoped, so it
+    only sees that editor's files - which works regardless of whether the
+    editor is frontmost (System Events only enumerates windows for the
+    active app).  Parses stdout regardless of lsof's exit code (lsof
+    returns non-zero on benign per-fd warnings while still emitting valid
+    output).  Result TTL-cached in the caller-owned *cache* (``mono`` /
+    ``hashes`` keys) so the two editors never share a cache.
     """
     now = time.monotonic()
-    if (now - _OPENWS_CACHE['mono']) < _OPENWS_TTL:
-        return _OPENWS_CACHE['hashes']
+    if (now - cache['mono']) < ttl:
+        return cache['hashes']
     hashes: set[str] = set()
-    pids = _cursor_pids()
+    pids = pids_fn()
     if pids:
         try:
             result = subprocess.run(
@@ -284,20 +301,23 @@ def _open_workspace_hashes() -> set[str]:
             hashes = set(_OPENWS_RE.findall(result.stdout))
         except (subprocess.SubprocessError, OSError):
             logger.debug("lsof open-workspace detection failed", exc_info=True)
-    _OPENWS_CACHE['mono'] = now
-    _OPENWS_CACHE['hashes'] = hashes
+    cache['mono'] = now
+    cache['hashes'] = hashes
     return hashes
 
 
-def _workspace_for_hash(ws_hash: str) -> Optional[tuple[str, Path]]:
+def _resolve_open_workspace(ws_hash: str,
+                            workspace_storage: Path
+                            ) -> Optional[tuple[str, Path]]:
     """Return ``(folder_path, state_db_path)`` for one workspaceStorage
-    hash, or ``None`` if it isn't a usable workspace.
+    hash under *workspace_storage*, or ``None`` if it isn't a usable
+    workspace.
 
     Reading only the hashes that are actually open (rather than every
     workspaceStorage dir) keeps the per-scan I/O to the handful of open
     workspaces.
     """
-    d = WORKSPACE_STORAGE / ws_hash
+    d = workspace_storage / ws_hash
     wj = d / 'workspace.json'
     db = d / 'state.vscdb'
     if not (wj.is_file() and db.is_file()):
@@ -310,6 +330,22 @@ def _workspace_for_hash(ws_hash: str) -> Optional[tuple[str, Path]]:
     if not folder:
         return None
     return (folder, db)
+
+
+def _cursor_pids() -> list[str]:
+    """PIDs of running Cursor processes (main app + helpers)."""
+    return _pids_for('Cursor.app')
+
+
+def _open_workspace_hashes() -> set[str]:
+    """Currently-open Cursor workspace hashes (see
+    :func:`_detect_open_workspace_hashes`)."""
+    return _detect_open_workspace_hashes(_cursor_pids, _OPENWS_CACHE)
+
+
+def _workspace_for_hash(ws_hash: str) -> Optional[tuple[str, Path]]:
+    """``(folder, state_db)`` for an open Cursor workspace hash, or None."""
+    return _resolve_open_workspace(ws_hash, WORKSPACE_STORAGE)
 
 
 def _branch_for(folder: str) -> str:
@@ -435,9 +471,11 @@ def _build_row(folder: str, base: str, composer_id: str,
         'last_msg': last_msg,
         'ide': 'Cursor',
         'cli_provider': 'cursor-gui',
-        'cursor_window_folder': folder,
-        'composer_id': composer_id,
-        'composer_name': name,
+        # Generic keys shared with VS Code Copilot rows (see
+        # vscode_copilot_scan) so the render pipeline reads one shape.
+        'window_folder': folder,
+        'chat_id': composer_id,
+        'chat_name': name,
         'status_kind': kind,
         'status_text': text,
         'created_at': rec.get('createdAt'),

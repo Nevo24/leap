@@ -7,6 +7,7 @@ import logging
 import subprocess
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -41,8 +42,17 @@ from leap.utils.menu import extract_menu_options, extract_menu_question
 from leap.utils.pricing import format_usd
 from leap.utils.socket_utils import send_socket_request
 from leap.monitor.scm_polling import BackgroundCallWorker, SessionRefreshWorker
-from leap.monitor.cursor_gui_scan import CURSOR_GUI_ROW_TYPE, CURSOR_GUI_TAG_PREFIX
-from leap.monitor.navigation import close_cursor_composer, focus_cursor_window
+from leap.monitor.cursor_gui_scan import CURSOR_GUI_ROW_TYPE
+from leap.monitor.vscode_copilot_scan import (
+    GUI_ROW_TYPES,
+    GUI_TAG_PREFIXES,
+    VSCODE_GUI_ROW_TYPE,
+    VSCODE_GUI_TAG_PREFIX,
+)
+from leap.monitor.navigation import (
+    close_cursor_composer, focus_cursor_window, focus_vscode_chat_session,
+    rename_vscode_chat_session,
+)
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
 from leap.monitor.ui.table_helpers import (
@@ -66,6 +76,64 @@ logger = logging.getLogger(__name__)
 # ``_SORT_MODE_ORDER``; kept here next to the sort/boundary logic that
 # consumes it (and so the pure-logic tests don't need MonitorWindow).
 _GROUPED_SORT_MODES = frozenset({'project', 'app', 'cli'})
+
+
+@dataclass(frozen=True)
+class _EditorRowProfile:
+    """Per-editor presentation + action dispatch for read-only editor-GUI
+    rows (Cursor Agent tabs, VS Code Copilot chats).
+
+    Lets ``_build_editor_gui_row`` read one profile per ``row_type``
+    instead of branching on ``is_vscode`` for every label, tooltip, and
+    button handler.  Adding a third editor is a new table entry, not new
+    branches scattered through the builder.
+
+    The ``on_*`` callables take the MonitorWindow as their first argument
+    and adapt to each handler's real signature (e.g. VS Code's hide
+    handlers ignore the folder a Cursor close needs), so the builder can
+    dispatch all three buttons uniformly.
+    """
+    cli_label: str          # CLI-column badge ('Cursor Editor' / 'Copilot Chat')
+    app_label: str          # App-column badge + tooltips ('Cursor' / 'VS Code')
+    chat_noun: str          # 'Agent tab' / 'Copilot chat'
+    close_full_tip: str     # leftmost-X tooltip when the chat is still live
+    close_server_tip: str   # server-cell-X tooltip when the chat is still live
+    on_close_full: Callable     # (window, folder, cid, label, tag, tab_closed)
+    on_close_server: Callable   # (window, folder, cid, label)
+    on_jump: Callable           # (window, folder, cid)
+
+
+_EDITOR_PROFILES: dict[str, _EditorRowProfile] = {
+    CURSOR_GUI_ROW_TYPE: _EditorRowProfile(
+        cli_label='Cursor Editor',
+        app_label='Cursor',
+        chat_noun='Agent tab',
+        close_full_tip='Stop tracking and close this Agent tab in Cursor',
+        close_server_tip='Close only this Agent tab in Cursor '
+                         '(keeps PR tracking)',
+        on_close_full=lambda w, fol, cid, lbl, tg, closed:
+            w._close_cursor_tab_and_untrack(fol, cid, lbl, tg, closed),
+        on_close_server=lambda w, fol, cid, lbl:
+            w._close_cursor_tab(fol, cid, lbl),
+        on_jump=lambda w, fol, cid: w._jump_to_cursor_window(fol, cid),
+    ),
+    VSCODE_GUI_ROW_TYPE: _EditorRowProfile(
+        cli_label='Copilot Chat',
+        app_label='VS Code',
+        chat_noun='Copilot chat',
+        close_full_tip='Stop tracking and hide this Copilot chat row '
+                       '(the chat stays in VS Code)',
+        close_server_tip='Hide this Copilot chat row (keeps PR tracking; '
+                         'the chat stays in VS Code)',
+        # VS Code has no chat tab to close, so the hide handlers ignore the
+        # folder a Cursor close needs - the adapter drops it.
+        on_close_full=lambda w, fol, cid, lbl, tg, closed:
+            w._hide_vscode_chat_and_untrack(cid, lbl, tg, closed),
+        on_close_server=lambda w, fol, cid, lbl:
+            w._hide_vscode_chat(cid, lbl),
+        on_jump=lambda w, fol, cid: w._jump_to_vscode_chat(fol, cid),
+    ),
+}
 
 
 def _hex_to_rgb_str(hex_color: str) -> str:
@@ -391,7 +459,8 @@ class TableBuilderMixin(_Base):
         self._cache_cell(tag, 'tag', tag_state, row, self.COL_TAG)
 
     def _show_tag_context_menu(self, tag: str, global_pos: QPoint) -> None:
-        """Show context menu for the tag cell (set/remove alias)."""
+        """Show context menu for the tag cell (set/remove alias; for a
+        VS Code Copilot row also the editor-side chat rename)."""
         menu = QMenu(self)
         alias = self._aliases.get(tag)
         if alias:
@@ -400,6 +469,18 @@ class TableBuilderMixin(_Base):
         else:
             set_action = menu.addAction('Set alias')
             remove_action = None
+        # VS Code chats can be renamed IN the editor (unlike Cursor, whose
+        # rename isn't drivable from outside): the extension opens VS Code's
+        # own pre-filled rename input, and the new title flows back into the
+        # row label on the next scan.  Aliases above stay Leap-local.
+        rename_chat_action = None
+        vs_row = None
+        if tag.startswith(VSCODE_GUI_TAG_PREFIX):
+            vs_row = next(
+                (r for r in (getattr(self, '_cursor_gui_rows', []) or [])
+                 if r.get('tag') == tag and r.get('chat_id')), None)
+            if vs_row is not None:
+                rename_chat_action = menu.addAction('Rename chat in VS Code...')
 
         action = menu.exec_(global_pos)
         if action == set_action:
@@ -410,6 +491,9 @@ class TableBuilderMixin(_Base):
                 self._set_alias(tag, text.strip())
         elif remove_action and action == remove_action:
             self._set_alias(tag, None)
+        elif rename_chat_action is not None and action == rename_chat_action:
+            self._rename_vscode_chat(vs_row.get('window_folder') or '',
+                                     vs_row.get('chat_id'))
 
     def _set_alias(self, tag: str, alias: Optional[str]) -> None:
         """Set or clear the alias for a tag and persist."""
@@ -910,22 +994,40 @@ class TableBuilderMixin(_Base):
         self._apply_row_color_to_widget(container, row_color)
         self._cache_cell(tag, 'pr', pr_state, row, self.COL_PR)
 
-    def _build_cursor_gui_row(self, row: int, session: dict,
+    def _build_editor_gui_row(self, row: int, session: dict,
                               row_color: Optional[str]) -> None:
-        """Render a read-only Cursor editor Agent-tab row.
+        """Render a read-only editor-GUI agent row: a Cursor editor
+        Agent-tab row or a VS Code Copilot Chat session row.
 
-        These rows have no Leap server: they show the tab's title, a
-        best-effort status read from Cursor's on-disk state, and an
-        "Open" button that raises the Cursor *window* (tab-level focus
-        is impossible - Cursor exposes nothing clickable to
-        Accessibility).  Every column is painted explicitly, clearing
-        any widget left by a previous occupant of this grid row, so no
-        stale cells bleed through.  Not cell-cached (few rows, cheap).
+        These rows have no Leap server: they show the chat's title, a
+        best-effort status read from the editor's on-disk state, and an
+        "Open" button that raises the editor *window* and (best-effort,
+        via the Leap extension) focuses the chat itself.  Every column is
+        painted explicitly, clearing any widget left by a previous
+        occupant of this grid row, so no stale cells bleed through.  Not
+        cell-cached (few rows, cheap).
+
+        The two families differ only in labels and in what the X buttons
+        do: a Cursor X closes the real Agent tab in Cursor, a VS Code X
+        hides the session from the monitor (VS Code has no chat tab to
+        close - sessions just exist in its store).  Those per-editor
+        differences live in the row's ``_EditorRowProfile`` (keyed by
+        ``row_type``), so this method dispatches uniformly.
         """
         tag = session['tag']
         t = current_theme()
-        # A synthesized "tab closed" row (the tab was closed via the Open-cell
-        # X but the PR is still tracked, so the row stays to monitor it).
+        profile = _EDITOR_PROFILES[session.get('row_type')]
+        editor = profile.app_label
+        chat_noun = profile.chat_noun
+        folder = session.get('window_folder') or ''
+        chat_id = session.get('chat_id')
+        # Frozen at row-build time (matches the old per-lambda capture):
+        # the alias the user set, else the chat's own title, else the tag.
+        alias = self._aliases.get(tag)
+        label = alias or session.get('display_label') or tag
+        # A synthesized "closed" row (the Cursor tab was closed / the VS Code
+        # session was hidden or aged out, but the PR is still tracked, so the
+        # row stays to monitor it).
         tab_closed = bool(session.get('_tab_closed'))
 
         # Clear any widgets a prior occupant of this row left behind.
@@ -944,10 +1046,10 @@ class TableBuilderMixin(_Base):
             self.table.removeCellWidget(row, col)
 
         # ── Delete column: the "full close" X - stops PR tracking AND
-        # closes the Agent tab in Cursor (the chat stays in Cursor's
-        # history), so the row goes away entirely.  This mirrors a normal
+        # closes the Agent tab in Cursor / hides the Copilot chat from the
+        # monitor, so the row goes away entirely.  This mirrors a normal
         # row's leftmost X (remove the whole row); the Open-cell X below
-        # closes only the tab and keeps a tracked row alive. ──
+        # closes/hides only the chat and keeps a tracked row alive. ──
         close_container = QWidget()
         close_layout = QHBoxLayout(close_container)
         close_layout.setContentsMargins(0, 0, 0, 0)
@@ -957,24 +1059,21 @@ class TableBuilderMixin(_Base):
                                close_btn.sizeHint().height())
         close_btn.setStyleSheet(close_btn_style(font_size=self._zoomed_size()))
         close_btn.setProperty('_btn_role', 'close')
-        close_btn.setToolTip('Stop tracking and close this Agent tab in Cursor'
-                             if not tab_closed else 'Stop tracking (remove row)')
+        close_btn.setToolTip('Stop tracking (remove row)' if tab_closed
+                             else profile.close_full_tip)
         close_btn.clicked.connect(
-            lambda checked, fol=session.get('cursor_window_folder') or '',
-            cid=session.get('composer_id'), tg=tag, closed=tab_closed,
-            lbl=(self._aliases.get(tag)
-                 or session.get('display_label') or tag):
-                self._close_cursor_tab_and_untrack(fol, cid, lbl, tg, closed))
+            lambda checked, p=profile, fol=folder, cid=chat_id, tg=tag,
+            closed=tab_closed, lbl=label:
+                p.on_close_full(self, fol, cid, lbl, tg, closed))
         close_layout.addWidget(close_btn, 0, Qt.AlignCenter)
         self._set_cell_widget(row, self.COL_DELETE, close_container)
         self._apply_row_color_to_widget(close_container, row_color)
 
-        # ── Tag: Leap alias if set, else the composer-derived label.
+        # ── Tag: Leap alias if set, else the chat-derived label.
         # Right-click offers the same Set/Rename/Remove alias menu as
-        # real rows, so a Cursor tab can be named purely Leap-side
-        # (persists by composer id, works even for unnamed tabs).
-        alias = self._aliases.get(tag)
-        display = alias or session.get('display_label') or tag
+        # real rows, so a chat can be named purely Leap-side
+        # (persists by chat id, works even for unnamed chats).
+        display = label
         tag_container = QWidget()
         tlay = QHBoxLayout(tag_container)
         tlay.setContentsMargins(0, 0, 0, 0)
@@ -989,8 +1088,8 @@ class TableBuilderMixin(_Base):
             font = tag_label.font()
             font.setItalic(True)
             tag_label.setFont(font)
-        tip = ('Cursor Agent tab (read-only)\nChat: '
-               + (session.get('composer_name') or 'New Agent'))
+        tip = (f'{editor} {chat_noun} (read-only)\nChat: '
+               + (session.get('chat_name') or 'New Agent'))
         if alias:
             tip = f'Alias: {alias}\n' + tip
         tag_label.setToolTip(tip)
@@ -1015,16 +1114,16 @@ class TableBuilderMixin(_Base):
         self._apply_row_color_to_widget(tag_container, row_color)
 
         # ── CLI / App as outlined-pill badges (match normal rows) ──
-        self._set_badge_cell(row, self.COL_CLI, 'Cursor Editor', row_color)
-        self._set_badge_cell(row, self.COL_APP, 'Cursor', row_color)
+        self._set_badge_cell(row, self.COL_CLI, profile.cli_label, row_color)
+        self._set_badge_cell(row, self.COL_APP, editor, row_color)
         self._set_cell_text(row, self.COL_PROJECT,
                             session.get('project') or 'N/A', row_color)
-        # Last Msg: the most recent user prompt in this Agent tab (read
-        # from Cursor's message bubbles on disk; blank if none readable).
+        # Last Msg: the most recent user prompt in this chat (read from
+        # the editor's on-disk state; blank if none readable).
         self._set_cell_text(row, self.COL_TASK,
                             session.get('last_msg') or '', row_color)
-        # Context: N/A - Cursor exposes no context-window usage (and the
-        # widget-removal loop above does not clear text-item cells).
+        # Context: N/A - neither editor exposes context-window usage (and
+        # the widget-removal loop above does not clear text-item cells).
         self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
         # Path: same label + actions button as normal rows (Open in
         # Terminal / Open in IDE - both operate on this row's folder).
@@ -1036,12 +1135,12 @@ class TableBuilderMixin(_Base):
         self._build_branch_cell(row, tag, session.get('branch') or 'N/A',
                                 row_color)
 
-        # ── Server column → close-tab "×" + window-level "Open" jump,
+        # ── Server column → close/hide "×" + window-level "Open" jump,
         # mirroring a normal running row's [× | Terminal] layout.  The ×
-        # closes ONLY the Cursor Agent tab (PR tracking stays, so a tracked
-        # row survives as a "tab closed" row).  Hidden once the tab is
-        # already closed - there's nothing left to close. ──
-        folder = session.get('cursor_window_folder') or ''
+        # closes ONLY the Cursor Agent tab / hides ONLY the Copilot chat
+        # row (PR tracking stays, so a tracked row survives as a closed
+        # row).  Hidden once the chat is already closed - there's nothing
+        # left to close. ──
         jump_container = QWidget()
         jlay = QHBoxLayout(jump_container)
         jlay.setContentsMargins(0, 0, 0, 0)
@@ -1053,25 +1152,22 @@ class TableBuilderMixin(_Base):
             srv_close_btn.setStyleSheet(
                 close_btn_style(font_size=self._zoomed_size()))
             srv_close_btn.setProperty('_btn_role', 'close')
-            srv_close_btn.setToolTip('Close only this Agent tab in Cursor '
-                                     '(keeps PR tracking)')
+            srv_close_btn.setToolTip(profile.close_server_tip)
             srv_close_btn.clicked.connect(
-                lambda checked, fol=folder,
-                cid=session.get('composer_id'),
-                lbl=(self._aliases.get(tag)
-                     or session.get('display_label') or tag):
-                    self._close_cursor_tab(fol, cid, lbl))
+                lambda checked, p=profile, fol=folder, cid=chat_id, lbl=label:
+                    p.on_close_server(self, fol, cid, lbl))
             jlay.addWidget(srv_close_btn, 0, Qt.AlignVCenter)
         jump_btn = QPushButton('Open')
         jump_btn.setStyleSheet(active_btn_style())
         jump_btn.setProperty('_btn_role', 'active')
         proj = session.get('project') or 'this project'
         jump_btn.setToolTip(
-            f'Reopen this Agent tab in Cursor ({proj})' if tab_closed
-            else f'Open the Cursor window for {proj} and focus this Agent tab')
+            f'Reopen this {chat_noun} in {editor} ({proj})' if tab_closed
+            else f'Open the {editor} window for {proj} '
+                 f'and focus this {chat_noun}')
         jump_btn.clicked.connect(
-            lambda checked, fol=folder, cid=session.get('composer_id'):
-                self._jump_to_cursor_window(fol, cid))
+            lambda checked, p=profile, fol=folder, cid=chat_id:
+                p.on_jump(self, fol, cid))
         jlay.addWidget(jump_btn)
         self._set_cell_widget(row, self.COL_SERVER, jump_container)
         self._apply_row_color_to_widget(jump_container, row_color)
@@ -1113,7 +1209,7 @@ class TableBuilderMixin(_Base):
         # set above (already contrast-adjusted for row_color).  This matches
         # the normal status cell, which bakes the color and skips it too.
 
-        # ── Queue: always N/A (a Cursor tab has no Leap queue behind it).
+        # ── Queue: always N/A (no Leap queue behind an editor chat).
         # Rendered exactly like the PR Branch column's N/A - dimmed +
         # centered (both via _set_cell_text's N/A handling) + monospace.
         # COL_QUEUE isn't a _MONO_COLS column (normal rows overlay a widget
@@ -1158,7 +1254,7 @@ class TableBuilderMixin(_Base):
             track_layout.setSpacing(2)
             track_btn = QPushButton('Track PR')
             track_btn.setStyleSheet(inactive_btn_style())
-            track_btn.setToolTip("Track this Agent tab's branch PR")
+            track_btn.setToolTip(f"Track this {chat_noun}'s branch PR")
             track_btn.clicked.connect(
                 lambda checked, t=tag: self._track_cursor_pr(t))
             track_layout.addWidget(track_btn)
@@ -1251,6 +1347,119 @@ class TableBuilderMixin(_Base):
             lambda: close_cursor_composer(folder, composer_id), self)
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _jump_to_vscode_chat(self, folder: str,
+                             session_id: Optional[str] = None) -> None:
+        """Raise the VS Code window for *folder* and focus the Copilot chat.
+
+        VS Code sibling of `_jump_to_cursor_window`: window raise via the
+        System Events bridge, then the Leap extension opens the chat
+        session itself (best-effort).  Background thread, non-blocking.
+        """
+        if not folder:
+            self._show_status('No project folder recorded for this chat')
+            return
+        self._show_status(
+            f'Opening VS Code window for {Path(folder).name}...')
+        worker = BackgroundCallWorker(
+            lambda: focus_vscode_chat_session(folder, session_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _rename_vscode_chat(self, folder: str,
+                            session_id: Optional[str]) -> None:
+        """Open VS Code's own rename input for a Copilot chat (raises the
+        window, then the Leap extension runs ``agentSession.rename``).
+        The new title flows back into the row label on the next scan."""
+        if not session_id:
+            self._show_status('No session id recorded for this chat')
+            return
+        if not folder:
+            # Without a folder the window raise would match an arbitrary
+            # VS Code window by empty-substring title; bail like the jump.
+            self._show_status('No project folder recorded for this chat')
+            return
+        self._show_status('Opening the rename input in VS Code...')
+        worker = BackgroundCallWorker(
+            lambda: rename_vscode_chat_session(folder, session_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _hide_vscode_session_id(self, session_id: str) -> None:
+        """Persist a Copilot chat dismissal (``vscode_gui_hidden`` pref).
+
+        The scan skips a hidden session until it shows activity NEWER than
+        the dismiss time (a new user prompt auto-unhides it - the moral
+        equivalent of reopening a closed Cursor tab).  Entries older than
+        30 days are pruned so chats deleted in VS Code don't accumulate.
+        """
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - 30 * 24 * 3600 * 1000
+        prior = self._prefs.get('vscode_gui_hidden')
+        if not isinstance(prior, dict):  # tolerate a corrupted pref value
+            prior = {}
+        hidden = {k: v for k, v in prior.items()
+                  if isinstance(v, (int, float)) and v >= cutoff}
+        hidden[session_id] = now_ms
+        self._prefs['vscode_gui_hidden'] = hidden
+        self._save_prefs()
+
+    def _hide_vscode_chat(self, session_id: Optional[str],
+                          label: str) -> None:
+        """Server-cell X on a VS Code row: hide the chat row but KEEP PR
+        tracking (the tracked row survives as a synthesized closed row).
+
+        VS Code sibling of `_close_cursor_tab` - except nothing happens in
+        VS Code itself: there is no chat tab to close, the session simply
+        stops being shown by the monitor.
+        """
+        if not session_id:
+            self._show_status('No session id recorded for this chat')
+            return
+        reply = QMessageBox.question(
+            self, 'Hide Copilot Chat Row',
+            f"Hide the Copilot chat '{label}' from the monitor?\n\n"
+            "The chat itself stays in VS Code. Sending it a new message "
+            "brings the row back.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._hide_vscode_session_id(session_id)
+        self._show_status(f"Hidden Copilot chat '{label}'")
+
+    def _hide_vscode_chat_and_untrack(self, session_id: Optional[str],
+                                      label: str, tag: str,
+                                      tab_closed: bool) -> None:
+        """Leftmost-X action on a VS Code row: stop PR tracking AND hide
+        the chat row (VS Code sibling of `_close_cursor_tab_and_untrack`).
+
+        For an already-hidden chat (a synthesized closed row that only
+        persists because it's tracked) there's nothing to hide - it just
+        stops tracking, dropping the row.
+        """
+        if tab_closed:
+            self._untrack_cursor_pr(tag)  # nothing to hide; just drop it
+            return
+        if not session_id:
+            self._show_status('No session id recorded for this chat')
+            return
+        tracked = tag in self._tracked_tags
+        extra = ' and stop tracking its PR' if tracked else ''
+        reply = QMessageBox.question(
+            self, 'Hide Copilot Chat Row',
+            f"Hide the Copilot chat '{label}'{extra}?\n\n"
+            "The chat itself stays in VS Code. Sending it a new message "
+            "brings the row back.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        # Stop tracking first (drops the cache so no closed row is
+        # synthesized once the session leaves the next scan), then hide.
+        self._untrack_cursor_pr(tag)
+        self._hide_vscode_session_id(session_id)
+        self._show_status(f"Hidden Copilot chat '{label}'")
 
     def _track_cursor_pr(self, tag: str) -> None:
         """Start tracking a Cursor row's branch PR (opt-in, in-memory).
@@ -1473,6 +1682,8 @@ class TableBuilderMixin(_Base):
         if mode == 'cli':
             if session.get('row_type') == CURSOR_GUI_ROW_TYPE:
                 return 'Cursor Editor'
+            if session.get('row_type') == VSCODE_GUI_ROW_TYPE:
+                return 'Copilot Chat'
             cli = (session.get('cli_provider') or '').strip()
             if not cli:
                 pinned = getattr(self, '_pinned_sessions', {}).get(
@@ -1528,17 +1739,18 @@ class TableBuilderMixin(_Base):
     def _tag_sort_key(self, session: dict[str, Any]) -> str:
         """Case-insensitive key matching the row's visible Tag-column text.
 
-        Prefers the user's display alias; for a read-only Cursor editor
-        row (which has no alias) it's the chat's display label rather
-        than the synthetic ``cursor-gui:<id>`` tag; otherwise the tag.
+        Prefers the user's display alias; for a read-only editor-GUI row
+        (which has no alias) it's the chat's display label rather than
+        the synthetic ``cursor-gui:`` / ``vscode-gui:`` tag; otherwise
+        the tag.
         """
         tag = session.get('tag', '')
         alias = (getattr(self, '_aliases', {}) or {}).get(tag)
         if alias:
             return str(alias).casefold()
-        if session.get('row_type') == CURSOR_GUI_ROW_TYPE:
+        if session.get('row_type') in GUI_ROW_TYPES:
             label = (session.get('display_label')
-                     or session.get('composer_name') or tag)
+                     or session.get('chat_name') or tag)
             return str(label).casefold()
         return str(tag).casefold()
 
@@ -1752,16 +1964,17 @@ class TableBuilderMixin(_Base):
             for row, session in enumerate(self.sessions):
                 tag = session['tag']
                 row_color = self._row_colors.get(tag)
-                # Read-only Cursor editor Agent-tab rows are rendered by a
-                # dedicated, self-contained helper (paints all columns,
-                # no server semantics) and skip the normal cell pipeline.
-                if session.get('row_type') == CURSOR_GUI_ROW_TYPE:
+                # Read-only editor-GUI rows (Cursor Agent tabs, VS Code
+                # Copilot chats) are rendered by a dedicated, self-contained
+                # helper (paints all columns, no server semantics) and skip
+                # the normal cell pipeline.
+                if session.get('row_type') in GUI_ROW_TYPES:
                     # This row's PR PulsingLabel/IndicatorLabel are reused
                     # across rebuilds (like normal rows) - keep them out of
                     # the stale-cleanup below, which would otherwise pop
                     # them and stop the pulse every 1s.
                     stale_pr_tags.discard(tag)
-                    self._build_cursor_gui_row(row, session, row_color)
+                    self._build_editor_gui_row(row, session, row_color)
                     continue
                 server_pid = session.get('server_pid')
                 is_dead = server_pid is None
@@ -2687,9 +2900,25 @@ class TableBuilderMixin(_Base):
         if self._refresh_worker is not None:
             self._refresh_worker.wait(500)  # ms – should be near-instant
 
+        show_editor_rows = bool(self._prefs.get('show_editor_gui_agents', True))
+        # VS Code Copilot scan inputs, snapshotted on the GUI thread: the
+        # user-dismissed sessions and the PR-tracked session ids (which
+        # bypass the scan's recency filter so tracking survives age-out).
+        # ``vscode_gui_hidden`` is user-editable JSON, so tolerate a
+        # corrupted (non-dict) value rather than letting dict() raise here
+        # and wedge the refresh loop.
+        _hidden_pref = self._prefs.get('vscode_gui_hidden')
+        vscode_hidden = dict(_hidden_pref) \
+            if (show_editor_rows and isinstance(_hidden_pref, dict)) else {}
+        vscode_keep_ids = {
+            t[len(VSCODE_GUI_TAG_PREFIX):] for t in self._tracked_tags
+            if t.startswith(VSCODE_GUI_TAG_PREFIX)
+        } if show_editor_rows else set()
         self._refresh_worker = SessionRefreshWorker(
             self,
-            scan_cursor_gui=bool(self._prefs.get('show_cursor_gui_agents', True)),
+            scan_editor_gui=show_editor_rows,
+            vscode_hidden=vscode_hidden,
+            vscode_keep_ids=vscode_keep_ids,
         )
         self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
         self._refresh_worker.finished.connect(self._on_refresh_worker_finished)
@@ -2710,43 +2939,47 @@ class TableBuilderMixin(_Base):
             self._refresh_worker = None
 
     def _reconcile_cursor_gui_rows(self, cursor_gui_rows: list) -> None:
-        """Set ``self._cursor_gui_rows`` from a fresh scan, synthesizing a
-        "tab closed" row for each tracked Cursor tag whose tab is no longer
-        open, and pruning per-tag state / caches for tags we no longer show.
+        """Set ``self._cursor_gui_rows`` from a fresh scan (Cursor Agent
+        tabs + VS Code Copilot chats), synthesizing a closed row for each
+        tracked editor-GUI tag that's no longer scanned, and pruning
+        per-tag state / caches for tags we no longer show.
 
         This is what makes the two close buttons differ: the Open-cell X
-        closes only the tab (tracking stays → the tag is synthesized here →
-        the row survives as "tab closed", like a dead-but-tracked regular
-        row), while the leftmost X also stops tracking (no synthesis → the
-        row drops).  Pure state transform, factored out for unit testing.
+        closes only the tab / hides only the chat (tracking stays → the
+        tag is synthesized here → the row survives as "tab closed" /
+        "chat hidden", like a dead-but-tracked regular row), while the
+        leftmost X also stops tracking (no synthesis → the row drops).
+        Pure state transform, factored out for unit testing.
         """
         live_cursor_tags = {r['tag'] for r in cursor_gui_rows}
-        # Cache each live Cursor row (a shallow copy, so a later in-place
+        # Cache each live row (a shallow copy, so a later in-place
         # mutation of the live row dict can't corrupt the cached snapshot)
-        # so a PR-tracked tab that's later closed can still be rendered as a
-        # "tab closed" row.
+        # so a PR-tracked chat that's later closed can still be rendered
+        # as a closed row.
         for r in cursor_gui_rows:
             self._cursor_row_cache[r['tag']] = dict(r)
-        # Synthesize a "tab closed" row for each tracked Cursor tag whose tab
-        # is no longer open.
+        # Synthesize a closed row for each tracked editor-GUI tag that the
+        # scan no longer returns.
         synthesized: list[dict] = []
         for t in self._tracked_tags:
-            if (t.startswith(CURSOR_GUI_TAG_PREFIX) and t not in live_cursor_tags
+            if (t.startswith(GUI_TAG_PREFIXES) and t not in live_cursor_tags
                     and t in self._cursor_row_cache):
                 closed = dict(self._cursor_row_cache[t])
                 closed['_tab_closed'] = True
                 closed['status_kind'] = 'idle'
-                closed['status_text'] = '○  Tab closed'
+                closed['status_text'] = ('○  Chat hidden'
+                                         if t.startswith(VSCODE_GUI_TAG_PREFIX)
+                                         else '○  Tab closed')
                 synthesized.append(closed)
         self._cursor_gui_rows = list(cursor_gui_rows) + synthesized
-        # Tags we keep showing (live tabs + synthesized closed-but-tracked)
-        # must survive the prune below; everything else cursor-ish that's
+        # Tags we keep showing (live + synthesized closed-but-tracked)
+        # must survive the prune below; every other editor-GUI tag that's
         # neither shown nor tracked is stale and gets cleaned up.
         kept_cursor_tags = live_cursor_tags | {r['tag'] for r in synthesized}
         stale_cursor_tags = {
             t for t in (set(self._pr_statuses) | set(self._tracked_tags)
                         | set(self._pr_widgets))
-            if t.startswith(CURSOR_GUI_TAG_PREFIX) and t not in kept_cursor_tags
+            if t.startswith(GUI_TAG_PREFIXES) and t not in kept_cursor_tags
         }
         for t in stale_cursor_tags:
             self._tracked_tags.discard(t)
@@ -2768,16 +3001,17 @@ class TableBuilderMixin(_Base):
                                cursor_gui_rows: list) -> None:
         """Handle background session refresh result.
 
-        ``cursor_gui_rows`` are read-only Cursor editor Agent-tab rows.
-        They are stashed separately (not merged into ``self.sessions``)
-        so the pinned-session / PR / sleep-guard machinery never sees
-        them; ``_update_table`` overlays them at render time only.
+        ``cursor_gui_rows`` are read-only editor-GUI rows (Cursor Agent
+        tabs + VS Code Copilot chats).  They are stashed separately (not
+        merged into ``self.sessions``) so the pinned-session / PR /
+        sleep-guard machinery never sees them; ``_update_table`` overlays
+        them at render time only.
         """
         # Respect the CURRENT toggle, not the value captured when this scan's
         # worker was launched: if the feature was turned off mid-scan, an
-        # in-flight worker (built with scan_cursor_gui=True) would otherwise
+        # in-flight worker (built with scan_editor_gui=True) would otherwise
         # briefly resurrect the rows here for one refresh tick.
-        if not self._prefs.get('show_cursor_gui_agents', True):
+        if not self._prefs.get('show_editor_gui_agents', True):
             cursor_gui_rows = []
         self._reconcile_cursor_gui_rows(cursor_gui_rows)
         # A tracked Cursor row keeps the SCM poll timer running - keep it
@@ -2814,7 +3048,7 @@ class TableBuilderMixin(_Base):
             active_paths_fn=self._get_active_project_paths,
             log_fn=self._show_status,
             show_tooltips=self._prefs.get('show_tooltips', True),
-            show_cursor_gui_agents=self._prefs.get('show_cursor_gui_agents', True),
+            show_editor_gui_agents=self._prefs.get('show_editor_gui_agents', True),
             notification_prefs=get_notification_prefs(self._prefs),
             current_auto_send_mode=server_settings.get('auto_send_mode', AutoSendMode.PAUSE),
             current_churn_queue_mode=server_settings.get('churn_queue_mode', ChurnQueueMode.WAIT),
@@ -2831,22 +3065,22 @@ class TableBuilderMixin(_Base):
             self._prefs['default_terminal'] = dialog.selected_terminal()
             self._prefs['repos_dir'] = dialog.selected_repos_dir()
             self._prefs['show_tooltips'] = dialog.show_tooltips()
-            cursor_gui_now = dialog.show_cursor_gui_agents()
-            if not cursor_gui_now:
+            editor_gui_now = dialog.show_editor_gui_agents()
+            if not editor_gui_now:
                 # Turning the feature off: drop any overlay rows now so they
                 # vanish immediately rather than lingering until the next
                 # refresh tick (which would no longer repopulate them).  Also
-                # tear down any in-memory Cursor PR tracking right away (those
-                # tags are never pinned, so nothing else would clean them up)
-                # and re-sync the SCM poll timer so it stops if nothing else
-                # is tracked.
+                # tear down any in-memory editor-GUI PR tracking right away
+                # (those tags are never pinned, so nothing else would clean
+                # them up) and re-sync the SCM poll timer so it stops if
+                # nothing else is tracked.
                 for t in [t for t in self._tracked_tags
-                          if t.startswith(CURSOR_GUI_TAG_PREFIX)]:
+                          if t.startswith(GUI_TAG_PREFIXES)]:
                     self._untrack_cursor_pr(t)
                 self._cursor_gui_rows = []
                 self._cursor_row_cache.clear()
                 self._sync_scm_poll_timer()
-            self._prefs['show_cursor_gui_agents'] = cursor_gui_now
+            self._prefs['show_editor_gui_agents'] = editor_gui_now
             self._prefs['notifications'] = dialog.notification_prefs()
             self._prefs['default_diff_tool'] = dialog.selected_diff_tool()
             self._prefs['new_status_seconds'] = dialog.new_status_seconds()
@@ -3486,8 +3720,8 @@ class TableBuilderMixin(_Base):
         if row < 0 or row >= len(row_tags):
             return
         tag = row_tags[row]
-        # Cursor rows have no status-fire indicator.
-        if tag.startswith(CURSOR_GUI_TAG_PREFIX):
+        # Editor-GUI rows have no status-fire indicator.
+        if tag.startswith(GUI_TAG_PREFIXES):
             return
         if tag not in self._state_changed_at or tag in self._dismissed_new_status:
             return

@@ -171,7 +171,7 @@ class SettingsDialog(ZoomMixin, QDialog):
         active_paths_fn: Optional[Callable[[], set[str]]] = None,
         log_fn: Optional[Callable[[str], None]] = None,
         show_tooltips: bool = True,
-        show_cursor_gui_agents: bool = True,
+        show_editor_gui_agents: bool = True,
         notification_prefs: Optional[dict[str, dict[str, Any]]] = None,
         current_auto_send_mode: str = AutoSendMode.PAUSE,
         current_churn_queue_mode: str = ChurnQueueMode.WAIT,
@@ -411,15 +411,16 @@ class SettingsDialog(ZoomMixin, QDialog):
         self._shortcut_hint.setWordWrap(True)
         grid.addWidget(self._shortcut_hint, 12, 0, 1, 4)
 
-        # Show Cursor editor Agent tabs
-        self._cursor_gui_check = QCheckBox(
-            'Show Cursor editor Agent tabs')
-        self._cursor_gui_check.setToolTip(
-            'Surface Cursor (editor) Agent chat tabs as read-only rows, '
-            'with a best-effort status read from disk and a window-level '
-            '"Open" jump. Cannot queue messages or focus an individual tab.')
-        self._cursor_gui_check.setChecked(show_cursor_gui_agents)
-        grid.addWidget(self._cursor_gui_check, 13, 0, 1, 3)
+        # Show editor Agent sessions (Cursor Agent tabs + VS Code Copilot)
+        self._editor_gui_check = QCheckBox(
+            'Show editor Agent sessions (Cursor + VS Code Copilot)')
+        self._editor_gui_check.setToolTip(
+            'Surface in-editor AI chats as read-only rows: Cursor (editor) '
+            'Agent tabs and VS Code Copilot Chat sessions, with a '
+            'best-effort status read from disk and an "Open" jump into '
+            'the editor. Cannot queue messages.')
+        self._editor_gui_check.setChecked(show_editor_gui_agents)
+        grid.addWidget(self._editor_gui_check, 13, 0, 1, 3)
 
         layout.addLayout(grid)
         layout.addStretch()
@@ -656,9 +657,10 @@ class SettingsDialog(ZoomMixin, QDialog):
         """Return whether hover explanations are enabled."""
         return self._tooltips_check.isChecked()
 
-    def show_cursor_gui_agents(self) -> bool:
-        """Return whether Cursor editor Agent-tab rows should be shown."""
-        return self._cursor_gui_check.isChecked()
+    def show_editor_gui_agents(self) -> bool:
+        """Return whether editor-GUI agent rows (Cursor Agent tabs +
+        VS Code Copilot chats) should be shown."""
+        return self._editor_gui_check.isChecked()
 
     def selected_auto_send_mode(self) -> str:
         """Return the selected default auto-send mode."""

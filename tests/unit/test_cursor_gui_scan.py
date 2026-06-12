@@ -161,9 +161,9 @@ def test_build_row_shape_and_label():
     assert row['display_label'] == 'Fix login bug'  # name only, no project prefix
     assert row['project'] == 'proj'
     assert row['project_path'] == '/Users/x/proj'
-    assert row['cursor_window_folder'] == '/Users/x/proj'
+    assert row['window_folder'] == '/Users/x/proj'
     assert row['ide'] == 'Cursor'
-    assert row['composer_id'] == 'abc-123'
+    assert row['chat_id'] == 'abc-123'
     assert row['server_pid'] is None
     assert row['status_kind'] == 'idle'
 
@@ -171,7 +171,7 @@ def test_build_row_shape_and_label():
 def test_build_row_name_fallback():
     for bad in (None, '', '   '):
         row = cgs._build_row('/p/proj', 'proj', 'id1', {'name': bad})
-        assert row['composer_name'] == 'New Agent'
+        assert row['chat_name'] == 'New Agent'
         assert row['display_label'] == 'New Agent'
 
 
@@ -348,7 +348,7 @@ def test_scan_builds_rows_for_open_workspace(tmp_path, monkeypatch):
     )
     rows = cgs.scan_open_cursor_agents()
     assert len(rows) == 2  # only the two selected/open tabs
-    by_id = {r['composer_id']: r for r in rows}
+    by_id = {r['chat_id']: r for r in rows}
     assert by_id['c1']['status_kind'] == 'idle'  # 'aborted' = done -> idle
     assert by_id['c1']['display_label'] == 'Tab name change'
     assert by_id['c1']['project'] == 'ai-workflows_1'
@@ -385,7 +385,7 @@ def test_scan_skips_composer_missing_from_global(tmp_path, monkeypatch):
         open_hashes={'hash1'},
     )
     rows = cgs.scan_open_cursor_agents()
-    assert [r['composer_id'] for r in rows] == ['c1']
+    assert [r['chat_id'] for r in rows] == ['c1']
 
 
 def test_scan_dedupes_composer_shared_across_workspaces(tmp_path, monkeypatch):
@@ -421,8 +421,8 @@ def test_scan_dedupes_composer_shared_across_workspaces(tmp_path, monkeypatch):
 
     rows = cgs.scan_open_cursor_agents()
     # 'shared' appears once (not twice), under the busier workspace.
-    ids = [r['composer_id'] for r in rows]
+    ids = [r['chat_id'] for r in rows]
     assert ids.count('shared') == 1
     assert sorted(ids) == ['real', 'shared']
-    shared_row = next(r for r in rows if r['composer_id'] == 'shared')
+    shared_row = next(r for r in rows if r['chat_id'] == 'shared')
     assert shared_row['project'] == 'ai-workflows_1'  # busier workspace wins

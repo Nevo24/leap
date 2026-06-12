@@ -116,6 +116,21 @@ function processRequestFile(requireFocus) {
                 return;
             }
             closeComposer(content.substring('closeComposer:'.length));
+        } else if (content.startsWith('focusChatSession:')) {
+            // VS Code only (the mirror image of focusComposer): open a
+            // Copilot Chat session by id. A Cursor window must NOT
+            // consume the shared request file - leave it for the
+            // VS Code window the monitor just raised.
+            if (isCursor()) {
+                return;
+            }
+            focusChatSession(content.substring('focusChatSession:'.length));
+        } else if (content.startsWith('renameChatSession:')) {
+            // VS Code only (same shared-file rationale as above).
+            if (isCursor()) {
+                return;
+            }
+            renameChatSession(content.substring('renameChatSession:'.length));
         } else {
             selectTerminalByName(content);
         }
@@ -130,7 +145,7 @@ function processRequestFile(requireFocus) {
  */
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Leap');
-    log('Leap extension v1.6.4 activated');
+    log('Leap extension v1.7.0 activated');
     log(`Watching for: ${REQUEST_FILE}`);
 
     // Register command (for manual use via command palette)
@@ -303,6 +318,73 @@ async function focusComposer(composerId) {
         }
     }
     log(`focusComposer: no command succeeded for ${composerId}`);
+}
+
+/**
+ * VS Code only: open an existing Copilot Chat session by its session id.
+ *
+ * VS Code addresses local chat sessions as
+ * `vscode-chat-session://local/<base64url(sessionId)>` resources and
+ * registers a chat editor for that scheme, so a plain `vscode.open`
+ * shows the session (as an editor tab). There is no public chat-session
+ * API, so it is best-effort: a VS Code version that changes the scheme
+ * simply leaves the monitor at window-level focus.
+ */
+async function focusChatSession(sessionId) {
+    if (!sessionId) {
+        return;
+    }
+    if (isCursor()) {
+        log('focusChatSession: running in Cursor, ignoring');
+        return;
+    }
+    const uri = chatSessionUri(sessionId);
+    try {
+        await vscode.commands.executeCommand('vscode.open', uri);
+        log(`focusChatSession: opened ${sessionId}`);
+    } catch (err) {
+        log(`focusChatSession: vscode.open failed for ${sessionId}: ${err}`);
+    }
+}
+
+/**
+ * VS Code addresses local chat sessions as
+ * `vscode-chat-session://local/<base64url(sessionId)>`.
+ */
+function chatSessionUri(sessionId) {
+    const b64 = Buffer.from(sessionId, 'utf8').toString('base64')
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return vscode.Uri.parse(`vscode-chat-session://local/${b64}`);
+}
+
+/**
+ * VS Code only: open VS Code's own rename input for a chat session.
+ *
+ * `agentSession.rename` resolves its target from a marshalled
+ * `{$mid: 25, session: {resource}}` argument (a structural check on the
+ * main-thread side), shows the native input box pre-filled with the
+ * current title, and persists via `setChatSessionTitle`. The new title
+ * lands in the chat-session store, so the Leap monitor row label
+ * follows on its next scan. Best-effort, like every command here that
+ * leans on an undocumented internal: a VS Code that changes the
+ * argument shape just logs and does nothing.
+ */
+async function renameChatSession(sessionId) {
+    if (!sessionId) {
+        return;
+    }
+    if (isCursor()) {
+        log('renameChatSession: running in Cursor, ignoring');
+        return;
+    }
+    const uri = chatSessionUri(sessionId);
+    try {
+        await vscode.commands.executeCommand(
+            'agentSession.rename', { $mid: 25, session: { resource: uri } });
+        log(`renameChatSession: rename flow opened for ${sessionId}`);
+    } catch (err) {
+        log(`renameChatSession: failed for ${sessionId}: ${err}`);
+    }
 }
 
 /**
