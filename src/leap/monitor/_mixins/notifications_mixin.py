@@ -9,8 +9,9 @@ from PyQt5.QtWidgets import QMessageBox
 
 from leap.monitor.pr_tracking.base import UserNotification
 from leap.monitor.pr_tracking.config import (
-    get_dock_enabled, load_github_config, load_gitlab_config,
-    save_github_config, save_gitlab_config, save_notification_seen,
+    get_dock_enabled, load_bitbucket_config, load_github_config,
+    load_gitlab_config, save_bitbucket_config, save_github_config,
+    save_gitlab_config, save_notification_seen,
 )
 from leap.monitor.pr_tracking.git_utils import SCMType
 from leap.monitor.ui.dock_badge import NotificationEvent, NotificationType
@@ -40,6 +41,18 @@ class NotificationsMixin(_Base):
                 and github_config.get('enable_notifications')
                 and SCMType.GITHUB.value in self._scm_providers):
             result.add(SCMType.GITHUB.value)
+        # Bitbucket additionally gates on supports_notifications(): the
+        # config can carry enable_notifications=True while connected to
+        # Cloud (which has no notifications API) - without the gate the
+        # poll timer would be kept alive for a provider that never
+        # produces notifications.
+        bitbucket_config = load_bitbucket_config()
+        bitbucket_provider = self._scm_providers.get(SCMType.BITBUCKET.value)
+        if (bitbucket_config
+                and bitbucket_config.get('enable_notifications')
+                and bitbucket_provider is not None
+                and bitbucket_provider.supports_notifications()):
+            result.add(SCMType.BITBUCKET.value)
         return result
 
     def _maybe_start_notification_poll(self) -> None:
@@ -55,7 +68,8 @@ class NotificationsMixin(_Base):
         for the failing provider and restarts polling.
         """
         provider_name = scm_type.title()  # "github" -> "Github"
-        if scm_type not in (SCMType.GITHUB.value, SCMType.GITLAB.value):
+        if scm_type not in (SCMType.GITHUB.value, SCMType.GITLAB.value,
+                            SCMType.BITBUCKET.value):
             return
 
         # Stop polling to prevent duplicate popups while the dialog is open
@@ -66,6 +80,12 @@ class NotificationsMixin(_Base):
                 'GitHub notifications require a classic personal access token '
                 'with the "notifications" scope.\n'
                 'Fine-grained tokens do NOT support this endpoint.'
+            )
+        elif scm_type == SCMType.BITBUCKET.value:
+            scope_hint = (
+                'Bitbucket notification tracking reads the Server reviewer '
+                'dashboard and needs a token with repository read '
+                'permission.'
             )
         else:
             scope_hint = (
@@ -90,6 +110,11 @@ class NotificationsMixin(_Base):
             if config:
                 config['enable_notifications'] = False
                 save_github_config(config)
+        elif scm_type == SCMType.BITBUCKET.value:
+            config = load_bitbucket_config()
+            if config:
+                config['enable_notifications'] = False
+                save_bitbucket_config(config)
         else:
             config = load_gitlab_config()
             if config:

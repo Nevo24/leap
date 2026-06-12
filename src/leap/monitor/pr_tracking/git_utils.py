@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from leap.monitor.pr_tracking.config import load_github_config, load_gitlab_config
+from leap.monitor.pr_tracking.config import (
+    load_bitbucket_config, load_github_config, load_gitlab_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,7 @@ class SCMType(Enum):
     """Type of source code management platform."""
     GITLAB = "gitlab"
     GITHUB = "github"
+    BITBUCKET = "bitbucket"
     UNKNOWN = "unknown"
 
 
@@ -99,6 +102,12 @@ class ParsedProjectUrl:
     commit: Optional[str] = None  # Commit SHA if parsed from a commit URL
 
 
+def _bare_host(url: str) -> str:
+    """Extract just the hostname from a URL (no scheme/creds/port/path)."""
+    host = url.split('://', 1)[-1]
+    return host.split('/', 1)[0].rsplit('@', 1)[-1].split(':', 1)[0]
+
+
 def _normalize_host(host_with_creds: str) -> str:
     """Strip ``user:pass@`` and resolve any SSH alias in *host_with_creds*.
 
@@ -118,17 +127,21 @@ def parse_pr_url(
     url: str,
     gitlab_config: Optional[dict[str, Any]] = None,
     github_config: Optional[dict[str, Any]] = None,
+    bitbucket_config: Optional[dict[str, Any]] = None,
 ) -> Optional[ParsedPRUrl]:
-    """Parse a GitLab PR or GitHub PR URL.
+    """Parse a GitLab, GitHub or Bitbucket PR URL.
 
     Supported formats:
         GitLab: https://gitlab.com/group/project/-/merge_requests/42
         GitHub: https://github.com/owner/repo/pull/42
+        Bitbucket Cloud: https://bitbucket.org/workspace/repo/pull-requests/42
+        Bitbucket Server: https://host/projects/KEY/repos/repo/pull-requests/42
 
     Args:
         url: The PR URL.
         gitlab_config: Optional GitLab config dict for custom host detection.
         github_config: Optional GitHub config dict for custom host detection.
+        bitbucket_config: Optional Bitbucket config dict for custom host detection.
 
     Returns:
         ParsedPRUrl or None if the URL cannot be parsed.
@@ -137,7 +150,8 @@ def parse_pr_url(
     m = re.match(r'https?://([^/]+)/(.+?)/-/merge_requests/(\d+)', url)
     if m:
         host_url = f"https://{_normalize_host(m.group(1))}"
-        scm_type = detect_scm_type(host_url, gitlab_config, github_config)
+        scm_type = detect_scm_type(host_url, gitlab_config, github_config,
+                                   bitbucket_config)
         # URL structure is exclusively GitLab
         if scm_type == SCMType.UNKNOWN:
             scm_type = SCMType.GITLAB
@@ -152,10 +166,47 @@ def parse_pr_url(
     m = re.match(r'https?://([^/]+)/([^/]+/[^/]+)/pull/(\d+)', url)
     if m:
         host_url = f"https://{_normalize_host(m.group(1))}"
-        scm_type = detect_scm_type(host_url, gitlab_config, github_config)
+        scm_type = detect_scm_type(host_url, gitlab_config, github_config,
+                                   bitbucket_config)
         # URL structure is exclusively GitHub
         if scm_type == SCMType.UNKNOWN:
             scm_type = SCMType.GITHUB
+        return ParsedPRUrl(
+            scm_type=scm_type,
+            host_url=host_url,
+            project_path=m.group(2),
+            pr_iid=int(m.group(3)),
+        )
+
+    # Bitbucket Server/DC: https://<host>[/context]/projects/<KEY>/repos/<slug>/pull-requests/<id>
+    # Must be tried before the Cloud pattern - a Server URL would otherwise
+    # match the generic <a>/<b>/pull-requests/<id> shape with the wrong path.
+    # The optional context segments (installs under e.g. /stash) become part
+    # of host_url so clone/fetch URL construction keeps working.
+    m = re.match(
+        r'https?://([^/]+)((?:/[^/]+)*?)/projects/([^/]+)/repos/([^/]+)'
+        r'/pull-requests/(\d+)',
+        url)
+    if m:
+        host_url = f"https://{_normalize_host(m.group(1))}{m.group(2)}"
+        # URL structure is exclusively Bitbucket Server.  Project path is
+        # normalized to KEY/slug (the canonical form the provider expects).
+        return ParsedPRUrl(
+            scm_type=SCMType.BITBUCKET,
+            host_url=host_url,
+            project_path=f'{m.group(3)}/{m.group(4)}',
+            pr_iid=int(m.group(5)),
+        )
+
+    # Bitbucket Cloud: https://<host>/<workspace>/<repo>/pull-requests/<id>
+    m = re.match(r'https?://([^/]+)/([^/]+/[^/]+)/pull-requests/(\d+)', url)
+    if m:
+        host_url = f"https://{_normalize_host(m.group(1))}"
+        scm_type = detect_scm_type(host_url, gitlab_config, github_config,
+                                   bitbucket_config)
+        # URL structure is exclusively Bitbucket
+        if scm_type == SCMType.UNKNOWN:
+            scm_type = SCMType.BITBUCKET
         return ParsedPRUrl(
             scm_type=scm_type,
             host_url=host_url,
@@ -170,6 +221,7 @@ def detect_scm_type(
     host_url: str,
     gitlab_config: Optional[dict[str, Any]] = None,
     github_config: Optional[dict[str, Any]] = None,
+    bitbucket_config: Optional[dict[str, Any]] = None,
 ) -> SCMType:
     """Detect SCM platform type from a git remote host URL.
 
@@ -177,6 +229,7 @@ def detect_scm_type(
         host_url: The host URL (e.g., 'https://github.com').
         gitlab_config: Optional GitLab config dict with 'gitlab_url' key.
         github_config: Optional GitHub config dict with 'github_url' key.
+        bitbucket_config: Optional Bitbucket config dict with 'bitbucket_url' key.
 
     Returns:
         SCMType indicating the platform.
@@ -187,6 +240,9 @@ def detect_scm_type(
     host_lower = host_url.lower().rstrip('/')
     if 'github.com' in host_lower:
         return SCMType.GITHUB
+
+    if 'bitbucket.org' in host_lower:
+        return SCMType.BITBUCKET
 
     if github_config:
         github_url = (github_config.get('github_url') or '').lower().rstrip('/')
@@ -202,9 +258,25 @@ def detect_scm_type(
         if gitlab_url and gitlab_url in host_lower:
             return SCMType.GITLAB
 
-    # Default heuristic: if host contains 'gitlab', assume GitLab
+    if bitbucket_config:
+        bitbucket_url = (bitbucket_config.get('bitbucket_url') or '').lower().rstrip('/')
+        if bitbucket_url and bitbucket_url in host_lower:
+            return SCMType.BITBUCKET
+        # Context-path installs: the saved URL 'https://host/stash' is never
+        # a substring of the bare 'https://host' a git remote yields, so
+        # fall back to comparing hostnames.
+        if bitbucket_url and _bare_host(bitbucket_url) == _bare_host(host_lower):
+            return SCMType.BITBUCKET
+
+    # Default heuristics on the hostname.  'gitlab' is checked first so
+    # every host this function classified as GitLab before Bitbucket
+    # support existed still resolves identically (strictly additive).
+    # 'stash' is Bitbucket Server's pre-rename product name and is still
+    # a very common self-hosted subdomain (stash.company.com).
     if 'gitlab' in host_lower:
         return SCMType.GITLAB
+    if 'bitbucket' in host_lower or 'stash' in host_lower:
+        return SCMType.BITBUCKET
 
     return SCMType.UNKNOWN
 
@@ -229,6 +301,7 @@ def refine_scm_type(host_url: str, scm_type: SCMType) -> SCMType:
         host_url,
         gitlab_config=load_gitlab_config(),
         github_config=load_github_config(),
+        bitbucket_config=load_bitbucket_config(),
     )
 
 
@@ -320,11 +393,18 @@ _PROJECT_URL_SUFFIXES = re.compile(
     r')$'
 )
 
+# Known path suffixes on Bitbucket Cloud that follow workspace/repo
+_BITBUCKET_URL_SUFFIXES = re.compile(
+    r'/(?:src|commits|branches|pull-requests|downloads|pipelines'
+    r'|deployments|wiki|issues|admin)(?:/.*)?$'
+)
+
 
 def parse_project_url(
     url: str,
     gitlab_config: Optional[dict[str, Any]] = None,
     github_config: Optional[dict[str, Any]] = None,
+    bitbucket_config: Optional[dict[str, Any]] = None,
 ) -> Optional[ParsedProjectUrl]:
     """Parse a plain Git project URL (HTTPS or SSH).
 
@@ -332,11 +412,14 @@ def parse_project_url(
         HTTPS: https://host/group/project[.git]
         HTTPS with path suffixes: https://host/group/project/-/tree/main
         SSH: git@host:group/project[.git]
+        Bitbucket Server web: https://host/projects/KEY/repos/repo[/browse]
+        Bitbucket Server clone: https://host/scm/KEY/repo[.git]
 
     Args:
         url: The project URL.
         gitlab_config: Optional GitLab config dict for custom host detection.
         github_config: Optional GitHub config dict for custom host detection.
+        bitbucket_config: Optional Bitbucket config dict for custom host detection.
 
     Returns:
         ParsedProjectUrl or None if the URL cannot be parsed.
@@ -351,10 +434,48 @@ def parse_project_url(
         if '/' not in project_path:
             return None
         return ParsedProjectUrl(
-            scm_type=detect_scm_type(host_url, gitlab_config, github_config),
+            scm_type=detect_scm_type(host_url, gitlab_config, github_config,
+                                     bitbucket_config),
             host_url=host_url,
             project_path=project_path,
         )
+
+    # Bitbucket Server web URL: https://host[/context]/projects/KEY/repos/repo[/...]
+    # Gated on the host NOT detecting as GitLab/GitHub, so a GitLab group
+    # that happens to be named 'projects' keeps the generic handling.
+    m = re.match(
+        r'https?://([^/]+)((?:/[^/]+)*?)/projects/([^/]+)/repos/([^/]+?)'
+        r'(?:\.git)?(/.*)?$',
+        url)
+    if m:
+        host_url = f"https://{_normalize_host(m.group(1))}{m.group(2)}"
+        detected = detect_scm_type(host_url, gitlab_config, github_config,
+                                   bitbucket_config)
+        if detected not in (SCMType.GITLAB, SCMType.GITHUB):
+            tail = m.group(5) or ''
+            commit_match = re.match(
+                r'/commits/([0-9a-fA-F]{7,40})(?:/.*)?$', tail)
+            return ParsedProjectUrl(
+                scm_type=SCMType.BITBUCKET,
+                host_url=host_url,
+                project_path=f'{m.group(3)}/{m.group(4)}',
+                commit=commit_match.group(1) if commit_match else None,
+            )
+
+    # Bitbucket Server clone URL: https://host[/context]/scm/KEY/repo[.git]
+    m = re.match(
+        r'https?://([^/]+)((?:/[^/]+)*?)/scm/([^/]+)/([^/]+?)(?:\.git)?/?$',
+        url)
+    if m:
+        host_url = f"https://{_normalize_host(m.group(1))}{m.group(2)}"
+        detected = detect_scm_type(host_url, gitlab_config, github_config,
+                                   bitbucket_config)
+        if detected not in (SCMType.GITLAB, SCMType.GITHUB):
+            return ParsedProjectUrl(
+                scm_type=SCMType.BITBUCKET,
+                host_url=host_url,
+                project_path=f'{m.group(3)}/{m.group(4)}',
+            )
 
     # HTTPS: https://host/group/project[.git][/-/tree/...]
     m = re.match(r'https?://([^/]+)/(.+?)(?:\.git)?/?$', url)
@@ -363,6 +484,28 @@ def parse_project_url(
 
     host_url = f"https://{_normalize_host(m.group(1))}"
     raw_path = m.group(2).rstrip('/')
+
+    scm_type = detect_scm_type(host_url, gitlab_config, github_config,
+                               bitbucket_config)
+
+    if scm_type == SCMType.BITBUCKET:
+        # Bitbucket Cloud: single-commit URLs use /commits/<sha> and the
+        # browse suffixes differ from GitLab/GitHub - handled separately so
+        # the GitLab/GitHub path below stays byte-identical.
+        commit_match = re.search(r'/commits/([0-9a-fA-F]{7,40})(?:/.*)?$',
+                                 raw_path)
+        commit_sha = commit_match.group(1) if commit_match else None
+        if commit_match:
+            raw_path = raw_path[:commit_match.start()]
+        project_path = _BITBUCKET_URL_SUFFIXES.sub('', raw_path).rstrip('/')
+        if '/' not in project_path:
+            return None
+        return ParsedProjectUrl(
+            scm_type=scm_type,
+            host_url=host_url,
+            project_path=project_path,
+            commit=commit_sha,
+        )
 
     # Check for commit URL: /-/commit/<sha> (GitLab) or /commit/<sha> (GitHub)
     commit_match = re.search(r'(?:/-)?/commit/([0-9a-fA-F]{7,40})(?:/.*)?$', raw_path)
@@ -377,7 +520,7 @@ def parse_project_url(
         return None
 
     return ParsedProjectUrl(
-        scm_type=detect_scm_type(host_url, gitlab_config, github_config),
+        scm_type=scm_type,
         host_url=host_url,
         project_path=project_path,
         commit=commit_sha,

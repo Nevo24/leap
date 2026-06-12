@@ -28,7 +28,7 @@ class CqCommand:
 
 def _pr_prefix(scm_type: str) -> str:
     """Return the convention-correct PR-number prefix for *scm_type*."""
-    return '#' if scm_type == 'github' else '!'
+    return '#' if scm_type in ('github', 'bitbucket') else '!'
 
 
 def format_leap_message(cmd: CqCommand) -> str:

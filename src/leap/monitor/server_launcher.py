@@ -19,6 +19,9 @@ from PyQt5.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QStyle, QVBoxLayout,
 )
 
+from leap.monitor.pr_tracking.bitbucket_provider import (
+    BitbucketProvider, is_bitbucket_cloud_url,
+)
 from leap.monitor.pr_tracking.config import (
     update_pinned_session_field, write_pinned_session_entry,
 )
@@ -211,6 +214,8 @@ class ServerLauncher:
             return getattr(provider, '_gl', None) and provider._gl.private_token
         if scm_type == 'github':
             return getattr(provider, '_token', None)
+        if scm_type == 'bitbucket':
+            return getattr(provider, '_token', None)
         return None
 
     def _build_clone_url(self, host_url: str, remote_project: str, scm_type: str) -> str:
@@ -236,15 +241,43 @@ class ServerLauncher:
         rest = resolve_ssh_alias(rest)
         clean_host_url = f"{scheme}{rest}"
 
-        base_url = f"{clean_host_url}/{remote_project}.git"
+        repo_path = remote_project
+        if scm_type == 'bitbucket':
+            # Normalize the stored path (web URLs use projects/KEY/repos/slug)
+            # and apply the Server git prefix: Bitbucket Server clones over
+            # HTTPS at [context/]scm/KEY/slug.git, not at the web path.
+            # server_git_path preserves context segments a local remote may
+            # have baked into the stored path.
+            if is_bitbucket_cloud_url(clean_host_url):
+                parts = BitbucketProvider._split_project(remote_project)
+                if parts:
+                    repo_path = f"{parts[0]}/{parts[1]}"
+            else:
+                git_path = BitbucketProvider.server_git_path(remote_project)
+                if git_path:
+                    repo_path = git_path
+
+        base_url = f"{clean_host_url}/{repo_path}.git"
         token = self._get_scm_token(scm_type)
         if not token or not clean_host_url.startswith('http'):
             return base_url
         encoded_token = quote(token, safe='')
         if scm_type == 'github':
-            return f"{scheme}x-access-token:{encoded_token}@{rest}/{remote_project}.git"
+            return f"{scheme}x-access-token:{encoded_token}@{rest}/{repo_path}.git"
+        if scm_type == 'bitbucket':
+            provider = self._w._scm_providers.get(scm_type)
+            auth_user = getattr(provider, '_auth_user', '') if provider else ''
+            if not auth_user and not is_bitbucket_cloud_url(clean_host_url):
+                # Server HTTP access tokens act as a Basic password for any
+                # username; use the connected one.
+                auth_user = getattr(provider, '_username', '') if provider else ''
+            if auth_user:
+                return (f"{scheme}{quote(auth_user, safe='')}:{encoded_token}"
+                        f"@{rest}/{repo_path}.git")
+            # Cloud workspace/repo access tokens clone as x-token-auth
+            return f"{scheme}x-token-auth:{encoded_token}@{rest}/{repo_path}.git"
         # GitLab uses oauth2 as the username
-        return f"{scheme}oauth2:{encoded_token}@{rest}/{remote_project}.git"
+        return f"{scheme}oauth2:{encoded_token}@{rest}/{repo_path}.git"
 
     def _heal_pinned_host_url(self, tag: str, pinned: dict[str, Any]) -> None:
         """Migrate a pinned-session entry whose host_url is an SSH alias.

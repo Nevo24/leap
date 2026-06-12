@@ -14,6 +14,7 @@ from PyQt5 import sip
 from PyQt5.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
 from PyQt5.QtWidgets import QAction, QMenu, QMessageBox
 
+from leap.monitor.dialogs.bitbucket_setup_dialog import BitbucketSetupDialog
 from leap.monitor.dialogs.github_setup_dialog import (
     GitHubSetupDialog, _check_github_scopes, _verify_github_server,
 )
@@ -23,9 +24,11 @@ from leap.monitor.dialogs.gitlab_setup_dialog import (
 )
 from leap.monitor.navigation import close_terminal_with_title, find_terminal_with_title
 from leap.monitor.pr_tracking.base import SCMProvider
+from leap.monitor.pr_tracking.bitbucket_provider import BitbucketProvider
 from leap.monitor.pr_tracking.config import (
-    load_github_config, load_gitlab_config, resolve_scm_token,
-    save_github_config, save_gitlab_config,
+    load_bitbucket_config, load_github_config, load_gitlab_config,
+    resolve_scm_token, save_bitbucket_config, save_github_config,
+    save_gitlab_config,
 )
 from leap.monitor.pr_tracking.git_utils import (
     SCMType, get_git_remote_info, refine_scm_type,
@@ -94,6 +97,26 @@ class SCMConfigMixin(_Base):
         else:
             self._scm_providers.pop(SCMType.GITHUB.value, None)
 
+        # Bitbucket
+        bitbucket_config = load_bitbucket_config()
+        bitbucket_token = self._resolve_and_validate_env_token(
+            bitbucket_config, 'token', 'Bitbucket', save_bitbucket_config)
+        if bitbucket_config and bitbucket_token and 'username' in bitbucket_config:
+            try:
+                self._scm_providers[SCMType.BITBUCKET.value] = BitbucketProvider(
+                    bitbucket_url=bitbucket_config.get(
+                        'bitbucket_url', 'https://bitbucket.org'),
+                    token=bitbucket_token,
+                    username=bitbucket_config['username'],
+                    auth_user=bitbucket_config.get('auth_user', ''),
+                    filter_bots=filter_bots,
+                )
+            except Exception:
+                logger.debug("Failed to init Bitbucket provider", exc_info=True)
+                self._scm_providers.pop(SCMType.BITBUCKET.value, None)
+        else:
+            self._scm_providers.pop(SCMType.BITBUCKET.value, None)
+
         self._update_scm_buttons()
 
     def _resolve_and_validate_env_token(
@@ -151,6 +174,10 @@ class SCMConfigMixin(_Base):
             return False, 'Token appears to be a GitHub token, not a GitLab token.'
         if provider_name == 'GitHub' and token.startswith('glpat-'):
             return False, 'Token appears to be a GitLab token, not a GitHub token.'
+        if provider_name == 'Bitbucket' and token.startswith(
+                ('ghp_', 'github_pat_', 'glpat-')):
+            return False, ('Token appears to be a GitHub/GitLab token, '
+                           'not a Bitbucket token.')
         try:
             if provider_name == 'GitLab':
                 gl = gitlab.Gitlab(
@@ -184,6 +211,18 @@ class SCMConfigMixin(_Base):
                 for w in warnings:
                     logger.debug("GitHub token: %s", w)
                 return True, username
+            elif provider_name == 'Bitbucket':
+                provider = BitbucketProvider(
+                    bitbucket_url=config.get('bitbucket_url',
+                                             'https://bitbucket.org'),
+                    token=token,
+                    username=config.get('username', ''),
+                    auth_user=config.get('auth_user', ''),
+                )
+                success, message = provider.test_connection()
+                if not success:
+                    return False, message
+                return True, message
         except Exception as e:
             return False, str(e)
         return False, 'Unknown provider'
@@ -249,6 +288,19 @@ class SCMConfigMixin(_Base):
                 'Open the GitHub setup dialog to log in with a personal '
                 'access token and enable PR tracking')
 
+        if SCMType.BITBUCKET.value in self._scm_providers:
+            self.bitbucket_btn.setText('Bitbucket Connected')
+            self.bitbucket_btn.setStyleSheet(connected_style)
+            self.bitbucket_btn.setToolTip(
+                'Open Bitbucket settings (edit fields, or disconnect)')
+        else:
+            self.bitbucket_btn.setText('Connect Bitbucket')
+            self.bitbucket_btn.setStyleSheet('')
+            self.bitbucket_btn.setToolTip(
+                'Open the Bitbucket setup dialog to log in with an API '
+                'token or access token and enable PR tracking (Cloud and '
+                'Server / Data Center)')
+
     def _get_provider_for_session(self, session: dict[str, Any]) -> Optional[SCMProvider]:
         """Get the appropriate SCM provider for a session based on its git remote.
 
@@ -289,6 +341,9 @@ class SCMConfigMixin(_Base):
         github_config = load_github_config()
         if github_config:
             intervals.append(github_config.get('poll_interval', SCM_POLL_INTERVAL))
+        bitbucket_config = load_bitbucket_config()
+        if bitbucket_config:
+            intervals.append(bitbucket_config.get('poll_interval', SCM_POLL_INTERVAL))
         return min(intervals) if intervals else SCM_POLL_INTERVAL
 
     @staticmethod
@@ -381,6 +436,20 @@ class SCMConfigMixin(_Base):
             self._auto_track_pr_pinned()
             self._maybe_start_notification_poll()
             self._show_status(self._scm_dialog_status_msg('GitHub', dialog))
+
+    def _open_bitbucket_setup(self) -> None:
+        """Open the Bitbucket setup dialog."""
+        dialog = BitbucketSetupDialog(self)
+        if dialog.exec_():
+            # Re-initialize providers after any disk write (Save / Connect /
+            # Disconnect) so in-memory state matches what's now on disk.
+            self._scm_poll_timer.stop()
+            self._scm_providers.pop(SCMType.BITBUCKET.value, None)
+            self._clear_provider_state(SCMType.BITBUCKET.value)
+            self._init_scm_providers()
+            self._auto_track_pr_pinned()
+            self._maybe_start_notification_poll()
+            self._show_status(self._scm_dialog_status_msg('Bitbucket', dialog))
 
     def _toggle_include_bots(self, state: int) -> None:
         """Toggle bot comment inclusion and persist."""

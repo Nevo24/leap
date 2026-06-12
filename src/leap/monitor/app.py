@@ -1082,6 +1082,10 @@ class MonitorWindow(
         self.github_btn.clicked.connect(self._open_github_setup)
         btn_group_layout.addWidget(self.github_btn)
 
+        self.bitbucket_btn = QPushButton('Connect Bitbucket')
+        self.bitbucket_btn.clicked.connect(self._open_bitbucket_setup)
+        btn_group_layout.addWidget(self.bitbucket_btn)
+
         self.slack_bot_btn = QPushButton('Slack Bot')
         self.slack_bot_btn.setToolTip('Start/stop the Slack bot daemon')
         self.slack_bot_btn.clicked.connect(self._toggle_slack_bot)

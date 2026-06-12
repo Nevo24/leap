@@ -15,12 +15,76 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 
+def _is_bitbucket_cloud_host(host_url: str) -> bool:
+    """True if *host_url* points at Bitbucket Cloud (bitbucket.org)."""
+    host = host_url.lower()
+    if '://' in host:
+        host = host.split('://', 1)[1]
+    host = host.split('/', 1)[0].rsplit('@', 1)[-1].split(':', 1)[0]
+    return host == 'bitbucket.org' or host.endswith('.bitbucket.org')
+
+
+def _bitbucket_repo_parts(project: str) -> Optional[tuple[str, str]]:
+    """Normalize a Bitbucket project path to (workspace-or-key, slug).
+
+    Accepts ``KEY/slug``, Server clone paths (``scm/KEY/slug``) and Server
+    web paths (``projects/KEY/repos/slug``).  The Server forms match
+    suffix-anchored so context-path installs survive (a remote like
+    ``https://host/stash/scm/key/slug.git`` yields the project path
+    ``stash/scm/key/slug``); the ``projects/…/repos/…`` form is checked
+    first so a project key literally named ``scm`` can't trip the
+    clone-path rule.
+    """
+    parts = [p for p in project.strip('/').split('/') if p]
+    if (len(parts) >= 4 and parts[-4].lower() == 'projects'
+            and parts[-2].lower() == 'repos'):
+        return parts[-3], parts[-1]
+    if len(parts) >= 3 and parts[-3].lower() == 'scm':
+        return parts[-2], parts[-1]
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return None
+
+
+def _bitbucket_git_path(project: str) -> Optional[str]:
+    """Git-over-HTTPS path for a Server repo, context segments preserved.
+
+    Mirrors ``BitbucketProvider.server_git_path`` (duplicated to keep the
+    server package import-free of monitor code): clone-form paths pass
+    through verbatim, web-form paths swap ``projects/K/repos/S`` for
+    ``scm/K/S`` in place, bare ``K/S`` gains the ``scm/`` prefix.
+    """
+    parts = [p for p in project.strip('/').split('/') if p]
+    if (len(parts) >= 4 and parts[-4].lower() == 'projects'
+            and parts[-2].lower() == 'repos'):
+        return '/'.join(parts[:-4] + ['scm', parts[-3], parts[-1]])
+    if len(parts) >= 3 and parts[-3].lower() == 'scm':
+        return '/'.join(parts)
+    if len(parts) == 2:
+        return f'scm/{parts[0]}/{parts[1]}'
+    return None
+
+
+def _bitbucket_project_key(project: str) -> str:
+    """Comparison key for Bitbucket repo paths.
+
+    Strips the Server ``scm/`` / ``projects/…/repos/`` prefixes and
+    casefolds - Server web URLs show the project key uppercased while
+    clone URLs lowercase it.
+    """
+    parts = _bitbucket_repo_parts(project)
+    if not parts:
+        return project.lower()
+    return f'{parts[0]}/{parts[1]}'.lower()
+
+
 def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[str]:
     """Build an authenticated fetch URL from pinned session + SCM config.
 
-    Reads the SCM token from the appropriate config file (gitlab_config.json
-    or github_config.json) and injects it into the host URL.  Returns None
-    if no token is available or the URL is non-HTTP (e.g. SSH).
+    Reads the SCM token from the appropriate config file (gitlab_config.json,
+    github_config.json or bitbucket_config.json) and injects it into the host
+    URL.  Returns None if no token is available or the URL is non-HTTP
+    (e.g. SSH).
 
     Note: Token resolution logic is intentionally duplicated from
     monitor's resolve_scm_token to avoid cross-package imports.
@@ -40,11 +104,15 @@ def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[
 
     # Read token from the SCM config file (supports env var mode)
     token: Optional[str] = None
+    bb_auth_user = ''
     if scm_type == 'gitlab':
         cfg_path = storage_dir / "gitlab_config.json"
         token_key = 'private_token'
     elif scm_type == 'github':
         cfg_path = storage_dir / "github_config.json"
+        token_key = 'token'
+    elif scm_type == 'bitbucket':
+        cfg_path = storage_dir / "bitbucket_config.json"
         token_key = 'token'
     else:
         return None
@@ -64,6 +132,12 @@ def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[
                     token = os.environ.get(var_name) if var_name else None
                 else:
                     token = cfg.get(token_key)
+                if scm_type == 'bitbucket':
+                    bb_auth_user = cfg.get('auth_user', '') or ''
+                    if not bb_auth_user and not _is_bitbucket_cloud_host(host_url):
+                        # Server access tokens act as a Basic password for
+                        # any username; use the connected one.
+                        bb_auth_user = cfg.get('username', '') or ''
         except (OSError, ValueError):
             pass
 
@@ -76,6 +150,18 @@ def build_auth_fetch_url(pinned: dict[str, Any], storage_dir: Path) -> Optional[
     encoded_token = quote(token, safe='')
     if scm_type == 'github':
         return f"{scheme}x-access-token:{encoded_token}@{host}/{project}.git"
+    if scm_type == 'bitbucket':
+        if _is_bitbucket_cloud_host(host_url):
+            parts = _bitbucket_repo_parts(project)
+            repo_path = f'{parts[0]}/{parts[1]}' if parts else project
+        else:
+            # Bitbucket Server serves git over HTTPS at
+            # [context/]scm/KEY/slug.git - context segments preserved
+            repo_path = _bitbucket_git_path(project) or project
+        if bb_auth_user:
+            return (f"{scheme}{quote(bb_auth_user, safe='')}:{encoded_token}"
+                    f"@{host}/{repo_path}.git")
+        return f"{scheme}x-token-auth:{encoded_token}@{host}/{repo_path}.git"
     return f"{scheme}oauth2:{encoded_token}@{host}/{project}.git"
 
 
@@ -139,8 +225,24 @@ def validate_pinned_session(tag: str, storage_dir: Path) -> None:
             m = re.match(r'https?://[^/]+/(.+?)(?:\.git)?$', remote_url)
             if m:
                 local_project = m.group(1)
+            else:
+                # SSH URI form: ssh://git@host[:port]/user/project.git
+                # (Bitbucket Server's default SSH clone URL shape)
+                m = re.match(r'ssh://[^@/]+@[^:/]+(?::\d+)?/(.+?)(?:\.git)?$',
+                             remote_url)
+                if m:
+                    local_project = m.group(1)
 
-    if not local_project or local_project != pinned_project:
+    # Bitbucket repo paths need normalization before comparing: HTTPS clone
+    # remotes carry the /scm/ prefix and lowercase the project key, while
+    # pinned web paths are KEY/slug with the key uppercased.
+    local_cmp = local_project
+    pinned_cmp = pinned_project
+    if entry.get('scm_type') == 'bitbucket' and local_project:
+        local_cmp = _bitbucket_project_key(local_project)
+        pinned_cmp = _bitbucket_project_key(pinned_project)
+
+    if not local_project or local_cmp != pinned_cmp:
         local_desc = f"'{local_project}'" if local_project else 'not a matching git repo'
         print(
             f"\033[91mError: Tag '{tag}' is monitored for repo "

@@ -18,7 +18,7 @@ from leap.monitor.dialogs.add_local_dialog import AddLocalDialog
 from leap.monitor.dialogs.resume_session_dialog import ResumeSessionDialog
 from leap.monitor.pr_tracking.base import PRState, PRStatus
 from leap.monitor.pr_tracking.config import (
-    load_github_config, load_gitlab_config,
+    load_bitbucket_config, load_github_config, load_gitlab_config,
     remove_pinned_session_tag, update_pinned_session_field,
     write_pinned_session_entry,
 )
@@ -76,13 +76,14 @@ class PRTrackingMixin(_Base):
             if not self._scm_providers:
                 QMessageBox.information(
                     self, 'No SCM Connected',
-                    'Connect to GitLab or GitHub first using the buttons at the bottom.'
+                    'Connect to GitLab, GitHub or Bitbucket first using the '
+                    'buttons at the bottom.'
                 )
             else:
                 QMessageBox.information(
                     self, 'No Provider Match',
                     'No configured SCM provider matches this project\'s git remote.\n'
-                    'Connect the appropriate provider (GitLab/GitHub) first.'
+                    'Connect the appropriate provider (GitLab/GitHub/Bitbucket) first.'
                 )
             return
 
@@ -1089,7 +1090,7 @@ class PRTrackingMixin(_Base):
             'each poll cycle, causing duplicate sends.\n\n'
             "Auto '/leap' fetch has been disabled to prevent this.\n\n"
             'Common cause: the SCM token lacks the "api" scope '
-            '(GitLab) or sufficient permissions (GitHub).\n'
+            '(GitLab) or sufficient permissions (GitHub/Bitbucket).\n'
             "Update your token, then re-enable \"Auto '/leap' fetch\"."
         )
 
@@ -1277,6 +1278,7 @@ class PRTrackingMixin(_Base):
         """Add a row from a Git URL (PR URL or plain project URL)."""
         gitlab_config = load_gitlab_config()
         github_config = load_github_config()
+        bitbucket_config = load_bitbucket_config()
         prev_url = ''
         while True:
             dlg = QInputDialog(self)
@@ -1291,15 +1293,16 @@ class PRTrackingMixin(_Base):
             prev_url = url.strip()
 
             # Try PR URL first
-            parsed_pr = parse_pr_url(prev_url, gitlab_config, github_config)
+            parsed_pr = parse_pr_url(prev_url, gitlab_config, github_config,
+                                     bitbucket_config)
             if parsed_pr:
                 provider = self._scm_providers.get(parsed_pr.scm_type.value)
                 if not provider:
                     if not self._scm_providers:
                         QMessageBox.information(
                             self, 'No SCM Connected',
-                            'Connect to GitLab or GitHub first using '
-                            'the buttons at the bottom.',
+                            'Connect to GitLab, GitHub or Bitbucket first '
+                            'using the buttons at the bottom.',
                         )
                     else:
                         QMessageBox.warning(
@@ -1311,7 +1314,8 @@ class PRTrackingMixin(_Base):
                 return
 
             # Try plain project URL
-            parsed_proj = parse_project_url(prev_url, gitlab_config, github_config)
+            parsed_proj = parse_project_url(prev_url, gitlab_config,
+                                            github_config, bitbucket_config)
             if parsed_proj:
                 self._add_row_from_project_url(parsed_proj)
                 return
@@ -1322,6 +1326,7 @@ class PRTrackingMixin(_Base):
                 'Supported formats:\n'
                 '  PR:     https://gitlab.com/group/project/-/merge_requests/42\n'
                 '  PR:     https://github.com/owner/repo/pull/42\n'
+                '  PR:     https://bitbucket.org/workspace/repo/pull-requests/42\n'
                 '  Commit: https://gitlab.com/group/project/-/commit/abc123\n'
                 '  Git:    https://host/group/project\n'
                 '  SSH:    git@host:group/project.git',
@@ -1404,7 +1409,7 @@ class PRTrackingMixin(_Base):
             reply = QMessageBox.question(
                 self, 'Unknown Host',
                 f"Could not match '{parsed.host_url}' to any connected "
-                f"provider (GitLab/GitHub).\n\n"
+                f"provider (GitLab/GitHub/Bitbucket).\n\n"
                 f"The clone will be unauthenticated and may fail on "
                 f"private repos.\n\nContinue?",
                 QMessageBox.Yes | QMessageBox.No,

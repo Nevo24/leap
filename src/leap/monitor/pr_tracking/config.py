@@ -11,6 +11,7 @@ from leap.utils.constants import STORAGE_DIR
 
 GITLAB_CONFIG_FILE = STORAGE_DIR / "gitlab_config.json"
 GITHUB_CONFIG_FILE = STORAGE_DIR / "github_config.json"
+BITBUCKET_CONFIG_FILE = STORAGE_DIR / "bitbucket_config.json"
 MONITOR_PREFS_FILE = STORAGE_DIR / "monitor_prefs.json"
 PINNED_SESSIONS_FILE = STORAGE_DIR / "pinned_sessions.json"
 NOTIFICATION_SEEN_FILE = STORAGE_DIR / "notification_seen.json"
@@ -250,6 +251,29 @@ def load_gitlab_config() -> Optional[dict[str, Any]]:
 def save_gitlab_config(config: dict[str, Any]) -> None:
     """Save GitLab configuration to storage."""
     atomic_write_json(GITLAB_CONFIG_FILE, config)
+
+
+def load_bitbucket_config() -> Optional[dict[str, Any]]:
+    """Load Bitbucket configuration from storage.
+
+    Returns:
+        Config dict with bitbucket_url, token, auth_user, username,
+        poll_interval, or None if not configured.  ``auth_user`` is the
+        Basic-auth identity (Atlassian email / username) - empty means the
+        token authenticates as a Bearer access token.
+    """
+    if not BITBUCKET_CONFIG_FILE.exists():
+        return None
+    try:
+        with open(BITBUCKET_CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_bitbucket_config(config: dict[str, Any]) -> None:
+    """Save Bitbucket configuration to storage."""
+    atomic_write_json(BITBUCKET_CONFIG_FILE, config)
 
 
 def normalize_github_api_url(url: str) -> str:

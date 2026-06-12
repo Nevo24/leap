@@ -63,9 +63,10 @@ class ClosedPRInfo:
 
 @dataclass
 class UserNotification:
-    """A notification from an SCM provider (GitLab Todo / GitHub Notification)."""
+    """A notification from an SCM provider (GitLab Todo / GitHub Notification /
+    Bitbucket Server reviewer-dashboard entry)."""
     id: str
-    scm_type: str  # "gitlab" or "github"
+    scm_type: str  # "gitlab", "github" or "bitbucket"
     reason: str  # "review_requested", "assigned", "mentioned", "other"
     title: str  # Target title (PR/issue title)
     target_url: str  # URL to open in browser

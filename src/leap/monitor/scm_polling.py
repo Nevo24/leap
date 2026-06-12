@@ -88,7 +88,8 @@ class SCMPollerWorker(QThread):
         """Configure the poller with available providers and sessions to poll.
 
         Args:
-            providers: Dict mapping SCMType value ("gitlab", "github") to provider instance.
+            providers: Dict mapping SCMType value ("gitlab", "github",
+                "bitbucket") to provider instance.
             sessions: List of session dicts to poll.
             auto_fetch_leap: Whether to scan and handle /leap commands.
             notif_scm_types: Set of SCM type strings to fetch notifications for.

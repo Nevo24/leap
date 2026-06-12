@@ -179,7 +179,7 @@ poetry run pytest tests/ -v       # All tests with verbose output
 
 ## SCM Polling & PR Tracking
 
-The monitor polls GitLab/GitHub for PR status + user notifications, renders PR markers and merged/closed badges, sends PR comments and `/leap` commands into sessions, manages pinned/persistent rows and managed-clone dirty-tree sync, validates branches at startup, and owns the session-table UX (sort modes + drag-reorder, row colors, tag aliases, live filter, new-change fire indicator). Token modes: direct or env-var; GitHub Enterprise URLs are normalized to `/api/v3`. Key timeouts: 15s/request, 30s/poll-cycle, 60s stuck-poll reset, 30s default interval. Full subsystem reference: see the `monitor-pr-tracking` skill.
+The monitor polls GitLab/GitHub/Bitbucket for PR status + user notifications, renders PR markers and merged/closed badges, sends PR comments and `/leap` commands into sessions, manages pinned/persistent rows and managed-clone dirty-tree sync, validates branches at startup, and owns the session-table UX (sort modes + drag-reorder, row colors, tag aliases, live filter, new-change fire indicator). Token modes: direct or env-var; GitHub Enterprise URLs are normalized to `/api/v3`. Bitbucket is one provider class covering both Cloud (bitbucket.org, API 2.0) and self-hosted Server/Data Center (API 1.0) - flavor decided by URL; some flags are platform-limited (draft Cloud-only, conflicts Server-only, notifications Server-only). Key timeouts: 15s/request, 30s/poll-cycle, 60s stuck-poll reset, 30s default interval. Full subsystem reference: see the `monitor-pr-tracking` skill.
 
 ## Slack Integration
 
