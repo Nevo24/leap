@@ -953,25 +953,6 @@ def focus_vscode_chat_session(folder: str,
     return raised
 
 
-def rename_vscode_chat_session(folder: str, session_id: str) -> bool:
-    """Open VS Code's own rename input for a Copilot Chat session.
-
-    Raises the owning VS Code window, then asks the Leap extension to run
-    ``agentSession.rename`` for this session (via a
-    ``renameChatSession:<id>`` request).  VS Code shows its native input
-    box pre-filled with the current title; the new title persists into
-    the chat-session store, so the monitor row label follows on the next
-    scan.  Best-effort; returns whether the window raise succeeded.
-    """
-    if not session_id:
-        return False
-    raised = _raise_editor_window('VS Code', 'Code', folder)
-    if raised:
-        time.sleep(0.3)
-        _write_terminal_request(f'renameChatSession:{session_id}')
-    return raised
-
-
 def _raise_editor_window(ide_label: str, process_name: str,
                          folder: str) -> bool:
     """Raise the *ide_label* (Cursor / VS Code) window for *folder*.

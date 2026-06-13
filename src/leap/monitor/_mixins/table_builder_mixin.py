@@ -52,7 +52,7 @@ from leap.monitor.vscode_copilot_scan import (
 )
 from leap.monitor.navigation import (
     close_cursor_composer, focus_cursor_window,
-    focus_vscode_chat_session, rename_vscode_chat_session,
+    focus_vscode_chat_session,
 )
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
@@ -493,8 +493,8 @@ class TableBuilderMixin(_Base):
         self._cache_cell(tag, 'tag', tag_state, row, self.COL_TAG)
 
     def _show_tag_context_menu(self, tag: str, global_pos: QPoint) -> None:
-        """Show context menu for the tag cell (set/remove alias; for a
-        VS Code Copilot row also the editor-side chat rename)."""
+        """Show context menu for the tag cell (set/rename/remove the
+        Leap-side alias)."""
         menu = QMenu(self)
         alias = self._aliases.get(tag)
         if alias:
@@ -503,18 +503,12 @@ class TableBuilderMixin(_Base):
         else:
             set_action = menu.addAction('Set alias')
             remove_action = None
-        # VS Code chats can be renamed IN the editor (unlike Cursor, whose
-        # rename isn't drivable from outside): the extension opens VS Code's
-        # own pre-filled rename input, and the new title flows back into the
-        # row label on the next scan.  Aliases above stay Leap-local.
-        rename_chat_action = None
-        vs_row = None
-        if tag.startswith(VSCODE_GUI_TAG_PREFIX):
-            vs_row = next(
-                (r for r in (getattr(self, '_cursor_gui_rows', []) or [])
-                 if r.get('tag') == tag and r.get('chat_id')), None)
-            if vs_row is not None:
-                rename_chat_action = menu.addAction('Rename chat in VS Code...')
+        # No "Rename chat in VS Code" here: VS Code's agentSession.rename
+        # only resolves a session loaded in the Agent Sessions view and
+        # otherwise renames the *focused* chat - so driving it by id from
+        # outside can rename the wrong chat (same unreliable mechanism the
+        # archive-close had).  The alias above is the safe, Leap-local
+        # rename.
 
         action = menu.exec_(global_pos)
         if action == set_action:
@@ -525,9 +519,6 @@ class TableBuilderMixin(_Base):
                 self._set_alias(tag, text.strip())
         elif remove_action and action == remove_action:
             self._set_alias(tag, None)
-        elif rename_chat_action is not None and action == rename_chat_action:
-            self._rename_vscode_chat(vs_row.get('window_folder') or '',
-                                     vs_row.get('chat_id'))
 
     def _set_alias(self, tag: str, alias: Optional[str]) -> None:
         """Set or clear the alias for a tag and persist."""
@@ -1416,24 +1407,6 @@ class TableBuilderMixin(_Base):
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _rename_vscode_chat(self, folder: str,
-                            session_id: Optional[str]) -> None:
-        """Open VS Code's own rename input for a Copilot chat (raises the
-        window, then the Leap extension runs ``agentSession.rename``).
-        The new title flows back into the row label on the next scan."""
-        if not session_id:
-            self._show_status('No session id recorded for this chat')
-            return
-        if not folder:
-            # Without a folder the window raise would match an arbitrary
-            # VS Code window by empty-substring title; bail like the jump.
-            self._show_status('No project folder recorded for this chat')
-            return
-        self._show_status('Opening the rename input in VS Code...')
-        worker = BackgroundCallWorker(
-            lambda: rename_vscode_chat_session(folder, session_id), self)
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
 
     def _dismiss_vscode_session(self, session_id: str) -> None:
         """Persist a removed VS Code row in the ``vscode_gui_hidden`` pref.

@@ -125,12 +125,6 @@ function processRequestFile(requireFocus) {
                 return;
             }
             focusChatSession(content.substring('focusChatSession:'.length));
-        } else if (content.startsWith('renameChatSession:')) {
-            // VS Code only (same shared-file rationale as above).
-            if (isCursor()) {
-                return;
-            }
-            renameChatSession(content.substring('renameChatSession:'.length));
         } else {
             selectTerminalByName(content);
         }
@@ -145,7 +139,7 @@ function processRequestFile(requireFocus) {
  */
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Leap');
-    log('Leap extension v1.7.2 activated');
+    log('Leap extension v1.7.3 activated');
     log(`Watching for: ${REQUEST_FILE}`);
 
     // Register command (for manual use via command palette)
@@ -355,36 +349,6 @@ function chatSessionUri(sessionId) {
     const b64 = Buffer.from(sessionId, 'utf8').toString('base64')
         .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     return vscode.Uri.parse(`vscode-chat-session://local/${b64}`);
-}
-
-/**
- * VS Code only: open VS Code's own rename input for a chat session.
- *
- * `agentSession.rename` resolves its target from a marshalled
- * `{$mid: 25, session: {resource}}` argument (a structural check on the
- * main-thread side), shows the native input box pre-filled with the
- * current title, and persists via `setChatSessionTitle`. The new title
- * lands in the chat-session store, so the Leap monitor row label
- * follows on its next scan. Best-effort, like every command here that
- * leans on an undocumented internal: a VS Code that changes the
- * argument shape just logs and does nothing.
- */
-async function renameChatSession(sessionId) {
-    if (!sessionId) {
-        return;
-    }
-    if (isCursor()) {
-        log('renameChatSession: running in Cursor, ignoring');
-        return;
-    }
-    const uri = chatSessionUri(sessionId);
-    try {
-        await vscode.commands.executeCommand(
-            'agentSession.rename', { $mid: 25, session: { resource: uri } });
-        log(`renameChatSession: rename flow opened for ${sessionId}`);
-    } catch (err) {
-        log(`renameChatSession: failed for ${sessionId}: ${err}`);
-    }
 }
 
 /**

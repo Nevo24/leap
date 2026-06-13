@@ -4,7 +4,7 @@
 
 Run AI coding agents (Claude Code, Codex CLI, GitHub Copilot, Cursor Agent, Gemini CLI) in any terminal (JetBrains, VS Code, Cursor, iTerm2, cmux, WezTerm, Arduino IDE, and more). Queue messages while the agent is busy, track all sessions from a single monitor, and jump straight to the right terminal with one click.
 
-**NEW!** Manage your in-editor agent chats right in the monitor too - Cursor Editor Agent tabs and VS Code Copilot Chat sessions, with live status, PR tracking, one-click jump to the exact chat, and (VS Code) rename from the monitor.
+**NEW!** Manage your in-editor agent chats right in the monitor too - Cursor Editor Agent tabs and VS Code Copilot Chat sessions, with live status, PR tracking, and one-click jump to the exact chat.
 
 ## Key Features
 

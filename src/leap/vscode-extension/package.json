@@ -2,7 +2,7 @@
   "name": "leap-terminal-selector",
   "displayName": "Leap Terminal Selector",
   "description": "Allows Leap Monitor to select terminal tabs by name",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "publisher": "leap",
   "engines": {
     "vscode": "^1.78.0"
