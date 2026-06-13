@@ -51,7 +51,7 @@ from leap.monitor.vscode_copilot_scan import (
     VSCODE_GUI_TAG_PREFIX,
 )
 from leap.monitor.navigation import (
-    archive_vscode_chat_session, close_cursor_composer, focus_cursor_window,
+    close_cursor_composer, focus_cursor_window,
     focus_vscode_chat_session, rename_vscode_chat_session,
 )
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
@@ -132,17 +132,18 @@ _EDITOR_PROFILES: dict[str, _EditorRowProfile] = {
         # The chat-session op-log records each request's promptTokens and the
         # selected model's input limit; the scanner ships them on the row.
         supports_context=True,
-        close_full_tip='Stop tracking and archive this Copilot chat in '
-                       'VS Code (recoverable via Unarchive)',
-        close_server_tip='Archive this Copilot chat in VS Code (keeps PR '
-                         'tracking; recoverable via Unarchive)',
-        # VS Code chat sessions are persisted, not tabs, so "close" =
-        # archive.  The archive handlers ignore the folder a Cursor close
-        # needs - the adapter drops it.
+        close_full_tip='Stop tracking and remove this row from Leap '
+                       '(VS Code has no API to close a chat from outside; '
+                       'use Open, then Archive in VS Code)',
+        close_server_tip='Remove this row from Leap (chat stays in VS Code; '
+                         'returns if it gets new activity)',
+        # VS Code exposes no reliable close-by-id, so "close" is a Leap-side
+        # row removal keyed by session UUID.  The remove handlers need no
+        # folder - the adapter drops it.
         on_close_full=lambda w, fol, cid, lbl, tg, closed:
-            w._archive_vscode_chat_and_untrack(fol, cid, lbl, tg, closed),
+            w._remove_vscode_row_and_untrack(cid, lbl, tg, closed),
         on_close_server=lambda w, fol, cid, lbl:
-            w._archive_vscode_chat(fol, cid, lbl),
+            w._remove_vscode_row(cid, lbl),
         on_jump=lambda w, fol, cid: w._jump_to_vscode_chat(fol, cid),
     ),
 }
@@ -1434,78 +1435,63 @@ class TableBuilderMixin(_Base):
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _archive_vscode_chat(self, folder: str, session_id: Optional[str],
-                             label: str) -> None:
-        """Server-cell X on a VS Code row: archive the chat in VS Code but
-        KEEP PR tracking (the tracked row survives as a synthesized
-        "archived" row).  VS Code sibling of `_close_cursor_tab`.
+    def _dismiss_vscode_session(self, session_id: str) -> None:
+        """Persist a removed VS Code row in the ``vscode_gui_hidden`` pref.
 
-        Archive is VS Code's recoverable "close" (Unarchive restores it).
-        Acts on VS Code via the Leap extension, so it confirms first, then
-        runs in the background; the scan drops the row once VS Code records
-        the session archived.
+        Keyed by the immutable session UUID (never the title), so a future
+        chat with the same name is unaffected.  The scan skips this session
+        until it shows activity newer than the dismiss time - a new user
+        message auto-returns the row.  Entries older than 30 days are pruned
+        so sessions deleted in VS Code don't accumulate.
+        """
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - 30 * 24 * 3600 * 1000
+        prior = self._prefs.get('vscode_gui_hidden')
+        if not isinstance(prior, dict):  # tolerate a corrupted pref value
+            prior = {}
+        hidden = {k: v for k, v in prior.items()
+                  if isinstance(v, (int, float)) and v >= cutoff}
+        hidden[session_id] = now_ms
+        self._prefs['vscode_gui_hidden'] = hidden
+        self._save_prefs()
+
+    def _remove_vscode_row(self, session_id: Optional[str],
+                           label: str) -> None:
+        """Server-cell X on a VS Code row: remove the row from Leap but KEEP
+        PR tracking (a tracked row survives as a synthesized "removed" row).
+
+        VS Code exposes no API to close a chat from outside (its archive
+        command can't reliably target a session by id), so this is purely a
+        Leap-side hide - the chat stays in VS Code.  Reversible: sending the
+        chat a new message auto-returns the row.  No confirmation (cheap and
+        reversible).
         """
         if not session_id:
             self._show_status('No session id recorded for this chat')
             return
-        if not folder:
-            self._show_status('No project folder recorded for this chat')
-            return
-        reply = QMessageBox.question(
-            self, 'Archive Copilot Chat',
-            f"Archive the Copilot chat '{label}' in VS Code?\n\n"
-            "This moves it out of VS Code's active sessions list "
-            "(recoverable via Unarchive) and removes the row from Leap.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-        self._show_status(f"Archiving Copilot chat '{label}'...")
-        worker = BackgroundCallWorker(
-            lambda: archive_vscode_chat_session(folder, session_id), self)
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
+        self._dismiss_vscode_session(session_id)
+        self._show_status(f"Removed '{label}' from Leap (chat stays in VS Code)")
 
-    def _archive_vscode_chat_and_untrack(self, folder: str,
-                                         session_id: Optional[str],
-                                         label: str, tag: str,
-                                         tab_closed: bool) -> None:
-        """Leftmost-X action on a VS Code row: stop PR tracking AND archive
-        the chat in VS Code (VS Code sibling of
-        `_close_cursor_tab_and_untrack`).
+    def _remove_vscode_row_and_untrack(self, session_id: Optional[str],
+                                       label: str, tag: str,
+                                       tab_closed: bool) -> None:
+        """Leftmost-X on a VS Code row: stop PR tracking AND remove the row.
 
-        For an already-archived chat (a synthesized "archived" row that
-        only persists because it's tracked) there's nothing to archive - it
-        just stops tracking, dropping the row.
+        For an already-removed-but-tracked row (a synthesized "removed" row
+        that only persists because it's tracked) there's nothing to dismiss
+        again - it just stops tracking, dropping the row.
         """
         if tab_closed:
-            self._untrack_cursor_pr(tag)  # nothing to archive; just drop it
+            self._untrack_cursor_pr(tag)  # already dismissed; just drop it
             return
         if not session_id:
             self._show_status('No session id recorded for this chat')
             return
-        if not folder:
-            self._show_status('No project folder recorded for this chat')
-            return
-        tracked = tag in self._tracked_tags
-        extra = ' and stop tracking its PR' if tracked else ''
-        reply = QMessageBox.question(
-            self, 'Archive Copilot Chat',
-            f"Archive the Copilot chat '{label}'{extra}?\n\n"
-            "This moves it out of VS Code's active sessions list "
-            "(recoverable via Unarchive) and removes the row from Leap.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-        # Stop tracking first (drops the cache so no "archived" row is
-        # synthesized once the session leaves the next scan), then archive.
+        # Stop tracking first (drops the cache so no "removed" row is
+        # synthesized once the session leaves the scan), then dismiss.
         self._untrack_cursor_pr(tag)
-        self._show_status(f"Archiving Copilot chat '{label}'...")
-        worker = BackgroundCallWorker(
-            lambda: archive_vscode_chat_session(folder, session_id), self)
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
+        self._dismiss_vscode_session(session_id)
+        self._show_status(f"Removed '{label}' from Leap (chat stays in VS Code)")
 
     def _track_cursor_pr(self, tag: str) -> None:
         """Start tracking a Cursor row's branch PR (opt-in, in-memory).
@@ -2947,10 +2933,14 @@ class TableBuilderMixin(_Base):
             self._refresh_worker.wait(500)  # ms – should be near-instant
 
         show_editor_rows = bool(self._prefs.get('show_editor_gui_agents', True))
-        # GUI-thread snapshot of the PR-tracked VS Code session ids, so a
-        # tracked chat keeps its row (until archived) regardless of the
-        # recency window.  Passed in so the worker thread never reads the
-        # monitor's mutable state.
+        # GUI-thread snapshots passed in so the worker thread never reads the
+        # monitor's mutable state: the rows the user removed from Leap
+        # (sessionId -> dismiss-time, user-editable JSON so tolerate a
+        # non-dict), and the PR-tracked VS Code session ids (so a tracked
+        # chat keeps its row regardless of the recency window).
+        _hidden_pref = self._prefs.get('vscode_gui_hidden')
+        vscode_hidden = dict(_hidden_pref) \
+            if (show_editor_rows and isinstance(_hidden_pref, dict)) else {}
         vscode_keep_ids = {
             t[len(VSCODE_GUI_TAG_PREFIX):] for t in self._tracked_tags
             if t.startswith(VSCODE_GUI_TAG_PREFIX)
@@ -2958,6 +2948,7 @@ class TableBuilderMixin(_Base):
         self._refresh_worker = SessionRefreshWorker(
             self,
             scan_editor_gui=show_editor_rows,
+            vscode_hidden=vscode_hidden,
             vscode_keep_ids=vscode_keep_ids,
         )
         self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
@@ -3007,7 +2998,7 @@ class TableBuilderMixin(_Base):
                 closed = dict(self._cursor_row_cache[t])
                 closed['_tab_closed'] = True
                 closed['status_kind'] = 'idle'
-                closed['status_text'] = ('○  Chat archived'
+                closed['status_text'] = ('○  Removed'
                                          if t.startswith(VSCODE_GUI_TAG_PREFIX)
                                          else '○  Tab closed')
                 synthesized.append(closed)

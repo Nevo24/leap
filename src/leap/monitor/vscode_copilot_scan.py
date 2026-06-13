@@ -192,14 +192,33 @@ def _derive_status(entry: dict) -> tuple[str, str]:
     return 'idle', '○  Idle'
 
 
+def _entry_last_ms(entry: dict) -> int:
+    """The session's last-message epoch-ms, coerced to int (0 if absent)."""
+    last_ms = entry.get('lastMessageDate')
+    return int(last_ms) if isinstance(last_ms, (int, float)) else 0
+
+
+def _is_dismissed(sid: str, entry: dict, hidden: dict) -> bool:
+    """True if the user removed this row from Leap and the chat hasn't had
+    newer activity since.
+
+    ``hidden`` maps sessionId -> dismiss-time (epoch ms).  Keyed by the
+    immutable session UUID, never the title - so a *future* chat with the
+    same name gets a new UUID and is unaffected.  A new user message
+    (``lastMessageDate`` past the dismiss time) auto-returns the row: the
+    chat is active again, so Leap shows it again.
+    """
+    dismissed_at = hidden.get(sid)
+    return dismissed_at is not None and _entry_last_ms(entry) <= dismissed_at
+
+
 def _is_visible(sid: str, entry: dict, now_ms: int,
                 keep_ids: set[str]) -> bool:
     """Decide whether a session earns a monitor row.
 
-    Archived sessions are filtered by the caller (see
-    :func:`_archived_session_ids`) before this is reached - archiving is
-    Leap's "close", so an archived chat drops out of the scan entirely
-    (and a tracked one then gets a synthesized "closed" row).  The rest:
+    Two removals are applied by the caller *before* this: sessions the
+    user archived in VS Code (:func:`_archived_session_ids`) and rows the
+    user removed from Leap (:func:`_is_dismissed`).  The rest:
 
     * never: empty sessions (VS Code pre-creates blank "New Chat" entries
       on every panel open) or external sessions (cloud / other providers -
@@ -216,10 +235,7 @@ def _is_visible(sid: str, entry: dict, now_ms: int,
         return True
     if entry.get('lastResponseState') == _STATE_GENERATING:
         return True
-    last_ms = entry.get('lastMessageDate')
-    if not isinstance(last_ms, (int, float)):
-        last_ms = 0
-    return (now_ms - last_ms) <= RECENT_WINDOW_MS
+    return (now_ms - _entry_last_ms(entry)) <= RECENT_WINDOW_MS
 
 
 def _session_id_from_resource(resource: Any) -> Optional[str]:
@@ -442,18 +458,24 @@ def _build_row(folder: str, base: str, sid: str, entry: dict,
 
 
 def scan_open_vscode_copilot_sessions(
+    hidden: Optional[dict] = None,
     keep_ids: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return one row dict per visible Copilot Chat session of each
     workspace open in a live VS Code.
 
-    *keep_ids* (PR-tracked session ids) bypass the recency filter so a
-    tracked chat keeps its row until it's archived.  Archived sessions are
-    dropped entirely (archive is Leap's "close").
+    Two user removals drop a row, both keyed by the immutable session
+    UUID (never the title, so a future same-named chat is unaffected):
+    *hidden* maps sessionId -> dismiss-time for rows the user removed from
+    Leap (auto-returns on newer activity - see :func:`_is_dismissed`), and
+    sessions the user archived in VS Code itself
+    (:func:`_archived_session_ids`).  *keep_ids* (PR-tracked session ids)
+    bypass the recency filter so a tracked chat keeps its row.
 
     Returns ``[]`` when VS Code isn't running / has no open workspaces.
     Never raises - any disk/schema problem degrades to fewer rows.
     """
+    hidden = hidden or {}
     keep_ids = keep_ids or set()
     try:
         open_hashes = _open_workspace_hashes()
@@ -485,6 +507,7 @@ def scan_open_vscode_copilot_sessions(
         archived = _archived_session_ids(ws_db)
         visible = [(sid, e) for sid, e in entries.items()
                    if sid not in archived
+                   and not _is_dismissed(sid, e, hidden)
                    and _is_visible(sid, e, now_ms, keep_ids)]
         if not visible:
             continue

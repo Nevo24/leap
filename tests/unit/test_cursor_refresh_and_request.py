@@ -42,6 +42,7 @@ class _FakeWorker:
 
     def __init__(self, scan_editor_gui: bool) -> None:
         self._scan_editor_gui = scan_editor_gui
+        self._vscode_hidden: dict = {}
         self._vscode_keep_ids: set = set()
         self.sessions_ready = _RecordingSignal()
 
@@ -60,7 +61,7 @@ def test_cursor_scanned_even_when_leap_fetch_fails(
     )
     monkeypatch.setattr(
         scm_polling, 'scan_open_vscode_copilot_sessions',
-        lambda keep_ids=None: [],
+        lambda hidden=None, keep_ids=None: [],
     )
     w = _FakeWorker(scan_editor_gui=True)
     scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]
@@ -80,7 +81,7 @@ def test_leap_fetch_failure_without_editor_scan_emits_empty(
     )
     monkeypatch.setattr(
         scm_polling, 'scan_open_vscode_copilot_sessions',
-        lambda keep_ids=None:
+        lambda hidden=None, keep_ids=None:
             (_ for _ in ()).throw(AssertionError('should not scan')),
     )
     w = _FakeWorker(scan_editor_gui=False)
@@ -98,7 +99,7 @@ def test_happy_path_emits_both(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         scm_polling, 'scan_open_vscode_copilot_sessions',
-        lambda keep_ids=None: [{'tag': 'vscode-gui:def'}],
+        lambda hidden=None, keep_ids=None: [{'tag': 'vscode-gui:def'}],
     )
     w = _FakeWorker(scan_editor_gui=True)
     scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]
@@ -122,7 +123,7 @@ def test_one_editor_scan_failure_keeps_the_other(
     )
     monkeypatch.setattr(
         scm_polling, 'scan_open_vscode_copilot_sessions',
-        lambda keep_ids=None: [{'tag': 'vscode-gui:def'}],
+        lambda hidden=None, keep_ids=None: [{'tag': 'vscode-gui:def'}],
     )
     w = _FakeWorker(scan_editor_gui=True)
     scm_polling.SessionRefreshWorker.run(w)  # type: ignore[arg-type]

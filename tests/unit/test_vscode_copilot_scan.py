@@ -152,7 +152,48 @@ def test_visibility_keep_ids_bypass_recency():
     assert vcs._is_visible('s', _entry(last_ms=old), NOW_MS, {'s'})
 
 
-# ---- Archived-session detection (Leap's "close") ------------------------
+# ---- Remove-row dismissal (UUID-keyed, auto-returns on new activity) -----
+
+
+def test_dismissed_when_no_newer_activity():
+    # Removed at NOW; last message predates that -> stays removed.
+    hidden = {'s': NOW_MS}
+    assert vcs._is_dismissed('s', _entry(last_ms=NOW_MS - 5000), hidden)
+
+
+def test_dismissed_auto_returns_on_new_message():
+    # A new user message after the dismiss time -> row returns.
+    hidden = {'s': NOW_MS - 1000}
+    assert not vcs._is_dismissed('s', _entry(last_ms=NOW_MS), hidden)
+
+
+def test_dismissed_only_matches_the_exact_uuid():
+    # A different session id (e.g. a future same-named chat) is unaffected.
+    hidden = {'old-uuid': NOW_MS}
+    assert not vcs._is_dismissed('new-uuid', _entry(last_ms=NOW_MS), hidden)
+
+
+def test_scan_drops_dismissed_session(storage, monkeypatch):
+    h = 'd' * 32
+    _make_workspace(storage, h, '/repos/app',
+                    {'keep': _entry(), 'gone': _entry()})
+    _open_hashes(monkeypatch, {h})
+    rows = vcs.scan_open_vscode_copilot_sessions(hidden={'gone': NOW_MS + 1000})
+    assert [r['chat_id'] for r in rows] == ['keep']
+
+
+def test_scan_dismissed_beats_tracking(storage, monkeypatch):
+    """Removing a TRACKED chat drops it from the scan (so the reconcile can
+    synthesize its 'Removed' row) - dismissal wins over the keep_ids bypass."""
+    h = 'e' * 32
+    _make_workspace(storage, h, '/repos/app', {'t1': _entry()})
+    _open_hashes(monkeypatch, {h})
+    rows = vcs.scan_open_vscode_copilot_sessions(
+        hidden={'t1': NOW_MS + 1000}, keep_ids={'t1'})
+    assert rows == []
+
+
+# ---- Archived-session detection (VS Code's own archive) -----------------
 
 
 def test_session_id_from_resource_roundtrips():

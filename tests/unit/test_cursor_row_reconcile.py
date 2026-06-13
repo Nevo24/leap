@@ -278,10 +278,10 @@ def _vs_row(sid: str, **extra: Any) -> dict:
     return d
 
 
-def test_tracked_vscode_chat_synthesizes_chat_archived() -> None:
-    """A tracked VS Code chat that leaves the scan (archived / aged out)
-    survives as a synthesized row - with VS Code wording, not 'Tab
-    closed'."""
+def test_tracked_vscode_chat_synthesizes_removed_row() -> None:
+    """A tracked VS Code chat that leaves the scan (removed from Leap /
+    archived in VS Code / aged out) survives as a synthesized row - with
+    VS Code wording, not 'Tab closed'."""
     s = _Stub()
     _reconcile(s, [_vs_row('v1')])
     s._tracked_tags.add(VS_PREFIX + 'v1')
@@ -290,7 +290,7 @@ def test_tracked_vscode_chat_synthesizes_chat_archived() -> None:
     synth = s._cursor_gui_rows[0]
     assert synth['tag'] == VS_PREFIX + 'v1'
     assert synth['_tab_closed'] is True
-    assert synth['status_text'] == '○  Chat archived'
+    assert synth['status_text'] == '○  Removed'
     assert synth['project_path'] == '/repos/app'
 
 
@@ -311,7 +311,7 @@ def test_mixed_editors_reconcile_independently() -> None:
     _reconcile(s, [])
     by_tag = {r['tag']: r for r in s._cursor_gui_rows}
     assert by_tag[PREFIX + 'c1']['status_text'] == '○  Tab closed'
-    assert by_tag[VS_PREFIX + 'v1']['status_text'] == '○  Chat archived'
+    assert by_tag[VS_PREFIX + 'v1']['status_text'] == '○  Removed'
 
 
 # ---- Editor-profile dispatch (the table that replaced inline branching) ----
@@ -352,10 +352,10 @@ def test_cursor_profile_dispatch_passes_folder() -> None:
     ]
 
 
-def test_vscode_profile_dispatch_routes_to_archive_with_folder() -> None:
-    """The VS Code adapter routes the X buttons to the archive handlers
-    and keeps the folder (archive raises the VS Code window, so unlike the
-    old hide it needs the folder)."""
+def test_vscode_profile_dispatch_routes_to_remove_dropping_folder() -> None:
+    """The VS Code X buttons route to the Leap-side remove handlers and
+    DROP the folder (removal is a monitor-side hide - no VS Code action -
+    so it needs only the session id); jump still keeps the folder."""
     from leap.monitor._mixins.table_builder_mixin import _EDITOR_PROFILES
     w = _RecorderWin()
     p = _EDITOR_PROFILES['vscode_copilot_gui']
@@ -363,7 +363,7 @@ def test_vscode_profile_dispatch_routes_to_archive_with_folder() -> None:
     p.on_close_server(w, '/f', 'cid', 'lbl')
     p.on_jump(w, '/f', 'cid')
     assert w.calls == [
-        ('_archive_vscode_chat_and_untrack', ('/f', 'cid', 'lbl', 'tag', True)),
-        ('_archive_vscode_chat', ('/f', 'cid', 'lbl')),
+        ('_remove_vscode_row_and_untrack', ('cid', 'lbl', 'tag', True)),
+        ('_remove_vscode_row', ('cid', 'lbl')),
         ('_jump_to_vscode_chat', ('/f', 'cid')),
     ]

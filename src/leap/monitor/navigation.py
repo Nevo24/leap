@@ -909,29 +909,6 @@ def focus_vscode_chat_session(folder: str,
     return raised
 
 
-def archive_vscode_chat_session(folder: str, session_id: str) -> bool:
-    """Archive a VS Code Copilot Chat session (Leap's "close").
-
-    VS Code chat sessions are persisted, not tabs, so the non-destructive
-    analog of Cursor's "close the tab, chat stays in history" is Archive:
-    the Leap extension runs ``agentSession.archive``, which moves the
-    session out of the active SESSIONS list (recoverable via Unarchive)
-    and records the archived state in ``agentSessions.state.cache`` - which
-    is how the monitor's scan notices the session is gone and drops the
-    row.  Raises the owning VS Code window first (so the focused window's
-    extension consumes the request), then writes a
-    ``archiveChatSession:<id>`` request.  Best-effort; returns whether the
-    window raise succeeded.
-    """
-    if not session_id:
-        return False
-    raised = _raise_editor_window('VS Code', 'Code', folder)
-    if raised:
-        time.sleep(0.3)
-        _write_terminal_request(f'archiveChatSession:{session_id}')
-    return raised
-
-
 def rename_vscode_chat_session(folder: str, session_id: str) -> bool:
     """Open VS Code's own rename input for a Copilot Chat session.
 
