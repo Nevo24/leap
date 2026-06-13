@@ -258,6 +258,43 @@ def _jetbrains_env() -> dict[str, str]:
     return env
 
 
+# Standard macOS locations + bundle names for the VS Code-family editors.
+_VSCODE_APP_DIRS = ('/Applications', os.path.expanduser('~/Applications'))
+_VSCODE_BUNDLE_NAMES = {
+    'VS Code': ('Visual Studio Code', 'Visual Studio Code - Insiders'),
+    'Cursor': ('Cursor',),
+}
+
+
+def _vscode_cli_in_bundle(ide: str) -> Optional[str]:
+    """Path to the ``code`` CLI bundled inside the target editor's own
+    ``.app``, or None if the bundle isn't in a standard location.
+
+    Both VS Code and Cursor ship the CLI at
+    ``Contents/Resources/app/bin/code``.  Pinning to the bundle avoids a
+    PATH ``code`` that belongs to a *different* VS Code-family editor:
+    Cursor installs a ``code`` shim that shadows VS Code's on PATH, so a
+    plain ``which('code')`` for a VS Code session would drive Cursor
+    instead (e.g. closing a VS Code session would pop Cursor open)."""
+    for base in _VSCODE_APP_DIRS:
+        for name in _VSCODE_BUNDLE_NAMES.get(ide, ()):
+            cli = os.path.join(base, f'{name}.app',
+                               'Contents', 'Resources', 'app', 'bin', 'code')
+            if os.path.isfile(cli):
+                return cli
+    return None
+
+
+def _cli_is_other_editor(cli_path: str, ide: str) -> bool:
+    """True if *cli_path* resolves into the OTHER VS Code-family editor's
+    bundle - so we never drive Cursor for a VS Code session, or VS Code
+    for a Cursor session (e.g. Cursor's ``code`` shim symlinked onto PATH)."""
+    real = os.path.realpath(cli_path)
+    in_cursor = 'Cursor.app/' in real
+    in_vscode = 'Visual Studio Code' in real
+    return in_vscode if ide == 'Cursor' else in_cursor
+
+
 def _vscode_env_and_path(
     ide: str = 'VS Code',
 ) -> tuple[dict[str, str], Optional[str]]:
@@ -269,9 +306,16 @@ def _vscode_env_and_path(
         if p not in current_path and os.path.exists(p):
             env['PATH'] = f"{p}:{current_path}"
             current_path = env['PATH']
-    # Cursor uses 'cursor' CLI, VS Code uses 'code'
-    cli_name = 'cursor' if ide == 'Cursor' else 'code'
-    code_path = shutil.which(cli_name, path=env.get('PATH'))
+    # Prefer the CLI bundled inside the target editor's own .app; only fall
+    # back to a PATH lookup, and then reject a candidate that resolves into
+    # the OTHER editor's bundle (Cursor's `code` shim shadows VS Code's on
+    # PATH - running it would open the wrong editor).
+    code_path = _vscode_cli_in_bundle(ide)
+    if not code_path:
+        cli_name = 'cursor' if ide == 'Cursor' else 'code'
+        cand = shutil.which(cli_name, path=env.get('PATH'))
+        if cand and not _cli_is_other_editor(cand, ide):
+            code_path = cand
     return env, code_path
 
 

@@ -367,3 +367,11 @@ def test_vscode_profile_dispatch_routes_to_remove_dropping_folder() -> None:
         ('_remove_vscode_row', ('cid', 'lbl')),
         ('_jump_to_vscode_chat', ('/f', 'cid')),
     ]
+
+
+def test_vscode_remove_explainer_suppressed_after_dont_show_again() -> None:
+    """Once vscode_remove_explained is set, _confirm_vscode_remove returns
+    True immediately - no dialog built (keeps repeated removals snappy)."""
+    class _S:
+        _prefs = {'vscode_remove_explained': True}
+    assert TableBuilderMixin._confirm_vscode_remove(_S(), 'hi') is True

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from PyQt5 import sip
 from PyQt5.QtWidgets import (
-    QApplication, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+    QApplication, QCheckBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QMenu, QMessageBox, QPushButton, QTableWidgetItem, QWidget,
     QWidgetAction,
 )
@@ -1455,6 +1455,40 @@ class TableBuilderMixin(_Base):
         self._prefs['vscode_gui_hidden'] = hidden
         self._save_prefs()
 
+    def _confirm_vscode_remove(self, label: str) -> bool:
+        """One-time explainer that removing a VS Code row does NOT close the
+        chat in VS Code (the non-obvious part).  Returns True to proceed.
+
+        Shown until the user ticks "Don't show this again"
+        (``vscode_remove_explained`` pref), then suppressed so repeated
+        removals stay snappy.
+        """
+        if self._prefs.get('vscode_remove_explained'):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle('Remove Copilot Chat Row')
+        box.setText(f"Remove '{label}' from Leap?")
+        box.setInformativeText(
+            "This removes the row from Leap only - the chat stays in "
+            "VS Code. VS Code has no way to close a chat from outside, so "
+            "to close it for real: click Open to jump to the chat, then "
+            "Archive it in VS Code.\n\n"
+            "The row returns here automatically if the chat gets new "
+            "activity.")
+        remove_btn = box.addButton('Remove', QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(remove_btn)
+        dont_ask = QCheckBox("Don't show this again")
+        box.setCheckBox(dont_ask)
+        box.exec_()
+        if box.clickedButton() is not remove_btn:
+            return False
+        if dont_ask.isChecked():
+            self._prefs['vscode_remove_explained'] = True
+            self._save_prefs()
+        return True
+
     def _remove_vscode_row(self, session_id: Optional[str],
                            label: str) -> None:
         """Server-cell X on a VS Code row: remove the row from Leap but KEEP
@@ -1463,11 +1497,13 @@ class TableBuilderMixin(_Base):
         VS Code exposes no API to close a chat from outside (its archive
         command can't reliably target a session by id), so this is purely a
         Leap-side hide - the chat stays in VS Code.  Reversible: sending the
-        chat a new message auto-returns the row.  No confirmation (cheap and
-        reversible).
+        chat a new message auto-returns the row.  A one-time dialog explains
+        this the first time (see ``_confirm_vscode_remove``).
         """
         if not session_id:
             self._show_status('No session id recorded for this chat')
+            return
+        if not self._confirm_vscode_remove(label):
             return
         self._dismiss_vscode_session(session_id)
         self._show_status(f"Removed '{label}' from Leap (chat stays in VS Code)")
@@ -1486,6 +1522,8 @@ class TableBuilderMixin(_Base):
             return
         if not session_id:
             self._show_status('No session id recorded for this chat')
+            return
+        if not self._confirm_vscode_remove(label):
             return
         # Stop tracking first (drops the cache so no "removed" row is
         # synthesized once the session leaves the scan), then dismiss.
