@@ -131,6 +131,12 @@ function processRequestFile(requireFocus) {
                 return;
             }
             renameChatSession(content.substring('renameChatSession:'.length));
+        } else if (content.startsWith('archiveChatSession:')) {
+            // VS Code only (same shared-file rationale as above).
+            if (isCursor()) {
+                return;
+            }
+            archiveChatSession(content.substring('archiveChatSession:'.length));
         } else {
             selectTerminalByName(content);
         }
@@ -145,7 +151,7 @@ function processRequestFile(requireFocus) {
  */
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Leap');
-    log('Leap extension v1.7.0 activated');
+    log('Leap extension v1.7.1 activated');
     log(`Watching for: ${REQUEST_FILE}`);
 
     // Register command (for manual use via command palette)
@@ -384,6 +390,36 @@ async function renameChatSession(sessionId) {
         log(`renameChatSession: rename flow opened for ${sessionId}`);
     } catch (err) {
         log(`renameChatSession: failed for ${sessionId}: ${err}`);
+    }
+}
+
+/**
+ * VS Code only: archive a Copilot Chat session by id (Leap's "close").
+ *
+ * VS Code chat sessions are persisted, not tabs - the non-destructive
+ * analog of Cursor's "close the Agent tab (chat stays in history)" is
+ * Archive: `agentSession.archive` moves the session out of the active
+ * SESSIONS list (recoverable via Unarchive). Resolved from the same
+ * marshalled `{$mid: 25, session: {resource}}` argument as rename, and
+ * the archived state lands in `agentSessions.state.cache`, which is how
+ * the Leap monitor's scan notices the session is gone and drops the row.
+ * Best-effort, like every internal-command call here.
+ */
+async function archiveChatSession(sessionId) {
+    if (!sessionId) {
+        return;
+    }
+    if (isCursor()) {
+        log('archiveChatSession: running in Cursor, ignoring');
+        return;
+    }
+    const uri = chatSessionUri(sessionId);
+    try {
+        await vscode.commands.executeCommand(
+            'agentSession.archive', { $mid: 25, session: { resource: uri } });
+        log(`archiveChatSession: archived ${sessionId}`);
+    } catch (err) {
+        log(`archiveChatSession: failed for ${sessionId}: ${err}`);
     }
 }
 

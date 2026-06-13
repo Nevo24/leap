@@ -79,6 +79,18 @@ def _install_and_configure(provider_name: str, source_hook: str) -> bool:
             shutil.copy2(statusline_source, statusline_dest)
             os.chmod(str(statusline_dest), 0o755)
 
+    # cursor-agent's session store is encrypted, so its context-window usage
+    # is only reachable via a status line (a Claude-compatible statusLine
+    # command in ~/.cursor/cli-config.json).  Install the script alongside so
+    # ``CursorAgentProvider.configure_hooks`` can register it.
+    if provider_name == "cursor-agent":
+        statusline_source = Path(source_hook).with_name(
+            "leap-cursor-statusline.py")
+        if statusline_source.is_file():
+            statusline_dest = hook_dir / "leap-cursor-statusline.py"
+            shutil.copy2(statusline_source, statusline_dest)
+            os.chmod(str(statusline_dest), 0o755)
+
     provider.configure_hooks(str(dest))
     return True
 

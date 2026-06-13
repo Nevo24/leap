@@ -613,9 +613,9 @@ class TestClaudeStatuslineSafetyNet:
 
 class TestProviderContextUsage:
     def test_supports_flag_per_provider(self):
-        # Cursor genuinely can't report usage -> N/A; the rest can.
-        assert get_provider('cursor-agent').supports_context_usage is False
-        for name in ('claude', 'codex', 'gemini', 'copilot'):
+        # Every base CLI reports usage now - cursor-agent joined via its
+        # status-line state file (the same route as Copilot).
+        for name in ('claude', 'codex', 'gemini', 'copilot', 'cursor-agent'):
             assert get_provider(name).supports_context_usage is True
 
     def test_copilot_reads_statusline_state_file(self, tmp_path):

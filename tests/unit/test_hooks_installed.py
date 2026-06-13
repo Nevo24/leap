@@ -61,6 +61,8 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[P
     monkeypatch.setattr(codex_mod, "CODEX_HOOKS_FILE", tmp_path / ".codex" / "hooks.json")
     monkeypatch.setattr(cursor_mod, "CURSOR_CONFIG_DIR", tmp_path / ".cursor")
     monkeypatch.setattr(cursor_mod, "CURSOR_HOOKS_FILE", tmp_path / ".cursor" / "hooks.json")
+    monkeypatch.setattr(cursor_mod, "CURSOR_CLI_CONFIG_FILE",
+                        tmp_path / ".cursor" / "cli-config.json")
     monkeypatch.setattr(gemini_mod, "GEMINI_CONFIG_DIR", tmp_path / ".gemini")
     monkeypatch.setattr(gemini_mod, "GEMINI_SETTINGS_FILE", tmp_path / ".gemini" / "settings.json")
 

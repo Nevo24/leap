@@ -24,6 +24,7 @@ from typing import Any, Optional
 from leap.cli_providers.base import CLIProvider
 from leap.cli_providers.states import SIGNAL_STATES
 from leap.utils.atomic_write import atomic_write_json
+from leap.utils.context_usage import ContextUsage, statusline_context_usage
 from leap.utils.cursor_session_move import find_chat_dir, relocate_cursor_session
 
 
@@ -39,6 +40,10 @@ from leap.utils.cursor_session_move import find_chat_dir, relocate_cursor_sessio
 
 CURSOR_CONFIG_DIR: Path = Path.home() / ".cursor"
 CURSOR_HOOKS_FILE: Path = CURSOR_CONFIG_DIR / "hooks.json"
+# cursor-agent's own CLI config (NOT hooks.json): carries the Claude-style
+# ``statusLine: {type: "command", command}`` entry Leap registers for the
+# monitor's Context column.
+CURSOR_CLI_CONFIG_FILE: Path = CURSOR_CONFIG_DIR / "cli-config.json"
 HOOK_MARKER: str = "leap-hook.sh"
 
 
@@ -280,6 +285,10 @@ class CursorAgentProvider(CLIProvider):
         - Each hook entry has a "command" string (not nested "hooks" array)
 
         We configure the stop hook to call leap-hook.sh with "idle" state.
+
+        Also registers Leap's status-line script (the only path to
+        cursor-agent's context-window usage - the session store is encrypted)
+        in ``~/.cursor/cli-config.json``; see :meth:`_configure_statusline`.
         """
         hooks_data: dict[str, Any] = {"version": 1, "hooks": {}}
         if CURSOR_HOOKS_FILE.exists():
@@ -322,6 +331,57 @@ class CursorAgentProvider(CLIProvider):
         })
 
         atomic_write_json(CURSOR_HOOKS_FILE, hooks_data)
+        self._configure_statusline(hook_script_path)
+
+    def _configure_statusline(self, hook_script_path: str) -> None:
+        """Register Leap's status line in ``~/.cursor/cli-config.json``.
+
+        cursor-agent supports a Claude-compatible ``statusLine`` command: it
+        pipes a JSON payload (model + ``context_window`` block) to the command
+        on stdin every render, with the CLI's env (so ``LEAP_TAG`` /
+        ``LEAP_SIGNAL_DIR`` reach the script).  Leap registers
+        ``leap-cursor-statusline.py`` (installed next to the hook script) so
+        the monitor's Context column gets ``<tag>.context`` state files - the
+        encrypted session store offers no transcript fallback.
+
+        cursor-agent allows only one ``statusLine``, so any the user already
+        had is preserved by chaining to it via ``leap-statusline-chain``
+        (never chain to our own script - a self-reference would loop on
+        reconfigure).  Best-effort and never raises: the status line is an
+        optional enhancement (``hooks_installed`` doesn't gate on it), so a
+        failure here must not break ``make install`` or session startup.
+        """
+        try:
+            statusline = Path(hook_script_path).with_name(
+                "leap-cursor-statusline.py")
+            if not statusline.is_file():
+                return  # installer didn't place the script - nothing to wire
+            config: dict[str, Any] = {}
+            if CURSOR_CLI_CONFIG_FILE.is_file():
+                try:
+                    with open(CURSOR_CLI_CONFIG_FILE) as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        config = loaded
+                except (json.JSONDecodeError, OSError, ValueError):
+                    return  # don't clobber a file we can't safely read
+            existing = config.get("statusLine")
+            existing_cmd = (existing.get("command")
+                            if isinstance(existing, dict) else None)
+            if (isinstance(existing_cmd, str) and existing_cmd.strip()
+                    and "leap-cursor-statusline" not in existing_cmd):
+                try:
+                    statusline.with_name("leap-statusline-chain").write_text(
+                        existing_cmd)
+                except OSError:
+                    pass
+            config["statusLine"] = {
+                "type": "command",
+                "command": str(statusline),
+            }
+            atomic_write_json(CURSOR_CLI_CONFIG_FILE, config)
+        except Exception:
+            return  # best-effort: the status line is an optional enhancement
 
     def hooks_installed(self) -> bool:
         """True iff ``~/.cursor/leap-hook.sh`` exists AND
@@ -390,7 +450,80 @@ class CursorAgentProvider(CLIProvider):
                             atomic_write_json(CURSOR_HOOKS_FILE, data)
         except Exception:
             pass
+        self._deconfigure_statusline()
         super().deconfigure_hooks()
+
+    def _deconfigure_statusline(self) -> None:
+        """Remove Leap's status line from ~/.cursor/cli-config.json.
+
+        Restores the user's prior status-line command from
+        ``leap-statusline-chain`` if one was saved at install time, or removes
+        the ``statusLine`` key entirely if Leap added it from scratch.  Then
+        removes the chain file and the status-line script.  Best-effort:
+        never raises.
+        """
+        try:
+            chain_file = self.hook_config_dir / "leap-statusline-chain"
+            prior_cmd: Optional[str] = None
+            if chain_file.is_file():
+                try:
+                    prior_cmd = chain_file.read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    pass
+
+            if CURSOR_CLI_CONFIG_FILE.is_file():
+                try:
+                    with open(CURSOR_CLI_CONFIG_FILE, encoding="utf-8") as f:
+                        config = json.load(f)
+                    if isinstance(config, dict):
+                        existing = config.get("statusLine")
+                        existing_cmd = (
+                            existing.get("command") if isinstance(existing, dict) else None
+                        )
+                        if (
+                            isinstance(existing_cmd, str)
+                            and "leap-cursor-statusline" in existing_cmd
+                        ):
+                            if prior_cmd:
+                                config["statusLine"] = {
+                                    "type": "command",
+                                    "command": prior_cmd,
+                                }
+                            else:
+                                config.pop("statusLine", None)
+                            atomic_write_json(CURSOR_CLI_CONFIG_FILE, config)
+                except (json.JSONDecodeError, OSError, ValueError):
+                    pass
+
+            for name in ("leap-statusline-chain", "leap-cursor-statusline.py"):
+                try:
+                    (self.hook_config_dir / name).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+    # -- Context usage ------------------------------------------------------
+
+    @property
+    def supports_context_usage(self) -> bool:
+        return True
+
+    def context_usage(self, cli_name: str, tag: str,
+                      storage_dir: Path) -> Optional[ContextUsage]:
+        """Context-window usage from the status-line state file.
+
+        Leap's status-line script (``leap-cursor-statusline.py``, registered
+        in ``~/.cursor/cli-config.json``) writes
+        ``<storage>/sockets/<tag>.context`` (JSON ``{used_tokens, window,
+        model}``) every render.  The file is absent until the status line
+        first fires (-> blank cell) or if the status line isn't installed
+        (run ``leap --reconfigure``).  No transcript fallback exists:
+        cursor-agent's on-disk session store is encrypted and carries no
+        token usage.
+        """
+        state = storage_dir / 'sockets' / f'{tag}.context'
+        return statusline_context_usage(str(state))
 
     # -- CLI binary lookup -----------------------------------------------
 

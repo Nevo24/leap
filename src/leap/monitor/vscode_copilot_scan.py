@@ -20,7 +20,11 @@ VS Code persists chat state per workspace under
   a status column.
 * ``chatSessions/<sessionId>.jsonl`` → the session content as an op-log
   (``kind`` 0 = full initial state; later lines patch paths in ``k``).
-  Only read to extract the last user prompt, signature-cached.
+  Read (signature-cached) for the last user prompt and the Context column's
+  usage: each finished request records ``result.metadata.promptTokens``
+  (that request's input-side size - a live-context proxy) and
+  ``inputState.selectedModel.metadata.maxInputTokens`` is the selected
+  model's input limit (the window).
 
 ``lastResponseState`` holds the last request's response state.  Mapping
 (verified empirically + against VS Code's own index→status function, which
@@ -41,6 +45,7 @@ defensive: any unexpected shape skips that row rather than raising.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -104,8 +109,11 @@ _STATE_NEEDS_INPUT: int = 4
 # Per-workspace session-index cache, keyed by the db path and invalidated
 # by db signature (mtime of db + -wal), like the Cursor scan's caches.
 _INDEX_CACHE: dict[str, dict[str, Any]] = {}
-# Per-session last-user-prompt cache, keyed by the session jsonl signature.
-_LASTMSG_CACHE: dict[str, tuple[Any, str]] = {}
+# Per-workspace archived-session-id cache (same db-signature invalidation).
+_ARCHIVED_CACHE: dict[str, dict[str, Any]] = {}
+# Per-session details cache (last user prompt + context usage), keyed by
+# the session jsonl signature.
+_DETAILS_CACHE: dict[str, tuple[Any, tuple[str, Optional[dict]]]] = {}
 # Length cap for the Last Msg cell text.
 _LASTMSG_MAX_LEN: int = 200
 # Open-workspace detection cache (pgrep+lsof).  VS Code keeps its OWN cache
@@ -185,19 +193,18 @@ def _derive_status(entry: dict) -> tuple[str, str]:
 
 
 def _is_visible(sid: str, entry: dict, now_ms: int,
-                hidden: dict[str, float], keep_ids: set[str]) -> bool:
+                keep_ids: set[str]) -> bool:
     """Decide whether a session earns a monitor row.
+
+    Archived sessions are filtered by the caller (see
+    :func:`_archived_session_ids`) before this is reached - archiving is
+    Leap's "close", so an archived chat drops out of the scan entirely
+    (and a tracked one then gets a synthesized "closed" row).  The rest:
 
     * never: empty sessions (VS Code pre-creates blank "New Chat" entries
       on every panel open) or external sessions (cloud / other providers -
       the Agent Sessions view lists e.g. Claude Code there, which would
       double-count Leap's own rows);
-    * hidden: a session the user dismissed stays hidden until it shows
-      *new* activity (``lastMessageDate`` newer than the dismiss time) -
-      the moral equivalent of "closing the tab and reopening it".  Hidden
-      beats EVERYTHING below, including PR tracking: hiding a tracked
-      chat must drop it from the scan so the reconcile can synthesize
-      its "Chat hidden" row (which is what keeps the PR polled);
     * always: a generating session, or one the monitor PR-tracks
       (``keep_ids``) - tracking outliving the recency window mirrors a
       tracked-but-closed Cursor tab;
@@ -205,33 +212,93 @@ def _is_visible(sid: str, entry: dict, now_ms: int,
     """
     if entry.get('isEmpty') is True or entry.get('isExternal') is True:
         return False
-    last_ms = entry.get('lastMessageDate')
-    if not isinstance(last_ms, (int, float)):
-        last_ms = 0
-    hidden_at = hidden.get(sid)
-    if hidden_at is not None and last_ms <= hidden_at:
-        return False
     if sid in keep_ids:
         return True
     if entry.get('lastResponseState') == _STATE_GENERATING:
         return True
+    last_ms = entry.get('lastMessageDate')
+    if not isinstance(last_ms, (int, float)):
+        last_ms = 0
     return (now_ms - last_ms) <= RECENT_WINDOW_MS
 
 
-# ---- Last user prompt ----------------------------------------------------
+def _session_id_from_resource(resource: Any) -> Optional[str]:
+    """Decode a ``vscode-chat-session://local/<base64url(id)>`` resource
+    back to its session id, or ``None`` for any other scheme/shape.
+
+    VS Code addresses local sessions this way in ``agentSessions.state.cache``
+    (external providers like ``claude-code:`` use a different scheme, which
+    we ignore - they aren't Leap rows)."""
+    prefix = 'vscode-chat-session://local/'
+    if not isinstance(resource, str) or not resource.startswith(prefix):
+        return None
+    b = resource[len(prefix):]
+    try:
+        return base64.urlsafe_b64decode(b + '=' * (-len(b) % 4)).decode('utf-8')
+    except (ValueError, UnicodeDecodeError):
+        return None
 
 
-def _extract_last_message(session_file: Path) -> str:
-    """Best-effort last USER prompt from a session's op-log jsonl.
+def _archived_session_ids(ws_db: Path) -> set[str]:
+    """Session ids the user has archived in this workspace.
+
+    Archive is VS Code's persisted, recoverable "close" (the analog of
+    Cursor's close-tab-keep-in-history).  The archived flag lives in
+    ``agentSessions.state.cache`` (entry shape
+    ``{resource, archived, pinned, read}``), NOT in the session index, so
+    the scan reads it separately and drops archived sessions - that's how
+    the monitor row disappears when the chat is archived.  Cached by db
+    signature, like the index."""
+    sig = _db_signature(ws_db)
+    cached = _ARCHIVED_CACHE.get(str(ws_db))
+    if cached is not None and cached.get('sig') == sig:
+        return cached['ids']
+    ids: set[str] = set()
+    rows = _query_ro(
+        ws_db,
+        "SELECT value FROM ItemTable WHERE key='agentSessions.state.cache'",
+    )
+    if rows:
+        try:
+            data = json.loads(rows[0][0])
+            if isinstance(data, list):
+                for e in data:
+                    if isinstance(e, dict) and e.get('archived'):
+                        sid = _session_id_from_resource(e.get('resource'))
+                        if sid:
+                            ids.add(sid)
+        except (TypeError, ValueError, IndexError):
+            ids = set()
+    _ARCHIVED_CACHE[str(ws_db)] = {'sig': sig, 'ids': ids}
+    return ids
+
+
+# ---- Last user prompt + context usage --------------------------------------
+
+
+def _extract_session_details(session_file: Path) -> tuple[str, Optional[dict]]:
+    """Best-effort ``(last user prompt, context usage)`` from a session's
+    op-log jsonl.
 
     Requests (= user turns) appear in two forms, both observed live:
     the ``kind:0`` first line carries ``v.requests`` (the compacted full
     state), and later ops re-set the array (``k == ['requests']``) or one
     element (``k == ['requests', <idx>]``).  The newest request list wins;
-    its last element's ``message.text`` is the prompt.  Returns '' when
-    nothing readable.
+    its last element's ``message.text`` is the prompt.
+
+    Context usage pairs the newest finished request's
+    ``result.metadata.promptTokens`` (that request's input-side size - a
+    live-context proxy, input-only like the CLI providers) with the selected
+    model's ``inputState.selectedModel.metadata.maxInputTokens`` (the
+    window).  ``inputState`` comes from the ``kind:0`` state and is patched
+    by ``k == ['inputState']`` / ``['inputState', 'selectedModel']`` ops, so
+    a mid-session model switch updates the window.  The usage dict is
+    ``{used_tokens, window, model}`` (the row's ``context`` key), or ``None``
+    when either side is missing (no finished request yet, or no readable
+    model limit) -> blank Context cell.
     """
     requests: list = []
+    selected_model: Optional[dict] = None
     try:
         with open(session_file, encoding='utf-8', errors='replace') as fh:
             for line in fh:
@@ -247,11 +314,28 @@ def _extract_last_message(session_file: Path) -> str:
                         else None
                     if isinstance(reqs, list):
                         requests = reqs
+                    inp = init.get('inputState') if isinstance(init, dict) \
+                        else None
+                    sm = inp.get('selectedModel') if isinstance(inp, dict) \
+                        else None
+                    if isinstance(sm, dict):
+                        selected_model = sm
                     continue
                 k = op.get('k')
-                if not isinstance(k, list) or not k or k[0] != 'requests':
+                if not isinstance(k, list) or not k:
                     continue
                 v = op.get('v')
+                if k[0] == 'inputState':
+                    if len(k) == 1 and isinstance(v, dict):
+                        sm = v.get('selectedModel')
+                        if isinstance(sm, dict):
+                            selected_model = sm
+                    elif (len(k) == 2 and k[1] == 'selectedModel'
+                            and isinstance(v, dict)):
+                        selected_model = v
+                    continue
+                if k[0] != 'requests':
+                    continue
                 if len(k) == 1 and isinstance(v, list):
                     requests = v
                 elif (len(k) == 2 and isinstance(k[1], int)
@@ -262,39 +346,65 @@ def _extract_last_message(session_file: Path) -> str:
                     elif idx == len(requests):
                         requests.append(v)
     except OSError:
-        return ''
+        return '', None
+    last_msg = ''
     for req in reversed(requests):
         if not isinstance(req, dict):
             continue
         msg = req.get('message')
         text = msg.get('text') if isinstance(msg, dict) else None
         if isinstance(text, str) and text.strip():
-            return ' '.join(text.split())[:_LASTMSG_MAX_LEN]
-    return ''
+            last_msg = ' '.join(text.split())[:_LASTMSG_MAX_LEN]
+            break
+    return last_msg, _derive_context(requests, selected_model)
 
 
-def _last_message(session_file: Path) -> str:
-    """Cached wrapper for :func:`_extract_last_message` (keyed by the
+def _derive_context(requests: list,
+                    selected_model: Optional[dict]) -> Optional[dict]:
+    """Pair the newest request's prompt tokens with the model's input limit."""
+    metadata = (selected_model.get('metadata')
+                if isinstance(selected_model, dict) else None)
+    if not isinstance(metadata, dict):
+        return None
+    window = metadata.get('maxInputTokens')
+    if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
+        return None
+    for req in reversed(requests):
+        if not isinstance(req, dict):
+            continue
+        result = req.get('result')
+        res_md = result.get('metadata') if isinstance(result, dict) else None
+        used = res_md.get('promptTokens') if isinstance(res_md, dict) else None
+        if isinstance(used, int) and not isinstance(used, bool) and used > 0:
+            name = metadata.get('name') or metadata.get('id')
+            return {'used_tokens': used, 'window': window,
+                    'model': name if isinstance(name, str) else ''}
+    return None
+
+
+def _session_details(session_file: Path) -> tuple[str, Optional[dict]]:
+    """Cached wrapper for :func:`_extract_session_details` (keyed by the
     session file's mtime+size, so it re-reads only after a write)."""
     try:
         st = session_file.stat()
         sig: Any = (st.st_mtime_ns, st.st_size)
     except OSError:
-        return ''
+        return '', None
     key = str(session_file)
-    cached = _LASTMSG_CACHE.get(key)
+    cached = _DETAILS_CACHE.get(key)
     if cached is not None and cached[0] == sig:
         return cached[1]
-    text = _extract_last_message(session_file)
-    _LASTMSG_CACHE[key] = (sig, text)
-    return text
+    details = _extract_session_details(session_file)
+    _DETAILS_CACHE[key] = (sig, details)
+    return details
 
 
 # ---- Row building --------------------------------------------------------
 
 
 def _build_row(folder: str, base: str, sid: str, entry: dict,
-               branch: str = '', last_msg: str = '') -> dict:
+               branch: str = '', last_msg: str = '',
+               context: Optional[dict] = None) -> dict:
     """Build one synthetic monitor row dict for a Copilot Chat session.
 
     Same shape as a Cursor GUI row (shared render/reconcile pipeline);
@@ -315,6 +425,7 @@ def _build_row(folder: str, base: str, sid: str, entry: dict,
         'project_path': folder,
         'branch': branch,
         'last_msg': last_msg,
+        'context': context,
         'ide': 'VS Code',
         'cli_provider': 'vscode-copilot-gui',
         'window_folder': folder,
@@ -331,20 +442,18 @@ def _build_row(folder: str, base: str, sid: str, entry: dict,
 
 
 def scan_open_vscode_copilot_sessions(
-    hidden: Optional[dict[str, float]] = None,
     keep_ids: Optional[set[str]] = None,
 ) -> list[dict]:
     """Return one row dict per visible Copilot Chat session of each
     workspace open in a live VS Code.
 
-    *hidden* maps session id → dismiss timestamp (ms): the session stays
-    hidden until it shows newer activity.  *keep_ids* (PR-tracked session
-    ids) bypass the recency filter entirely.
+    *keep_ids* (PR-tracked session ids) bypass the recency filter so a
+    tracked chat keeps its row until it's archived.  Archived sessions are
+    dropped entirely (archive is Leap's "close").
 
     Returns ``[]`` when VS Code isn't running / has no open workspaces.
     Never raises - any disk/schema problem degrades to fewer rows.
     """
-    hidden = hidden or {}
     keep_ids = keep_ids or set()
     try:
         open_hashes = _open_workspace_hashes()
@@ -355,7 +464,8 @@ def scan_open_vscode_copilot_sessions(
         # VS Code fully closed (or no open workspaces) - drop every cache
         # rather than leaking entries until it reopens.
         _INDEX_CACHE.clear()
-        _LASTMSG_CACHE.clear()
+        _ARCHIVED_CACHE.clear()
+        _DETAILS_CACHE.clear()
         return []
 
     now_ms = int(time.time() * 1000)
@@ -372,21 +482,26 @@ def scan_open_vscode_copilot_sessions(
             continue
         open_ws_keys.add(str(ws_db))
         entries = _session_index(ws_db)
+        archived = _archived_session_ids(ws_db)
         visible = [(sid, e) for sid, e in entries.items()
-                   if _is_visible(sid, e, now_ms, hidden, keep_ids)]
+                   if sid not in archived
+                   and _is_visible(sid, e, now_ms, keep_ids)]
         if not visible:
             continue
         branch = _branch_for(folder)  # cached; once per folder
         for sid, entry in visible:
             session_file = ws_db.parent / 'chatSessions' / f'{sid}.jsonl'
             seen_files.add(str(session_file))
+            last_msg, context = _session_details(session_file)
             rows.append(_build_row(folder, base, sid, entry, branch,
-                                   _last_message(session_file)))
+                                   last_msg, context))
 
     # Prune caches to what's currently open/visible so they stay bounded
     # across a long monitor run.
     for key in [k for k in _INDEX_CACHE if k not in open_ws_keys]:
         _INDEX_CACHE.pop(key, None)
-    for key in [k for k in _LASTMSG_CACHE if k not in seen_files]:
-        _LASTMSG_CACHE.pop(key, None)
+    for key in [k for k in _ARCHIVED_CACHE if k not in open_ws_keys]:
+        _ARCHIVED_CACHE.pop(key, None)
+    for key in [k for k in _DETAILS_CACHE if k not in seen_files]:
+        _DETAILS_CACHE.pop(key, None)
     return rows

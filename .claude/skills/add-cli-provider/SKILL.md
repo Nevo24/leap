@@ -185,7 +185,7 @@ Override these only if the CLI differs from the defaults:
 | `valid_signal_states` | `SIGNAL_STATES` | Override if the CLI writes different states to signal files |
 | `supports_resume` | `False` | Set `True` when you wire up the **Leap Resume** feature (see below) |
 | `requires_cwd_bound_resume` | `False` | Set `True` if resuming this CLI requires running from the recorded cwd (see **Cross-cwd resume — the "move" mechanism** below). Drives the picker's *Original / Current* prompt. |
-| `supports_context_usage` | `False` | Set `True` when you implement `context_usage()`. `False` renders the monitor's Context cell as `N/A` (CLI can't report usage, e.g. Cursor); `True` shows the % or blank. See **Context-usage column** below. |
+| `supports_context_usage` | `False` | Set `True` when you implement `context_usage()`. `False` renders the monitor's Context cell as `N/A` (CLI can't report usage); `True` shows the % or blank. All five base CLIs report usage today. See **Context-usage column** below. |
 
 #### Optional Methods (Have Defaults)
 
@@ -463,15 +463,23 @@ green→amber→red. You don't touch the monitor.
        return mycli_context_usage(tp) if tp else None
    ```
 
-2. **CLIs with no transcript usage but a status line (Copilot).** Copilot's
-   transcript exposes no live usage, but its **status line** receives the live
-   numbers (`current_context_tokens`, `context_window_size`, `model`) on stdin
-   each render. Leap installs `leap-copilot-statusline.py` (registered in
-   `~/.copilot/settings.json` by `CopilotProvider.configure_hooks`, chaining any
-   existing status line via a `leap-statusline-chain` sidecar); the script
-   writes `<storage>/sockets/<tag>.context` (the status-line subprocess inherits
+2. **CLIs with no transcript usage but a status line (Copilot,
+   cursor-agent).** Copilot's transcript exposes no live usage, but its
+   **status line** receives the live numbers (`current_context_tokens`,
+   `context_window_size`, `model`) on stdin each render. Leap installs
+   `leap-copilot-statusline.py` (registered in `~/.copilot/settings.json` by
+   `CopilotProvider.configure_hooks`, chaining any existing status line via a
+   `leap-statusline-chain` sidecar); the script writes
+   `<storage>/sockets/<tag>.context` (the status-line subprocess inherits
    `LEAP_TAG`/`LEAP_SIGNAL_DIR`). The provider reads that file via
-   `copilot_context_usage(state_path)`. To add a status-line CLI: install its
+   `statusline_context_usage(state_path)`. cursor-agent is the same pattern
+   (its session store is *encrypted*, so the status line is the only signal):
+   `leap-cursor-statusline.py`, registered as the Claude-compatible
+   `statusLine: {type: "command", command}` in `~/.cursor/cli-config.json` by
+   `CursorAgentProvider._configure_statusline`; the payload mirrors Claude's
+   (`context_window.context_window_size` / `used_percentage` /
+   `total_input_tokens`, where `total_input_tokens` is percent-derived, i.e.
+   live context, not cumulative). To add a status-line CLI: install its
    script in `configure_hooks` (and have `_install_and_configure` in
    `configure_hooks.py` copy it), keep `hooks_installed()` independent of it
    (the status line is optional — don't gate session startup on it), and read

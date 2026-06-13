@@ -278,8 +278,8 @@ def _vs_row(sid: str, **extra: Any) -> dict:
     return d
 
 
-def test_tracked_vscode_chat_synthesizes_chat_hidden() -> None:
-    """A tracked VS Code chat that leaves the scan (hidden / aged out)
+def test_tracked_vscode_chat_synthesizes_chat_archived() -> None:
+    """A tracked VS Code chat that leaves the scan (archived / aged out)
     survives as a synthesized row - with VS Code wording, not 'Tab
     closed'."""
     s = _Stub()
@@ -290,7 +290,7 @@ def test_tracked_vscode_chat_synthesizes_chat_hidden() -> None:
     synth = s._cursor_gui_rows[0]
     assert synth['tag'] == VS_PREFIX + 'v1'
     assert synth['_tab_closed'] is True
-    assert synth['status_text'] == '○  Chat hidden'
+    assert synth['status_text'] == '○  Chat archived'
     assert synth['project_path'] == '/repos/app'
 
 
@@ -311,7 +311,7 @@ def test_mixed_editors_reconcile_independently() -> None:
     _reconcile(s, [])
     by_tag = {r['tag']: r for r in s._cursor_gui_rows}
     assert by_tag[PREFIX + 'c1']['status_text'] == '○  Tab closed'
-    assert by_tag[VS_PREFIX + 'v1']['status_text'] == '○  Chat hidden'
+    assert by_tag[VS_PREFIX + 'v1']['status_text'] == '○  Chat archived'
 
 
 # ---- Editor-profile dispatch (the table that replaced inline branching) ----
@@ -352,9 +352,10 @@ def test_cursor_profile_dispatch_passes_folder() -> None:
     ]
 
 
-def test_vscode_profile_dispatch_drops_folder_on_close() -> None:
-    """The VS Code adapter must drop the folder arg the Cursor close
-    needs (VS Code hides have no folder), while jump keeps it."""
+def test_vscode_profile_dispatch_routes_to_archive_with_folder() -> None:
+    """The VS Code adapter routes the X buttons to the archive handlers
+    and keeps the folder (archive raises the VS Code window, so unlike the
+    old hide it needs the folder)."""
     from leap.monitor._mixins.table_builder_mixin import _EDITOR_PROFILES
     w = _RecorderWin()
     p = _EDITOR_PROFILES['vscode_copilot_gui']
@@ -362,7 +363,7 @@ def test_vscode_profile_dispatch_drops_folder_on_close() -> None:
     p.on_close_server(w, '/f', 'cid', 'lbl')
     p.on_jump(w, '/f', 'cid')
     assert w.calls == [
-        ('_hide_vscode_chat_and_untrack', ('cid', 'lbl', 'tag', True)),
-        ('_hide_vscode_chat', ('cid', 'lbl')),
+        ('_archive_vscode_chat_and_untrack', ('/f', 'cid', 'lbl', 'tag', True)),
+        ('_archive_vscode_chat', ('/f', 'cid', 'lbl')),
         ('_jump_to_vscode_chat', ('/f', 'cid')),
     ]

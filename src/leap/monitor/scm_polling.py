@@ -511,21 +511,18 @@ class SessionRefreshWorker(QThread):
     ``self.sessions`` / pinned-session machinery - they are a pure
     display overlay added at render time.
 
-    ``vscode_hidden`` / ``vscode_keep_ids`` are GUI-thread snapshots of
-    the dismissed-chats pref and the PR-tracked VS Code session ids,
-    passed in at construction so the worker thread never touches the
-    monitor's mutable state.
+    ``vscode_keep_ids`` is a GUI-thread snapshot of the PR-tracked VS Code
+    session ids, passed in at construction so the worker thread never
+    touches the monitor's mutable state.
     """
 
     sessions_ready = pyqtSignal(list, list)  # (leap_sessions, editor_gui_rows)
 
     def __init__(self, parent: Optional[QWidget] = None,
                  scan_editor_gui: bool = False,
-                 vscode_hidden: Optional[dict] = None,
                  vscode_keep_ids: Optional[set] = None) -> None:
         super().__init__(parent)
         self._scan_editor_gui = scan_editor_gui
-        self._vscode_hidden = vscode_hidden or {}
         self._vscode_keep_ids = vscode_keep_ids or set()
 
     def run(self) -> None:
@@ -550,7 +547,6 @@ class SessionRefreshWorker(QThread):
                 logger.debug("Error scanning Cursor agent tabs", exc_info=True)
             try:
                 editor_rows.extend(scan_open_vscode_copilot_sessions(
-                    hidden=self._vscode_hidden,
                     keep_ids=self._vscode_keep_ids,
                 ))
             except Exception:

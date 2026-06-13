@@ -38,6 +38,7 @@ from leap.slack.config import (
     is_slack_installed, load_slack_config, load_slack_sessions, resolve_team_id,
 )
 from leap.utils.constants import SOCKET_DIR, load_settings, save_settings
+from leap.utils.context_usage import ContextUsage
 from leap.utils.menu import extract_menu_options, extract_menu_question
 from leap.utils.pricing import format_usd
 from leap.utils.socket_utils import send_socket_request
@@ -50,8 +51,8 @@ from leap.monitor.vscode_copilot_scan import (
     VSCODE_GUI_TAG_PREFIX,
 )
 from leap.monitor.navigation import (
-    close_cursor_composer, focus_cursor_window, focus_vscode_chat_session,
-    rename_vscode_chat_session,
+    archive_vscode_chat_session, close_cursor_composer, focus_cursor_window,
+    focus_vscode_chat_session, rename_vscode_chat_session,
 )
 from leap.monitor.ui.ui_widgets import ElidedLabel, IndicatorLabel, PulsingLabel
 from leap.monitor.themes import current_theme, ensure_contrast
@@ -96,6 +97,10 @@ class _EditorRowProfile:
     cli_label: str          # CLI-column badge ('Cursor Editor' / 'Copilot Chat')
     app_label: str          # App-column badge + tooltips ('Cursor' / 'VS Code')
     chat_noun: str          # 'Agent tab' / 'Copilot chat'
+    supports_context: bool  # Context column: scanner provides usage (VS Code)
+    #                         vs the editor exposes none on disk (Cursor) - the
+    #                         same N/A-vs-blank split regular rows get from
+    #                         provider.supports_context_usage.
     close_full_tip: str     # leftmost-X tooltip when the chat is still live
     close_server_tip: str   # server-cell-X tooltip when the chat is still live
     on_close_full: Callable     # (window, folder, cid, label, tag, tab_closed)
@@ -108,6 +113,9 @@ _EDITOR_PROFILES: dict[str, _EditorRowProfile] = {
         cli_label='Cursor Editor',
         app_label='Cursor',
         chat_noun='Agent tab',
+        # Cursor's composer store keeps tokenCount zeroed and the conversation
+        # encrypted - there is no context signal on disk to surface.
+        supports_context=False,
         close_full_tip='Stop tracking and close this Agent tab in Cursor',
         close_server_tip='Close only this Agent tab in Cursor '
                          '(keeps PR tracking)',
@@ -121,16 +129,20 @@ _EDITOR_PROFILES: dict[str, _EditorRowProfile] = {
         cli_label='Copilot Chat',
         app_label='VS Code',
         chat_noun='Copilot chat',
-        close_full_tip='Stop tracking and hide this Copilot chat row '
-                       '(the chat stays in VS Code)',
-        close_server_tip='Hide this Copilot chat row (keeps PR tracking; '
-                         'the chat stays in VS Code)',
-        # VS Code has no chat tab to close, so the hide handlers ignore the
-        # folder a Cursor close needs - the adapter drops it.
+        # The chat-session op-log records each request's promptTokens and the
+        # selected model's input limit; the scanner ships them on the row.
+        supports_context=True,
+        close_full_tip='Stop tracking and archive this Copilot chat in '
+                       'VS Code (recoverable via Unarchive)',
+        close_server_tip='Archive this Copilot chat in VS Code (keeps PR '
+                         'tracking; recoverable via Unarchive)',
+        # VS Code chat sessions are persisted, not tabs, so "close" =
+        # archive.  The archive handlers ignore the folder a Cursor close
+        # needs - the adapter drops it.
         on_close_full=lambda w, fol, cid, lbl, tg, closed:
-            w._hide_vscode_chat_and_untrack(cid, lbl, tg, closed),
+            w._archive_vscode_chat_and_untrack(fol, cid, lbl, tg, closed),
         on_close_server=lambda w, fol, cid, lbl:
-            w._hide_vscode_chat(cid, lbl),
+            w._archive_vscode_chat(fol, cid, lbl),
         on_jump=lambda w, fol, cid: w._jump_to_vscode_chat(fol, cid),
     ),
 }
@@ -250,47 +262,21 @@ class TableBuilderMixin(_Base):
         else:
             item.setForeground(QColor(current_theme().text_primary))
 
-    def _build_context_cell(self, row: int, tag: str, cli_provider: str,
-                            row_color: Optional[str]) -> None:
-        """Render the Context-window-usage cell, or blank.
+    def _set_context_usage_cell(self, row: int, usage: ContextUsage,
+                                row_color: Optional[str]) -> str:
+        """Render a :class:`ContextUsage` into the Context cell.
 
-        Shows ``<pct>%`` of the model's context window used, colored
-        green -> amber -> red as it fills (an at-a-glance warning of how
-        close the session is to auto-compaction).  The value comes per-CLI from
-        ``provider.context_usage()`` (Claude / Codex / Gemini read transcripts;
-        Copilot reads its status-line state file).  Three cell states:
-
-        - **N/A** - the CLI can't report usage at all (``supports_context_usage``
-          is False, e.g. Cursor).
-        - **blank** - supported, but no data yet (transcript/state file not
-          written this session).
-        - **<pct>%** - the live measurement.
-
-        The provider locates its own source from ``(cli_provider, tag,
-        STORAGE_DIR)`` -- passing the row's recorded ``cli_provider`` name keeps
-        custom CLIs pointed at their own subdir.
-
-        Not ``_cell_cache``-d: the value changes as the session grows.
-        ``context_usage`` already caches on the source file's (mtime, size), so
-        an unchanged poll is a single ``stat`` and ``_set_cell_text`` no-ops
-        when the text is unchanged.
+        Sets the ``<pct>%`` text, the green -> amber -> red fill colour, and
+        the base "Context window" tooltip block.  Shared by regular rows
+        (provider-sourced usage; ``_build_context_cell`` appends the cost
+        block) and VS Code Copilot editor-GUI rows (scanner-sourced usage).
+        Returns the applied tooltip HTML so callers can extend it.
         """
-        try:
-            provider = get_provider(cli_provider)
-        except ValueError:
-            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
-            return
-        if not provider.supports_context_usage:
-            self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
-            return
-        usage = provider.context_usage(cli_provider, tag, SOCKET_DIR.parent)
-        if usage is None:
-            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
-            return
-        self._set_cell_text(row, self.COL_CONTEXT, f'{usage.percent}%', row_color)
+        self._set_cell_text(row, self.COL_CONTEXT, f'{usage.percent}%',
+                            row_color)
         item = self.table.item(row, self.COL_CONTEXT)
         if item is None:
-            return
+            return ''
         t = current_theme()
         color = (t.accent_green if usage.percent < 70
                  else t.accent_orange if usage.percent < 90
@@ -325,6 +311,53 @@ class TableBuilderMixin(_Base):
             f" <span style='color:{dim}'>· {usage.percent}% used</span></div>"
             f"{model_html}"
         )
+        item.setToolTip(tooltip)
+        return tooltip
+
+    def _build_context_cell(self, row: int, tag: str, cli_provider: str,
+                            row_color: Optional[str]) -> None:
+        """Render the Context-window-usage cell, or blank.
+
+        Shows ``<pct>%`` of the model's context window used, colored
+        green -> amber -> red as it fills (an at-a-glance warning of how
+        close the session is to auto-compaction).  The value comes per-CLI from
+        ``provider.context_usage()`` (Claude / Codex / Gemini read transcripts;
+        Copilot and cursor-agent read their status-line state files).  Three
+        cell states:
+
+        - **N/A** - the CLI can't report usage at all (``supports_context_usage``
+          is False).
+        - **blank** - supported, but no data yet (transcript/state file not
+          written this session).
+        - **<pct>%** - the live measurement.
+
+        The provider locates its own source from ``(cli_provider, tag,
+        STORAGE_DIR)`` -- passing the row's recorded ``cli_provider`` name keeps
+        custom CLIs pointed at their own subdir.
+
+        Not ``_cell_cache``-d: the value changes as the session grows.
+        ``context_usage`` already caches on the source file's (mtime, size), so
+        an unchanged poll is a single ``stat`` and ``_set_cell_text`` no-ops
+        when the text is unchanged.
+        """
+        try:
+            provider = get_provider(cli_provider)
+        except ValueError:
+            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
+            return
+        if not provider.supports_context_usage:
+            self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
+            return
+        usage = provider.context_usage(cli_provider, tag, SOCKET_DIR.parent)
+        if usage is None:
+            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
+            return
+        tooltip = self._set_context_usage_cell(row, usage, row_color)
+        item = self.table.item(row, self.COL_CONTEXT)
+        if item is None:
+            return
+        t = current_theme()
+        sec, pri, dim = t.text_secondary, t.text_primary, t.text_muted
         # Cost-supporting CLIs (Claude/Codex/Gemini) add the cumulative
         # token + USD meter.  Cost is an estimate ("est.") because
         # subscription users aren't billed per token; the $ is dropped when
@@ -1122,9 +1155,25 @@ class TableBuilderMixin(_Base):
         # the editor's on-disk state; blank if none readable).
         self._set_cell_text(row, self.COL_TASK,
                             session.get('last_msg') or '', row_color)
-        # Context: N/A - neither editor exposes context-window usage (and
-        # the widget-removal loop above does not clear text-item cells).
-        self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
+        # Context: VS Code rows carry scanner-extracted usage (the chat
+        # op-log records each request's prompt tokens + the selected model's
+        # input limit); Cursor rows have no on-disk signal -> N/A.  Mirrors
+        # the regular-row semantics: N/A = can't report, blank = supported
+        # but nothing readable yet.
+        ctx = session.get('context')
+        window = ctx.get('window') if isinstance(ctx, dict) else None
+        used = ctx.get('used_tokens') if isinstance(ctx, dict) else None
+        if not profile.supports_context:
+            self._set_cell_text(row, self.COL_CONTEXT, 'N/A', row_color)
+        elif isinstance(window, int) and window > 0:
+            self._set_context_usage_cell(
+                row,
+                ContextUsage(used_tokens=used if isinstance(used, int) else 0,
+                             window=window,
+                             model=str(ctx.get('model') or '')),
+                row_color)
+        else:
+            self._set_cell_text(row, self.COL_CONTEXT, '', row_color)
         # Path: same label + actions button as normal rows (Open in
         # Terminal / Open in IDE - both operate on this row's folder).
         self._build_path_cell(row, tag, session.get('project_path') or 'N/A',
@@ -1385,81 +1434,78 @@ class TableBuilderMixin(_Base):
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def _hide_vscode_session_id(self, session_id: str) -> None:
-        """Persist a Copilot chat dismissal (``vscode_gui_hidden`` pref).
+    def _archive_vscode_chat(self, folder: str, session_id: Optional[str],
+                             label: str) -> None:
+        """Server-cell X on a VS Code row: archive the chat in VS Code but
+        KEEP PR tracking (the tracked row survives as a synthesized
+        "archived" row).  VS Code sibling of `_close_cursor_tab`.
 
-        The scan skips a hidden session until it shows activity NEWER than
-        the dismiss time (a new user prompt auto-unhides it - the moral
-        equivalent of reopening a closed Cursor tab).  Entries older than
-        30 days are pruned so chats deleted in VS Code don't accumulate.
-        """
-        now_ms = int(time.time() * 1000)
-        cutoff = now_ms - 30 * 24 * 3600 * 1000
-        prior = self._prefs.get('vscode_gui_hidden')
-        if not isinstance(prior, dict):  # tolerate a corrupted pref value
-            prior = {}
-        hidden = {k: v for k, v in prior.items()
-                  if isinstance(v, (int, float)) and v >= cutoff}
-        hidden[session_id] = now_ms
-        self._prefs['vscode_gui_hidden'] = hidden
-        self._save_prefs()
-
-    def _hide_vscode_chat(self, session_id: Optional[str],
-                          label: str) -> None:
-        """Server-cell X on a VS Code row: hide the chat row but KEEP PR
-        tracking (the tracked row survives as a synthesized closed row).
-
-        VS Code sibling of `_close_cursor_tab` - except nothing happens in
-        VS Code itself: there is no chat tab to close, the session simply
-        stops being shown by the monitor.
+        Archive is VS Code's recoverable "close" (Unarchive restores it).
+        Acts on VS Code via the Leap extension, so it confirms first, then
+        runs in the background; the scan drops the row once VS Code records
+        the session archived.
         """
         if not session_id:
             self._show_status('No session id recorded for this chat')
             return
+        if not folder:
+            self._show_status('No project folder recorded for this chat')
+            return
         reply = QMessageBox.question(
-            self, 'Hide Copilot Chat Row',
-            f"Hide the Copilot chat '{label}' from the monitor?\n\n"
-            "The chat itself stays in VS Code. Sending it a new message "
-            "brings the row back.",
+            self, 'Archive Copilot Chat',
+            f"Archive the Copilot chat '{label}' in VS Code?\n\n"
+            "This moves it out of VS Code's active sessions list "
+            "(recoverable via Unarchive) and removes the row from Leap.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        self._hide_vscode_session_id(session_id)
-        self._show_status(f"Hidden Copilot chat '{label}'")
+        self._show_status(f"Archiving Copilot chat '{label}'...")
+        worker = BackgroundCallWorker(
+            lambda: archive_vscode_chat_session(folder, session_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
-    def _hide_vscode_chat_and_untrack(self, session_id: Optional[str],
-                                      label: str, tag: str,
-                                      tab_closed: bool) -> None:
-        """Leftmost-X action on a VS Code row: stop PR tracking AND hide
-        the chat row (VS Code sibling of `_close_cursor_tab_and_untrack`).
+    def _archive_vscode_chat_and_untrack(self, folder: str,
+                                         session_id: Optional[str],
+                                         label: str, tag: str,
+                                         tab_closed: bool) -> None:
+        """Leftmost-X action on a VS Code row: stop PR tracking AND archive
+        the chat in VS Code (VS Code sibling of
+        `_close_cursor_tab_and_untrack`).
 
-        For an already-hidden chat (a synthesized closed row that only
-        persists because it's tracked) there's nothing to hide - it just
-        stops tracking, dropping the row.
+        For an already-archived chat (a synthesized "archived" row that
+        only persists because it's tracked) there's nothing to archive - it
+        just stops tracking, dropping the row.
         """
         if tab_closed:
-            self._untrack_cursor_pr(tag)  # nothing to hide; just drop it
+            self._untrack_cursor_pr(tag)  # nothing to archive; just drop it
             return
         if not session_id:
             self._show_status('No session id recorded for this chat')
+            return
+        if not folder:
+            self._show_status('No project folder recorded for this chat')
             return
         tracked = tag in self._tracked_tags
         extra = ' and stop tracking its PR' if tracked else ''
         reply = QMessageBox.question(
-            self, 'Hide Copilot Chat Row',
-            f"Hide the Copilot chat '{label}'{extra}?\n\n"
-            "The chat itself stays in VS Code. Sending it a new message "
-            "brings the row back.",
+            self, 'Archive Copilot Chat',
+            f"Archive the Copilot chat '{label}'{extra}?\n\n"
+            "This moves it out of VS Code's active sessions list "
+            "(recoverable via Unarchive) and removes the row from Leap.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        # Stop tracking first (drops the cache so no closed row is
-        # synthesized once the session leaves the next scan), then hide.
+        # Stop tracking first (drops the cache so no "archived" row is
+        # synthesized once the session leaves the next scan), then archive.
         self._untrack_cursor_pr(tag)
-        self._hide_vscode_session_id(session_id)
-        self._show_status(f"Hidden Copilot chat '{label}'")
+        self._show_status(f"Archiving Copilot chat '{label}'...")
+        worker = BackgroundCallWorker(
+            lambda: archive_vscode_chat_session(folder, session_id), self)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _track_cursor_pr(self, tag: str) -> None:
         """Start tracking a Cursor row's branch PR (opt-in, in-memory).
@@ -2901,15 +2947,10 @@ class TableBuilderMixin(_Base):
             self._refresh_worker.wait(500)  # ms – should be near-instant
 
         show_editor_rows = bool(self._prefs.get('show_editor_gui_agents', True))
-        # VS Code Copilot scan inputs, snapshotted on the GUI thread: the
-        # user-dismissed sessions and the PR-tracked session ids (which
-        # bypass the scan's recency filter so tracking survives age-out).
-        # ``vscode_gui_hidden`` is user-editable JSON, so tolerate a
-        # corrupted (non-dict) value rather than letting dict() raise here
-        # and wedge the refresh loop.
-        _hidden_pref = self._prefs.get('vscode_gui_hidden')
-        vscode_hidden = dict(_hidden_pref) \
-            if (show_editor_rows and isinstance(_hidden_pref, dict)) else {}
+        # GUI-thread snapshot of the PR-tracked VS Code session ids, so a
+        # tracked chat keeps its row (until archived) regardless of the
+        # recency window.  Passed in so the worker thread never reads the
+        # monitor's mutable state.
         vscode_keep_ids = {
             t[len(VSCODE_GUI_TAG_PREFIX):] for t in self._tracked_tags
             if t.startswith(VSCODE_GUI_TAG_PREFIX)
@@ -2917,7 +2958,6 @@ class TableBuilderMixin(_Base):
         self._refresh_worker = SessionRefreshWorker(
             self,
             scan_editor_gui=show_editor_rows,
-            vscode_hidden=vscode_hidden,
             vscode_keep_ids=vscode_keep_ids,
         )
         self._refresh_worker.sessions_ready.connect(self._on_sessions_refreshed)
@@ -2967,7 +3007,7 @@ class TableBuilderMixin(_Base):
                 closed = dict(self._cursor_row_cache[t])
                 closed['_tab_closed'] = True
                 closed['status_kind'] = 'idle'
-                closed['status_text'] = ('○  Chat hidden'
+                closed['status_text'] = ('○  Chat archived'
                                          if t.startswith(VSCODE_GUI_TAG_PREFIX)
                                          else '○  Tab closed')
                 synthesized.append(closed)
