@@ -23,9 +23,14 @@ Per-CLI support:
               reads that file.  Claude also writes the same file via its own
               status-line script and prefers it over the transcript (it is the
               only place Claude exposes the resolved 1M-vs-200K window).
-  - Cursor  : NOT supported - the CLI exposes no token usage at all and chats
-              live in an undocumented content-addressed SQLite blob store
-              (no transcript_path recorded).  Renders N/A.
+  - Cursor  : its on-disk session store is encrypted (no transcript_path,
+              no token usage), but - like Claude/Copilot - it pipes the live
+              context numbers to a **status line** command on stdin every
+              render.  Leap installs ``leap-cursor-statusline.py`` (registered
+              in ``~/.cursor/cli-config.json``) which writes the same
+              ``<storage>/sockets/<tag>.context`` file ``statusline_context_usage``
+              reads.  Blank until the status line first fires (run
+              ``leap --reconfigure`` if it never does).
 
 Each CLI measures the same thing: the size of the prompt sent on the most
 recent turn (the conversation loaded into the window), NOT the model's reply.
