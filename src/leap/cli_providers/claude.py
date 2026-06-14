@@ -28,6 +28,60 @@ from leap.utils.resume_store import latest_transcript_for
 _TRANSCRIPT_TAIL_BYTES = 32768
 _TRANSCRIPT_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
+# Caps on the head scan when recovering the session's original cwd.  The cwd
+# sits on an early, small record, so the common case returns after a few small
+# lines; the caps bound a pathological file (a multi-MB paste/image record, or
+# a missing-cwd file) instead of reading a whole giant line into memory.  Real
+# transcripts have been observed with ~650 KB of content before the cwd line,
+# so the total cap is set well above that.
+_FIRST_CWD_SCAN_LINES = 64
+_FIRST_CWD_MAX_LINE_BYTES = 1 << 18   # 256 KiB per readline
+_FIRST_CWD_MAX_TOTAL_BYTES = 1 << 21  # 2 MiB total
+
+
+def _first_cwd_in_transcript(path: str) -> str:
+    """Return the first non-empty ``cwd`` recorded in a Claude transcript.
+
+    Claude anchors a transcript under the slug of the cwd it was *started*
+    in, which is the cwd the first JSONL record carries.  A mid-session
+    ``cd`` changes later records' ``cwd`` but never moves the file, so this
+    head value is the cwd ``claude --resume`` needs.  Returns ``''`` on any
+    read/parse failure (caller falls back to the recorded cwd).
+    """
+    if not path:
+        return ''
+    total = 0
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            for _ in range(_FIRST_CWD_SCAN_LINES):
+                # Bounded read: a line longer than the cap comes back truncated
+                # (fails the json parse below and is skipped) rather than
+                # pulling a multi-MB record into memory.
+                raw = f.readline(_FIRST_CWD_MAX_LINE_BYTES)
+                if not raw:
+                    break
+                total += len(raw)
+                stripped = raw.strip()
+                if stripped:
+                    try:
+                        entry = json.loads(stripped)
+                    except (json.JSONDecodeError, ValueError):
+                        entry = None
+                    if isinstance(entry, dict):
+                        cwd = entry.get('cwd')
+                        # Must be a non-empty STRING.  A truthy non-string (an
+                        # odd transcript record) would otherwise reach
+                        # ``slugify`` -> ``re.sub`` and raise TypeError, which
+                        # the picker's ``except`` wouldn't expect — crashing the
+                        # whole ``leap --resume`` picker for every CLI.
+                        if isinstance(cwd, str) and cwd:
+                            return cwd
+                if total >= _FIRST_CWD_MAX_TOTAL_BYTES:
+                    break
+    except OSError:
+        return ''
+    return ''
+
 # Matches ``[Pasted text #N]`` / ``[Pasted text #N +K lines]`` in
 # history ``display`` strings.  Captures the paste id so the resolver
 # can look it up in the entry's ``pastedContents`` dict.
@@ -563,6 +617,33 @@ class ClaudeProvider(CLIProvider):
         return relocate_claude_session(
             session_id, src_cwd, dst_cwd, on_committed=on_committed,
         )
+
+    def resume_cwd_for_transcript(self, transcript_path: str, cwd: str) -> str:
+        """Return the cwd ``claude --resume`` needs, healing mid-session drift.
+
+        Claude stores ``<projects>/<slug-of-start-cwd>/<uuid>.jsonl`` and that
+        slug is fixed at session start.  ``record_session`` keeps overwriting
+        the recorded cwd with whatever cwd a hook last saw, so a session that
+        ``cd``'d mid-run ends up with a cwd whose slug no longer matches its
+        transcript dir — and then resume can't find it from *any* directory.
+
+        The transcript dir's slug is authoritative.  If the given cwd already
+        matches it, return it unchanged (no I/O — the common case).  Otherwise
+        recover the original cwd from the transcript's first record, accepting
+        it only when its slug matches the dir; fall back to the given cwd if it
+        can't be recovered (never invent a path).
+        """
+        if not transcript_path or '.claude/projects/' not in transcript_path:
+            return cwd
+        actual_slug = os.path.basename(os.path.dirname(transcript_path))
+        if not actual_slug:
+            return cwd
+        if cwd and slugify(cwd) == actual_slug:
+            return cwd
+        original = _first_cwd_in_transcript(transcript_path)
+        if original and slugify(original) == actual_slug:
+            return original
+        return cwd
 
     # -- Last assistant message (Slack) ----------------------------------
 

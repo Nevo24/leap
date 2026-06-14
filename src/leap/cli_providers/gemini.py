@@ -23,7 +23,10 @@ from leap.cli_providers.base import CLIProvider
 from leap.utils.atomic_write import atomic_write_json
 from leap.utils.context_usage import ContextUsage, gemini_context_usage
 from leap.utils.cost_usage import CostInfo, gemini_session_cost_cached
-from leap.utils.gemini_session_move import relocate_gemini_session
+from leap.utils.gemini_session_move import (
+    relocate_gemini_session,
+    resume_cwd_for_session,
+)
 from leap.utils.resume_store import latest_transcript_for
 
 
@@ -326,6 +329,17 @@ class GeminiProvider(CLIProvider):
         return relocate_gemini_session(
             session_id, src_cwd, dst_cwd, on_committed=on_committed,
         )
+
+    def resume_cwd_for_transcript(self, transcript_path: str, cwd: str) -> str:
+        """Heal a recorded cwd that drifted from the session's slug dir.
+
+        A mid-session ``cd`` makes ``record_session`` store a cwd whose
+        registry slug no longer maps to ``tmp/<slug>/chats/`` where the
+        session lives, breaking resume from every directory.  Recover the
+        original cwd from the registry; see
+        :func:`leap.utils.gemini_session_move.resume_cwd_for_session`.
+        """
+        return resume_cwd_for_session(transcript_path, cwd)
 
     # -- Hook configuration ----------------------------------------------
 

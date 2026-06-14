@@ -331,6 +331,30 @@ def get_provider(name: Optional[str] = None) -> CLIProvider:
     return provider
 
 
+def resume_cwd_for_record(cli: str, transcript_path: str, cwd: str) -> str:
+    """Cwd a recorded session should be resumed in, healed against drift.
+
+    The recorded ``cwd`` can drift from where the CLI anchored the session
+    (a mid-session ``cd``), which breaks resume from every directory.  This
+    reconciles it against the authoritative ``transcript_path`` via the
+    provider's :meth:`CLIProvider.resume_cwd_for_transcript`.  Single entry
+    point shared by every resume launcher (the ``leap --resume`` picker and
+    the monitor's GUI resume paths) so they heal identically.
+
+    Best-effort: returns ``cwd`` unchanged for an unknown ``cli`` or an empty
+    ``transcript_path`` — never raises.  The broad ``except`` is deliberate:
+    several callers (the ``leap --resume`` picker, the monitor PR-tracking
+    resume) don't wrap this, and a heal failure must never break the resume
+    itself — falling back to the recorded cwd is always safe.
+    """
+    if not transcript_path:
+        return cwd
+    try:
+        return get_provider(cli).resume_cwd_for_transcript(transcript_path, cwd) or cwd
+    except Exception:
+        return cwd
+
+
 def list_providers() -> list[str]:
     """Return list of available provider names, respecting user-defined order."""
     saved = _load_cli_order()

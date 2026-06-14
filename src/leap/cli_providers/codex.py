@@ -44,6 +44,37 @@ _LAST_PROMPT_CACHE: dict[str, tuple[int, int, str]] = {}
 HOOK_MARKER: str = "leap-hook.sh"
 
 
+def _session_meta_cwd(transcript_path: str) -> str:
+    """Return the ``cwd`` Codex recorded in a rollout's ``session_meta`` line.
+
+    Codex writes its launch cwd into the first JSONL record
+    (``{"type": "session_meta", "payload": {"cwd": ..., "id": ...}}``).  That
+    is the cwd Codex internally associates with the session, so resuming with
+    ``-C <that cwd>`` avoids Codex's own "Choose working directory" prompt.
+    Returns ``''`` on any read/parse failure (caller falls back to its cwd).
+    """
+    if not transcript_path or '.codex/sessions/' not in transcript_path:
+        return ''
+    try:
+        with open(transcript_path, 'r', encoding='utf-8', errors='replace') as f:
+            first = f.readline()
+    except OSError:
+        return ''
+    if not first.strip():
+        return ''
+    try:
+        entry = json.loads(first)
+    except (json.JSONDecodeError, ValueError):
+        return ''
+    if not isinstance(entry, dict) or entry.get('type') != 'session_meta':
+        return ''
+    payload = entry.get('payload')
+    if not isinstance(payload, dict):
+        return ''
+    cwd = payload.get('cwd')
+    return cwd if isinstance(cwd, str) and cwd else ''
+
+
 class CodexProvider(CLIProvider):
     """Provider for OpenAI Codex CLI (Ratatui TUI, Rust)."""
 
@@ -378,6 +409,37 @@ class CodexProvider(CLIProvider):
                 # "logical move" surface still looks succeeded.
                 pass
         return transcript_path
+
+    def resume_cwd_for_transcript(self, transcript_path: str, cwd: str) -> str:
+        """Resume Codex in the cwd it started in (its ``session_meta`` cwd).
+
+        ``codex resume <uuid>`` finds the session from any cwd, but the picker
+        still ``chdir``s and passes ``-C <cwd>``; if that cwd doesn't match the
+        cwd Codex recorded for the session, Codex re-prompts "Choose working
+        directory to resume".  A mid-session ``cd`` (or just resuming from
+        elsewhere) makes the recorded cwd drift, so recover the start cwd from
+        the rollout to keep the resume silent and land in the right place.
+        Falls back to the given cwd when the rollout has no usable cwd, or
+        when the start cwd no longer exists — Codex resumes by UUID from
+        anywhere, so a deleted start dir must not block a resume that would
+        otherwise succeed (the recorded/current cwd still works).
+        """
+        meta_cwd = _session_meta_cwd(transcript_path)
+        if meta_cwd and os.path.isdir(meta_cwd):
+            return meta_cwd
+        return cwd
+
+    def record_cwd_for_transcript(self, transcript_path: str, cwd: str) -> str:
+        """Record the cwd as-is — do NOT pin to the start cwd.
+
+        Codex's :meth:`relocate_session` is logical-only: "Stay in current"
+        rewrites the recorded cwd to the new dir without moving any files.
+        Pinning the record back to the rollout's start cwd on every hook (the
+        base default, via :meth:`resume_cwd_for_transcript`) would clobber that
+        deliberate choice.  Codex resumes by UUID regardless, so the recorded
+        cwd is purely a "where to land" hint that the user controls.
+        """
+        return cwd
 
     # -- Hook configuration ----------------------------------------------
 

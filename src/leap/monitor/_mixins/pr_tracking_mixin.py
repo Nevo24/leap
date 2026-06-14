@@ -11,7 +11,7 @@ from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox
 
-from leap.cli_providers.registry import get_display_name
+from leap.cli_providers.registry import get_display_name, resume_cwd_for_record
 from leap.utils.constants import STORAGE_DIR, is_valid_tag
 from leap.utils.resume_store import load_raw_tag_rows
 from leap.monitor.dialogs.add_local_dialog import AddLocalDialog
@@ -1630,10 +1630,13 @@ class PRTrackingMixin(_Base):
         # ``tenant-manager/`` — don't get treated as separate projects),
         # while the terminal inside the IDE cds to the recorded subdir.
         # For plain terminals both are ignored downstream.
+        # Heal a recorded cwd that drifted from the session's anchor dir (a
+        # mid-session ``cd``) so the resume lands where the CLI can find it.
+        healed_cwd = resume_cwd_for_record(cli, sess.transcript_path, sess.cwd)
         self._server_launcher.open_resume_in_terminal(
             cli=cli, tag=original_tag, session_id=sess.session_id,
             preferred_ide=preferred_ide,
-            recorded_cwd=sess.cwd or None,
+            recorded_cwd=healed_cwd or None,
             recorded_project_path=sess.project_path or None,
         )
 

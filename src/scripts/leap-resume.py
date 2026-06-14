@@ -55,7 +55,9 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 try:
-    from leap.cli_providers.registry import get_display_name, get_provider
+    from leap.cli_providers.registry import (
+        get_display_name, get_provider, resume_cwd_for_record,
+    )
     from leap.utils.claude_session_move import RelocationError
     from leap.utils.resume_store import (
         TagRow, SessionRecord, load_tag_rows, load_raw_tag_rows,
@@ -65,6 +67,7 @@ except ImportError:
     def get_display_name(name: str) -> str:  # type: ignore[no-redef]
         return name
     get_provider = None  # type: ignore
+    resume_cwd_for_record = None  # type: ignore
     RelocationError = Exception  # type: ignore
     TagRow = None  # type: ignore
     SessionRecord = None  # type: ignore
@@ -270,6 +273,95 @@ def _prompt_new_tag(old_tag: str) -> Optional[str]:
         return line
 
 
+# Prefix marking a ``_get_key`` return as pasted text rather than a keypress.
+# ``\x00`` can never be typed or be part of a real key name, so the search
+# loops can distinguish ``_PASTE_PREFIX + text`` from ``'up'`` / a char / etc.
+_PASTE_PREFIX = '\x00'
+
+
+# Keys parsed from one input burst but not yet returned.  A paste (or fast
+# typing) arrives as a multi-byte burst that must be read in a single raw-mode
+# window — see :func:`_get_key` — so any keys past the first are stashed here
+# and handed out one per call.
+_PENDING_KEYS: list[str] = []
+
+
+def _parse_keys(data: str) -> list[str]:
+    """Parse a burst of terminal input into a list of key tokens.
+
+    Handles arrow keys (CSI ``[A``/``[B`` and SS3 ``OA``/``OB``), bracketed
+    paste (``ESC[200~`` … ``ESC[201~`` → a single :data:`_PASTE_PREFIX`-tagged
+    token with control chars stripped), Enter, Backspace, quit, bare Esc, and
+    printable chars.  Reading the whole burst at once and parsing it here is
+    what lets a paste survive the per-call raw-mode toggle.
+    """
+    keys: list[str] = []
+    i, n = 0, len(data)
+    while i < n:
+        ch = data[i]
+        if ch == '\x1b':
+            tail = data[i + 1:]
+            if tail.startswith('[200~'):
+                end = data.find('\x1b[201~', i)
+                body = data[i + 6:] if end == -1 else data[i + 6:end]
+                i = n if end == -1 else end + len('\x1b[201~')
+                keys.append(
+                    _PASTE_PREFIX + ''.join(c for c in body if c.isprintable())
+                )
+                continue
+            if tail[:2] in ('[A', 'OA'):
+                keys.append('up'); i += 3; continue
+            if tail[:2] in ('[B', 'OB'):
+                keys.append('down'); i += 3; continue
+            if not tail:
+                keys.append('escape'); i += 1; continue
+            # Unknown ESC sequence: skip ESC + a following CSI/SS3 run so its
+            # bytes don't leak into the search query as stray chars.
+            i += 1
+            if i < n and data[i] in ('[', 'O'):
+                i += 1
+                while i < n and not (data[i].isalpha() or data[i] == '~'):
+                    i += 1
+                if i < n:
+                    i += 1
+            continue
+        if ch in ('\r', '\n'):
+            keys.append('enter')
+        elif ch in ('\x03', '\x04'):  # Ctrl+C / Ctrl+D
+            keys.append('quit')
+        elif ch == 'q':
+            keys.append('quit')
+        elif ch in ('\x7f', '\x08'):  # DEL / Backspace
+            keys.append('backspace')
+        elif ch.isprintable():
+            keys.append(ch)
+        # else: other control byte — drop it
+        i += 1
+    return keys
+
+
+def _enable_bracketed_paste() -> None:
+    """Ask the terminal to wrap pasted input in ``ESC[200~`` … ``ESC[201~``.
+
+    Without this, a paste arrives as raw characters and the per-keypress
+    raw-mode toggle in :func:`_get_key` (which flushes pending input) drops
+    everything after the first char.  With it, the whole paste arrives as one
+    burst that a single :func:`_get_key` call drains via
+    :func:`_drain_bracketed_paste`.  No-op when stderr isn't a terminal.
+    """
+    if sys.stderr.isatty():
+        sys.stderr.write('\x1b[?2004h')
+        sys.stderr.flush()
+
+
+def _disable_bracketed_paste() -> None:
+    """Undo :func:`_enable_bracketed_paste` so the shell/CLI we hand off to
+    gets the terminal back in its default paste mode."""
+    if sys.stderr.isatty():
+        sys.stderr.write('\x1b[?2004l')
+        sys.stderr.flush()
+
+
 def _get_key() -> str:
     """Read a single keypress using ``os.read`` on the raw fd.
 
@@ -283,40 +375,43 @@ def _get_key() -> str:
     in application cursor mode, and returns ``'quit'`` on stdin EOF so
     `_pick` can't get stuck in an infinite empty-read loop.
     """
+    if _PENDING_KEYS:
+        return _PENDING_KEYS.pop(0)
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        # TCSANOW, not tty.setraw's default TCSAFLUSH: TCSAFLUSH discards input
+        # already queued.  Combined with reading the WHOLE burst below, this is
+        # what keeps a paste intact — the per-call raw toggle would otherwise
+        # strand bytes received between calls in the canonical line buffer,
+        # leaving only the first char.
+        tty.setraw(fd, termios.TCSANOW)
         b = os.read(fd, 1)
         if not b:
             return 'quit'  # EOF
-        ch = b.decode('utf-8', errors='replace')
-        if ch == '\x1b':
-            # CSI bytes arrive back-to-back after the ESC; bare Esc
-            # leaves stdin idle.  Poll briefly for the follow-up.
-            if not select.select([fd], [], [], 0.1)[0]:
-                return 'escape'
-            # Read the whole CSI/SS3 tail in one call so Python buffering
-            # can't fragment it across reads.
-            rest = os.read(fd, 16).decode('utf-8', errors='replace')
-            if rest.startswith('[A') or rest.startswith('OA'):
-                return 'up'
-            if rest.startswith('[B') or rest.startswith('OB'):
-                return 'down'
-            return ''  # unhandled sequence, already fully drained
-        if ch in ('\r', '\n'):
-            return 'enter'
-        if ch in ('\x03', '\x04'):  # Ctrl+C / Ctrl+D
-            return 'quit'
-        if ch == 'q':
-            return 'quit'
-        if ch in ('\x7f', '\x08'):  # DEL / Backspace
-            return 'backspace'
-        if ch.isprintable():
-            return ch
+        data = b
+        # Drain the rest of the burst in this same raw window: a paste, or the
+        # ``[A`` tail of an arrow key, arrives right behind the first byte.
+        while True:
+            if data == b'\x1b':
+                timeout = 0.1          # lone ESC: wait briefly for a sequence
+            elif b'\x1b[200~' in data and b'\x1b[201~' not in data:
+                timeout = 0.2          # bracketed paste still in flight
+            else:
+                timeout = 0.0          # otherwise take only what's ready now
+            if not select.select([fd], [], [], timeout)[0]:
+                break
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            data += chunk
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    return ''
+    keys = _parse_keys(data.decode('utf-8', errors='replace'))
+    if not keys:
+        return ''
+    _PENDING_KEYS.extend(keys[1:])
+    return keys[0]
 
 
 def _truncate(plain: str, term_cols: int) -> str:
@@ -552,6 +647,11 @@ def _pick_tag(all_rows: list) -> tuple:
             filtered = _filter_rows(all_rows, query)
             idx = 0
             n = _render_tags(filtered, idx, first=False, last_n=n, query=query)
+        elif key.startswith(_PASTE_PREFIX):
+            query += key[len(_PASTE_PREFIX):]
+            filtered = _filter_rows(all_rows, query)
+            idx = 0
+            n = _render_tags(filtered, idx, first=False, last_n=n, query=query)
         elif len(key) == 1 and key.isprintable():
             query += key
             filtered = _filter_rows(all_rows, query)
@@ -588,6 +688,11 @@ def _pick_session(tag: str, cli: str, all_sessions: list) -> tuple:
             return _ABORT, n
         elif key == 'backspace':
             query = query[:-1]
+            filtered = _filter_sessions(all_sessions, query)
+            idx = 0
+            n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
+        elif key.startswith(_PASTE_PREFIX):
+            query += key[len(_PASTE_PREFIX):]
             filtered = _filter_sessions(all_sessions, query)
             idx = 0
             n = _render_sessions(tag, cli, filtered, idx, first=False, last_n=n, query=query)
@@ -942,6 +1047,9 @@ def main() -> int:
     else:
         # Interactive picker.  Outer loop so Esc from the session
         # sub-picker bounces back to the tag picker without restarting.
+        # Bracketed paste is enabled for the whole search interaction so a
+        # pasted query arrives as one unit; always disabled again on exit.
+        _enable_bracketed_paste()
         try:
             while True:
                 tag_row, n_tags = _pick_tag(rows)
@@ -965,11 +1073,22 @@ def main() -> int:
         except KeyboardInterrupt:
             sys.stderr.write("\n")
             return 130
+        finally:
+            _disable_bracketed_paste()
 
     tag = chosen_tag.tag
     cli = chosen_tag.cli
     session_id = chosen_session.session_id
     target_cwd = chosen_session.cwd
+    # A mid-session ``cd`` can leave the recorded cwd pointing at a directory
+    # the transcript isn't anchored under, so resume would otherwise fail from
+    # *every* directory.  Reconcile against the authoritative transcript so both
+    # the relocate source and the chdir target are the cwd ``resume`` actually
+    # needs.  This heals records written before the recording-side fix landed.
+    if resume_cwd_for_record is not None:
+        target_cwd = resume_cwd_for_record(
+            cli, chosen_session.transcript_path, target_cwd,
+        )
 
     # Is the *CLI session UUID* already being used by a live Leap server?
     # That's the real conflict — not whether the Leap tag has a running

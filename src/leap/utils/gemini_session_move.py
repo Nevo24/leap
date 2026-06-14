@@ -42,7 +42,7 @@ from leap.utils.relocation import (
 )
 
 
-__all__ = ['relocate_gemini_session', 'slugify']
+__all__ = ['relocate_gemini_session', 'resume_cwd_for_session', 'slugify']
 
 
 GEMINI_HOME: Path = Path.home() / ".gemini"
@@ -232,6 +232,38 @@ def _load_projects_registry() -> dict[str, str]:
         if isinstance(cwd, str) and isinstance(slug, str):
             out[cwd] = slug
     return out
+
+
+def resume_cwd_for_session(transcript_path: str, cwd: str) -> str:
+    """Return the cwd ``gemini --resume`` needs, healing mid-session ``cd`` drift.
+
+    Gemini stores a session at ``tmp/<slug>/chats/session-*.jsonl`` where
+    ``<slug>`` is the registry slug of the cwd the session was *started* in.
+    ``record_session`` keeps overwriting the recorded cwd with whatever cwd a
+    hook last saw, so a session that ``cd``'d mid-run ends up with a cwd whose
+    registry slug no longer maps to its session dir — and then resume can't
+    find it from *any* directory (same failure class as Claude's slug drift).
+
+    The session dir's slug is authoritative.  If the given cwd's registry slug
+    already matches it, return it unchanged (the common case).  Otherwise
+    reverse-lookup the registry for the cwd whose slug matches; accept it only
+    when the match is unique (Gemini's ``-N`` dedup keeps slugs 1:1 with cwds),
+    else fall back to the given cwd — never invent a path.
+    """
+    if (not transcript_path
+            or '/.gemini/tmp/' not in transcript_path
+            or '/chats/' not in transcript_path):
+        return cwd
+    actual_slug = Path(transcript_path).parent.parent.name
+    if not actual_slug:
+        return cwd
+    registry = _load_projects_registry()
+    if cwd and registry.get(cwd) == actual_slug:
+        return cwd
+    matches = [k for k, slug in registry.items() if slug == actual_slug]
+    if len(matches) == 1:
+        return matches[0]
+    return cwd
 
 
 def _save_projects_registry(projects: dict[str, str]) -> None:

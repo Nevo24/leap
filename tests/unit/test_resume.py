@@ -17,7 +17,9 @@ import pytest
 from leap.cli_providers.registry import (
     CustomCLIProvider,
     get_provider,
+    resume_cwd_for_record,
 )
+from leap.utils.claude_session_move import slugify
 from leap.utils.resume_store import (
     MAX_ENTRIES_PER_TAG,
     SessionRecord,
@@ -63,6 +65,263 @@ class TestClaudeProviderResume:
         # dropped by an older leap-server flag filter (see claude.py note).
         p = get_provider("claude")
         assert p.resume_args("abc") == ["--resume=abc"]
+
+
+def _make_claude_transcript(tmp_path, start_cwd, uuid="0123abcd-ef45", lines=None):
+    """Create a Claude transcript under ``<tmp>/.claude/projects/<slug>/``.
+
+    The dir slug encodes ``start_cwd`` (matching Claude's on-disk layout).
+    ``lines`` are JSONL records written in order; defaults to a single record
+    carrying ``start_cwd``.
+    """
+    proj = tmp_path / ".claude" / "projects" / slugify(start_cwd)
+    proj.mkdir(parents=True, exist_ok=True)
+    tp = proj / f"{uuid}.jsonl"
+    if lines is None:
+        lines = [{"type": "user", "cwd": start_cwd}]
+    tp.write_text("".join(json.dumps(rec) + "\n" for rec in lines))
+    return str(tp)
+
+
+class TestClaudeResumeCwdReconcile:
+    """``resume_cwd_for_transcript`` heals a recorded cwd that drifted from the
+    transcript's anchored slug dir (e.g. after a mid-session ``cd``)."""
+
+    def test_no_drift_returns_cwd_without_reading(self, tmp_path):
+        # cwd slug already matches the transcript dir -> returned as-is, even
+        # though the transcript file does not exist (the match short-circuits
+        # before any read).
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        tp = str(tmp_path / ".claude" / "projects" / slugify(start) / "x.jsonl")
+        assert p.resume_cwd_for_transcript(tp, start) == start
+
+    def test_drift_recovers_original_from_transcript(self, tmp_path):
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        tp = _make_claude_transcript(
+            tmp_path, start,
+            lines=[{"cwd": start}, {"cwd": "/Users/me/elsewhere"}],
+        )
+        assert p.resume_cwd_for_transcript(tp, "/Users/me/elsewhere") == start
+
+    def test_drift_skips_leading_records_without_cwd(self, tmp_path):
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        tp = _make_claude_transcript(
+            tmp_path, start, lines=[{"type": "summary"}, {"cwd": start}],
+        )
+        assert p.resume_cwd_for_transcript(tp, "/Users/me/elsewhere") == start
+
+    def test_drift_unrecoverable_missing_transcript_returns_cwd(self, tmp_path):
+        # Slug dir name encodes `start`, but the file isn't there to recover
+        # from -> fall back to the (drifted) cwd, never invent a path.
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        tp = str(tmp_path / ".claude" / "projects" / slugify(start) / "x.jsonl")
+        assert p.resume_cwd_for_transcript(tp, "/Users/me/elsewhere") \
+            == "/Users/me/elsewhere"
+
+    def test_drift_first_cwd_slug_mismatch_returns_cwd(self, tmp_path):
+        # The transcript's first cwd doesn't slug-match its own dir (a corrupt
+        # or hand-moved transcript) -> don't trust it.
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        tp = _make_claude_transcript(
+            tmp_path, start, lines=[{"cwd": "/totally/different/place"}],
+        )
+        assert p.resume_cwd_for_transcript(tp, "/Users/me/elsewhere") \
+            == "/Users/me/elsewhere"
+
+    def test_drift_skips_giant_line_before_cwd(self, tmp_path):
+        # A ~600 KB record before the cwd line must not break recovery: it's
+        # read truncated (per-line cap), fails json, gets skipped, and the cwd
+        # on the next line is still found — without loading the giant line whole.
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        big = {"type": "x", "blob": "A" * (600 * 1024)}
+        tp = _make_claude_transcript(tmp_path, start, lines=[big, {"cwd": start}])
+        assert p.resume_cwd_for_transcript(tp, "/Users/me/elsewhere") == start
+
+    def test_drift_total_cap_bounds_scan(self, tmp_path):
+        # cwd buried after >2 MiB of content is not recovered (the scan is
+        # bounded) -> falls back to the given cwd rather than reading unboundedly.
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        filler = {"type": "x", "blob": "A" * (300 * 1024)}
+        tp = _make_claude_transcript(
+            tmp_path, start, lines=[filler] * 12 + [{"cwd": start}],
+        )
+        assert p.resume_cwd_for_transcript(tp, "/fallback") == "/fallback"
+
+    def test_non_claude_transcript_path_returns_cwd(self):
+        p = get_provider("claude")
+        assert p.resume_cwd_for_transcript(
+            "/Users/me/.codex/sessions/x.jsonl", "/some/cwd") == "/some/cwd"
+
+    def test_empty_transcript_path_returns_cwd(self):
+        p = get_provider("claude")
+        assert p.resume_cwd_for_transcript("", "/some/cwd") == "/some/cwd"
+
+    def test_record_pins_to_start_cwd(self, tmp_path):
+        # Claude record-time delegates to resume-time (base default), so the
+        # record is pinned to the session's start cwd (clean picker display).
+        p = get_provider("claude")
+        start = "/Users/me/workspace/repo"
+        tp = _make_claude_transcript(tmp_path, start, lines=[{"cwd": start}])
+        assert p.record_cwd_for_transcript(tp, "/Users/me/elsewhere") == start
+
+    def test_base_default_is_noop(self):
+        # A provider that doesn't override (Cursor) returns cwd unchanged.
+        p = get_provider("cursor-agent")
+        assert p.resume_cwd_for_transcript(
+            "/anything/.cursor/chats/h/c/x.jsonl", "/some/cwd") == "/some/cwd"
+        assert p.record_cwd_for_transcript(
+            "/anything/.cursor/chats/h/c/x.jsonl", "/some/cwd") == "/some/cwd"
+
+
+class TestGeminiResumeCwdReconcile:
+    """``resume_cwd_for_transcript`` heals a Gemini cwd that drifted from the
+    session's registry slug dir (e.g. after a mid-session ``cd``).  Gemini maps
+    cwd->slug in ``projects.json`` and stores sessions under
+    ``tmp/<slug>/chats/``, so recovery is a registry reverse-lookup."""
+
+    _REG = "leap.utils.gemini_session_move.GEMINI_PROJECTS_REGISTRY"
+
+    def _registry(self, tmp_path, monkeypatch, mapping):
+        reg = tmp_path / "projects.json"
+        reg.write_text(json.dumps({"projects": mapping}))
+        monkeypatch.setattr(self._REG, reg)
+
+    def _tp(self, slug):
+        return f"/home/u/.gemini/tmp/{slug}/chats/session-2026-01-01T00-00-abcd.jsonl"
+
+    def test_no_drift_returns_cwd(self, tmp_path, monkeypatch):
+        self._registry(tmp_path, monkeypatch, {"/work/repo": "repo"})
+        g = get_provider("gemini")
+        assert g.resume_cwd_for_transcript(self._tp("repo"), "/work/repo") == "/work/repo"
+
+    def test_drift_recovers_via_registry(self, tmp_path, monkeypatch):
+        # recorded cwd drifted to the subdir (slug "sub"); the session lives
+        # under "repo" -> recover the original cwd from the registry.
+        self._registry(tmp_path, monkeypatch,
+                       {"/work/repo": "repo", "/work/repo/sub": "sub"})
+        g = get_provider("gemini")
+        assert g.resume_cwd_for_transcript(self._tp("repo"), "/work/repo/sub") \
+            == "/work/repo"
+
+    def test_drift_ambiguous_slug_returns_cwd(self, tmp_path, monkeypatch):
+        # Two cwds mapping to the same slug (shouldn't happen given Gemini's
+        # -N dedup, but never guess) -> fall back to the given cwd.
+        self._registry(tmp_path, monkeypatch, {"/a/repo": "repo", "/b/repo": "repo"})
+        g = get_provider("gemini")
+        assert g.resume_cwd_for_transcript(self._tp("repo"), "/somewhere") == "/somewhere"
+
+    def test_unknown_slug_returns_cwd(self, tmp_path, monkeypatch):
+        self._registry(tmp_path, monkeypatch, {"/work/repo": "repo"})
+        g = get_provider("gemini")
+        assert g.resume_cwd_for_transcript(self._tp("ghost"), "/work/x") == "/work/x"
+
+    def test_non_gemini_path_returns_cwd(self, tmp_path, monkeypatch):
+        self._registry(tmp_path, monkeypatch, {"/work/repo": "repo"})
+        g = get_provider("gemini")
+        assert g.resume_cwd_for_transcript(
+            "/home/u/.claude/projects/-x/u.jsonl", "/work/x") == "/work/x"
+
+    def test_empty_transcript_returns_cwd(self):
+        g = get_provider("gemini")
+        assert g.resume_cwd_for_transcript("", "/work/x") == "/work/x"
+
+
+class TestCodexResumeCwdReconcile:
+    """Codex resumes by UUID, but the picker still ``chdir``s and passes
+    ``-C <cwd>``; resuming in the session's start cwd (from ``session_meta``)
+    keeps Codex from re-prompting 'Choose working directory'.  Record time must
+    NOT pin — Codex's logical relocate owns the recorded cwd."""
+
+    def _rollout(self, tmp_path, start_cwd, *, sid="019eb287-aaaa-bbbb",
+                 meta=True, cwd_value=None):
+        d = tmp_path / ".codex" / "sessions" / "2026" / "06" / "10"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"rollout-2026-06-10T20-14-25-{sid}.jsonl"
+        if meta:
+            payload = {"id": sid}
+            payload["cwd"] = start_cwd if cwd_value is None else cwd_value
+            head = {"type": "session_meta", "payload": payload}
+        else:
+            head = {"type": "message", "payload": {"role": "user"}}
+        f.write_text(json.dumps(head) + "\n")
+        return str(f)
+
+    def test_resume_recovers_start_cwd(self, tmp_path):
+        # Start cwd exists -> prefer it (silences Codex's dir prompt).
+        c = get_provider("codex")
+        start = str(tmp_path / "repo")
+        os.makedirs(start)
+        tp = self._rollout(tmp_path, start)
+        assert c.resume_cwd_for_transcript(tp, "/some/drifted") == start
+
+    def test_resume_deleted_start_cwd_falls_back(self, tmp_path):
+        # session_meta points at a dir that no longer exists -> don't force it;
+        # Codex resumes by UUID, so a deleted start dir must not block resume.
+        c = get_provider("codex")
+        tp = self._rollout(tmp_path, "/gone/nowhere/repo")
+        assert c.resume_cwd_for_transcript(tp, str(tmp_path)) == str(tmp_path)
+
+    def test_record_does_not_pin_start_cwd(self, tmp_path):
+        # Critical: record must keep the given cwd, so a logical "stay in
+        # current" relocation isn't clobbered by the next hook.
+        c = get_provider("codex")
+        tp = self._rollout(tmp_path, "/work/repo")
+        assert c.record_cwd_for_transcript(tp, "/work/relocated") == "/work/relocated"
+
+    def test_resume_no_session_meta_falls_back(self, tmp_path):
+        c = get_provider("codex")
+        tp = self._rollout(tmp_path, "/work/repo", meta=False)
+        assert c.resume_cwd_for_transcript(tp, "/fallback") == "/fallback"
+
+    def test_resume_non_string_cwd_falls_back(self, tmp_path):
+        c = get_provider("codex")
+        tp = self._rollout(tmp_path, "/work/repo", cwd_value=["bad"])
+        assert c.resume_cwd_for_transcript(tp, "/fallback") == "/fallback"
+
+    def test_resume_missing_file_falls_back(self, tmp_path):
+        c = get_provider("codex")
+        tp = str(tmp_path / ".codex" / "sessions" / "nope" / "rollout-z.jsonl")
+        assert c.resume_cwd_for_transcript(tp, "/fallback") == "/fallback"
+
+    def test_resume_non_codex_path_falls_back(self):
+        c = get_provider("codex")
+        assert c.resume_cwd_for_transcript(
+            "/x/.claude/projects/s/u.jsonl", "/fb") == "/fb"
+
+
+class TestResumeCwdForRecord:
+    """Shared healing entry point used by every resume launcher (the
+    ``leap --resume`` picker and the monitor's GUI resume paths)."""
+
+    def test_unknown_cli_returns_cwd(self):
+        assert resume_cwd_for_record(
+            "nope", "/x/.codex/sessions/r.jsonl", "/cwd") == "/cwd"
+
+    def test_empty_transcript_returns_cwd(self):
+        assert resume_cwd_for_record("claude", "", "/cwd") == "/cwd"
+
+    def test_delegates_to_provider_and_heals(self, tmp_path):
+        start = "/Users/me/workspace/repo"
+        tp = _make_claude_transcript(tmp_path, start, lines=[{"cwd": start}])
+        assert resume_cwd_for_record("claude", tp, "/Users/me/elsewhere") == start
+
+    def test_raising_provider_is_swallowed(self, monkeypatch):
+        # A heal failure must never break resume -> fall back to the given cwd.
+        def boom(self, transcript_path, cwd):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(
+            "leap.cli_providers.claude.ClaudeProvider.resume_cwd_for_transcript",
+            boom,
+        )
+        assert resume_cwd_for_record(
+            "claude", "/x/.claude/projects/s/u.jsonl", "/cwd") == "/cwd"
 
 
 class TestCodexProviderResume:

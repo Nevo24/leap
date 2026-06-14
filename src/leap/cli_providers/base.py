@@ -1070,6 +1070,34 @@ class CLIProvider(ABC):
         """
         return False
 
+    def resume_cwd_for_transcript(self, transcript_path: str, cwd: str) -> str:
+        """Cwd ``<cli> resume`` should run in for this session (RESUME time).
+
+        ``record_session`` stores whatever cwd the session was in when a hook
+        last fired, but resuming needs the cwd the CLI actually associates with
+        the session — for cwd-bound CLIs (Claude/Gemini) that's the cwd at
+        *session start* (the slug/registry dir the transcript lives under); a
+        later ``cd`` drifts the recorded cwd away from it and breaks resume from
+        every directory.  Given the authoritative ``transcript_path``, return
+        the cwd to resume in.
+
+        Default: ``cwd`` is authoritative.  Override in providers whose resume
+        is sensitive to cwd to recover the right one from on-disk state.
+        """
+        return cwd
+
+    def record_cwd_for_transcript(self, transcript_path: str, cwd: str) -> str:
+        """Cwd to persist for this session (RECORD time, called per hook).
+
+        Defaults to :meth:`resume_cwd_for_transcript` so cwd-bound CLIs pin the
+        record to the session's anchor dir and the picker shows the right cwd.
+        Override to decouple the two: Codex resumes by UUID but keeps a *logical*
+        recorded cwd that "Stay in current" rewrites — pinning it to the start
+        cwd here would clobber that on the next hook, so Codex records ``cwd``
+        as-is and only reconciles at resume time.
+        """
+        return self.resume_cwd_for_transcript(transcript_path, cwd)
+
     def relocate_session(
         self,
         session_id: str,

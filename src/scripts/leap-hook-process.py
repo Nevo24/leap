@@ -203,12 +203,19 @@ def _record(cli: str, tag: str, hook_data: dict) -> None:
     # Enforce the convention at write time so read-time stays consistent.
     if cli == 'cursor-agent':
         transcript_path = ''
+    # A mid-session ``cd`` makes the hook's current cwd drift away from the
+    # directory the transcript is anchored under.  ``--resume`` only finds the
+    # session from its original cwd, so pin the record to that (recovered from
+    # the transcript when the live cwd has drifted; a no-op for CLIs keyed by
+    # UUID alone).
+    cwd = hook_data.get('cwd', '') or os.getcwd()
+    cwd = provider.record_cwd_for_transcript(transcript_path, cwd)
     _debug_log('record-ok', cli=cli, tag=tag, session_id=session_id)
     record_session(
         storage_dir, cli, tag,
         session_id=session_id,
         transcript_path=transcript_path,
-        cwd=hook_data.get('cwd', '') or os.getcwd(),
+        cwd=cwd,
         terminal_app=terminal_app,
         project_path=project_path,
     )

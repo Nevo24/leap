@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QCursor
 
-from leap.cli_providers.registry import DEFAULT_PROVIDER
+from leap.cli_providers.registry import DEFAULT_PROVIDER, resume_cwd_for_record
 from leap.monitor.vscode_copilot_scan import GUI_TAG_PREFIXES
 from leap.monitor.dialogs.branch_picker_dialog import BranchPickerDialog
 from leap.monitor.dialogs.git_changes_dialog import CommitListDialog
@@ -547,8 +547,14 @@ class ActionsMenuMixin(_Base):
         try:
             for row in load_tag_rows(STORAGE_DIR):
                 if row.tag == tag and row.cli == cli and row.sessions:
-                    session_id = row.sessions[0].session_id
-                    recorded_cwd = row.sessions[0].cwd or None
+                    sess = row.sessions[0]
+                    session_id = sess.session_id
+                    # Heal a recorded cwd that drifted from the session's
+                    # anchor dir (a mid-session ``cd``) so the resume lands
+                    # where the CLI can actually find the session.
+                    recorded_cwd = resume_cwd_for_record(
+                        cli, sess.transcript_path, sess.cwd,
+                    ) or None
                     break
         except Exception:  # pragma: no cover - best-effort lookup
             session_id = None

@@ -203,6 +203,8 @@ Override these only if the CLI differs from the defaults:
 | `resume_args()` | Returns `[]` | Implement for **Leap Resume** — return the argv tokens that resume the given session id |
 | `relocate_session()` | Returns `None` (no cross-cwd) | Implement for the **move mechanism** — physically (or logically) bring the session's on-disk state under the user's chosen cwd. Required when `requires_cwd_bound_resume = True`. |
 | `session_exists()` | Returns `True` | Override if your CLI records sessions with empty `transcript_path` so the picker's path-based stale-check can't filter them — return `False` when the session's on-disk state has been deleted out-of-band. |
+| `resume_cwd_for_transcript(transcript_path, cwd)` | Returns `cwd` | **Resume-time** cwd reconciliation (see **Cwd drift** below). Override when a mid-session `cd` can leave the recorded cwd pointing somewhere the session isn't anchored, so resume would fail from every directory. Return the cwd `<cli> resume` actually needs, recovered from on-disk state. Used by every resume launcher via `registry.resume_cwd_for_record`. |
+| `record_cwd_for_transcript(transcript_path, cwd)` | Delegates to `resume_cwd_for_transcript` | **Record-time** cwd (called per hook by `leap-hook-process.py`). The default pins the recorded cwd to the resume cwd so the picker shows the right directory. Override to **decouple** the two — e.g. Codex keeps a *logical* recorded cwd that "Stay in current" rewrites, so pinning it here would clobber that on the next hook; Codex returns `cwd` unchanged and only reconciles at resume time. |
 | `context_usage(cli_name, tag, storage_dir)` | Returns `None` | Implement (with `supports_context_usage = True`) to show the monitor's **Context** column — locate your own source (a transcript via `latest_transcript_for`, or Copilot's status-line state file) and return prompt-tokens vs the context window. See **Context-usage column** below. |
 | `session_cost(cli_name, tag, storage_dir)` | Returns `None` | Implement (with `supports_cost = True`) to add cost lines to the Context tooltip — sum the session's billable tokens from your transcript and price them via `leap.utils.pricing` (`price_for` / `cost_usd`). See **Context-usage column** + `cost_usage.py`. |
 | `input_history(cwd)` | Returns `None` (passthrough — CLI handles ↑/↓ natively) | Return the CLI's on-disk input history (oldest→newest) so Leap drives ↑/↓ recall and keeps its input mirror in sync for `^^`. **Opting in steals ↑/↓** — read the **↑/↓ recall, dialogs & 'Last Msg'** note below. |
@@ -378,6 +380,32 @@ new resume-capable provider to implement the *move mechanism*:
   handles this centrally.  Just make sure your `supports_resume`
   accurately reflects whether `relocate_session` + `resume_args` are
   actually implemented.
+
+**Cwd drift (only if your CLI's resume is cwd-sensitive):**
+
+`record_session` stores whatever cwd a hook last reported.  If a session
+`cd`s mid-run, that recorded cwd drifts away from where the CLI actually
+anchored the session (Claude's slug dir, Gemini's `projects.json` slug, the
+cwd Codex baked into `session_meta`).  For a cwd-bound CLI this is the same
+failure class as a wrong slug — resume then can't find the session from
+**any** directory.  The authoritative anchor is the recorded
+`transcript_path`, so reconcile against it:
+
+- Override `resume_cwd_for_transcript(transcript_path, cwd)` to return the
+  cwd `<cli> resume` needs, recovered from on-disk state — Claude reads the
+  transcript's first `cwd` record (validated against the slug dir), Gemini
+  reverse-looks-up `projects.json` by the session's slug, Codex reads
+  `session_meta.cwd` (only when that dir still exists — it resumes by UUID so
+  a deleted start dir must not block it).
+- Every resume launcher (the `leap --resume` picker **and** the monitor's
+  two GUI resume paths) heals through one entry point,
+  `registry.resume_cwd_for_record(cli, transcript_path, cwd)` — best-effort,
+  never raises.  Don't re-derive cwd ad hoc in a launcher; call that.
+- `record_cwd_for_transcript` (the per-hook write) defaults to the same
+  value so the picker display stays correct.  Override it back to a plain
+  `return cwd` only if your CLI keeps a *logical* recorded cwd that a
+  relocation rewrites without moving files (Codex), where per-hook pinning
+  would clobber the user's "Stay in current" choice.
 
 **TL;DR — minimum overrides for a new resume-capable CLI:**
 
