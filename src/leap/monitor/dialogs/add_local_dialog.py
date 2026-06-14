@@ -6,13 +6,16 @@ from PyQt5.QtWidgets import (
 )
 
 from leap.monitor.dialogs.zoom_mixin import ZoomMixin
-from leap.monitor.pr_tracking.config import load_dialog_geometry, save_dialog_geometry
+from leap.monitor.pr_tracking.config import (
+    load_dialog_flag, load_dialog_geometry, save_dialog_flag, save_dialog_geometry,
+)
 
 
 class AddLocalDialog(ZoomMixin, QDialog):
     """Simple dialog to select a local directory and choose clone vs open mode."""
 
     _DEFAULT_SIZE = (500, 200)
+    _CLONE_MODE_FLAG = 'add_local_clone_mode'
 
     def __init__(self, parent: object = None) -> None:
         super().__init__(parent)
@@ -49,7 +52,10 @@ class AddLocalDialog(ZoomMixin, QDialog):
             'Run the session directly inside the chosen directory - no '
             'clone. Changes will apply to your existing workspace.'
         )
-        self._clone_radio.setChecked(True)
+        # Restore the last-used mode (defaults to clone the first time).
+        clone_mode = load_dialog_flag(self._CLONE_MODE_FLAG, default=True)
+        self._clone_radio.setChecked(clone_mode)
+        self._open_radio.setChecked(not clone_mode)
         layout.addWidget(self._clone_radio)
         layout.addWidget(self._open_radio)
 
@@ -78,8 +84,9 @@ class AddLocalDialog(ZoomMixin, QDialog):
         return self._path_edit.text().strip()
 
     def done(self, result: int) -> None:
-        """Save dialog size on close."""
+        """Persist dialog size and the chosen clone/open mode on close."""
         save_dialog_geometry('add_local', self.width(), self.height())
+        save_dialog_flag(self._CLONE_MODE_FLAG, self._clone_radio.isChecked())
         super().done(result)
 
     def is_clone_mode(self) -> bool:

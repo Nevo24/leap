@@ -2844,6 +2844,7 @@ class MonitorWindow(
         'dialog_splitter_sizes',
         'dialog_geometry',
         'dialog_geometry_state',
+        'dialog_flags',
         'notes_flatten_on_paste',
         'resume_open_in_last_app',
         'resume_session_hidden_columns',
