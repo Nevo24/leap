@@ -647,6 +647,40 @@ class TestUserRespondedFlag:
         feed_with_hidden_cursor(tracker, 'Rendering...')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
 
+    def test_user_responded_cursor_hidden_stays_waiting_while_dialog_shown(
+        self, tmp_path: Path,
+    ) -> None:
+        """A multi-option AskUserQuestion HIDES the cursor the whole time
+        it is open, and navigating it (Tab between questions, arrows
+        between options) sets _user_responded on the first keypress.  The
+        cursor-hidden poll heuristic must NOT flip to running while the
+        dialog footer is still on screen: doing so drops the PROMPT-state
+        arrow passthrough in the input filter and resets the live dialog
+        out of pyte, so up/down get stolen for history recall and the
+        dialog becomes un-navigable by arrow (the recurring 'arrows stuck
+        in a multi-option question' report)."""
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        dialog = (
+            'How should the search find rulings?  '
+            '1. AIText  2. ai-gate  3. both  '
+            'Enter to select  Esc to cancel'
+        )
+        feed_screen_text(tracker, dialog)
+        write_signal(tracker, 'needs_permission')
+        tracker.get_state(pty_alive=True)  # → needs_permission
+        # User NAVIGATES the dialog with Tab — sets _user_responded.
+        tracker.on_input(b'\t')
+        assert tracker._user_responded is True
+        # Dialog is still on screen, but (being a selection dialog) it
+        # hides the cursor while open.
+        feed_with_hidden_cursor(tracker, dialog)
+        # Must stay needs_permission: the user is navigating, not done.
+        # (Contrast test_user_responded_cursor_hidden_goes_running, where
+        # the dialog footer is gone and the flip to running is correct.)
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+
     def test_interrupted_responded_cursor_hidden_goes_running(
         self, tmp_path: Path,
     ) -> None:

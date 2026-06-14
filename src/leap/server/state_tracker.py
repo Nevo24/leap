@@ -2045,7 +2045,35 @@ class CLIStateTracker:
         ):
             with self._screen_lock:
                 cursor_hidden = self._screen.cursor.hidden
-            if cursor_hidden:
+                # Read the live screen under the same lock: a hidden cursor
+                # only means "the CLI moved past the dialog" if the dialog
+                # is actually GONE (see dialog_still_open below).
+                compact = self._get_screen_text().replace(
+                    ' ', '').replace('\n', '')
+            # Even on a provider whose dialogs normally keep the cursor
+            # VISIBLE (Claude's Yes/No permission menu), SOME dialogs hide
+            # it the whole time they're open — notably a multi-option /
+            # multi-question AskUserQuestion.  Navigating such a dialog
+            # (Tab between questions, arrows between options) sets
+            # _user_responded on the first keypress, so "user_responded +
+            # cursor hidden" goes true while the dialog is still open and
+            # the user is merely moving around inside it.  Flipping to
+            # RUNNING then is doubly wrong: it drops the PROMPT-state arrow
+            # passthrough in the input filter, AND the _reset_screen()
+            # below wipes the live dialog out of pyte — so the next
+            # screen_has_active_dialog() reads "no dialog" and the filter
+            # STEALS up/down for history recall, leaving the dialog
+            # un-navigable by arrow (the recurring "arrows stuck in a
+            # multi-option question" report).  Only treat a hidden cursor
+            # as "moved past the dialog" once the dialog indicator is gone
+            # from the screen.  Scoped to PROMPT_STATES so INTERRUPTED (no
+            # dialog_patterns footer; its prompt is matched elsewhere)
+            # keeps the original cursor-only path and still recovers here.
+            dialog_still_open = (
+                current in PROMPT_STATES
+                and self._provider.has_dialog_indicator(compact)
+            )
+            if cursor_hidden and not dialog_still_open:
                 if not self._commit_state(current, CLIState.RUNNING, None):
                     return None
                 _log.debug(
