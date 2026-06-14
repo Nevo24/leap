@@ -282,12 +282,42 @@ class ClaudeProvider(CLIProvider):
         non-blank rows).  This makes empty/transient screens behave
         like the legacy strict-dialog-only check.
         """
+        if self._idle_box_rendered(display_lines):
+            return True
+        return len(display_lines) < self._IDLE_DETECT_MIN_ROWS
+
+    def _idle_box_rendered(self, display_lines: list[str]) -> bool:
+        """The strict idle-box signature only: a top-HR row immediately
+        followed by a ``❯`` input row, within the last ``_IDLE_TAIL_WINDOW``
+        rows.  Unlike :meth:`is_idle_prompt_visible` this has NO
+        sparse-screen fallback — a near-empty / partially-repainted screen
+        returns False, not True.
+        """
         tail = display_lines[-self._IDLE_TAIL_WINDOW:]
         for i, ln in enumerate(tail):
             if (self._is_prompt_box_hr(ln) and i + 1 < len(tail)
                     and self._is_prompt_box_input_row(tail[i + 1])):
                 return True
-        return len(display_lines) < self._IDLE_DETECT_MIN_ROWS
+        return False
+
+    def idle_prompt_certain(
+        self, display_lines: list[str],
+    ) -> Optional[bool]:
+        """Positive idle-prompt evidence for the waiting→idle dismissal.
+
+        Returns ``True`` iff Claude's idle input box is *positively*
+        rendered (strict box, no sparse fallback), else ``False``.  The
+        waiting→idle dismissal demotes a permission/question dialog to idle
+        only when this is not ``False`` — so a dialog that was blanked out
+        of pyte by a state-transition ``_reset_screen()`` and then only
+        PARTIALLY repainted (footer absent, no idle box either) is treated
+        as ambiguous and the dialog is held, NOT idled.  Without this the
+        dismissal reads "indicator gone" off the desynced screen and
+        FALSELY demotes a still-open dialog to idle, dropping the
+        PROMPT-state ↑/↓ passthrough and stranding the user (the recurring
+        "arrows stuck in a dialog" report).
+        """
+        return self._idle_box_rendered(display_lines)
 
     def has_selection_cursor(self, display_lines: list[str]) -> bool:
         """True iff a ❯/› menu-selection cursor is in the recent tail rows.

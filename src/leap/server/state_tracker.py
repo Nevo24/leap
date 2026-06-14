@@ -2131,8 +2131,10 @@ class CLIStateTracker:
         ):
             with self._screen_lock:
                 cursor_visible = not self._screen.cursor.hidden
-                screen_text = self._get_screen_text()
+                display_lines = self._get_display_lines()
+                screen_text = '\n'.join(display_lines)
                 compact = screen_text.replace(' ', '').replace('\n', '')
+            filled = [ln for ln in display_lines if ln.strip()]
             if cursor_visible:
                 indicator_gone = False
                 if current == CLIState.INTERRUPTED:
@@ -2192,6 +2194,29 @@ class CLIStateTracker:
                             self._prompt_snapshot = []
                             self._last_running_snapshot = []
                         return CLIState.RUNNING
+                    # Demoting a permission/input dialog to IDLE needs
+                    # POSITIVE idle evidence, not just an absent footer.  A
+                    # signal-driven RUNNING→needs_permission promotion
+                    # _reset_screen()s the dialog out of pyte; if the CLI
+                    # then only PARTIALLY repaints (footer not restored, no
+                    # idle box), `indicator_gone` reads True off a desynced
+                    # screen even though the dialog is still on the user's
+                    # terminal.  Idling here drops the PROMPT-state ↑/↓
+                    # passthrough and strands the user — the recurring
+                    # "arrows stuck in a dialog" report, captured live as
+                    # `RUNNING→needs_permission (signal)` immediately
+                    # followed by `needs_permission→idle (indicator gone +
+                    # cursor visible + silence)` with the dialog still on
+                    # screen.  `idle_prompt_certain` returns False for that
+                    # ambiguous fragment, so hold the dialog instead; the
+                    # Stop-hook idle signal or the 60s safety timeout still
+                    # resolves a genuinely finished turn.  None (providers
+                    # with no idle-box detector) keeps the legacy
+                    # demote-on-indicator-gone behaviour.
+                    if (current in PROMPT_STATES
+                            and self._provider.idle_prompt_certain(filled)
+                            is False):
+                        return None
                     if not self._commit_state(current, CLIState.IDLE, None):
                         return None
                     _log.debug(

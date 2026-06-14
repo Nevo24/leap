@@ -1424,9 +1424,17 @@ class TestSafetyTimeouts:
         write_signal(tracker, 'needs_permission')
         assert tracker.get_state(pty_alive=True) == 'needs_permission'
         assert tracker._awaiting_resume_after_prompt is False
-        # CLI self-dismisses the dialog (no user answer): footer gone.
+        # CLI self-dismisses the dialog (no user answer): footer gone and
+        # the real idle prompt box (HR + ❯) is rendered back - the positive
+        # idle evidence the dismissal now requires (a genuine dismissal
+        # renders it; a dialog merely lost from pyte would not).
         t[0] = 3.0
-        feed_with_visible_cursor(tracker, 'tool auto-cancelled, moving on')
+        hr = '─' * 80
+        feed_with_visible_cursor(
+            tracker,
+            f'tool auto-cancelled, moving on\r\n{hr}\r\n❯ \r\n{hr}\r\n'
+            '? for shortcuts',
+        )
         t[0] = 9.0
         assert tracker.get_state(pty_alive=True) == 'idle'
 
@@ -2455,15 +2463,65 @@ class TestStaleScreenContent:
         assert waiting_since is not None
 
         # CLI self-dismisses: new output arrives AFTER _waiting_since,
-        # replacing the dialog with a plain idle prompt (no dialog indicator).
+        # replacing the dialog with the real idle prompt box (HR + ❯).
+        # The box is the positive idle evidence the dismissal now requires
+        # (idle_prompt_certain True) - a genuine dismissal renders it.
         t[0] = 5.5
-        feed_screen_text(tracker, 'Claude is ready')   # no dialog patterns
+        hr = '─' * 80
+        feed_screen_text(
+            tracker, f'Claude is ready\r\n{hr}\r\n❯ \r\n{hr}\r\n? for shortcuts',
+        )
 
         # After 5s of silence since the new output, indicator-gone fires.
         t[0] = 10.6  # 5.1s after the post-state output at t=5.5
         state = tracker.get_state(pty_alive=True)
         assert state == CLIState.IDLE, (
             'indicator-gone should fire after new output shows dialog is gone'
+        )
+
+    def test_dialog_lost_to_reset_then_partial_repaint_is_not_idled(
+        self, tmp_path: Path,
+    ) -> None:
+        """The 'arrows stuck' repro from a real onboarding capture: a dialog
+        is on screen, a needs_permission SIGNAL promotes RUNNING→
+        needs_permission (which _reset_screen()s pyte, blanking the dialog),
+        and the CLI then only PARTIALLY repaints - footer NOT restored, no
+        idle box.  The waiting→idle dismissal must NOT demote to idle off
+        that desynced screen: idling drops the PROMPT-state ↑/↓ passthrough
+        and the still-open dialog becomes un-navigable by arrow (the input
+        filter steals up/down for history recall).  Pre-fix this idled
+        (`needs_permission→idle (indicator gone + cursor visible + silence)`);
+        post-fix it holds because idle_prompt_certain is False on the
+        partial-repaint fragment.  Contrast
+        test_needs_permission_self_dismiss_detected_after_new_output, where a
+        real idle box IS rendered and the demote is correct.
+        """
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_input(b'x')
+        tracker.on_send()
+        # Claude renders the dialog while RUNNING.
+        t[0] = 1.0
+        feed_with_visible_cursor(
+            tracker, 'Pick one  1. A  2. B  Enter to select  Esc to cancel')
+        # A needs_permission signal promotes RUNNING→needs_permission; the
+        # signal transition _reset_screen()s pyte, blanking the live dialog.
+        t[0] = 1.5
+        write_signal(tracker, 'needs_permission')
+        assert tracker.get_state(pty_alive=True) == 'needs_permission'
+        # The CLI does NOT fully re-render the (still-open) dialog - only a
+        # partial repaint lands after the reset: a row or two, no footer and
+        # no idle box.  It bumps _last_output_time past _waiting_since, so the
+        # existing output-after-waiting guard no longer blocks the dismissal.
+        t[0] = 2.0
+        feed_with_visible_cursor(tracker, 'option row highlighted')
+        # 5+ s of silence with the cursor visible: the dismissal's
+        # cursor+silence path runs and reads the footer as 'gone', but there
+        # is NO positive idle evidence (no idle box) -> HOLD, do not idle.
+        t[0] = 8.0
+        assert tracker.get_state(pty_alive=True) == 'needs_permission', (
+            'a dialog lost to reset + partial repaint must NOT be idled - '
+            'that is the arrows-stuck bug'
         )
 
 

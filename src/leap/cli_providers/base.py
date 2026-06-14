@@ -214,6 +214,26 @@ class CLIProvider(ABC):
         """
         return True
 
+    def idle_prompt_certain(
+        self, display_lines: list[str],
+    ) -> Optional[bool]:
+        """Positive idle-prompt evidence for the waiting→idle dismissal.
+
+        Tri-state: ``True`` (idle prompt definitely rendered), ``False``
+        (definitely NOT — e.g. a reset/partial-repaint fragment), or
+        ``None`` (no opinion).  The dismissal demotes a permission/input
+        dialog to idle only when this is not ``False``.
+
+        Default: ``None`` — providers without a structural idle-box
+        detector express no opinion, so the dismissal keeps its legacy
+        behaviour (demote on indicator-gone alone).  Claude overrides this
+        to return a real boolean so a dialog that pyte lost to a
+        ``_reset_screen()`` (and only partially repainted) is NOT mistaken
+        for idle.
+        """
+        del display_lines
+        return None
+
     def has_selection_cursor(self, display_lines: list[str]) -> bool:
         """True iff a menu/picker selection cursor is on the recent screen.
 

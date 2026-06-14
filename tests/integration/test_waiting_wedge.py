@@ -163,8 +163,14 @@ class TestWaitingRecovery:
         pty.write_signal('needs_permission')
         assert pty.get_state() == 'needs_permission'
 
-        # Dialog disappears — CLI redraws a plain prompt.
-        pty.feed_output(b'\x1b[?25h\x1b[2J\x1b[H> ')
+        # Dialog disappears — Claude redraws its idle prompt box (HR + ❯).
+        # That box is the positive idle evidence the waiting→idle dismissal
+        # requires: a genuine dismissal renders it, whereas a dialog merely
+        # lost from pyte (reset + partial repaint) would not, so it is held.
+        hr = '─' * 80
+        pty.feed_output(
+            ('\x1b[?25h\x1b[2J\x1b[H' + hr + '\r\n❯ \r\n' + hr
+             + '\r\n? for shortcuts').encode())
         # Advance past the 5s silence window.
         base = pty.tracker._clock()
         pty.tracker._clock = lambda: base + 6.0
