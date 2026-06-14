@@ -3367,6 +3367,32 @@ class TestScreenHasActiveDialog:
         tracker.on_send()
         assert tracker.screen_has_active_dialog() is False
 
+    def test_returns_true_when_signal_pending_despite_desynced_screen(
+        self, tmp_path: Path,
+    ) -> None:
+        # Desync backstop: a permission signal is the persistent record a
+        # dialog is pending. If a state flip + _reset_screen() desynced pyte
+        # (blank/partial screen, footer gone) while the dialog is still on
+        # the user's terminal, the arrow filter must STILL route up/down to
+        # the dialog - keyed off the signal, not the lost footer. Without
+        # this, the cursor-hidden flip's absence-based check (or any reset)
+        # leaves a signalled dialog un-navigable by arrow.
+        t = [0.0]
+        tracker = make_tracker(tmp_path, t)
+        tracker.on_send()
+        # Partial/desynced screen: no dialog footer detectable on its own.
+        feed_screen_text(tracker, 'option row highlighted')
+        assert tracker.screen_has_active_dialog() is False
+        # But the hook signalled the dialog is pending -> active for arrows.
+        write_signal(tracker, 'needs_permission')
+        assert tracker.screen_has_active_dialog() is True
+        # needs_input (elicitation) likewise.
+        write_signal(tracker, 'needs_input')
+        assert tracker.screen_has_active_dialog() is True
+        # A non-prompt signal (idle) does NOT force-active: recall resumes.
+        write_signal(tracker, 'idle')
+        assert tracker.screen_has_active_dialog() is False
+
     def test_returns_false_when_only_one_pattern_present(
         self, tmp_path: Path,
     ) -> None:

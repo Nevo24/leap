@@ -2837,7 +2837,26 @@ class CLIStateTracker:
            text.  Providers that don't implement detection inherit the
            default True (assume idle visible) — for them this leg is a
            no-op and behaviour comes from checks #0 and #1.
+
+        Before any of those, a signal-based backstop: if the hook has
+        signalled a permission/input dialog is pending (``needs_permission``
+        / ``needs_input``), treat it as active even when the live screen
+        shows no dialog.  A state-transition ``_reset_screen()`` (e.g. the
+        signal-driven RUNNING→needs_permission promotion, or the
+        cursor-hidden flip) can blank the dialog out of pyte while it is
+        still on the user's terminal, and the CLI won't repaint an
+        unchanged dialog — so a screen-only check reads "no dialog" and ↑/↓
+        get stolen for history recall, stranding the user (the desync
+        family of the "arrows stuck in a dialog" bug).  The signal file is
+        the persistent record: it survives state flips (the flip paths
+        deliberately do NOT delete it) and the screen reset, and clears at
+        the next idle (Stop hook).  Because this method feeds ONLY the ↑/↓
+        filter, honoring a possibly-stale signal is a *cheap* false positive
+        (the arrow just reaches the CLI instead of driving recall; recall
+        resumes once the signal clears).
         """
+        if self._read_signal_state() in PROMPT_STATES:
+            return True
         with self._screen_lock:
             all_lines = self._get_display_lines()
         filled = [ln for ln in all_lines if ln.strip()]
